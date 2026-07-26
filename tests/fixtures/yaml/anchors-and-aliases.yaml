@@ -1,0 +1,6 @@
+defaults: &defaults
+  retry: 3
+  timeout: 30
+node:
+  command: echo hello
+  config: *defaults

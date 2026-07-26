@@ -1,0 +1,10 @@
+# workflow comment
+name: "Styled\tworkflow" # inline name comment
+description: 'Quoted description'
+metadata: { owner: LOOP24, tags: [alpha, 'beta'] }
+script: |
+  echo "hello"
+  echo "world"
+folded: >
+  first line
+  second line
