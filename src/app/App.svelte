@@ -12,7 +12,7 @@
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import type { AuthoringContract } from '$src/lib/contract/types'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
-  import { activeEditorMode } from '$src/stores/shell'
+  import { activeEditorMode, showEditorMode } from '$src/stores/shell'
   import { activeActivity, workspaceIntent } from '$src/stores/shell'
   import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
@@ -28,7 +28,7 @@
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
-  import type { DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
+  import type { DocumentAnalysis, DocumentKind, WorkflowPairText } from '$src/lib/documents/types'
   import {
     $documentWorkspace as documentWorkspaceState,
     DocumentWorkspaceController,
@@ -48,6 +48,8 @@
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
+  import EditorModes from '$src/features/editor/EditorModes.svelte'
+  import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
   import type { CanvasActionContext, DeleteImpact } from '$src/features/canvas/canvas-actions'
   import { createCanvasAuthoringCoordinator } from '$src/features/canvas/canvas-authoring-coordinator'
@@ -57,7 +59,6 @@
   } from '$src/stores/canvas'
   import { historyStore, recordTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
-  import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
   import { createApplicationDisposal } from './application-disposal'
@@ -113,6 +114,7 @@
     opener: HTMLElement | undefined
   } | null>(null)
   let handledIntent = 0
+  let restoredLayoutModeIdentity: string | null = null
   const documentWorkspace = new DocumentWorkspaceController({
     read: (path) => native.workspaceRead(path),
     write: (request) => native.workspaceWrite(request),
@@ -285,6 +287,12 @@
       request,
       opener: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
     }
+  }
+
+  function editYamlDocument(document: DocumentKind, text: string): void {
+    const pair = documentSessionStore.get().pair
+    if (!pair) return
+    applyAuthoritativeEditorText(pair, document, text, (next) => documentWorkspace.changed(next))
   }
 
   async function chooseCanvasNode(descriptor: NodeKindDescriptor): Promise<void> {
@@ -511,16 +519,36 @@
 
   $effect(() => {
     const session = $documentSessionStore
-    const workflowId = session.pair?.workflowId ?? null
-    if (workflowId !== canvasWorkflowId) {
-      canvasWorkflowId = workflowId
-      canvasProjection = null
+    const synchronized = synchronizeEditorProjection(
+      {
+        workflowId: canvasWorkflowId,
+        projection: canvasProjection,
+        stale: canvasStale,
+        readOnly: canvasStale,
+      },
+      session,
+    )
+    canvasWorkflowId = synchronized.workflowId
+    canvasProjection = synchronized.projection
+    canvasStale = synchronized.stale
+  })
+
+  $effect(() => {
+    const layout = $activeLayoutStore
+    const mode = $activeEditorMode
+    if (!layout) {
+      restoredLayoutModeIdentity = null
+      return
     }
-    if (session.analysis?.structurallyValid && isWorkflowProjection(session.analysis.projection)) {
-      canvasProjection = session.analysis.projection
+    const identity = `${layout.workspaceId}\0${layout.workflowPath}`
+    if (identity !== restoredLayoutModeIdentity) {
+      restoredLayoutModeIdentity = identity
+      if (mode !== layout.editorMode) showEditorMode(layout.editorMode)
+      return
     }
-    canvasStale = Boolean(
-      session.pair && (!session.analysis?.structurallyValid || !isWorkflowProjection(session.analysis?.projection)),
+    if (layout.editorMode === mode) return
+    void persistCanvasLayout({ ...layout, editorMode: mode, updatedAt: new Date().toISOString() }).catch(
+      surfaceCanvasPersistenceError,
     )
   })
 
@@ -707,25 +735,52 @@
             onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
             onDropPath={(path) => runWorkspaceOperation(actions.handleExternalPath(path))}
           />
-        {:else if canvasProjection && $activeLayoutStore && $activeEditorMode !== 'yaml'}
-          <GraphCanvas
-            bind:this={graphCanvas}
-            projection={canvasProjection}
-            layout={$activeLayoutStore}
-            workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
-            transitionLocked={canvasTransitionLocked}
-            issues={$documentSessionStore.analysis?.issues ?? []}
-            stale={canvasStale}
-            readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-              ?.readOnly === true}
-            onPersistLayout={persistCanvasLayout}
-            onPersistenceError={surfaceCanvasPersistenceError}
-            onConnect={(source, target) => canvasAuthoring.connect(source, target)}
-            onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}
-            onRequestAdd={requestCanvasAdd}
-            onDuplicate={(nodeIds) => canvasAuthoring.duplicate(nodeIds)}
-            onRequestDelete={requestCanvasDelete}
-          />
+        {:else}
+          <div
+            class="editor-surfaces"
+            class:split={$activeEditorMode === 'split'}
+            class:yaml-only={$activeEditorMode === 'yaml'}
+            class:no-canvas={!canvasProjection || !$activeLayoutStore}
+          >
+            {#if canvasProjection && $activeLayoutStore}
+              <div class="canvas-pane">
+                <GraphCanvas
+                  bind:this={graphCanvas}
+                  projection={canvasProjection}
+                  layout={$activeLayoutStore}
+                  workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
+                  transitionLocked={canvasTransitionLocked}
+                  issues={$documentSessionStore.analysis?.issues ?? []}
+                  stale={canvasStale}
+                  readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                    ?.readOnly === true}
+                  onPersistLayout={persistCanvasLayout}
+                  onPersistenceError={surfaceCanvasPersistenceError}
+                  onConnect={(source, target) => canvasAuthoring.connect(source, target)}
+                  onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}
+                  onRequestAdd={requestCanvasAdd}
+                  onDuplicate={(nodeIds) => canvasAuthoring.duplicate(nodeIds)}
+                  onRequestDelete={requestCanvasDelete}
+                />
+              </div>
+            {/if}
+            {#if $documentSessionStore.pair && $documentSessionStore.revision}
+              <div class="yaml-pane">
+                {#key $documentSessionStore.pair.workflowId}
+                  <EditorModes
+                    pair={$documentSessionStore.pair}
+                    revision={$documentSessionStore.revision}
+                    analysis={$documentSessionStore.analysis}
+                    projection={canvasProjection}
+                    mode={$activeEditorMode}
+                    readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                      ?.readOnly === true}
+                    onTextChange={editYamlDocument}
+                  />
+                {/key}
+              </div>
+            {/if}
+          </div>
         {/if}
       </section>
       {#if $documentSessionStore.pair}
@@ -1069,6 +1124,36 @@
     background-color: var(--color-canvas);
     background-image: radial-gradient(var(--color-grid) 1px, transparent 1px);
     background-size: 1.25rem 1.25rem;
+  }
+
+  .editor-surfaces,
+  .canvas-pane,
+  .yaml-pane {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .editor-surfaces {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-surfaces.split:not(.no-canvas) {
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.72fr);
+  }
+
+  .editor-surfaces.split:not(.no-canvas) .yaml-pane {
+    border-left: 1px solid var(--color-border);
+  }
+
+  .editor-surfaces:not(.split):not(.yaml-only) .yaml-pane,
+  .editor-surfaces.yaml-only .canvas-pane {
+    display: none;
+  }
+
+  .editor-surfaces.yaml-only .yaml-pane,
+  .editor-surfaces.split.no-canvas .yaml-pane {
+    grid-column: 1;
   }
 
   .context-layer {

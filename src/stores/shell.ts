@@ -1,11 +1,15 @@
 import { atom } from 'nanostores'
 import type { ActivityId, EditorMode } from '$src/lib/commands/types'
+import type { DocumentKind } from '$src/lib/documents/types'
 
 export const $activeActivity = atom<ActivityId>('explorer')
 export const activeActivity = $activeActivity
 
 export const $activeEditorMode = atom<EditorMode>('visual')
 export const activeEditorMode = $activeEditorMode
+
+export const $activeYamlDocument = atom<DocumentKind>('definition')
+export const activeYamlDocument = $activeYamlDocument
 
 export type WorkspaceIntentKind = 'open-folder' | 'quick-open' | `workflow.${string}`
 export interface WorkspaceIntent {
@@ -23,6 +27,10 @@ export function showActivity(activity: ActivityId): void {
 
 export function showEditorMode(mode: EditorMode): void {
   $activeEditorMode.set(mode)
+}
+
+export function showYamlDocument(document: DocumentKind): void {
+  $activeYamlDocument.set(document)
 }
 
 export function openFolder(): void {

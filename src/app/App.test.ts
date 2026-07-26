@@ -10,7 +10,7 @@ import {
   openDocumentSession,
   receiveDocumentAnalysis,
 } from '$src/stores/documents'
-import { clearActiveLayout, setActiveLayout } from '$src/stores/layout'
+import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import App from './App.svelte'
 
@@ -270,6 +270,102 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeEnabled()
     expect($documentSession.get().pair).toBe(before)
+  })
+
+  it('keeps the last valid graph and authoritative CodeMirror instance mounted across editor modes', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\nnodes:\n  - id: collect\n    command: Gather\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      issues: [],
+      structurallyValid: true,
+      projection: {
+        name: 'Flow',
+        description: '',
+        profile: 'hermes-legacy',
+        nodes: [
+          {
+            id: 'collect',
+            kind: 'command',
+            value: 'Gather',
+            dependsOn: [],
+            options: {},
+            source: { path: '/nodes/0', start: 20, end: 56 },
+          },
+        ],
+        edges: [],
+        definition: { name: 'Flow' },
+        companion: null,
+      },
+    })
+    setActiveLayout({
+      schemaVersion: 1,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      nodePositions: { collect: { x: 20, y: 30 } },
+      viewport: { x: 0, y: 0, zoom: 1 },
+      panels: { left: 280, right: 320, problems: 180 },
+      editorMode: 'visual',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+    })
+    render(App)
+
+    const graph = screen.getByRole('region', { name: 'Workflow graph' })
+    await fireEvent.click(screen.getByRole('button', { name: 'YAML' }))
+    await tick()
+
+    expect(screen.getByRole('tabpanel', { name: 'Definition YAML' })).toBeVisible()
+    const editor = screen.getByRole('textbox')
+    expect(editor).toHaveTextContent(/name: Flow/)
+    expect(screen.getByRole('region', { name: 'Workflow graph', hidden: true })).toBe(graph)
+    expect(activeLayoutStore.get()?.editorMode).toBe('yaml')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Split' }))
+    await tick()
+    expect(screen.getByRole('region', { name: 'Workflow graph' })).toBe(graph)
+    expect(screen.getByRole('tabpanel', { name: 'Definition YAML' })).toBeVisible()
+    expect(screen.getByRole('textbox')).toBe(editor)
+
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:other.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:other.yaml:definition',
+          kind: 'definition',
+          path: 'other.yaml',
+          text: 'name: Other\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'b'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    await tick()
+    expect(screen.getByRole('textbox')).not.toBe(editor)
+    expect(screen.getByRole('textbox')).toHaveTextContent(/name: Other/)
   })
 
   it('applies the selected light theme across the shell chrome', () => {
