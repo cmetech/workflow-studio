@@ -35,12 +35,32 @@ const commandContexts: readonly CommandContext[] = commandSurfaces.flatMap((surf
   [false, true].flatMap((canMutate) => [false, true].map((hasSelection) => ({ surface, canMutate, hasSelection }))),
 )
 
+const modifierOrder = new Map([
+  ['mod', 0],
+  ['ctrl', 1],
+  ['control', 1],
+  ['meta', 2],
+  ['cmd', 2],
+  ['command', 2],
+  ['alt', 3],
+  ['option', 3],
+  ['shift', 4],
+])
+
 function normalizeBinding(binding: string): string {
-  return binding
+  const parts = binding
     .split('+')
     .map((part) => part.trim().toLowerCase())
     .filter(Boolean)
-    .join('+')
+  const modifiers = parts
+    .filter((part) => modifierOrder.has(part))
+    .sort(
+      (left, right) =>
+        (modifierOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (modifierOrder.get(right) ?? Number.MAX_SAFE_INTEGER) ||
+        left.localeCompare(right),
+    )
+  const keys = parts.filter((part) => !modifierOrder.has(part))
+  return [...modifiers, ...keys].join('+')
 }
 
 function compareCommands(left: AppCommand, right: AppCommand): number {

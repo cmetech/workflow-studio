@@ -1,12 +1,12 @@
 # Workflow Studio
 
-Workflow Studio is a planned lightweight desktop editor for graphically authoring Hermes/co-worker DAG workflows. YAML is the only workflow format and remains the source of truth. The application will run independently of Hermes, work offline, and produce workflow definition and optional companion-policy YAML files that users can place wherever their Hermes installation discovers workflows.
+Workflow Studio is a lightweight desktop editor under active development for graphically authoring Hermes/co-worker DAG workflows. YAML is the only workflow format and remains the source of truth. The application is designed to run independently of Hermes, work offline, and produce workflow definition and optional companion-policy YAML files that users can place wherever their Hermes installation discovers workflows.
 
 This repository contains the application foundation and approved product and implementation documentation.
 
 ## Development
 
-Workflow Studio supports Node `>=22.12.0`, npm `>=10`, and Rust `>=1.77.2`.
+Workflow Studio supports Node `>=22.13.0`, npm `>=10`, and Rust `>=1.77.2`.
 
 ```bash
 npm ci
@@ -35,8 +35,9 @@ Use `npm run dev` for renderer development and `npm run tauri -- dev` to launch 
 
 - Product design: approved
 - Technology selection: approved
-- Repository scaffold: complete
-- Implementation: foundation in progress
+- Phase 1 native foundation: complete
+- Phase 2 YAML document and workspace: next
+- Version 1 implementation: in progress
 
 ## Foundational decisions
 

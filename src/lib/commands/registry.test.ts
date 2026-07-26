@@ -68,6 +68,21 @@ describe('command registry', () => {
     ])
   })
 
+  it('canonicalizes modifier order when detecting binding conflicts', () => {
+    const registry = registryWith(
+      command({ id: 'palette.open', label: 'Command Palette', defaultBindings: ['Mod+Shift+P'] }),
+      command({ id: 'palette.secondary', label: 'Other Palette', defaultBindings: ['Shift+Mod+P'] }),
+    )
+
+    expect(registry.listBindingConflicts()).toEqual([
+      expect.objectContaining({
+        type: 'binding_conflict',
+        binding: 'mod+shift+p',
+        commandIds: ['palette.open', 'palette.secondary'],
+      }),
+    ])
+  })
+
   it('allows a shared binding when the commands never share an enabled context', () => {
     const registry = registryWith(
       command({

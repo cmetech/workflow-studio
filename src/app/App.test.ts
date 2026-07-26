@@ -15,9 +15,10 @@ describe('App', () => {
   })
 
   it('offers a workspace action without requiring Hermes', () => {
-    render(App)
+    const { container } = render(App)
     expect(screen.getByRole('heading', { name: 'LOOP24 Workflow Studio' })).toBeVisible()
-    expect(screen.getByRole('img', { name: 'LOOP24' })).toBeVisible()
+    expect(container.querySelector('.brand-lockup img')).toHaveAttribute('alt', '')
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open Folder' })).toBeEnabled()
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })

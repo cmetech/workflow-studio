@@ -33,7 +33,7 @@
 <main class="application-shell">
   <header class="titlebar">
     <div class="brand-lockup">
-      <img src={brandMarkUrl} alt="LOOP24" />
+      <img src={brandMarkUrl} alt="" />
       <div class="title-copy">
         <p class="eyebrow">LOOP24</p>
         <h1 aria-label={brand.displayName}>Workflow Studio</h1>
