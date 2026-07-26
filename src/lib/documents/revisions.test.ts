@@ -4,11 +4,14 @@ import type { ContractDigest, DocumentAnalysis, TextDocumentState, WorkflowPairT
 import {
   acceptAnalysis,
   confirmDocumentSaved,
+  confirmPairStructureSaved,
   createDocumentRevision,
   editDocumentText,
   isAnalysisCurrent,
   removeCompanion,
+  setCompanion,
 } from './revisions'
+import { isDocumentPairDirty } from '$src/stores/documents'
 
 const contractDigest = `sha256:${'a'.repeat(64)}` as ContractDigest
 
@@ -28,6 +31,7 @@ function pair(): WorkflowPairText {
   return {
     workflowId: 'flow',
     generation: 0,
+    savedGeneration: 0,
     definition: document('definition'),
     companion: document('companion'),
   }
@@ -89,6 +93,17 @@ describe('document revisions', () => {
     expect(removed).toMatchObject({ generation: 1, companion: null })
     expect(removed.definition).toEqual(initial.definition)
     expect(removeCompanion(removed)).toBe(removed)
+  })
+
+  it('tracks companion-only addition and removal as dirty until the pair structure is confirmed saved', () => {
+    const legacy = removeCompanion(pair())
+    const savedLegacy = confirmPairStructureSaved(legacy, legacy.generation)
+    const added = setCompanion(savedLegacy, document('companion'))
+    const removedAgain = removeCompanion({ ...pair(), savedGeneration: pair().generation })
+
+    expect(isDocumentPairDirty(added)).toBe(true)
+    expect(isDocumentPairDirty(removedAgain)).toBe(true)
+    expect(isDocumentPairDirty(confirmPairStructureSaved(added, added.generation))).toBe(false)
   })
 
   it('requires exact generation, document revisions, and contract digest for current analysis', () => {

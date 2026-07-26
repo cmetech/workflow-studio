@@ -100,6 +100,7 @@ function pair(source = validSource, revision = 3): WorkflowPairText {
   return {
     workflowId: 'transactions',
     generation: 2,
+    savedGeneration: 2,
     definition: {
       id: 'definition',
       kind: 'definition',
@@ -305,11 +306,13 @@ nodes:
     if (!undone.ok) return
     expect(undone.pair.definition.text).toBe(validSource)
     expect(undone.pair.definition.revision).toBe(5)
+    expect(undone.pair.savedGeneration).toBe(2)
 
     const redone = redoTransaction(undone.history, undone.pair)
     expect(redone).toMatchObject({ ok: true })
     if (!redone.ok) return
     expect(redone.pair.definition.text).toBe(first.pair.definition.text)
+    expect(redone.pair.savedGeneration).toBe(2)
 
     const conflict = undoTransaction(redone.history, {
       ...redone.pair,

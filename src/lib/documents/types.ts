@@ -33,6 +33,7 @@ export interface TextDocumentState {
 export interface WorkflowPairText {
   workflowId: string
   generation: number
+  savedGeneration: number
   definition: TextDocumentState
   companion: TextDocumentState | null
 }

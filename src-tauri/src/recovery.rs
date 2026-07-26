@@ -115,40 +115,77 @@ fn write_blob(app_data: &Path, key: &str, content: &str) -> RecoveryResult<()> {
 fn list_blobs(app_data: &Path) -> RecoveryResult<Vec<RecoveryBlob>> {
     let root = recovery_root(app_data)?;
     let mut blobs = Vec::new();
+    let mut removed_junk = false;
+    let mut unexpected_entry = false;
     for entry in fs::read_dir(&root).map_err(|error| io_error("recovery_list_failed", error))? {
         let entry = entry.map_err(|error| io_error("recovery_list_failed", error))?;
         let file_type = entry
             .file_type()
             .map_err(|error| io_error("recovery_list_failed", error))?;
-        if !file_type.is_file() || file_type.is_symlink() {
+        if file_type.is_symlink() {
+            remove_junk_file(&entry.path())?;
+            removed_junk = true;
+            continue;
+        }
+        if !file_type.is_file() {
+            unexpected_entry = true;
             continue;
         }
         let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            remove_junk_file(&entry.path())?;
+            removed_junk = true;
             continue;
         };
         if !valid_record_id(&id) {
+            remove_junk_file(&entry.path())?;
+            removed_junk = true;
             continue;
         }
         let metadata = entry
             .metadata()
             .map_err(|error| io_error("recovery_list_failed", error))?;
         if metadata.len() > MAX_BLOB_BYTES {
+            remove_junk_file(&entry.path())?;
+            removed_junk = true;
             continue;
         }
-        if let Some(blob) = read_blob(&entry.path(), id, metadata.len())? {
-            blobs.push(blob);
+        match read_blob(&entry.path(), id)? {
+            Some(blob) => blobs.push(blob),
+            None => {
+                remove_junk_file(&entry.path())?;
+                removed_junk = true;
+            }
         }
+    }
+    if removed_junk {
+        sync_directory(&root)?;
+    }
+    if unexpected_entry {
+        return Err(recovery_error(
+            "recovery_unexpected_entry",
+            "The private recovery directory contains an unexpected non-file entry.",
+        ));
     }
     blobs.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(blobs)
 }
 
-fn read_blob(path: &Path, id: String, size: u64) -> RecoveryResult<Option<RecoveryBlob>> {
+fn read_blob(path: &Path, id: String) -> RecoveryResult<Option<RecoveryBlob>> {
     let file = File::open(path).map_err(|error| io_error("recovery_read_failed", error))?;
+    let size = file
+        .metadata()
+        .map_err(|error| io_error("recovery_read_failed", error))?
+        .len();
+    if size > MAX_BLOB_BYTES {
+        return Ok(None);
+    }
     let mut bytes = Vec::with_capacity(size as usize);
     file.take(MAX_BLOB_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| io_error("recovery_read_failed", error))?;
+    if bytes.len() as u64 != size {
+        return Ok(None);
+    }
     if bytes.len() < 8 || &bytes[..4] != MAGIC {
         return Ok(None);
     }
@@ -168,6 +205,10 @@ fn read_blob(path: &Path, id: String, size: u64) -> RecoveryResult<Option<Recove
         content,
         size,
     }))
+}
+
+fn remove_junk_file(path: &Path) -> RecoveryResult<()> {
+    fs::remove_file(path).map_err(|error| io_error("recovery_cleanup_failed", error))
 }
 
 fn delete_blob(app_data: &Path, id: &str) -> RecoveryResult<()> {
@@ -348,5 +389,52 @@ mod tests {
         let error = write_blob(app_data.path(), "workflow", "draft").unwrap_err();
         assert_eq!(error.code, "recovery_scope_invalid");
         assert!(outside.path().read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn listing_deletes_every_malformed_or_unaddressable_regular_blob() {
+        let app_data = tempfile::tempdir().unwrap();
+        let recovery = super::recovery_root(app_data.path()).unwrap();
+        let valid_name = |suffix: &str| format!("{}-{suffix}.wsr", "a".repeat(64));
+
+        std::fs::write(recovery.join(valid_name("01")), b"wrong-magic").unwrap();
+        std::fs::write(recovery.join(valid_name("02")), b"WSR1\0\0").unwrap();
+        std::fs::write(
+            recovery.join(valid_name("03")),
+            b"WSR1\xff\xff\xff\xffshort",
+        )
+        .unwrap();
+        std::fs::write(recovery.join(valid_name("04")), b"WSR1\0\0\0\x01k\xff").unwrap();
+        std::fs::write(recovery.join("not-a-recovery-id.txt"), b"junk").unwrap();
+        std::fs::write(
+            recovery.join(valid_name("05")),
+            vec![0_u8; super::MAX_BLOB_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        assert!(list_blobs(app_data.path()).unwrap().is_empty());
+        assert!(std::fs::read_dir(&recovery).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_never_follows_junk_symlinks_and_surfaces_unexpected_directories() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let recovery = super::recovery_root(app_data.path()).unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "outside").unwrap();
+        symlink(outside.path().join("keep.txt"), recovery.join("a.wsr")).unwrap();
+
+        assert!(list_blobs(app_data.path()).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+            "outside"
+        );
+
+        std::fs::create_dir(recovery.join("unexpected-directory")).unwrap();
+        let error = list_blobs(app_data.path()).unwrap_err();
+        assert_eq!(error.code, "recovery_unexpected_entry");
     }
 }

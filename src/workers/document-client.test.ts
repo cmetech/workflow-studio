@@ -45,6 +45,7 @@ function pair(): WorkflowPairText {
   return {
     workflowId: 'flow',
     generation: 0,
+    savedGeneration: 0,
     definition: document('definition'),
     companion: document('companion'),
   }

@@ -1,5 +1,6 @@
 import {
   confirmDocumentSaved,
+  confirmPairStructureSaved,
   createDocumentRevision,
   editDocumentText,
   isAnalysisCurrent,
@@ -48,6 +49,7 @@ export async function openWorkflowPair(options: OpenWorkflowPairOptions): Promis
   const pair: WorkflowPairText = {
     workflowId: options.workflowId,
     generation: 0,
+    savedGeneration: 0,
     definition: openedDocument(options.workflowId, 'definition', definition),
     companion: companion ? openedDocument(options.workflowId, 'companion', companion) : null,
   }
@@ -155,6 +157,13 @@ export async function saveWorkflowPair(options: SaveWorkflowPairOptions): Promis
       results: { definition: definitionResult, companion: companionResult },
       recoveryDraft: draft,
     }
+  }
+
+  if (
+    (nextPair.companion !== null && companionResult?.status === 'saved') ||
+    (nextPair.companion === null && companionResult?.status === 'deleted')
+  ) {
+    nextPair = confirmPairStructureSaved(nextPair, options.pair.generation)
   }
 
   const authoritativePair = replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)

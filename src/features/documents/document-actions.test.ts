@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ContractDigest, DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
-import { editDocumentText } from '$src/lib/documents/revisions'
-import { removeCompanion } from '$src/lib/documents/revisions'
+import { editDocumentText, removeCompanion, setCompanion } from '$src/lib/documents/revisions'
 import { createHistoryState } from '$src/stores/history'
 import {
   $documentSession,
@@ -24,6 +23,7 @@ function pair(overrides: Partial<WorkflowPairText> = {}): WorkflowPairText {
   return {
     workflowId: 'workflow:workspace:flows/release.yaml',
     generation: 0,
+    savedGeneration: 0,
     definition: {
       id: 'definition:release',
       kind: 'definition',
@@ -99,6 +99,7 @@ describe('document actions', () => {
     })
 
     expect(opened.definition).toMatchObject({ revision: 0, savedRevision: 0, diskHash: 'flows/release.yaml-hash' })
+    expect(opened).toMatchObject({ generation: 0, savedGeneration: 0 })
     expect(opened.companion).toMatchObject({
       revision: 0,
       savedRevision: 0,
@@ -266,7 +267,7 @@ describe('document actions', () => {
   it('returns a concurrently changed pair generation as authoritative and recovery-backed', async () => {
     const current = pair()
     openDocumentSession(current, digest)
-    const changedGeneration = removeCompanion(editDocumentText(current, 'definition', 'id: generation-newer\n'))
+    const changedGeneration = removeCompanion(current)
     const host = native()
     vi.mocked(host.workspaceWrite).mockImplementationOnce(async ({ relativePath, text }) => {
       updateDocumentSession(changedGeneration, digest)
@@ -289,9 +290,44 @@ describe('document actions', () => {
     expect(result.pair).toMatchObject({
       generation: changedGeneration.generation,
       companion: null,
-      definition: { text: changedGeneration.definition.text, diskHash: 'saved-definition-hash' },
+      definition: { text: current.definition.text, diskHash: 'saved-definition-hash' },
     })
     expect(keepRecovery).toHaveBeenCalledOnce()
+  })
+
+  it('returns a companion-only concurrent addition as dirty and persists recovery', async () => {
+    const current = pair({ companion: null })
+    openDocumentSession(current, digest)
+    const added = setCompanion(current, {
+      ...pair().companion!,
+      revision: 0,
+      savedRevision: 0,
+      diskHash: null,
+    })
+    const host = native()
+    vi.mocked(host.workspaceWrite).mockImplementationOnce(async ({ relativePath, text }) => {
+      updateDocumentSession(added, digest)
+      return {
+        relativePath,
+        sha256: 'saved-definition-hash',
+        size: text.length,
+        modifiedAt: '2026-07-25T12:01:00.000Z',
+      }
+    })
+    const keepRecovery = vi.fn(async () => undefined)
+    const discardRecovery = vi.fn(async () => undefined)
+
+    const result = await saveWorkflowPair({
+      pair: current,
+      analysis: analysis(current),
+      native: host,
+      keepRecovery,
+      discardRecovery,
+    })
+
+    expect(result.pair).toMatchObject({ generation: added.generation, companion: { diskHash: null } })
+    expect(keepRecovery).toHaveBeenCalledOnce()
+    expect(discardRecovery).not.toHaveBeenCalled()
   })
 
   it('uses a bound expected hash for companion deletion and treats failed or partial path results as partial save', async () => {
@@ -362,6 +398,7 @@ describe('document actions', () => {
         savedRevision: 2,
         diskHash: disk.sha256,
       })
+      expect(reloaded.pair.savedGeneration).toBe(clean.savedGeneration)
     }
 
     const dirty = handleExternalChange(pair(), disk)

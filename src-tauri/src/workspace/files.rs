@@ -1068,6 +1068,30 @@ pub fn trash_paths_checked_with(
 }
 
 #[cfg(test)]
+pub fn trash_paths_checked_with_handoff_hook(
+    scope: &WorkspaceScope,
+    requests: &[TrashPathRequest],
+    mut handoff_hook: impl FnMut(&Path),
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    let expected = requests
+        .iter()
+        .map(|request| TrashPathExpectation {
+            relative_path: request.relative_path.clone(),
+            expected_current_hash: Some(request.expected_current_hash.clone()),
+        })
+        .collect::<Vec<_>>();
+    trash_paths_impl(
+        scope,
+        &expected,
+        || {},
+        &mut handoff_hook,
+        || {},
+        &mut delete,
+    )
+}
+
+#[cfg(test)]
 pub fn trash_paths_with(
     scope: &WorkspaceScope,
     relative_paths: &[String],
@@ -1293,6 +1317,16 @@ fn trash_bound_path(
             source,
             &original_identity,
             error,
+        ));
+    }
+    if expected_current_hash
+        .is_some_and(|expected| !named_hash_matches(&quarantine, &original_identity, expected))
+    {
+        return Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            revision_conflict(),
         ));
     }
     let delete_result = delete(&ambient_path);

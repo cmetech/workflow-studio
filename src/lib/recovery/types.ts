@@ -12,6 +12,7 @@ export interface RecoveryDraft {
   readonly schemaVersion: typeof RECOVERY_SCHEMA_VERSION
   readonly workflowId: string
   readonly generation: number
+  readonly savedGeneration: number
   readonly definition: RecoveryDocumentDraft
   readonly companion: RecoveryDocumentDraft | null
   readonly updatedAt: string

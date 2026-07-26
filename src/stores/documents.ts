@@ -82,6 +82,7 @@ export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDiges
     let mergedGeneration = current.pair
     mergedGeneration = mergeSavedDocument(mergedGeneration, pair, 'definition')
     mergedGeneration = mergeSavedDocument(mergedGeneration, pair, 'companion')
+    mergedGeneration = mergeSavedPairStructure(mergedGeneration, pair)
     updateDocumentSession(mergedGeneration, contractDigest)
     return mergedGeneration
   }
@@ -96,6 +97,7 @@ export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDiges
   let merged = current.pair
   merged = mergeSavedDocument(merged, pair, 'definition')
   merged = mergeSavedDocument(merged, pair, 'companion')
+  merged = mergeSavedPairStructure(merged, pair)
   updateDocumentSession(merged, contractDigest)
   return merged
 }
@@ -127,9 +129,15 @@ function mergeSavedDocument(
 
 export function isDocumentPairDirty(pair: WorkflowPairText): boolean {
   return (
+    pair.generation !== pair.savedGeneration ||
     pair.definition.revision !== pair.definition.savedRevision ||
     (pair.companion !== null && pair.companion.revision !== pair.companion.savedRevision)
   )
+}
+
+function mergeSavedPairStructure(current: WorkflowPairText, saved: WorkflowPairText): WorkflowPairText {
+  if (saved.savedGeneration <= current.savedGeneration || saved.savedGeneration > current.generation) return current
+  return { ...current, savedGeneration: saved.savedGeneration }
 }
 
 export function closeDocumentSession(): void {

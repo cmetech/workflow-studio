@@ -33,6 +33,7 @@ export function createRecoveryDraft(pair: WorkflowPairText, updatedAt: string): 
     schemaVersion: RECOVERY_SCHEMA_VERSION,
     workflowId: pair.workflowId,
     generation: pair.generation,
+    savedGeneration: pair.savedGeneration,
     definition: documentDraft(pair.definition),
     companion: pair.companion ? documentDraft(pair.companion) : null,
     updatedAt,
@@ -191,6 +192,10 @@ function parseRecoveryDraft(content: string): RecoveryDraft | null {
       value.schemaVersion !== RECOVERY_SCHEMA_VERSION ||
       typeof value.workflowId !== 'string' ||
       !Number.isSafeInteger(value.generation) ||
+      !Number.isSafeInteger(value.savedGeneration) ||
+      (value.generation as number) < 0 ||
+      (value.savedGeneration as number) < 0 ||
+      (value.savedGeneration as number) > (value.generation as number) ||
       typeof value.updatedAt !== 'string'
     ) {
       return null
@@ -202,6 +207,7 @@ function parseRecoveryDraft(content: string): RecoveryDraft | null {
       schemaVersion: RECOVERY_SCHEMA_VERSION,
       workflowId: value.workflowId,
       generation: value.generation as number,
+      savedGeneration: value.savedGeneration as number,
       definition,
       companion,
       updatedAt: value.updatedAt,
@@ -243,6 +249,7 @@ function documentDraft(document: WorkflowPairText['definition']): RecoveryDocume
 
 function isDirty(pair: WorkflowPairText): boolean {
   return (
+    pair.generation !== pair.savedGeneration ||
     pair.definition.revision !== pair.definition.savedRevision ||
     (pair.companion !== null && pair.companion.revision !== pair.companion.savedRevision)
   )

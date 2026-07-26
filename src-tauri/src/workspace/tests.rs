@@ -703,6 +703,67 @@ fn trash_expected_hash_never_trashes_an_external_replacement() {
 }
 
 #[test]
+fn trash_rechecks_quarantined_content_immediately_before_os_handoff() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    let result = files::trash_paths_checked_with_handoff_hook(
+        &workspace,
+        &[files::TrashPathRequest {
+            relative_path: "flow.yaml".to_string(),
+            expected_current_hash: before.sha256,
+        }],
+        |quarantined| fs::write(quarantined, "id: in-place-external\n").unwrap(),
+        |_| panic!("mutated quarantined content must not reach OS Trash"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "failed");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("external_revision_conflict")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "id: in-place-external\n"
+    );
+}
+
+#[test]
+fn trash_reports_partial_when_quarantine_hash_mismatch_cannot_roll_back() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    let result = files::trash_paths_checked_with_handoff_hook(
+        &workspace,
+        &[files::TrashPathRequest {
+            relative_path: "flow.yaml".to_string(),
+            expected_current_hash: before.sha256,
+        }],
+        |quarantined| {
+            fs::write(quarantined, "id: in-place-external\n").unwrap();
+            fs::write(root.path().join("flow.yaml"), "id: source-recreated\n").unwrap();
+        },
+        |_| panic!("mutated quarantined content must not reach OS Trash"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "partial");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("workspace_trash_partial")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "id: source-recreated\n"
+    );
+}
+
+#[test]
 fn classifies_watcher_event_hints_without_file_content() {
     use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
     use notify::EventKind;

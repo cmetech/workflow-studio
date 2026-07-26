@@ -12,6 +12,7 @@ function pair(workflowId = 'workflow-1', text = 'id: draft\ntasks: {}\n'): Workf
   return {
     workflowId,
     generation: 1,
+    savedGeneration: 1,
     definition: {
       id: `${workflowId}:definition`,
       kind: 'definition',
@@ -55,6 +56,7 @@ describe('recovery store', () => {
       schemaVersion: 1,
       workflowId: 'workflow-1',
       generation: 1,
+      savedGeneration: 1,
       updatedAt: '2026-07-25T12:00:00.000Z',
       definition: {
         path: 'flows/workflow-1.yaml',
@@ -160,6 +162,24 @@ describe('recovery store', () => {
     vi.useRealTimers()
   })
 
+  it('persists a companion-only structural generation even when both document revisions are clean', async () => {
+    vi.useFakeTimers()
+    const port = memoryPort()
+    const controller = new RecoveryDraftController(createRecoveryStore(port))
+    const current = pair()
+    const structuralOnly = {
+      ...current,
+      generation: current.generation + 1,
+      definition: { ...current.definition, savedRevision: current.definition.revision },
+    }
+
+    controller.changed(structuralOnly)
+    await vi.advanceTimersByTimeAsync(750)
+
+    expect(port.recoveryWrite).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
+
   it('keeps at most 50 workflow drafts by pruning oldest records first', async () => {
     const port = memoryPort()
     const store = createRecoveryStore(port)
@@ -185,6 +205,23 @@ describe('recovery store', () => {
       0,
     )
     expect(total).toBeLessThanOrEqual(64 * 1024 * 1024)
+  })
+
+  it('deletes drafts with impossible pair structural baselines', async () => {
+    const port = memoryPort()
+    const draft = createRecoveryDraft(pair(), '2026-07-25T12:00:00.000Z')
+    port.records.set('negative-generation', {
+      key: draft.workflowId,
+      content: JSON.stringify({ ...draft, generation: -1 }),
+    })
+    port.records.set('future-saved-generation', {
+      key: draft.workflowId,
+      content: JSON.stringify({ ...draft, savedGeneration: draft.generation + 1 }),
+    })
+
+    expect(await createRecoveryStore(port).list()).toEqual([])
+    expect(port.records.size).toBe(0)
+    expect(port.recoveryDelete).toHaveBeenCalledTimes(2)
   })
 
   it('deletes malformed and old-schema blobs before enforcing count and complete stored-byte limits', async () => {

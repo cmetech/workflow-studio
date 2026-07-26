@@ -46,6 +46,15 @@ export function confirmDocumentSaved(
   })
 }
 
+export function confirmPairStructureSaved(pair: WorkflowPairText, generation: number): WorkflowPairText {
+  if (generation < pair.savedGeneration) return pair
+  if (generation > pair.generation) {
+    throw new RangeError('A saved pair generation cannot be newer than the authoritative pair generation.')
+  }
+  if (generation === pair.savedGeneration) return pair
+  return { ...pair, savedGeneration: generation }
+}
+
 export function removeCompanion(pair: WorkflowPairText): WorkflowPairText {
   if (!pair.companion) return pair
 
