@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { executeCommand, listCommands, setDocumentSaveHandler } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
@@ -41,10 +41,11 @@
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-  import { runAfterCanvasLayoutFlush } from '$src/features/canvas/canvas-activation-barrier'
+  import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
+  import { createApplicationDisposal } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
   const globalContext: CommandContext = {
@@ -84,6 +85,7 @@
   let canvasProjection = $state<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
+  let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let exportConfirmation = $state<{
     paths: readonly string[]
@@ -136,12 +138,14 @@
     contracts: availableContracts,
     analyze: analyzeCandidateInWorker,
     activate: openEntry,
-    openDraft: (pair, contract) =>
-      withCanvasLayoutBarrier(async () => {
+    openDraft: (pair, contract) => {
+      const requestToken = documentWorkspace.beginActivation()
+      return withCanvasLayoutBarrier(async () => {
         const workspaceId = $workspace.id
-        if (workspaceId) await documentWorkspace.openDraft(workspaceId, pair, contract)
+        if (workspaceId) await documentWorkspace.openDraft(workspaceId, pair, contract, requestToken)
         else openDocumentSession(pair, draftDigest)
-      }),
+      })
+    },
     currentDocument: () => documentSessionStore.get().pair,
     flushRecovery: (pair) => documentWorkspace.flushRecovery(pair),
     closeWorkspace: () => withCanvasLayoutBarrier(() => documentWorkspace.closeWorkspace()),
@@ -161,6 +165,19 @@
     { id: 'split', label: 'Split' },
     { id: 'yaml', label: 'YAML' },
   ]
+
+  const canvasActivationBarrier = createCanvasActivationBarrier({
+    getCanvas: () => graphCanvas,
+    setLocked: (locked) => {
+      canvasTransitionLocked = locked
+    },
+    settle: tick,
+    onPersistenceError: surfaceCanvasPersistenceError,
+  })
+  const applicationDisposal = createApplicationDisposal(
+    () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
+    surfaceCanvasPersistenceError,
+  )
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
@@ -184,21 +201,16 @@
     )
   }
 
-  async function flushCanvasLayout(): Promise<void> {
-    await withCanvasLayoutBarrier(async () => undefined)
-  }
-
   function surfaceCanvasPersistenceError(error: unknown): void {
     workspaceError = error instanceof Error ? error.message : 'The canvas layout could not be saved.'
   }
 
   function withCanvasLayoutBarrier<T>(transition: () => Promise<T>): Promise<T> {
-    return runAfterCanvasLayoutFlush(() => graphCanvas, transition, surfaceCanvasPersistenceError)
+    return canvasActivationBarrier.run(transition)
   }
 
-  async function disposeApplicationState(): Promise<void> {
-    await flushCanvasLayout()
-    await documentWorkspace.dispose()
+  function disposeApplicationState(): Promise<void> {
+    return applicationDisposal.dispose()
   }
 
   async function refreshRecent(): Promise<void> {
@@ -233,14 +245,15 @@
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
-    await flushCanvasLayout()
     const requestToken = documentWorkspace.beginActivation()
-    await contractReadiness
-    const contract = await activeContractFor(entry)
-    const workspaceId = $workspace.id
-    if (!workspaceId) return
-    const opened = await documentWorkspace.activate(workspaceId, entry, contract ?? null, requestToken)
-    if (opened) selectWorkspaceEntry(entry.id)
+    await withCanvasLayoutBarrier(async () => {
+      await contractReadiness
+      const contract = await activeContractFor(entry)
+      const workspaceId = $workspace.id
+      if (!workspaceId) return
+      const opened = await documentWorkspace.activate(workspaceId, entry, contract ?? null, requestToken)
+      if (opened) selectWorkspaceEntry(entry.id)
+    })
   }
 
   function analyzeCandidateInWorker(input: {
@@ -472,6 +485,7 @@
 
   onDestroy(() => {
     exportConfirmation?.resolve(false)
+    applicationDisposal.unmount()
   })
 </script>
 
@@ -566,6 +580,7 @@
             projection={canvasProjection}
             layout={$activeLayoutStore}
             workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
+            transitionLocked={canvasTransitionLocked}
             issues={$documentSessionStore.analysis?.issues ?? []}
             stale={canvasStale}
             readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)

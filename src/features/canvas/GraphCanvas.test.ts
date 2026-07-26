@@ -3,9 +3,9 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
-import { $canvasPositions, clearCanvasState } from '$src/stores/canvas'
+import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
-import { runAfterCanvasLayoutFlush } from './canvas-activation-barrier'
+import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 
 const projection: WorkflowProjection = Object.freeze({
   name: 'Release',
@@ -134,6 +134,42 @@ describe('GraphCanvas', () => {
     expect(screen.getByRole('button', { name: 'Hide minimap' })).toBeVisible()
   })
 
+  it('suppresses synthetic drag, selection, and Arrange mutations while an activation transition is locked', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const { container } = render(GraphCanvas, {
+      projection,
+      layout,
+      transitionLocked: true,
+      onPersistLayout: persistLayout,
+    })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    setCanvasSelection(['review'])
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent.click(screen.getAllByLabelText('command node collect')[0]!)
+    await fireEvent.click(screen.getByRole('button', { name: 'Arrange graph' }))
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect($canvasPositions.get().collect).toEqual({ x: 0, y: 0 })
+    expect($canvasSelection.get()).toEqual(['review'])
+    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeDisabled()
+    expect(persistLayout).not.toHaveBeenCalled()
+  })
+
   it('flushes a pending drag-stop persistence before the canvas closes', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
@@ -221,16 +257,19 @@ describe('GraphCanvas', () => {
       workflowPath: 'deploy.yaml',
       nodePositions: { collect: { x: 5, y: 6 }, review: { x: 320, y: 0 } },
     }
-    await runAfterCanvasLayoutFlush(
-      () => component,
-      () =>
-        rerender({
-          projection,
-          layout: secondLayout,
-          workflowIdentity: 'workspace-b\0workflow:workspace-b:deploy.yaml',
-          onPersistLayout: persistLayout,
-        }),
-      () => undefined,
+    const barrier = createCanvasActivationBarrier({
+      getCanvas: () => component,
+      setLocked: () => undefined,
+      settle: async () => undefined,
+      onPersistenceError: () => undefined,
+    })
+    await barrier.run(() =>
+      rerender({
+        projection,
+        layout: secondLayout,
+        workflowIdentity: 'workspace-b\0workflow:workspace-b:deploy.yaml',
+        onPersistLayout: persistLayout,
+      }),
     )
     await fireEvent(
       canvas,

@@ -1330,6 +1330,33 @@ describe('DocumentWorkspaceController', () => {
     expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
   })
 
+  it('honors a draft activation token allocated synchronously before a newer intent', async () => {
+    const { deps } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const draft = {
+      workflowId: 'draft-a',
+      generation: 1,
+      savedGeneration: 0,
+      definition: {
+        id: 'draft-a:definition',
+        kind: 'definition' as const,
+        path: 'draft-a.yaml',
+        text: 'name: draft\n',
+        revision: 1,
+        savedRevision: 0,
+        diskHash: null,
+      },
+      companion: null,
+    }
+    const draftIntent = controller.beginActivation()
+    const fileIntent = controller.beginActivation()
+
+    await controller.activate('workspace', entry('b.yaml'), contract, fileIntent)
+    await controller.openDraft('workspace', draft, contract, draftIntent)
+
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+  })
+
   it('retries the same layout persistence after a failed flush', async () => {
     const closer = {
       close: vi.fn().mockRejectedValueOnce(new Error('layout flush failed')).mockResolvedValue(undefined),

@@ -29,6 +29,7 @@
     projection: WorkflowProjection
     layout: LayoutRecordV1
     workflowIdentity?: string
+    transitionLocked?: boolean
     issues?: readonly ValidationIssue[]
     stale?: boolean
     readOnly?: boolean
@@ -40,6 +41,7 @@
     projection,
     layout,
     workflowIdentity = `${layout.workspaceId}\0${layout.workflowPath}`,
+    transitionLocked = false,
     issues = [],
     stale = false,
     readOnly = false,
@@ -61,7 +63,7 @@
   let persistenceQueue: Promise<void> = Promise.resolve()
 
   function deriveCanvas() {
-    return projectCanvas(projection, layout, { issues, stale, readOnly })
+    return projectCanvas(projection, layout, { issues, stale, readOnly: readOnly || transitionLocked })
   }
 
   $effect(() => {
@@ -78,18 +80,18 @@
   })
 
   function handleDrag(detail: CanvasDragDetail): void {
-    if (readOnly || stale) return
+    if (readOnly || stale || transitionLocked) return
     moveCanvasPosition(detail.id, detail.position)
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
-    if (readOnly || stale) return
+    if (readOnly || stale || transitionLocked) return
     moveCanvasPosition(detail.id, detail.position)
     schedulePersist(layoutWithPositions())
   }
 
   function arrange(): void {
-    if (readOnly || stale) return
+    if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
     flowNodes = projected.nodes
     flowEdges = projected.edges
@@ -98,8 +100,13 @@
   }
 
   function viewportChanged(viewport: Viewport): void {
-    if (readOnly || stale) return
+    if (readOnly || stale || transitionLocked) return
     schedulePersist({ ...layoutWithPositions(), viewport: { ...viewport } })
+  }
+
+  function selectionChanged(ids: readonly string[]): void {
+    if (transitionLocked) return
+    setCanvasSelection(ids)
   }
 
   function layoutWithPositions(): LayoutRecordV1 {
@@ -147,9 +154,15 @@
   })
 </script>
 
-<section class="graph-canvas" data-testid="workflow-canvas" aria-label="Workflow graph" bind:this={root}>
+<section
+  class="graph-canvas"
+  data-testid="workflow-canvas"
+  aria-label="Workflow graph"
+  aria-busy={transitionLocked}
+  bind:this={root}
+>
   <div class="canvas-toolbar" aria-label="Canvas tools">
-    <button type="button" aria-label="Arrange graph" disabled={readOnly || stale} onclick={arrange}>
+    <button type="button" aria-label="Arrange graph" disabled={readOnly || stale || transitionLocked} onclick={arrange}>
       <Network size={15} aria-hidden="true" />
       Arrange
     </button>
@@ -170,9 +183,9 @@
     bind:viewport={flowViewport}
     {nodeTypes}
     {edgeTypes}
-    nodesDraggable={!readOnly && !stale}
-    nodesConnectable={!readOnly && !stale}
-    elementsSelectable={true}
+    nodesDraggable={!readOnly && !stale && !transitionLocked}
+    nodesConnectable={!readOnly && !stale && !transitionLocked}
+    elementsSelectable={!transitionLocked}
     nodesFocusable={true}
     edgesFocusable={true}
     selectionOnDrag={true}
@@ -192,7 +205,7 @@
       const node = targetNode ?? nodes[0]
       if (node) handleDragStop({ id: node.id, position: node.position })
     }}
-    onselectionchange={({ nodes }) => setCanvasSelection(nodes.map(({ id }) => id))}
+    onselectionchange={({ nodes }) => selectionChanged(nodes.map(({ id }) => id))}
     onmoveend={(_event, viewport) => viewportChanged(viewport)}
   >
     <Background variant={BackgroundVariant.Dots} gap={20} size={1} />

@@ -181,8 +181,13 @@ export class DocumentWorkspaceController {
     else this.publishContractUnavailable(pair, revision.contractDigest)
   }
 
-  async openDraft(workspaceId: string, pair: WorkflowPairText, contract: AuthoringContract | null): Promise<void> {
-    const generation = this.beginActivation()
+  async openDraft(
+    workspaceId: string,
+    pair: WorkflowPairText,
+    contract: AuthoringContract | null,
+    requestToken: number = this.beginActivation(),
+  ): Promise<void> {
+    const generation = requestToken
     if ($documentSession.get().pair) await this.dependencies.recoveryDrafts.close()
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     await this.flushActiveLayout()
