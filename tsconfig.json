@@ -1,0 +1,16 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "ignoreDeprecations": "6.0",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "$src/*": ["src/*"]
+    },
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"]
+  },
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte", "vitest.setup.ts"]
+}

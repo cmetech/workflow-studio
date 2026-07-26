@@ -1,0 +1,46 @@
+:root {
+  color: #1a1a16;
+  background: #f7f5ed;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 3px solid #0f5fbf;
+  outline-offset: 2px;
+}
+
+main {
+  display: grid;
+  gap: 1rem;
+  max-width: 42rem;
+  min-height: 100vh;
+  align-content: center;
+  padding: 2rem;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+button {
+  width: fit-content;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #8a6d1a;
+  border-radius: 0.25rem;
+  color: #0c0c0c;
+  background: #fad22d;
+  cursor: pointer;
+}
