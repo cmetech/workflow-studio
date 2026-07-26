@@ -41,6 +41,7 @@
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
+  import { runAfterCanvasLayoutFlush } from '$src/features/canvas/canvas-activation-barrier'
   import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
@@ -135,23 +136,18 @@
     contracts: availableContracts,
     analyze: analyzeCandidateInWorker,
     activate: openEntry,
-    openDraft: async (pair, contract) => {
-      const workspaceId = $workspace.id
-      if (workspaceId) await documentWorkspace.openDraft(workspaceId, pair, contract)
-      else openDocumentSession(pair, draftDigest)
-    },
+    openDraft: (pair, contract) =>
+      withCanvasLayoutBarrier(async () => {
+        const workspaceId = $workspace.id
+        if (workspaceId) await documentWorkspace.openDraft(workspaceId, pair, contract)
+        else openDocumentSession(pair, draftDigest)
+      }),
     currentDocument: () => documentSessionStore.get().pair,
     flushRecovery: (pair) => documentWorkspace.flushRecovery(pair),
-    closeWorkspace: async () => {
-      await flushCanvasLayout()
-      await documentWorkspace.closeWorkspace()
-    },
-    closeDocument: async (workflowId) => {
-      await flushCanvasLayout()
-      await documentWorkspace.close(workflowId)
-    },
+    closeWorkspace: () => withCanvasLayoutBarrier(() => documentWorkspace.closeWorkspace()),
+    closeDocument: (workflowId) => withCanvasLayoutBarrier(() => documentWorkspace.close(workflowId)),
     renameDocument: (workspaceId, from, to, companionMoved) =>
-      documentWorkspace.renameActivePair(workspaceId, from, to, companionMoved),
+      withCanvasLayoutBarrier(() => documentWorkspace.renameActivePair(workspaceId, from, to, companionMoved)),
     companionCreated: (definitionPath, companionPath) =>
       documentWorkspace.companionCreated(definitionPath, companionPath),
     companionRemoved: (companionPath) => documentWorkspace.companionRemoved(companionPath),
@@ -189,7 +185,15 @@
   }
 
   async function flushCanvasLayout(): Promise<void> {
-    await graphCanvas?.flushPersistence()
+    await withCanvasLayoutBarrier(async () => undefined)
+  }
+
+  function surfaceCanvasPersistenceError(error: unknown): void {
+    workspaceError = error instanceof Error ? error.message : 'The canvas layout could not be saved.'
+  }
+
+  function withCanvasLayoutBarrier<T>(transition: () => Promise<T>): Promise<T> {
+    return runAfterCanvasLayoutFlush(() => graphCanvas, transition, surfaceCanvasPersistenceError)
   }
 
   async function disposeApplicationState(): Promise<void> {
@@ -229,8 +233,8 @@
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
-    const requestToken = documentWorkspace.beginActivation()
     await flushCanvasLayout()
+    const requestToken = documentWorkspace.beginActivation()
     await contractReadiness
     const contract = await activeContractFor(entry)
     const workspaceId = $workspace.id
@@ -468,7 +472,6 @@
 
   onDestroy(() => {
     exportConfirmation?.resolve(false)
-    void disposeApplicationState()
   })
 </script>
 
@@ -562,11 +565,13 @@
             bind:this={graphCanvas}
             projection={canvasProjection}
             layout={$activeLayoutStore}
+            workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
             issues={$documentSessionStore.analysis?.issues ?? []}
             stale={canvasStale}
             readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
               ?.readOnly === true}
             onPersistLayout={persistCanvasLayout}
+            onPersistenceError={surfaceCanvasPersistenceError}
           />
         {/if}
       </section>
@@ -591,7 +596,9 @@
               <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
                 >Keep Mine / Recreate</button
               >
-              <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.closeMissing())}
+              <button
+                type="button"
+                onclick={() => runWorkspaceOperation(withCanvasLayoutBarrier(() => documentWorkspace.closeMissing()))}
                 >Close and Recover Later</button
               >
             </div>

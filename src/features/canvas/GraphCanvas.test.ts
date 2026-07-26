@@ -5,6 +5,7 @@ import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import { $canvasPositions, clearCanvasState } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
+import { runAfterCanvasLayoutFlush } from './canvas-activation-barrier'
 
 const projection: WorkflowProjection = Object.freeze({
   name: 'Release',
@@ -136,7 +137,11 @@ describe('GraphCanvas', () => {
   it('flushes a pending drag-stop persistence before the canvas closes', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
-    const { component, container } = render(GraphCanvas, { projection, layout, onPersistLayout: persistLayout })
+    const { component, container, unmount } = render(GraphCanvas, {
+      projection,
+      layout,
+      onPersistLayout: persistLayout,
+    })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     await fireEvent(
       canvas,
@@ -152,8 +157,101 @@ describe('GraphCanvas', () => {
     expect(persistLayout).toHaveBeenCalledWith(
       expect.objectContaining({ nodePositions: expect.objectContaining({ collect: { x: 88, y: 99 } }) }),
     )
+    unmount()
     await vi.advanceTimersByTimeAsync(300)
     expect(persistLayout).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores the saved viewport when switching between workflow identities without arranging', async () => {
+    const firstLayout: LayoutRecordV1 = {
+      ...layout,
+      viewport: { x: 12, y: 34, zoom: 0.8 },
+    }
+    const secondLayout: LayoutRecordV1 = {
+      ...layout,
+      workspaceId: 'other-workspace',
+      workflowPath: 'deploy.yaml',
+      viewport: { x: 210, y: 120, zoom: 1.4 },
+    }
+    const { container, rerender } = render(GraphCanvas, {
+      projection,
+      layout: firstLayout,
+      workflowIdentity: 'workspace\0workflow:workspace:release.yaml',
+    })
+    await tick()
+
+    const viewport = container.querySelector<HTMLElement>('.svelte-flow__viewport')!
+    expect(viewport.style.transform).toContain('translate(12px, 34px) scale(0.8)')
+
+    await rerender({
+      projection,
+      layout: secondLayout,
+      workflowIdentity: 'other-workspace\0workflow:other-workspace:deploy.yaml',
+    })
+    await tick()
+
+    expect(viewport.style.transform).toContain('translate(210px, 120px) scale(1.4)')
+    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeEnabled()
+  })
+
+  it('persists one pending A drag before an open-draft transition and one B drag under the new identity', async () => {
+    vi.useFakeTimers()
+    const persisted: LayoutRecordV1[] = []
+    const persistLayout = vi.fn(async (next: LayoutRecordV1) => {
+      persisted.push(structuredClone(next))
+    })
+    const { component, container, rerender } = render(GraphCanvas, {
+      projection,
+      layout,
+      workflowIdentity: 'workspace\0workflow:workspace:release.yaml',
+      onPersistLayout: persistLayout,
+    })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 88, y: 99 } },
+      }),
+    )
+    const secondLayout: LayoutRecordV1 = {
+      ...layout,
+      workspaceId: 'workspace-b',
+      workflowPath: 'deploy.yaml',
+      nodePositions: { collect: { x: 5, y: 6 }, review: { x: 320, y: 0 } },
+    }
+    await runAfterCanvasLayoutFlush(
+      () => component,
+      () =>
+        rerender({
+          projection,
+          layout: secondLayout,
+          workflowIdentity: 'workspace-b\0workflow:workspace-b:deploy.yaml',
+          onPersistLayout: persistLayout,
+        }),
+      () => undefined,
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 44, y: 55 } },
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(persisted).toHaveLength(2)
+    expect(
+      persisted.map(({ workspaceId, workflowPath, nodePositions }) => ({
+        workspaceId,
+        workflowPath,
+        collect: nodePositions.collect,
+      })),
+    ).toEqual([
+      { workspaceId: 'workspace', workflowPath: 'release.yaml', collect: { x: 88, y: 99 } },
+      { workspaceId: 'workspace-b', workflowPath: 'deploy.yaml', collect: { x: 44, y: 55 } },
+    ])
   })
 
   it('exposes focusable 32px dependency ports for keyboard and touch users', async () => {

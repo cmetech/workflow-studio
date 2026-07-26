@@ -28,19 +28,23 @@
   interface Props {
     projection: WorkflowProjection
     layout: LayoutRecordV1
+    workflowIdentity?: string
     issues?: readonly ValidationIssue[]
     stale?: boolean
     readOnly?: boolean
     onPersistLayout?: (layout: LayoutRecordV1) => void | Promise<void>
+    onPersistenceError?: (error: unknown) => void
   }
 
   let {
     projection,
     layout,
+    workflowIdentity = `${layout.workspaceId}\0${layout.workflowPath}`,
     issues = [],
     stale = false,
     readOnly = false,
     onPersistLayout = () => undefined,
+    onPersistenceError = () => undefined,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -48,6 +52,8 @@
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(initialProjection.nodes)
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
+  let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
+  let restoredWorkflowIdentity = $state<string | null>(null)
   let minimapVisible = $state(false)
   let root: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
@@ -63,6 +69,12 @@
     flowNodes = projected.nodes
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
+  })
+
+  $effect(() => {
+    if (workflowIdentity === restoredWorkflowIdentity) return
+    restoredWorkflowIdentity = workflowIdentity
+    flowViewport = { ...layout.viewport }
   })
 
   function handleDrag(detail: CanvasDragDetail): void {
@@ -104,7 +116,7 @@
     pendingLayout = structuredClone(next)
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
-      void flushPersistence().catch(() => undefined)
+      void flushPersistence().catch(onPersistenceError)
     }, 300)
   }
 
@@ -131,7 +143,7 @@
   })
 
   onDestroy(() => {
-    void flushPersistence().catch(() => undefined)
+    void flushPersistence().catch(onPersistenceError)
   })
 </script>
 
@@ -155,9 +167,9 @@
   <SvelteFlow
     bind:nodes={flowNodes}
     bind:edges={flowEdges}
+    bind:viewport={flowViewport}
     {nodeTypes}
     {edgeTypes}
-    initialViewport={layout.viewport}
     nodesDraggable={!readOnly && !stale}
     nodesConnectable={!readOnly && !stale}
     elementsSelectable={true}
