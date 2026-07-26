@@ -24,8 +24,6 @@ pub struct LayoutState {
 
 struct LayoutScope {
     requested_root: PathBuf,
-    #[cfg(windows)]
-    root_path: PathBuf,
     root_identity: Handle,
     parent_path: PathBuf,
     parent_identity: Handle,
@@ -149,7 +147,7 @@ fn load_layout_impl(
 
 fn save_layout_file(app_data: &Path, content: &str, state: &LayoutState) -> LayoutResult<()> {
     with_scope(app_data, state, |scope| {
-        save_layout_impl(scope, content, || {})
+        save_layout_impl(scope, content, || {}, |_| {})
     })
 }
 
@@ -161,7 +159,19 @@ fn save_layout_file_with_bound_hook(
     hook: impl FnOnce(),
 ) -> LayoutResult<()> {
     with_scope(app_data, state, |scope| {
-        save_layout_impl(scope, content, hook)
+        save_layout_impl(scope, content, hook, |_| {})
+    })
+}
+
+#[cfg(all(test, windows))]
+fn save_layout_file_with_commit_hook(
+    app_data: &Path,
+    content: &str,
+    state: &LayoutState,
+    hook: impl FnOnce(&OsString),
+) -> LayoutResult<()> {
+    with_scope(app_data, state, |scope| {
+        save_layout_impl(scope, content, || {}, hook)
     })
 }
 
@@ -169,6 +179,7 @@ fn save_layout_impl(
     scope: &LayoutScope,
     content: &str,
     bound_hook: impl FnOnce(),
+    commit_hook: impl FnOnce(&OsString),
 ) -> LayoutResult<()> {
     if content.len() as u64 > MAX_LAYOUT_BYTES {
         return Err(layout_error(
@@ -194,7 +205,7 @@ fn save_layout_impl(
             "The staged private layout file changed before commit.",
         ));
     }
-    commit_staged_layout(scope, &temporary.name)?;
+    commit_staged_layout(scope, &temporary, commit_hook)?;
     temporary.disarm();
     scope.verify()?;
     sync_directory(&scope.directory)?;
@@ -251,8 +262,6 @@ impl LayoutScope {
         let root_identity = directory_identity(&directory, "layout_directory_failed")?;
         Ok(Self {
             requested_root: app_data.to_path_buf(),
-            #[cfg(windows)]
-            root_path: root,
             root_identity,
             parent_path: parent_path.to_path_buf(),
             parent_identity,
@@ -281,15 +290,24 @@ impl LayoutScope {
 }
 
 #[cfg(not(windows))]
-fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> LayoutResult<()> {
+fn commit_staged_layout(
+    scope: &LayoutScope,
+    temporary: &StagedLayout<'_>,
+    commit_hook: impl FnOnce(&OsString),
+) -> LayoutResult<()> {
+    commit_hook(&temporary.name);
     scope
         .directory
-        .rename(temporary_name, &scope.directory, LAYOUT_FILE)
+        .rename(&temporary.name, &scope.directory, LAYOUT_FILE)
         .map_err(|error| io_error("layout_write_failed", error))
 }
 
 #[cfg(windows)]
-fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> LayoutResult<()> {
+fn commit_staged_layout(
+    scope: &LayoutScope,
+    temporary: &StagedLayout<'_>,
+    commit_hook: impl FnOnce(&OsString),
+) -> LayoutResult<()> {
     let destination_exists = match scope.directory.symlink_metadata(LAYOUT_FILE) {
         Ok(_) => true,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -298,18 +316,14 @@ fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> Layou
     scope.verify()?;
     let result = select_windows_atomic_commit(
         destination_exists,
+        || commit_hook(&temporary.name),
         || {
             scope
                 .directory
-                .rename(temporary_name, &scope.directory, LAYOUT_FILE)
+                .rename(&temporary.name, &scope.directory, LAYOUT_FILE)
                 .map_err(|error| io_error("layout_write_failed", error))
         },
-        || {
-            replace_file_windows(
-                &scope.root_path.join(temporary_name),
-                &scope.root_path.join(LAYOUT_FILE),
-            )
-        },
+        || replace_file_windows(&scope.directory, temporary.file()),
     );
     scope.verify()?;
     result
@@ -318,9 +332,11 @@ fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> Layou
 #[cfg(any(test, windows))]
 fn select_windows_atomic_commit(
     destination_exists: bool,
+    interleave: impl FnOnce(),
     rename_new: impl FnOnce() -> LayoutResult<()>,
     replace_existing: impl FnOnce() -> LayoutResult<()>,
 ) -> LayoutResult<()> {
+    interleave();
     if destination_exists {
         replace_existing()
     } else {
@@ -329,40 +345,37 @@ fn select_windows_atomic_commit(
 }
 
 #[cfg(windows)]
-fn replace_file_windows(temporary: &Path, destination: &Path) -> LayoutResult<()> {
-    use std::os::windows::ffi::OsStrExt;
+fn replace_file_windows(directory: &Dir, temporary: &File) -> LayoutResult<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
+    };
 
-    type Bool = i32;
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn ReplaceFileW(
-            replaced_file_name: *const u16,
-            replacement_file_name: *const u16,
-            backup_file_name: *const u16,
-            replace_flags: u32,
-            exclude: *mut std::ffi::c_void,
-            reserved: *mut std::ffi::c_void,
-        ) -> Bool;
+    const TARGET_LENGTH: usize = LAYOUT_FILE.len();
+    #[repr(C)]
+    struct RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0,
+        root_directory: windows_sys::Win32::Foundation::HANDLE,
+        file_name_length: u32,
+        file_name: [u16; TARGET_LENGTH],
     }
 
-    let destination_wide = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let temporary_wide = temporary
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let mut file_name = [0_u16; TARGET_LENGTH];
+    for (destination, source) in file_name.iter_mut().zip(LAYOUT_FILE.encode_utf16()) {
+        *destination = source;
+    }
+    let rename = RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
+        root_directory: directory.as_raw_handle(),
+        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
+        file_name,
+    };
     let replaced = unsafe {
-        ReplaceFileW(
-            destination_wide.as_ptr(),
-            temporary_wide.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+        SetFileInformationByHandle(
+            temporary.as_raw_handle(),
+            FileRenameInfo,
+            std::ptr::addr_of!(rename).cast(),
+            std::mem::size_of_val(&rename) as u32,
         )
     };
     if replaced == 0 {
@@ -382,6 +395,14 @@ impl<'a> StagedLayout<'a> {
             let name = OsString::from(format!(".layouts-v1-{}-{sequence}.tmp", std::process::id()));
             let mut options = OpenOptions::new();
             options.read(true).write(true).create_new(true);
+            #[cfg(windows)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+                use windows_sys::Win32::Storage::FileSystem::DELETE;
+
+                options.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+            }
             match directory.open_with(&name, &options) {
                 Ok(file) => {
                     #[cfg(unix)]
@@ -413,6 +434,11 @@ impl<'a> StagedLayout<'a> {
 
     fn file_mut(&mut self) -> &mut File {
         self.file.as_mut().expect("staged layout file remains open")
+    }
+
+    #[cfg(windows)]
+    fn file(&self) -> &File {
+        self.file.as_ref().expect("staged layout file remains open")
     }
 
     fn named_identity_matches(&self) -> bool {
@@ -561,31 +587,37 @@ fn layout_error(code: &'static str, message: impl Into<String>) -> LayoutError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::save_layout_file_with_commit_hook;
     use super::{
         load_layout_file, load_layout_file_with_metadata_hook, save_layout_file,
         save_layout_file_with_bound_hook, select_windows_atomic_commit, LayoutState,
     };
 
     #[test]
-    fn windows_existing_target_commit_seam_selects_atomic_replace_not_rename() {
-        let renamed = std::cell::Cell::new(false);
-        let replaced = std::cell::Cell::new(false);
+    fn windows_existing_target_commit_seam_interleaves_before_handle_relative_replace() {
+        let events = std::cell::RefCell::new(Vec::new());
 
         select_windows_atomic_commit(
             true,
             || {
-                renamed.set(true);
+                events.borrow_mut().push("ambient-root-swapped");
+            },
+            || {
+                events.borrow_mut().push("rename");
                 Ok(())
             },
             || {
-                replaced.set(true);
+                events.borrow_mut().push("handle-relative-replace");
                 Ok(())
             },
         )
         .unwrap();
 
-        assert!(!renamed.get());
-        assert!(replaced.get());
+        assert_eq!(
+            events.into_inner(),
+            vec!["ambient-root-swapped", "handle-relative-replace"]
+        );
     }
 
     #[test]
@@ -748,6 +780,57 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, "layout_changed_during_read");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_commit_stays_bound_when_the_ambient_root_is_swapped() {
+        let parent = tempfile::tempdir().unwrap();
+        let app_data = parent.path().join("app-data");
+        let parked = parent.path().join("original-app-data");
+        std::fs::create_dir(&app_data).unwrap();
+        let state = LayoutState::default();
+        save_layout_file(&app_data, "original-layout", &state).unwrap();
+        let replacement_staged_name = std::cell::RefCell::new(None);
+
+        let error = save_layout_file_with_commit_hook(
+            &app_data,
+            "updated-original-layout",
+            &state,
+            |temporary_name| {
+                std::fs::rename(&app_data, &parked).unwrap();
+                std::fs::create_dir(&app_data).unwrap();
+                std::fs::write(app_data.join("layouts-v1.json"), "replacement-root-layout")
+                    .unwrap();
+                std::fs::write(
+                    app_data.join(temporary_name),
+                    "replacement-staged-lookalike",
+                )
+                .unwrap();
+                *replacement_staged_name.borrow_mut() = Some(temporary_name.clone());
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "layout_root_changed");
+        assert_eq!(
+            std::fs::read_to_string(app_data.join("layouts-v1.json")).unwrap(),
+            "replacement-root-layout"
+        );
+        let replacement_staged_name = replacement_staged_name.into_inner().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(app_data.join(replacement_staged_name)).unwrap(),
+            "replacement-staged-lookalike"
+        );
+        assert_eq!(
+            std::fs::read_to_string(parked.join("layouts-v1.json")).unwrap(),
+            "updated-original-layout"
+        );
+        let original_entries = std::fs::read_dir(&parked)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(original_entries, vec!["layouts-v1.json"]);
     }
 
     #[cfg(windows)]
