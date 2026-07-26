@@ -45,9 +45,13 @@ function readPathResults(error: object): readonly PathOperationResult[] {
       'relativePath' in value &&
       typeof value.relativePath === 'string' &&
       'status' in value &&
-      typeof value.status === 'string'
+      isPathOperationStatus(value.status)
     )
   })
+}
+
+function isPathOperationStatus(value: unknown): value is PathOperationResult['status'] {
+  return value === 'moved' || value === 'rolledBack' || value === 'trashed' || value === 'failed' || value === 'partial'
 }
 
 export const tauriBridge: WorkspaceNativeBridge = {

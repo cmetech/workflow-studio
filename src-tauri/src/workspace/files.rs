@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
@@ -8,6 +8,7 @@ use std::time::UNIX_EPOCH;
 #[cfg(windows)]
 use cap_std::fs::Permissions;
 use cap_std::fs::{Dir, File, Metadata, OpenOptions};
+use same_file::Handle;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -271,34 +272,19 @@ impl<'a> StagedFile<'a> {
         self.file.as_mut().expect("staged file remains open")
     }
 
-    fn persist_replace(mut self, target: &OsStr) -> WorkspaceResult<()> {
-        self.file.take();
-        self.parent
-            .rename(&self.name, self.parent, target)
-            .map_err(|error| io_error("workspace_write_failed", error))?;
-        self.active = false;
-        Ok(())
+    fn bound_path(&self) -> WorkspaceResult<BoundPath> {
+        Ok(BoundPath {
+            parent: self
+                .parent
+                .try_clone()
+                .map_err(|error| io_error("workspace_write_failed", error))?,
+            name: self.name.clone(),
+        })
     }
 
-    fn persist_noclobber(mut self, target: &OsStr) -> WorkspaceResult<()> {
+    fn disarm(&mut self) {
         self.file.take();
-        self.parent
-            .hard_link(&self.name, self.parent, target)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    revision_conflict()
-                } else {
-                    io_error("workspace_write_failed", error)
-                }
-            })?;
-        self.parent.remove_file(&self.name).map_err(|error| {
-            WorkspaceError::new(
-                "workspace_write_partial",
-                format!("The file was saved, but its temporary link could not be removed: {error}"),
-            )
-        })?;
         self.active = false;
-        Ok(())
     }
 }
 
@@ -410,7 +396,15 @@ pub fn write(
     text: &str,
     expected_current_hash: Option<&str>,
 ) -> WorkspaceResult<WorkspaceWriteResult> {
-    write_impl(scope, relative, text, expected_current_hash, || {})
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        || {},
+        || {},
+        || {},
+    )
 }
 
 #[cfg(test)]
@@ -421,7 +415,53 @@ pub fn write_with_precommit_hook(
     expected_current_hash: Option<&str>,
     hook: impl FnOnce(),
 ) -> WorkspaceResult<WorkspaceWriteResult> {
-    write_impl(scope, relative, text, expected_current_hash, hook)
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        hook,
+        || {},
+        || {},
+    )
+}
+
+#[cfg(test)]
+pub fn write_with_post_hash_hook(
+    scope: &WorkspaceScope,
+    relative: &str,
+    text: &str,
+    expected_current_hash: Option<&str>,
+    hook: impl FnOnce(),
+) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        || {},
+        hook,
+        || {},
+    )
+}
+
+#[cfg(test)]
+pub fn write_with_post_quarantine_hook(
+    scope: &WorkspaceScope,
+    relative: &str,
+    text: &str,
+    expected_current_hash: Option<&str>,
+    hook: impl FnOnce(),
+) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        || {},
+        || {},
+        hook,
+    )
 }
 
 fn write_impl(
@@ -429,7 +469,9 @@ fn write_impl(
     relative: &str,
     text: &str,
     expected_current_hash: Option<&str>,
-    precommit_hook: impl FnOnce(),
+    pre_hash_hook: impl FnOnce(),
+    post_hash_hook: impl FnOnce(),
+    post_quarantine_hook: impl FnOnce(),
 ) -> WorkspaceResult<WorkspaceWriteResult> {
     require_yaml(relative)?;
     if text.len() as u64 > MAX_YAML_BYTES {
@@ -447,59 +489,98 @@ fn write_impl(
         .and_then(|_| temporary.file_mut().flush())
         .and_then(|_| temporary.file_mut().sync_all())
         .map_err(|error| io_error("workspace_write_failed", error))?;
-    precommit_hook();
+    pre_hash_hook();
     scope.verify()?;
+    let staged = temporary.bound_path()?;
+    let staged_identity = named_identity(&staged, "workspace_write_failed")
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
 
-    let prior_permissions = match expected_current_hash {
-        Some(expected) => {
-            let mut current = bound
-                .parent
-                .open(&bound.name)
-                .map_err(|_| revision_conflict())?;
-            let metadata = current.metadata().map_err(|_| revision_conflict())?;
-            if !metadata.is_file() || hash_open_file(&mut current, MAX_YAML_BYTES)? != expected {
-                return Err(revision_conflict());
-            }
-            Some(metadata.permissions())
+    if let Some(expected) = expected_current_hash {
+        let mut current = bound
+            .parent
+            .open(&bound.name)
+            .map_err(|_| revision_conflict())?;
+        let metadata = current.metadata().map_err(|_| revision_conflict())?;
+        let original_identity =
+            file_identity(&current).map_err(|error| io_error("workspace_write_failed", error))?;
+        if !metadata.is_file() || hash_open_file(&mut current, MAX_YAML_BYTES)? != expected {
+            return Err(revision_conflict());
         }
-        None => match bound.parent.symlink_metadata(&bound.name) {
-            Ok(_) => return Err(revision_conflict()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(capability_error("workspace_write_failed", error)),
-        },
-    };
-    if let Some(permissions) = prior_permissions.as_ref() {
+        post_hash_hook();
+        scope.verify()?;
+        if !named_hash_matches(&bound, &original_identity, expected) {
+            return Err(revision_conflict());
+        }
+        let prior_permissions = metadata.permissions();
         temporary
             .file_mut()
-            .set_permissions(permissions.clone())
+            .set_permissions(prior_permissions.clone())
             .map_err(|error| io_error("workspace_write_failed", error))?;
-    }
+        #[cfg(windows)]
+        make_windows_file_replaceable(&current, &prior_permissions)?;
 
-    #[cfg(windows)]
-    make_windows_target_replaceable(&bound.parent, &bound.name, prior_permissions.as_ref())?;
-
-    let persist_result = if expected_current_hash.is_none() {
-        temporary.persist_noclobber(&bound.name)
+        let quarantine = unique_sibling(&bound, "original")?;
+        match move_noclobber_with_expected(&bound, &quarantine, &original_identity, || {}, || {}) {
+            MoveNoClobberOutcome::Moved => {}
+            outcome => {
+                #[cfg(windows)]
+                restore_windows_file_permissions(&current, &prior_permissions)?;
+                return Err(write_move_error(
+                    "The verified original could not be quarantined",
+                    &outcome,
+                ));
+            }
+        }
+        if !named_hash_matches(&quarantine, &original_identity, expected) {
+            let rollback =
+                move_noclobber_with_expected(&quarantine, &bound, &original_identity, || {}, || {});
+            #[cfg(windows)]
+            restore_windows_file_permissions(&current, &prior_permissions)?;
+            return Err(write_commit_recovery_error(
+                &MoveNoClobberOutcome::Failed(MoveIssue::new(
+                    "source_identity_changed",
+                    "The verified original changed while it was being quarantined.",
+                )),
+                &rollback,
+            ));
+        }
+        post_quarantine_hook();
+        let commit = move_noclobber_with_expected(&staged, &bound, &staged_identity, || {}, || {});
+        if !matches!(commit, MoveNoClobberOutcome::Moved) {
+            let rollback =
+                move_noclobber_with_expected(&quarantine, &bound, &original_identity, || {}, || {});
+            #[cfg(windows)]
+            restore_windows_file_permissions(&current, &prior_permissions)?;
+            return Err(write_commit_recovery_error(&commit, &rollback));
+        }
+        temporary.disarm();
+        if let Err(issue) = remove_verified_name(&quarantine, &original_identity) {
+            #[cfg(windows)]
+            restore_windows_file_permissions(&current, &prior_permissions)?;
+            return Err(WorkspaceError::new(
+                "workspace_write_partial",
+                format!(
+                    "The new file was saved, but verified original recovery cleanup failed: {}",
+                    issue.message
+                ),
+            ));
+        }
     } else {
-        temporary.persist_replace(&bound.name)
-    };
-    #[cfg(windows)]
-    if let Err(error) = persist_result {
-        restore_windows_permissions_after_failure(
-            &bound.parent,
-            &bound.name,
-            prior_permissions.as_ref(),
-        )?;
-        return Err(error);
+        match bound.parent.symlink_metadata(&bound.name) {
+            Ok(_) => return Err(revision_conflict()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(capability_error("workspace_write_failed", error)),
+        }
+        post_hash_hook();
+        let commit = move_noclobber_with_expected(&staged, &bound, &staged_identity, || {}, || {});
+        if !matches!(commit, MoveNoClobberOutcome::Moved) {
+            return Err(write_move_error(
+                "The new file could not be committed",
+                &commit,
+            ));
+        }
+        temporary.disarm();
     }
-    #[cfg(not(windows))]
-    persist_result?;
-    #[cfg(windows)]
-    restore_windows_permissions_after_success(
-        &bound.parent,
-        &bound.name,
-        prior_permissions.as_ref(),
-    )?;
     sync_parent(&bound.parent)?;
 
     let metadata = bound
@@ -514,7 +595,73 @@ fn write_impl(
     })
 }
 
+fn named_hash_matches(path: &BoundPath, identity: &Handle, expected_hash: &str) -> bool {
+    let Ok(mut file) = path.parent.open(&path.name) else {
+        return false;
+    };
+    let Ok(current_identity) = file_identity(&file) else {
+        return false;
+    };
+    current_identity == *identity
+        && hash_open_file(&mut file, MAX_YAML_BYTES)
+            .map(|hash| hash == expected_hash)
+            .unwrap_or(false)
+}
+
+fn unique_sibling(path: &BoundPath, purpose: &str) -> WorkspaceResult<BoundPath> {
+    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    Ok(BoundPath {
+        parent: path
+            .parent
+            .try_clone()
+            .map_err(|error| io_error("workspace_write_failed", error))?,
+        name: OsString::from(format!(
+            ".workflow-studio-{purpose}-{}-{sequence}-{}",
+            std::process::id(),
+            path.name.to_string_lossy()
+        )),
+    })
+}
+
+fn write_move_error(context: &str, outcome: &MoveNoClobberOutcome) -> WorkspaceError {
+    let (status, details) = move_failure_details(outcome);
+    WorkspaceError::new(
+        if status == "partial" {
+            "workspace_write_partial"
+        } else if matches!(outcome, MoveNoClobberOutcome::Failed(issue) if issue.code == "destination_exists" || issue.code == "source_identity_changed")
+        {
+            "external_revision_conflict"
+        } else {
+            "workspace_write_failed"
+        },
+        format!("{context}: {details}"),
+    )
+}
+
+fn write_commit_recovery_error(
+    commit: &MoveNoClobberOutcome,
+    rollback: &MoveNoClobberOutcome,
+) -> WorkspaceError {
+    let (_, commit_details) = move_failure_details(commit);
+    let (rollback_status, rollback_details) = move_failure_details(rollback);
+    if rollback_status == "moved" {
+        WorkspaceError::new(
+            "external_revision_conflict",
+            format!("The target changed before commit; the verified original was restored: {commit_details}"),
+        )
+    } else {
+        WorkspaceError::new(
+            "workspace_write_partial",
+            format!(
+                "The target changed before commit ({commit_details}); verified original recovery remains quarantined because rollback failed ({rollback_details})."
+            ),
+        )
+    }
+}
+
 fn hash_open_file(file: &mut File, max_bytes: u64) -> WorkspaceResult<String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| io_error("workspace_read_failed", error))?;
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
@@ -604,6 +751,16 @@ fn rename_pair_impl(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(capability_error("workspace_rename_failed", error)),
     };
+    let source_identity = named_identity(&source, "path_not_found")
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
+    let source_companion_identity = if has_companion {
+        Some(
+            named_identity(&source_companion, "path_not_found")
+                .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?,
+        )
+    } else {
+        None
+    };
     bound_hook();
     scope.verify()?;
 
@@ -617,14 +774,15 @@ fn rename_pair_impl(
         )?;
     }
 
-    let first_move = move_noclobber(&source, &destination);
+    let first_move =
+        move_noclobber_with_expected(&source, &destination, &source_identity, || {}, || {});
     if !matches!(first_move, MoveNoClobberOutcome::Moved) {
         let (status, message) = move_failure_details(&first_move);
         let result = path_result(
             source_definition,
             Some(destination_definition),
             status,
-            Some("workspace_rename_failed"),
+            Some(move_error_code(&first_move, "workspace_rename_failed")),
             Some(message.clone()),
         );
         let code = if status == "partial" {
@@ -651,11 +809,24 @@ fn rename_pair_impl(
                     "The companion rename destination already exists.",
                 )
             })
-            .map(|_| move_noclobber(&source_companion, &destination_companion));
+            .map(|_| {
+                move_noclobber_with_expected(
+                    &source_companion,
+                    &destination_companion,
+                    source_companion_identity
+                        .as_ref()
+                        .expect("companion identity exists when companion exists"),
+                    || {},
+                    || {},
+                )
+            });
         let second_move = match second_result {
             Ok(MoveNoClobberOutcome::Moved) => None,
             Ok(outcome) => Some(outcome),
-            Err(error) => Some(MoveNoClobberOutcome::Failed(error.message)),
+            Err(error) => Some(MoveNoClobberOutcome::Failed(MoveIssue::new(
+                error.code,
+                error.message,
+            ))),
         };
         if let Some(second_move) = second_move {
             let (second_status, second_message) = move_failure_details(&second_move);
@@ -663,7 +834,7 @@ fn rename_pair_impl(
                 &source_companion_relative,
                 Some(&destination_companion_relative),
                 second_status,
-                Some("workspace_rename_failed"),
+                Some(move_error_code(&second_move, "workspace_rename_failed")),
                 Some(second_message.clone()),
             ));
             let rollback = if ensure_bound_file(&destination).is_ok()
@@ -673,14 +844,17 @@ fn rename_pair_impl(
                 )
                 .is_ok()
             {
-                move_noclobber(&destination, &source)
+                move_noclobber_with_expected(&destination, &source, &source_identity, || {}, || {})
             } else {
-                MoveNoClobberOutcome::Failed(
-                    "The original definition path was recreated before rollback.".to_string(),
-                )
+                MoveNoClobberOutcome::Failed(MoveIssue::new(
+                    "destination_exists",
+                    "The original definition path was recreated before rollback.",
+                ))
             };
             if matches!(rollback, MoveNoClobberOutcome::Moved) && second_status != "partial" {
                 results[0].status = "rolledBack".to_string();
+                results[0].error_code = None;
+                results[0].message = Some("The definition rollback completed.".to_string());
                 return Err(WorkspaceError::new(
                     "workspace_rename_failed",
                     format!("The companion could not be renamed: {second_message}"),
@@ -689,6 +863,15 @@ fn rename_pair_impl(
             }
             if matches!(rollback, MoveNoClobberOutcome::Moved) {
                 results[0].status = "rolledBack".to_string();
+                results[0].error_code = None;
+                results[0].message = Some("The definition rollback completed.".to_string());
+            } else {
+                let (_, rollback_message) = move_failure_details(&rollback);
+                results[0].status = "partial".to_string();
+                results[0].error_code = Some("workspace_rename_partial".to_string());
+                results[0].message = Some(format!(
+                    "The definition rollback did not complete: {rollback_message}"
+                ));
             }
             return Err(WorkspaceError::new(
                 "workspace_rename_partial",
@@ -710,6 +893,15 @@ fn rename_pair_impl(
     Ok(WorkspaceRenameResult { paths, results })
 }
 
+fn move_error_code(outcome: &MoveNoClobberOutcome, fallback: &'static str) -> &'static str {
+    match outcome {
+        MoveNoClobberOutcome::Partial { .. } => "workspace_rename_partial",
+        MoveNoClobberOutcome::Failed(issue) => issue.code,
+        MoveNoClobberOutcome::RolledBack { unlink_error } => unlink_error.code,
+        MoveNoClobberOutcome::Moved => fallback,
+    }
+}
+
 pub fn trash_paths(
     scope: &WorkspaceScope,
     relative_paths: &[String],
@@ -724,7 +916,7 @@ pub fn trash_paths_with(
     relative_paths: &[String],
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, || {}, &mut delete)
+    trash_paths_impl(scope, relative_paths, || {}, |_| {}, &mut delete)
 }
 
 #[cfg(test)]
@@ -734,13 +926,24 @@ pub fn trash_paths_with_bound_hook(
     hook: impl FnOnce(),
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, hook, &mut delete)
+    trash_paths_impl(scope, relative_paths, hook, |_| {}, &mut delete)
+}
+
+#[cfg(test)]
+pub fn trash_paths_with_handoff_hook(
+    scope: &WorkspaceScope,
+    relative_paths: &[String],
+    mut handoff_hook: impl FnMut(&Path),
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    trash_paths_impl(scope, relative_paths, || {}, &mut handoff_hook, &mut delete)
 }
 
 fn trash_paths_impl(
     scope: &WorkspaceScope,
     relative_paths: &[String],
     bound_hook: impl FnOnce(),
+    mut handoff_hook: impl FnMut(&Path),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     if relative_paths.is_empty() || relative_paths.len() > 2 {
@@ -766,21 +969,22 @@ fn trash_paths_impl(
 
     let mut results = Vec::with_capacity(relative_paths.len());
     for (relative, bound) in relative_paths.iter().zip(bound) {
-        let result =
-            match bound.and_then(|source| trash_bound_path(scope, &source, relative, delete)) {
-                Ok(()) => path_result(relative, None, "trashed", None, None),
-                Err(error) => path_result(
-                    relative,
-                    None,
-                    if error.code == "workspace_trash_partial" {
-                        "partial"
-                    } else {
-                        "failed"
-                    },
-                    Some(error.code),
-                    Some(error.message),
-                ),
-            };
+        let result = match bound.and_then(|source| {
+            trash_bound_path(scope, &source, relative, &mut handoff_hook, delete)
+        }) {
+            Ok(()) => path_result(relative, None, "trashed", None, None),
+            Err(error) => path_result(
+                relative,
+                None,
+                if error.code == "workspace_trash_partial" {
+                    "partial"
+                } else {
+                    "failed"
+                },
+                Some(error.code),
+                Some(error.message),
+            ),
+        };
         results.push(result);
     }
     Ok(WorkspaceTrashResult { results })
@@ -790,9 +994,12 @@ fn trash_bound_path(
     scope: &WorkspaceScope,
     source: &BoundPath,
     relative: &str,
+    handoff_hook: &mut impl FnMut(&Path),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<()> {
     ensure_bound_file(source)?;
+    let original_identity = named_identity(source, "path_not_found")
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
     let root = scope.directory()?;
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let file_name = Path::new(relative)
@@ -809,7 +1016,7 @@ fn trash_bound_path(
             .map_err(|error| capability_error("workspace_trash_failed", error))?,
         name: quarantine_name.clone(),
     };
-    match move_noclobber(source, &quarantine) {
+    match move_noclobber_with_expected(source, &quarantine, &original_identity, || {}, || {}) {
         MoveNoClobberOutcome::Moved => {}
         outcome => {
             let (status, message) = move_failure_details(&outcome);
@@ -824,23 +1031,68 @@ fn trash_bound_path(
         }
     }
 
+    let candidate_path = scope.root.join(&quarantine_name);
+    handoff_hook(&candidate_path);
     let ambient_path = match scope.root_path() {
         Ok(root_path) => root_path.join(&quarantine_name),
         Err(error) => {
-            return match move_noclobber(&quarantine, source) {
-                MoveNoClobberOutcome::Moved => Err(error),
-                outcome => {
-                    let (_, rollback_message) = move_failure_details(&outcome);
-                    Err(WorkspaceError::new(
-                        "workspace_trash_partial",
-                        format!("{}; rollback failed: {rollback_message}", error.message),
-                    ))
-                }
-            }
+            return Err(trash_rollback_error(
+                &quarantine,
+                source,
+                &original_identity,
+                error,
+            ))
         }
     };
+    if !named_identity_matches(&quarantine, &original_identity) {
+        return Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            WorkspaceError::new(
+                "workspace_trash_partial",
+                "The quarantine name changed before OS Trash handoff and was not handed off.",
+            ),
+        ));
+    }
+    let ambient_identity = match Handle::from_path(&ambient_path) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Err(trash_rollback_error(
+                &quarantine,
+                source,
+                &original_identity,
+                WorkspaceError::new(
+                    "workspace_trash_failed",
+                    format!(
+                        "The quarantined file could not be bound for OS Trash handoff: {error}"
+                    ),
+                ),
+            ))
+        }
+    };
+    if ambient_identity != original_identity {
+        return Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            WorkspaceError::new(
+                "workspace_trash_failed",
+                "The ambient quarantine path did not identify the verified original and was not handed off.",
+            ),
+        ));
+    }
+    if let Err(error) = scope.verify() {
+        return Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            error,
+        ));
+    }
     if let Err(message) = delete(&ambient_path) {
-        let rollback = move_noclobber(&quarantine, source);
+        let rollback =
+            move_noclobber_with_expected(&quarantine, source, &original_identity, || {}, || {});
         return match rollback {
             MoveNoClobberOutcome::Moved => {
                 Err(WorkspaceError::new("workspace_trash_failed", message))
@@ -854,7 +1106,54 @@ fn trash_bound_path(
             }
         };
     }
-    Ok(())
+    match named_identity(&quarantine, "path_not_found") {
+        Err(issue) if issue.code == "path_not_found" => Ok(()),
+        Ok(identity) if identity == original_identity => {
+            let rollback =
+                move_noclobber_with_expected(&quarantine, source, &original_identity, || {}, || {});
+            match rollback {
+                MoveNoClobberOutcome::Moved => Err(WorkspaceError::new(
+                    "workspace_trash_failed",
+                    "OS Trash returned success but left the verified original in quarantine; the original was restored.",
+                )),
+                outcome => {
+                    let (_, rollback_message) = move_failure_details(&outcome);
+                    Err(WorkspaceError::new(
+                        "workspace_trash_partial",
+                        format!("OS Trash left the verified original in quarantine and rollback failed: {rollback_message}"),
+                    ))
+                }
+            }
+        }
+        Ok(_) => Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            WorkspaceError::new(
+                "workspace_trash_partial",
+                "OS Trash returned success but the quarantine name now identifies a different file.",
+            ),
+        )),
+        Err(issue) => Err(WorkspaceError::new(issue.code, issue.message)),
+    }
+}
+
+fn trash_rollback_error(
+    quarantine: &BoundPath,
+    source: &BoundPath,
+    original_identity: &Handle,
+    error: WorkspaceError,
+) -> WorkspaceError {
+    match move_noclobber_with_expected(quarantine, source, original_identity, || {}, || {}) {
+        MoveNoClobberOutcome::Moved => error,
+        outcome => {
+            let (_, rollback_message) = move_failure_details(&outcome);
+            WorkspaceError::new(
+                "workspace_trash_partial",
+                format!("{}; rollback failed: {rollback_message}", error.message),
+            )
+        }
+    }
 }
 
 fn ensure_bound_file(path: &BoundPath) -> WorkspaceResult<()> {
@@ -883,63 +1182,219 @@ fn ensure_bound_missing(path: &BoundPath, message: &str) -> WorkspaceResult<()> 
 enum MoveNoClobberOutcome {
     Moved,
     RolledBack {
-        unlink_error: String,
+        unlink_error: MoveIssue,
     },
     Partial {
-        unlink_error: String,
-        cleanup_error: String,
+        unlink_error: MoveIssue,
+        cleanup_error: MoveIssue,
     },
-    Failed(String),
+    Failed(MoveIssue),
 }
 
+#[derive(Clone, Debug)]
+struct MoveIssue {
+    code: &'static str,
+    message: String,
+}
+
+impl MoveIssue {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
 fn classify_move_noclobber(
     link: Result<(), String>,
     unlink: impl FnOnce() -> Result<(), String>,
     cleanup: impl FnOnce() -> Result<(), String>,
 ) -> MoveNoClobberOutcome {
     if let Err(error) = link {
-        return MoveNoClobberOutcome::Failed(error);
+        return MoveNoClobberOutcome::Failed(MoveIssue::new("workspace_move_failed", error));
     }
     match unlink() {
         Ok(()) => MoveNoClobberOutcome::Moved,
         Err(unlink_error) => match cleanup() {
-            Ok(()) => MoveNoClobberOutcome::RolledBack { unlink_error },
+            Ok(()) => MoveNoClobberOutcome::RolledBack {
+                unlink_error: MoveIssue::new("source_unlink_failed", unlink_error),
+            },
             Err(cleanup_error) => MoveNoClobberOutcome::Partial {
-                unlink_error,
-                cleanup_error,
+                unlink_error: MoveIssue::new("source_unlink_failed", unlink_error),
+                cleanup_error: MoveIssue::new("destination_cleanup_failed", cleanup_error),
             },
         },
     }
 }
 
-fn move_noclobber(source: &BoundPath, destination: &BoundPath) -> MoveNoClobberOutcome {
-    classify_move_noclobber(
+#[cfg(test)]
+fn move_noclobber_with_hooks(
+    source: &BoundPath,
+    destination: &BoundPath,
+    before_unlink: impl FnOnce(),
+    before_cleanup: impl FnOnce(),
+) -> MoveNoClobberOutcome {
+    let original = match named_identity(source, "path_not_found") {
+        Ok(identity) => identity,
+        Err(error) => return MoveNoClobberOutcome::Failed(error),
+    };
+    move_noclobber_with_expected(
+        source,
+        destination,
+        &original,
+        before_unlink,
+        before_cleanup,
+    )
+}
+
+fn move_noclobber_with_expected(
+    source: &BoundPath,
+    destination: &BoundPath,
+    original: &Handle,
+    before_unlink: impl FnOnce(),
+    before_cleanup: impl FnOnce(),
+) -> MoveNoClobberOutcome {
+    if !named_identity_matches(source, original) {
+        return MoveNoClobberOutcome::Failed(MoveIssue::new(
+            "source_identity_changed",
+            "The source name changed before the move began.",
+        ));
+    }
+    if let Err(error) =
         source
             .parent
             .hard_link(&source.name, &destination.parent, &destination.name)
-            .map_err(|error| error.to_string()),
-        || {
-            source
-                .parent
-                .remove_file(&source.name)
-                .map_err(|error| error.to_string())
+    {
+        return MoveNoClobberOutcome::Failed(MoveIssue::new(
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "destination_exists"
+            } else {
+                "workspace_move_failed"
+            },
+            error.to_string(),
+        ));
+    }
+
+    before_unlink();
+    if !named_identity_matches(destination, original) {
+        return MoveNoClobberOutcome::Partial {
+            unlink_error: MoveIssue::new(
+                "destination_identity_changed",
+                "The destination name no longer identifies the linked source.",
+            ),
+            cleanup_error: MoveIssue::new(
+                "destination_identity_changed",
+                "The changed destination was preserved instead of being removed.",
+            ),
+        };
+    }
+    if !named_identity_matches(source, original) {
+        return rollback_link_after_unlink_failure(
+            destination,
+            original,
+            MoveIssue::new(
+                "source_identity_changed",
+                "The source name changed before unlink and was preserved.",
+            ),
+            before_cleanup,
+        );
+    }
+    if let Err(error) = source.parent.remove_file(&source.name) {
+        return rollback_link_after_unlink_failure(
+            destination,
+            original,
+            MoveIssue::new("source_unlink_failed", error.to_string()),
+            before_cleanup,
+        );
+    }
+    if !named_identity_matches(destination, original) {
+        return MoveNoClobberOutcome::Partial {
+            unlink_error: MoveIssue::new(
+                "destination_identity_changed",
+                "The destination changed after the source was unlinked.",
+            ),
+            cleanup_error: MoveIssue::new(
+                "original_disposition_unknown",
+                "The original file remains open but no verified destination name remains.",
+            ),
+        };
+    }
+    MoveNoClobberOutcome::Moved
+}
+
+fn rollback_link_after_unlink_failure(
+    destination: &BoundPath,
+    original: &Handle,
+    unlink_error: MoveIssue,
+    before_cleanup: impl FnOnce(),
+) -> MoveNoClobberOutcome {
+    before_cleanup();
+    match remove_verified_name(destination, original) {
+        Ok(()) => MoveNoClobberOutcome::RolledBack { unlink_error },
+        Err(cleanup_error) => MoveNoClobberOutcome::Partial {
+            unlink_error,
+            cleanup_error,
         },
-        || {
-            destination
-                .parent
-                .remove_file(&destination.name)
-                .map_err(|error| error.to_string())
-        },
-    )
+    }
+}
+
+fn named_identity(path: &BoundPath, missing_code: &'static str) -> Result<Handle, MoveIssue> {
+    let file = path.parent.open(&path.name).map_err(|error| {
+        MoveIssue::new(
+            if error.kind() == std::io::ErrorKind::NotFound {
+                missing_code
+            } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+                "path_outside_workspace"
+            } else {
+                "workspace_identity_failed"
+            },
+            error.to_string(),
+        )
+    })?;
+    file_identity(&file)
+        .map_err(|error| MoveIssue::new("workspace_identity_failed", error.to_string()))
+}
+
+fn file_identity(file: &File) -> std::io::Result<Handle> {
+    Handle::from_file(file.try_clone()?.into_std())
+}
+
+fn named_identity_matches(path: &BoundPath, expected: &Handle) -> bool {
+    named_identity(path, "path_not_found")
+        .map(|identity| identity == *expected)
+        .unwrap_or(false)
+}
+
+fn remove_verified_name(path: &BoundPath, expected: &Handle) -> Result<(), MoveIssue> {
+    match named_identity(path, "path_not_found") {
+        Ok(identity) if identity == *expected => path
+            .parent
+            .remove_file(&path.name)
+            .map_err(|error| MoveIssue::new("destination_cleanup_failed", error.to_string())),
+        Ok(_) => Err(MoveIssue::new(
+            "destination_identity_changed",
+            "The destination changed before cleanup and was preserved.",
+        )),
+        Err(error) if error.code == "path_not_found" => Err(MoveIssue::new(
+            "destination_disposition_unknown",
+            "The verified destination name disappeared before cleanup.",
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 fn move_failure_details(outcome: &MoveNoClobberOutcome) -> (&'static str, String) {
     match outcome {
         MoveNoClobberOutcome::Moved => ("moved", String::new()),
-        MoveNoClobberOutcome::Failed(error) => ("failed", error.clone()),
+        MoveNoClobberOutcome::Failed(error) => ("failed", error.message.clone()),
         MoveNoClobberOutcome::RolledBack { unlink_error } => (
             "rolledBack",
-            format!("The source could not be removed and the destination was rolled back: {unlink_error}"),
+            format!(
+                "The source could not be removed and the destination was rolled back: {}",
+                unlink_error.message
+            ),
         ),
         MoveNoClobberOutcome::Partial {
             unlink_error,
@@ -947,7 +1402,8 @@ fn move_failure_details(outcome: &MoveNoClobberOutcome) -> (&'static str, String
         } => (
             "partial",
             format!(
-                "The source could not be removed ({unlink_error}) and destination cleanup also failed ({cleanup_error})."
+                "The source could not be removed ({}) and destination cleanup also failed ({}).",
+                unlink_error.message, cleanup_error.message
             ),
         ),
     }
@@ -974,6 +1430,8 @@ pub struct TestMoveOutcome {
     pub status: &'static str,
     pub unlink_error: Option<String>,
     pub cleanup_error: Option<String>,
+    pub unlink_error_code: Option<&'static str>,
+    pub cleanup_error_code: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -987,24 +1445,83 @@ pub fn move_noclobber_outcome_for_test(
             status: "moved",
             unlink_error: None,
             cleanup_error: None,
+            unlink_error_code: None,
+            cleanup_error_code: None,
         },
         MoveNoClobberOutcome::Failed(_) => TestMoveOutcome {
             status: "failed",
             unlink_error: None,
             cleanup_error: None,
+            unlink_error_code: None,
+            cleanup_error_code: None,
         },
         MoveNoClobberOutcome::RolledBack { unlink_error } => TestMoveOutcome {
             status: "rolledBack",
-            unlink_error: Some(unlink_error),
+            unlink_error: Some(unlink_error.message),
             cleanup_error: None,
+            unlink_error_code: Some(unlink_error.code),
+            cleanup_error_code: None,
         },
         MoveNoClobberOutcome::Partial {
             unlink_error,
             cleanup_error,
         } => TestMoveOutcome {
             status: "partial",
-            unlink_error: Some(unlink_error),
-            cleanup_error: Some(cleanup_error),
+            unlink_error: Some(unlink_error.message),
+            cleanup_error: Some(cleanup_error.message),
+            unlink_error_code: Some(unlink_error.code),
+            cleanup_error_code: Some(cleanup_error.code),
+        },
+    }
+}
+
+#[cfg(test)]
+pub fn move_noclobber_with_hooks_for_test(
+    scope: &WorkspaceScope,
+    source: &str,
+    destination: &str,
+    before_unlink: impl FnOnce(),
+    before_cleanup: impl FnOnce(),
+) -> WorkspaceResult<TestMoveOutcome> {
+    let source = bind_path(scope, source)?;
+    let destination = bind_path(scope, destination)?;
+    let outcome = move_noclobber_with_hooks(&source, &destination, before_unlink, before_cleanup);
+    Ok(test_move_outcome(outcome))
+}
+
+#[cfg(test)]
+fn test_move_outcome(outcome: MoveNoClobberOutcome) -> TestMoveOutcome {
+    match outcome {
+        MoveNoClobberOutcome::Moved => TestMoveOutcome {
+            status: "moved",
+            unlink_error: None,
+            cleanup_error: None,
+            unlink_error_code: None,
+            cleanup_error_code: None,
+        },
+        MoveNoClobberOutcome::Failed(error) => TestMoveOutcome {
+            status: "failed",
+            unlink_error: Some(error.message),
+            cleanup_error: None,
+            unlink_error_code: Some(error.code),
+            cleanup_error_code: None,
+        },
+        MoveNoClobberOutcome::RolledBack { unlink_error } => TestMoveOutcome {
+            status: "rolledBack",
+            unlink_error: Some(unlink_error.message),
+            cleanup_error: None,
+            unlink_error_code: Some(unlink_error.code),
+            cleanup_error_code: None,
+        },
+        MoveNoClobberOutcome::Partial {
+            unlink_error,
+            cleanup_error,
+        } => TestMoveOutcome {
+            status: "partial",
+            unlink_error: Some(unlink_error.message),
+            cleanup_error: Some(cleanup_error.message),
+            unlink_error_code: Some(unlink_error.code),
+            cleanup_error_code: Some(cleanup_error.code),
         },
     }
 }
@@ -1074,7 +1591,7 @@ fn sync_parent(parent: &Dir) -> WorkspaceResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 pub(super) fn make_windows_target_replaceable(
     parent: &Dir,
     target: &OsStr,
@@ -1090,7 +1607,7 @@ pub(super) fn make_windows_target_replaceable(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 pub(super) fn restore_windows_permissions_after_failure(
     parent: &Dir,
     target: &OsStr,
@@ -1107,17 +1624,26 @@ pub(super) fn restore_windows_permissions_after_failure(
 }
 
 #[cfg(windows)]
-fn restore_windows_permissions_after_success(
-    parent: &Dir,
-    target: &OsStr,
-    prior_permissions: Option<&Permissions>,
+fn make_windows_file_replaceable(
+    file: &File,
+    prior_permissions: &Permissions,
 ) -> WorkspaceResult<()> {
-    if let Some(permissions) = prior_permissions {
-        parent
-            .set_permissions(target, permissions.clone())
-            .map_err(|error| io_error("workspace_permission_restore_failed", error))?;
+    if prior_permissions.readonly() {
+        let mut writable = prior_permissions.clone();
+        writable.set_readonly(false);
+        file.set_permissions(writable)
+            .map_err(|error| io_error("workspace_write_failed", error))?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn restore_windows_file_permissions(
+    file: &File,
+    prior_permissions: &Permissions,
+) -> WorkspaceResult<()> {
+    file.set_permissions(prior_permissions.clone())
+        .map_err(|error| io_error("workspace_permission_restore_failed", error))
 }
 
 fn capability_error(code: &'static str, error: std::io::Error) -> WorkspaceError {

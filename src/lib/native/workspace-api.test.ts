@@ -145,6 +145,19 @@ describe('Tauri workspace bridge', () => {
       code: 'native_command_failed',
     })
   })
+
+  it('drops native path results with an unknown status', async () => {
+    invoke.mockRejectedValueOnce({
+      code: 'workspace_rename_partial',
+      message: 'A malformed native path result was returned.',
+      pathResults: [{ relativePath: 'flow.yaml', status: 'invented' }],
+    })
+
+    await expect(tauriBridge.workspaceRead('flow.yaml')).rejects.toMatchObject({
+      code: 'workspace_rename_partial',
+      pathResults: [],
+    })
+  })
 })
 
 describe('workspace change API', () => {

@@ -350,6 +350,226 @@ fn no_clobber_move_preserves_both_unlink_and_cleanup_failures() {
 }
 
 #[test]
+fn no_clobber_move_never_unlinks_a_source_name_replaced_after_hard_link() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+
+    let outcome = files::move_noclobber_with_hooks_for_test(
+        &workspace,
+        "source.yaml",
+        "destination.yaml",
+        || {
+            fs::rename(
+                root.path().join("source.yaml"),
+                root.path().join("parked.yaml"),
+            )
+            .unwrap();
+            fs::write(root.path().join("source.yaml"), "id: replacement\n").unwrap();
+        },
+        || {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.status, "rolledBack");
+    assert_eq!(outcome.unlink_error_code, Some("source_identity_changed"));
+    assert_eq!(
+        fs::read_to_string(root.path().join("source.yaml")).unwrap(),
+        "id: replacement\n"
+    );
+    assert!(!root.path().join("destination.yaml").exists());
+    assert_eq!(
+        fs::read_to_string(root.path().join("parked.yaml")).unwrap(),
+        "id: original\n"
+    );
+}
+
+#[test]
+fn no_clobber_move_never_cleans_a_destination_name_replaced_after_unlink_failure() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+
+    let outcome = files::move_noclobber_with_hooks_for_test(
+        &workspace,
+        "source.yaml",
+        "destination.yaml",
+        || {
+            fs::rename(
+                root.path().join("source.yaml"),
+                root.path().join("parked-source.yaml"),
+            )
+            .unwrap();
+            fs::write(root.path().join("source.yaml"), "id: replacement source\n").unwrap();
+        },
+        || {
+            fs::rename(
+                root.path().join("destination.yaml"),
+                root.path().join("parked-destination.yaml"),
+            )
+            .unwrap();
+            fs::write(
+                root.path().join("destination.yaml"),
+                "id: replacement destination\n",
+            )
+            .unwrap();
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.status, "partial");
+    assert_eq!(outcome.unlink_error_code, Some("source_identity_changed"));
+    assert_eq!(
+        outcome.cleanup_error_code,
+        Some("destination_identity_changed")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("destination.yaml")).unwrap(),
+        "id: replacement destination\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("parked-destination.yaml")).unwrap(),
+        "id: original\n"
+    );
+}
+
+#[test]
+fn write_never_replaces_a_name_changed_after_hash_and_identity_binding() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    let error = files::write_with_post_hash_hook(
+        &workspace,
+        "flow.yaml",
+        "id: mine\n",
+        Some(&before.sha256),
+        || {
+            fs::rename(
+                root.path().join("flow.yaml"),
+                root.path().join("parked.yaml"),
+            )
+            .unwrap();
+            fs::write(root.path().join("flow.yaml"), "id: external\n").unwrap();
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "external_revision_conflict");
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "id: external\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("parked.yaml")).unwrap(),
+        "id: original\n"
+    );
+}
+
+#[test]
+fn write_rolls_back_or_retains_recovery_when_target_reappears_after_quarantine() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    let error = files::write_with_post_quarantine_hook(
+        &workspace,
+        "flow.yaml",
+        "id: mine\n",
+        Some(&before.sha256),
+        || fs::write(root.path().join("flow.yaml"), "id: external\n").unwrap(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "workspace_write_partial");
+    assert!(error.message.contains("recovery"));
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "id: external\n"
+    );
+    let recovery = fs::read_dir(root.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".workflow-studio-original-")
+        })
+        .expect("verified original remains recoverable");
+    assert_eq!(
+        fs::read_to_string(recovery.path()).unwrap(),
+        "id: original\n"
+    );
+}
+
+#[test]
+fn trash_never_hands_off_a_quarantine_name_replaced_after_binding() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+
+    let result = files::trash_paths_with_handoff_hook(
+        &workspace,
+        &["flow.yaml".to_string()],
+        |quarantine| {
+            fs::rename(quarantine, root.path().join("parked-quarantine.yaml")).unwrap();
+            fs::write(quarantine, "id: replacement\n").unwrap();
+        },
+        |_| panic!("an unverified quarantine must not reach OS Trash"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "partial");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("workspace_trash_partial")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("parked-quarantine.yaml")).unwrap(),
+        "id: original\n"
+    );
+}
+
+#[test]
+fn trash_rolls_back_through_bound_handles_if_the_selected_root_is_replaced() {
+    let parent = tempdir().unwrap();
+    let root_path = parent.path().join("workspace");
+    fs::create_dir(&root_path).unwrap();
+    fs::write(root_path.join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(&root_path);
+    let displaced = parent.path().join("displaced");
+
+    let result = files::trash_paths_with_handoff_hook(
+        &workspace,
+        &["flow.yaml".to_string()],
+        |_| {
+            fs::rename(&root_path, &displaced).unwrap();
+            fs::create_dir(&root_path).unwrap();
+            fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap();
+        },
+        |_| panic!("a replaced selected root must not reach OS Trash"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "failed");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("workspace_root_changed")
+    );
+    assert_eq!(
+        fs::read_to_string(displaced.join("flow.yaml")).unwrap(),
+        "id: original\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root_path.join("flow.yaml")).unwrap(),
+        "id: replacement\n"
+    );
+}
+
+#[test]
 fn trash_preserves_each_capability_resolver_error_code() {
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
@@ -518,14 +738,16 @@ fn pair_rename_never_overwrites_a_recreated_source_and_reports_partial_state() {
         fs::read_to_string(root.path().join("new.yaml")).unwrap(),
         "id: old\n"
     );
-    assert!(error
-        .path_results
-        .iter()
-        .any(|result| result.status == "moved"));
-    assert!(error
-        .path_results
-        .iter()
-        .any(|result| result.status == "failed"));
+    assert_eq!(error.path_results[0].status, "partial");
+    assert_eq!(
+        error.path_results[0].error_code.as_deref(),
+        Some("workspace_rename_partial")
+    );
+    assert!(error.path_results[0]
+        .message
+        .as_deref()
+        .is_some_and(|message| message.contains("rollback")));
+    assert_eq!(error.path_results[1].status, "failed");
 }
 
 #[test]
