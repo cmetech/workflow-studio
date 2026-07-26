@@ -1,0 +1,21 @@
+# workflow header
+name: "Golden workflow"
+description: |-
+  Keep this multiline text.
+  Exactly as authored.
+settings: {retries: 2, mode: "careful"}
+metadata:
+  # owner guidance
+  owner: old # edited owner
+  untouched: "keep quoted" # keep this comment
+nodes:
+  # prepare comment
+  - id: "prepare"
+    command: |-
+      printf 'prepare'
+      printf 'again'
+  - id: consume
+    depends_on: ["prepare"]
+    prompt: "Use $prepare.output.value"
+    optional: keep-me
+# workflow footer

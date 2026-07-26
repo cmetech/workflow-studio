@@ -575,7 +575,7 @@ Version one is releasable only when a user can:
 
 | Risk | Mitigation |
 |---|---|
-| CST patches alter formatting or comments | Build the document engine first; maintain golden and property-based round-trip corpora |
+| CST patches alter formatting or comments | Build the document engine first; maintain golden and property-based round-trip corpora; apply retained CST source-range edits from highest offset to lowest because full `yaml` Document serialization normalizes untouched flow spacing |
 | Contract drifts from Hermes | Generate/pin from the CLI, verify digest, and keep parser-parity tests upstream |
 | Advanced YAML cannot be mutated safely | Preserve it; disable only the ambiguous visual operation; never normalize silently |
 | Large graphs become sluggish | Isolate drag state and prohibit high-frequency parser/layout/native work |

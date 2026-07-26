@@ -1,0 +1,4 @@
+shared_nodes: &shared_nodes
+  - id: prepare
+    command: prepare
+nodes: *shared_nodes

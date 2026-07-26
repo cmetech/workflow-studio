@@ -1,0 +1,10 @@
+defaults: &defaults
+  timeout: 30
+metadata:
+  inherited: *defaults
+nodes:
+  - id: prepare
+    command: prepare
+  - id: finish
+    depends_on: [prepare]
+    prompt: finish
