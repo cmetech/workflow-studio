@@ -1,5 +1,10 @@
 import { atom } from 'nanostores'
-import { acceptAnalysis, createDocumentRevision, isAnalysisCurrent } from '$src/lib/documents/revisions'
+import {
+  acceptAnalysis,
+  confirmDocumentSaved,
+  createDocumentRevision,
+  isAnalysisCurrent,
+} from '$src/lib/documents/revisions'
 import type { ContractDigest, DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
 
 export interface DocumentSessionState {
@@ -43,6 +48,48 @@ export function receiveDocumentAnalysis(analysis: DocumentAnalysis): void {
   if (accepted.analysis === current.analysis) return
 
   $documentSession.set({ ...current, analysis: accepted.analysis })
+}
+
+export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDigest: ContractDigest): void {
+  const current = $documentSession.get()
+  if (current.pair?.workflowId !== pair.workflowId || current.pair.generation !== pair.generation) return
+
+  let merged = current.pair
+  merged = mergeSavedDocument(merged, pair, 'definition')
+  merged = mergeSavedDocument(merged, pair, 'companion')
+  updateDocumentSession(merged, contractDigest)
+}
+
+function mergeSavedDocument(
+  current: WorkflowPairText,
+  saved: WorkflowPairText,
+  kind: 'definition' | 'companion',
+): WorkflowPairText {
+  const currentDocument = kind === 'definition' ? current.definition : current.companion
+  const savedDocument = kind === 'definition' ? saved.definition : saved.companion
+  if (
+    !currentDocument ||
+    !savedDocument ||
+    currentDocument.path !== savedDocument.path ||
+    savedDocument.diskHash === null ||
+    savedDocument.savedRevision < currentDocument.savedRevision ||
+    (savedDocument.savedRevision === currentDocument.savedRevision &&
+      savedDocument.diskHash === currentDocument.diskHash) ||
+    savedDocument.savedRevision > currentDocument.revision
+  ) {
+    return current
+  }
+  return confirmDocumentSaved(current, kind, {
+    revision: savedDocument.savedRevision,
+    diskHash: savedDocument.diskHash,
+  })
+}
+
+export function isDocumentPairDirty(pair: WorkflowPairText): boolean {
+  return (
+    pair.definition.revision !== pair.definition.savedRevision ||
+    (pair.companion !== null && pair.companion.revision !== pair.companion.savedRevision)
+  )
 }
 
 export function closeDocumentSession(): void {

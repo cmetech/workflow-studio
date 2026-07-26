@@ -1,4 +1,5 @@
 import type { WorkspaceFileEntry } from '../workspace/types'
+import type { RecoveryBlob, RecoveryWriteRequest } from '../recovery/types'
 
 export interface HostInfo {
   appVersion: string
@@ -87,5 +88,8 @@ export interface WorkspaceNativeBridge extends NativeBridge {
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
   workspaceRenamePair(request: WorkspaceRenameRequest): Promise<WorkspaceRenameResult>
   workspaceTrashPaths(relativePaths: readonly string[]): Promise<WorkspaceTrashResult>
+  recoveryList(): Promise<readonly RecoveryBlob[]>
+  recoveryWrite(request: RecoveryWriteRequest): Promise<void>
+  recoveryDelete(id: string): Promise<void>
   onWorkspaceChanged(handler: WorkspaceChangedHandler): Promise<UnlistenWorkspace>
 }

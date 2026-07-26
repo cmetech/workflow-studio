@@ -179,6 +179,9 @@ describe('workspace change API', () => {
       workspaceWrite: vi.fn(),
       workspaceRenamePair: vi.fn(),
       workspaceTrashPaths: vi.fn(),
+      recoveryList: vi.fn(),
+      recoveryWrite: vi.fn(),
+      recoveryDelete: vi.fn(),
       onWorkspaceChanged: vi.fn(async (handler) => {
         notify = handler
         return () => undefined

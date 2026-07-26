@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
+import type { RecoveryBlob } from '../recovery/types'
 import {
   NativeError,
   type PathOperationResult,
@@ -65,6 +66,9 @@ export const tauriBridge: WorkspaceNativeBridge = {
     invokeTyped<WorkspaceTrashResult>('workspace_trash_paths', {
       relativePaths: [...relativePaths],
     }),
+  recoveryList: () => invokeTyped<readonly RecoveryBlob[]>('recovery_list'),
+  recoveryWrite: (request) => invokeTyped<void>('recovery_write', { ...request }),
+  recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

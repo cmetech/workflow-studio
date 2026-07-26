@@ -24,6 +24,8 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     Object.entries(DEFAULT_FILES).map(([path, text]) => [path, { text, modifiedAt: FIXED_MODIFIED_AT }]),
   )
   const handlers = new Set<WorkspaceChangedHandler>()
+  const recovery = new Map<string, { key: string; content: string }>()
+  let recoverySequence = 0
   let selectedRoot = '/browser/workspace'
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
@@ -122,6 +124,20 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
           status: 'trashed' as const,
         })),
       }
+    },
+    recoveryList: async () =>
+      [...recovery].map(([id, record]) => ({
+        id,
+        key: record.key,
+        content: record.content,
+        size: byteLength(record.content),
+      })),
+    recoveryWrite: async ({ key, content }) => {
+      recoverySequence += 1
+      recovery.set(`browser-${recoverySequence.toString(16)}.wsr`, { key, content })
+    },
+    recoveryDelete: async (id) => {
+      recovery.delete(id)
     },
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)
