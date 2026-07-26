@@ -1,5 +1,6 @@
 import { isMap, parseAllDocuments, type ErrorCode, type YAMLError } from 'yaml'
 import type { ValidationIssue } from '$src/lib/documents/types'
+import * as sourceLocations from './source-locations'
 import type { ParseWorkflowYamlOptions, YamlParseResult } from './types'
 
 const YAML_OPTIONS = {
@@ -11,23 +12,9 @@ const YAML_OPTIONS = {
 } as const
 
 export function parseWorkflowYaml(text: string, options: ParseWorkflowYamlOptions): YamlParseResult {
-  const lineStarts = buildLineStarts(text)
   const invalidUnicodeOffset = findInvalidUnicodeOffset(text)
-
-  if (invalidUnicodeOffset !== null) {
-    return {
-      parsed: null,
-      issues: [
-        issueAtOffset(
-          syntaxIssue('invalid_unicode', 'Workflow YAML contains an unpaired UTF-16 surrogate.', options.document),
-          invalidUnicodeOffset,
-          lineStarts,
-        ),
-      ],
-    }
-  }
-
   const byteLength = new TextEncoder().encode(text).byteLength
+
   if (byteLength > options.maxBytes) {
     return {
       parsed: null,
@@ -41,18 +28,36 @@ export function parseWorkflowYaml(text: string, options: ParseWorkflowYamlOption
     }
   }
 
-  const documents = parseAllDocuments(text, YAML_OPTIONS)
-  if (documents.length === 0) {
+  const lineStarts = sourceLocations.buildLineStarts(text)
+  if (invalidUnicodeOffset !== null) {
     return {
       parsed: null,
-      issues: [syntaxIssue('empty_document', 'Workflow YAML must contain one mapping document.', options.document)],
+      issues: [
+        issueAtOffset(
+          syntaxIssue('invalid_unicode', 'Workflow YAML contains an unpaired UTF-16 surrogate.', options.document),
+          invalidUnicodeOffset,
+          lineStarts,
+        ),
+      ],
     }
   }
 
-  const issues = documents.flatMap((document) => [
-    ...document.errors.map((error) => yamlDiagnosticIssue(error, 'error', options.document, lineStarts)),
-    ...document.warnings.map((warning) => yamlDiagnosticIssue(warning, 'warning', options.document, lineStarts)),
-  ])
+  const documents = parseAllDocuments(text, YAML_OPTIONS)
+  const issues =
+    'empty' in documents
+      ? [
+          ...documents.errors.map((error) => yamlDiagnosticIssue(error, 'error', options.document, lineStarts)),
+          ...documents.warnings.map((warning) => yamlDiagnosticIssue(warning, 'warning', options.document, lineStarts)),
+        ]
+      : documents.flatMap((document) => [
+          ...document.errors.map((error) => yamlDiagnosticIssue(error, 'error', options.document, lineStarts)),
+          ...document.warnings.map((warning) => yamlDiagnosticIssue(warning, 'warning', options.document, lineStarts)),
+        ])
+
+  if (documents.length === 0) {
+    issues.push(syntaxIssue('empty_document', 'Workflow YAML must contain one mapping document.', options.document))
+    return { parsed: null, issues }
+  }
 
   if (documents.length !== 1) {
     const secondDocumentOffset = documents[1]?.range[0]
@@ -157,22 +162,6 @@ function lineColumnAtOffset(offset: number, lineStarts: readonly number[]): { li
     line: lineIndex + 1,
     column: offset - (lineStarts[lineIndex] ?? 0) + 1,
   }
-}
-
-function buildLineStarts(text: string): readonly number[] {
-  const starts = [0]
-
-  for (let index = 0; index < text.length; index += 1) {
-    const codeUnit = text.charCodeAt(index)
-    if (codeUnit === 0x0d && text.charCodeAt(index + 1) === 0x0a) {
-      starts.push(index + 2)
-      index += 1
-    } else if (codeUnit === 0x0a || codeUnit === 0x0d) {
-      starts.push(index + 1)
-    }
-  }
-
-  return starts
 }
 
 function findInvalidUnicodeOffset(text: string): number | null {

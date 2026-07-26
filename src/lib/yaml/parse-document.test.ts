@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { isAlias, isMap, isScalar, isSeq, Scalar } from 'yaml'
 import anchorsAndAliases from '../../../tests/fixtures/yaml/anchors-and-aliases.yaml?raw'
 import commentsAndStyles from '../../../tests/fixtures/yaml/comments-and-styles.yaml?raw'
 import duplicateKeys from '../../../tests/fixtures/yaml/duplicate-keys.yaml?raw'
 import multipleDocuments from '../../../tests/fixtures/yaml/multiple-documents.yaml?raw'
 import { parseWorkflowYaml } from './parse-document'
+import * as sourceLocations from './source-locations'
 
 const defaultOptions = { document: 'definition' as const, maxBytes: 2 * 1024 * 1024 }
 
@@ -21,6 +22,44 @@ describe('source-preserving YAML parsing', () => {
         blocking: true,
         document: 'definition',
       }),
+    ])
+  })
+
+  it('keeps a malformed directive-only stream error before the empty-document issue', () => {
+    const source = '%YAML nope\n'
+    const first = parseWorkflowYaml(source, defaultOptions)
+    const second = parseWorkflowYaml(source, defaultOptions)
+
+    expect(first.parsed).toBeNull()
+    expect(first.issues).toEqual(second.issues)
+    expect(first.issues).toEqual([
+      expect.objectContaining({
+        code: 'yaml_bad_directive',
+        severity: 'error',
+        blocking: true,
+        line: 1,
+        column: 7,
+      }),
+      expect.objectContaining({ code: 'empty_document' }),
+    ])
+  })
+
+  it('keeps a warning-only directive stream warning at its stable source location', () => {
+    const source = '\n%UNKNOWN directive\n'
+    const first = parseWorkflowYaml(source, defaultOptions)
+    const second = parseWorkflowYaml(source, defaultOptions)
+
+    expect(first.parsed).toBeNull()
+    expect(first.issues).toEqual(second.issues)
+    expect(first.issues).toEqual([
+      expect.objectContaining({
+        code: 'yaml_warning_bad_directive',
+        severity: 'warning',
+        blocking: false,
+        line: 2,
+        column: 1,
+      }),
+      expect.objectContaining({ code: 'empty_document' }),
     ])
   })
 
@@ -71,6 +110,19 @@ describe('source-preserving YAML parsing', () => {
 
     expect(result.parsed).toBeNull()
     expect(result.issues.map(({ code }) => code)).toEqual(['document_too_large'])
+  })
+
+  it('rejects oversized input before allocating its line-start table', () => {
+    const buildLineStarts = vi.spyOn(sourceLocations, 'buildLineStarts')
+
+    try {
+      const result = parseWorkflowYaml('\n'.repeat(1_024), { ...defaultOptions, maxBytes: 1 })
+
+      expect(result.issues.map(({ code }) => code)).toEqual(['document_too_large'])
+      expect(buildLineStarts).not.toHaveBeenCalled()
+    } finally {
+      buildLineStarts.mockRestore()
+    }
   })
 
   it('retains anchors and aliases as syntax nodes without expanding them', () => {
