@@ -12,6 +12,28 @@ const fixtures = {
 }
 
 const source: ContractSource = { kind: 'bundled', identifier: 'test-contract' }
+const fixtureApplicability = {
+  profiles: ['archon-2026-07'],
+  documents: ['definition'],
+}
+const fixtureField = {
+  id: 'fixture-field',
+  label: 'Fixture field',
+  description: 'Reader-only fixture field',
+  field_path: 'nodes[].fixture',
+  applicability: fixtureApplicability,
+  widget: 'text',
+  section: 'fixture',
+  order: 1,
+  status: 'supported',
+  examples: [],
+}
+const fixtureNodeKind = {
+  ...fixtureField,
+  id: 'fixture-node',
+  label: 'Fixture node',
+  fields: [fixtureField],
+}
 
 async function encodeSigned(envelope: Record<string, unknown>): Promise<Uint8Array> {
   envelope.contract_digest = `sha256:${await sha256Hex(canonicalizeContractPayload(envelope))}`
@@ -85,6 +107,31 @@ describe('authoring contract loader', () => {
     const result = await loadAuthoringContract(await encodeSigned(envelope), source)
 
     expect(result).toMatchObject({ ok: false, code: 'contract_shape_invalid' })
+  })
+
+  it.each([
+    ['null node-kind descriptor', { node_kinds: [null] }],
+    ['incomplete semantic-rule descriptor', { semantic_rules: [{}] }],
+    ['null compatibility descriptor', { compatibility_codes: { FIXTURE_INVALID: null } }],
+    ['incomplete documentation', { documentation: {} }],
+    [
+      'malformed descriptor applicability',
+      { node_kinds: [{ ...fixtureNodeKind, applicability: { profiles: [], documents: [null] } }] },
+    ],
+    ['malformed nested field descriptor', { node_kinds: [{ ...fixtureNodeKind, fields: [{}] }] }],
+  ])('rejects a %s', async (_case, overrides) => {
+    const result = await loadAuthoringContract(await signedBytes(overrides), source)
+
+    expect(result).toMatchObject({ ok: false, code: 'contract_shape_invalid' })
+  })
+
+  it('returns a shape failure when canonicalization rejects numeric overflow', async () => {
+    const overflowJson = archonFixtureText.replace('"test_fixture": true', '"test_fixture": 1e400')
+
+    await expect(loadAuthoringContract(new TextEncoder().encode(overflowJson), source)).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_shape_invalid',
+    })
   })
 
   it('preserves unknown top-level keys only as reader extensions', async () => {
