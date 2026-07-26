@@ -92,12 +92,32 @@ export interface LayoutNativeBridge extends NativeBridge {
 }
 
 export interface WorkspaceNativeBridge extends LayoutNativeBridge {
+  chooseWorkspaceFolder(): Promise<string | null>
+  chooseImportDefinition(): Promise<string | null>
+  chooseExportDirectory(): Promise<string | null>
   workspaceSetRoot(rootPath: string): Promise<WorkspaceRootInfo>
   workspaceScan(): Promise<readonly WorkspaceFileEntry[]>
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
   workspaceRenamePair(request: WorkspaceRenameRequest): Promise<WorkspaceRenameResult>
   workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
+  externalReadYaml(path: string): Promise<{ readonly path: string; readonly text: string }>
+  externalExportYamlPair(request: {
+    readonly directoryPath: string
+    readonly overwrite: boolean
+    readonly files: readonly { readonly fileName: string; readonly text: string }[]
+  }): Promise<{ readonly paths: readonly string[] }>
+  recentWorkspacesLoad(): Promise<string>
+  recentWorkspacesSave(content: string): Promise<void>
+  pathAvailable(path: string): Promise<boolean>
+  startupPaths(): Promise<
+    readonly {
+      readonly kind: 'directory' | 'yaml'
+      readonly path: string
+      readonly rootPath?: string
+      readonly relativePath?: string
+    }[]
+  >
   recoveryList(): Promise<readonly RecoveryBlob[]>
   recoveryWrite(request: RecoveryWriteRequest): Promise<void>
   recoveryDelete(id: string): Promise<void>

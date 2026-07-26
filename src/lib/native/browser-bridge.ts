@@ -28,6 +28,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   let recoverySequence = 0
   let layoutContent: string | null = null
   let selectedRoot = '/browser/workspace'
+  let recentWorkspaces = ''
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
     await Promise.all([...handlers].map((handler) => handler(event)))
@@ -39,6 +40,9 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       os: 'browser',
       arch: 'browser',
     }),
+    chooseWorkspaceFolder: async () => selectedRoot,
+    chooseImportDefinition: async () => null,
+    chooseExportDirectory: async () => null,
     workspaceSetRoot: async (rootPath) => {
       selectedRoot = rootPath
       return { workspaceId: 'browser-workspace', rootPath: selectedRoot }
@@ -141,6 +145,18 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       if (trashedPaths.length > 0) await emit({ paths: trashedPaths, kind: 'remove' })
       return { results }
     },
+    externalReadYaml: async (path) => {
+      throw new NativeError('dialog_permission_required', `No one-time browser permission exists for ${path}.`)
+    },
+    externalExportYamlPair: async () => {
+      throw new NativeError('dialog_permission_required', 'Select an export folder in the native desktop app.')
+    },
+    recentWorkspacesLoad: async () => recentWorkspaces,
+    recentWorkspacesSave: async (content) => {
+      recentWorkspaces = content
+    },
+    pathAvailable: async (path) => path === selectedRoot,
+    startupPaths: async () => [],
     recoveryList: async () =>
       [...recovery].map(([id, record]) => ({
         id,

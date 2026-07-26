@@ -33,6 +33,7 @@ describe('command registry', () => {
   it('registers the initial shell commands from one table', () => {
     expect(listCommands().map(({ id }) => id)).toEqual([
       'workspace.open-folder',
+      'workspace.quick-open',
       'problems.focus',
       'workbench.command-palette',
       'view.activity.examples',
@@ -43,6 +44,13 @@ describe('command registry', () => {
       'view.editor.split',
       'view.editor.visual',
       'view.editor.yaml',
+      'workflow.create-companion',
+      'workflow.duplicate',
+      'workflow.export',
+      'workflow.trash',
+      'workflow.open',
+      'workflow.remove-companion',
+      'workflow.rename',
     ])
   })
 

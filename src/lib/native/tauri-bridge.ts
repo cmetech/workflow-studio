@@ -57,6 +57,9 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
 
 export const tauriBridge: WorkspaceNativeBridge = {
   hostHealth: () => invokeTyped<HostInfo>('host_health'),
+  chooseWorkspaceFolder: () => invokeTyped<string | null>('dialog_choose_workspace'),
+  chooseImportDefinition: () => invokeTyped<string | null>('dialog_choose_import_definition'),
+  chooseExportDirectory: () => invokeTyped<string | null>('dialog_choose_export_directory'),
   workspaceSetRoot: (rootPath) => invokeTyped<WorkspaceRootInfo>('workspace_set_root', { rootPath }),
   workspaceScan: () => invokeTyped<readonly WorkspaceFileEntry[]>('workspace_scan'),
   workspaceRead: (relativePath) => invokeTyped<WorkspaceReadResult>('workspace_read', { relativePath }),
@@ -66,6 +69,25 @@ export const tauriBridge: WorkspaceNativeBridge = {
     invokeTyped<WorkspaceTrashResult>('workspace_trash_paths', {
       requests: requests.map((request) => ({ ...request })),
     }),
+  externalReadYaml: (path) => invokeTyped<{ path: string; text: string }>('external_read_yaml', { path }),
+  externalExportYamlPair: ({ directoryPath, overwrite, files }) =>
+    invokeTyped<{ paths: readonly string[] }>('external_export_yaml_pair', {
+      directoryPath,
+      overwrite,
+      files: files.map((file) => ({ ...file })),
+    }),
+  recentWorkspacesLoad: () => invokeTyped<string>('recent_workspaces_load'),
+  recentWorkspacesSave: (content) => invokeTyped<void>('recent_workspaces_save', { content }),
+  pathAvailable: (path) => invokeTyped<boolean>('recent_workspace_available', { path }),
+  startupPaths: () =>
+    invokeTyped<
+      readonly {
+        kind: 'directory' | 'yaml'
+        path: string
+        rootPath?: string
+        relativePath?: string
+      }[]
+    >('startup_paths'),
   recoveryList: () => invokeTyped<readonly RecoveryBlob[]>('recovery_list'),
   recoveryWrite: (request) => invokeTyped<void>('recovery_write', { ...request }),
   recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),

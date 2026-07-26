@@ -8,6 +8,7 @@
     tree?: readonly WorkspaceTreeEntry[]
     activeId?: string | null
     onOpen?: (entry: WorkspaceEntry) => void
+    onContext?: (entry: WorkspaceEntry) => void
   }
 
   interface VisibleTreeRow {
@@ -18,7 +19,7 @@
     readonly setSize: number
   }
 
-  let { tree, activeId, onOpen }: Props = $props()
+  let { tree, activeId, onOpen, onContext }: Props = $props()
   const displayedTree = $derived(tree ?? $workspace.tree)
   const selectedId = $derived(activeId === undefined ? $workspace.activeEntryId : activeId)
   let expandedIds = $state<Set<string>>(new Set())
@@ -100,6 +101,12 @@
   }
 
   async function handleKeydown(event: KeyboardEvent, row: VisibleTreeRow): Promise<void> {
+    if (event.key === 'F10' && event.shiftKey && !isWorkspaceFolder(row.entry)) {
+      event.preventDefault()
+      event.stopPropagation()
+      onContext?.(row.entry)
+      return
+    }
     const currentIndex = visibleRows.findIndex(({ entry }) => entry.id === row.entry.id)
     let nextId: string | null = null
 
@@ -165,6 +172,11 @@
         onclick={() => activateRow(row.entry)}
         onfocus={() => (focusedId = row.entry.id)}
         onkeydown={(event) => handleKeydown(event, row)}
+        oncontextmenu={(event) => {
+          if (isWorkspaceFolder(row.entry)) return
+          event.preventDefault()
+          onContext?.(row.entry)
+        }}
       >
         <span class="disclosure" aria-hidden="true">
           {#if isWorkspaceFolder(row.entry)}{expandedIds.has(row.entry.id) ? '▾' : '▸'}{:else}◇{/if}

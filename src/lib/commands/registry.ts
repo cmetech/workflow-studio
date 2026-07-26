@@ -1,4 +1,11 @@
-import { openCommandPalette, openFolder, showActivity, showEditorMode } from '$src/stores/shell'
+import {
+  openCommandPalette,
+  openFolder,
+  openQuickOpen,
+  requestWorkflowAction,
+  showActivity,
+  showEditorMode,
+} from '$src/stores/shell'
 import { requestProblemFocus } from '$src/stores/documents'
 import type { ActivityId, AppCommand, CommandContext, EditorMode } from './types'
 
@@ -164,6 +171,21 @@ function editorModeCommand(mode: EditorMode, label: string, binding: string): Ap
   }
 }
 
+function workflowCommand(
+  id: `workflow.${string}`,
+  label: string,
+  options: { binding?: string; mutating?: boolean } = {},
+): AppCommand {
+  return {
+    id,
+    label,
+    category: 'Workflow',
+    defaultBindings: options.binding ? [options.binding] : [],
+    enabled: (context) => context.hasSelection && (!options.mutating || context.canMutate),
+    run: () => requestWorkflowAction(id),
+  }
+}
+
 const initialCommands: readonly AppCommand[] = [
   {
     id: 'problems.focus',
@@ -182,6 +204,14 @@ const initialCommands: readonly AppCommand[] = [
     run: openFolder,
   },
   {
+    id: 'workspace.quick-open',
+    label: 'Quick Open',
+    category: 'File',
+    defaultBindings: ['Mod+P'],
+    enabled: () => true,
+    run: openQuickOpen,
+  },
+  {
     id: 'workbench.command-palette',
     label: 'Command Palette',
     category: 'View',
@@ -197,6 +227,13 @@ const initialCommands: readonly AppCommand[] = [
   editorModeCommand('visual', 'Visual', 'Mod+1'),
   editorModeCommand('split', 'Split', 'Mod+2'),
   editorModeCommand('yaml', 'YAML', 'Mod+3'),
+  workflowCommand('workflow.open', 'Open'),
+  workflowCommand('workflow.duplicate', 'Duplicate Pair', { binding: 'Mod+D', mutating: true }),
+  workflowCommand('workflow.rename', 'Rename Pair', { mutating: true }),
+  workflowCommand('workflow.create-companion', 'Create Companion', { mutating: true }),
+  workflowCommand('workflow.remove-companion', 'Remove Companion', { mutating: true }),
+  workflowCommand('workflow.export', 'Export'),
+  workflowCommand('workflow.trash', 'Move Pair to Trash', { mutating: true }),
 ]
 
 const applicationCommands = createCommandRegistry()

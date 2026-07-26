@@ -1,3 +1,4 @@
+pub(crate) mod dialogs;
 mod files;
 mod paths;
 mod watcher;

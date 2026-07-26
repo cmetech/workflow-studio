@@ -19,7 +19,10 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'LOOP24 Workflow Studio' })).toBeVisible()
     expect(container.querySelector('.brand-lockup img')).toHaveAttribute('alt', '')
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open Folder' })).toBeEnabled()
+    expect(screen.getAllByRole('button', { name: 'Open Folder' })).toHaveLength(2)
+    expect(
+      screen.getAllByRole('button', { name: 'Open Folder' }).every((button) => !button.hasAttribute('disabled')),
+    ).toBe(true)
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
@@ -29,7 +32,9 @@ describe('App', () => {
     expect(screen.getByRole('navigation', { name: 'Activities' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeEmptyDOMElement()
-    expect(screen.getByRole('region', { name: 'Workflow editor' })).toBeEmptyDOMElement()
+    expect(screen.getByRole('region', { name: 'Workflow editor' })).toContainElement(
+      screen.getByRole('region', { name: 'Open workspace drop zone' }),
+    )
     expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeEmptyDOMElement()
     expect(screen.getByRole('status')).toBeVisible()
 

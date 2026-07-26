@@ -177,6 +177,40 @@ describe('Tauri workspace bridge', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, 'layout_save', { content: '[{"schemaVersion":2}]' })
   })
 
+  it('uses narrow dialog, one-time external YAML, startup, and app-data recent commands', async () => {
+    invoke
+      .mockResolvedValueOnce('/chosen')
+      .mockResolvedValueOnce({ path: '/outside/flow.yaml', text: 'name: flow\n' })
+      .mockResolvedValueOnce({ paths: ['/export/flow.yaml'] })
+      .mockResolvedValueOnce([
+        { kind: 'yaml', path: '/outside/flow.yaml', rootPath: '/outside', relativePath: 'flow.yaml' },
+      ])
+      .mockResolvedValueOnce('[]')
+      .mockResolvedValueOnce(undefined)
+
+    await expect(tauriBridge.chooseWorkspaceFolder()).resolves.toBe('/chosen')
+    await tauriBridge.externalReadYaml('/outside/flow.yaml')
+    await tauriBridge.externalExportYamlPair({
+      directoryPath: '/export',
+      overwrite: false,
+      files: [{ fileName: 'flow.yaml', text: 'name: flow\n' }],
+    })
+    await tauriBridge.startupPaths()
+    await tauriBridge.recentWorkspacesLoad()
+    await tauriBridge.recentWorkspacesSave('[]')
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'dialog_choose_workspace', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(2, 'external_read_yaml', { path: '/outside/flow.yaml' })
+    expect(invoke).toHaveBeenNthCalledWith(3, 'external_export_yaml_pair', {
+      directoryPath: '/export',
+      overwrite: false,
+      files: [{ fileName: 'flow.yaml', text: 'name: flow\n' }],
+    })
+    expect(invoke).toHaveBeenNthCalledWith(4, 'startup_paths', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(5, 'recent_workspaces_load', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(6, 'recent_workspaces_save', { content: '[]' })
+  })
+
   it('never infers behavior by parsing native error strings', async () => {
     invoke.mockRejectedValueOnce('external_revision_conflict: misleading text')
 
@@ -212,6 +246,7 @@ describe('workspace change API', () => {
       readOnly: false,
     })
     const fake = {
+      ...createBrowserBridge(),
       hostHealth: vi.fn(),
       workspaceSetRoot: vi.fn(),
       workspaceScan: vi.fn(),

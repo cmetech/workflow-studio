@@ -172,6 +172,18 @@ describe('Explorer', () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ definitionPath: 'flows/paired.yaml' }))
   })
 
+  it('opens a workflow context request from the keyboard without reading content', async () => {
+    const onContext = vi.fn()
+    render(Explorer, { tree, onContext })
+    await tick()
+
+    const paired = screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })
+    paired.focus()
+    await fireEvent.keyDown(paired, { key: 'F10', shiftKey: true })
+
+    expect(onContext).toHaveBeenCalledWith(expect.objectContaining({ definitionPath: 'flows/paired.yaml' }))
+  })
+
   it('renders workspace scan metadata through the approved shell panel', async () => {
     loadWorkspaceEntries('workspace-1', 'Project', [
       {

@@ -1,11 +1,22 @@
 <script lang="ts">
-  import { executeCommand } from '$src/lib/commands/registry'
+  import { onMount } from 'svelte'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { executeCommand, listCommands } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { activeEditorMode } from '$src/stores/shell'
-  import { activeActivity } from '$src/stores/shell'
+  import { activeActivity, workspaceIntent } from '$src/stores/shell'
   import { workspace } from '$src/stores/workspace'
+  import { selectWorkspaceEntry } from '$src/stores/workspace'
+  import { getNativeBridge } from '$src/lib/native/bridge'
+  import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
+  import { createLayoutStore } from '$src/lib/layout/layout-store'
+  import { createWorkspaceActions } from '$src/features/workspace/workspace-actions'
+  import { openDocumentSession, closeDocumentSession } from '$src/stores/documents'
   import Explorer from '$src/features/workspace/Explorer.svelte'
+  import OpenWorkspace from '$src/features/workspace/OpenWorkspace.svelte'
+  import QuickOpen from '$src/features/workspace/QuickOpen.svelte'
+  import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
 
@@ -17,6 +28,34 @@
 
   const brand = loadBundledBrand()
   const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
+  const native = getNativeBridge()
+  const layoutStore = createLayoutStore(native)
+  const draftDigest = `sha256:${'0'.repeat(64)}` as const
+  let recent = $state<readonly RecentWorkspace[]>([])
+  let quickOpenVisible = $state(false)
+  let contextEntryId = $state<string | null>(null)
+  let handledIntent = 0
+  const actions = createWorkspaceActions({
+    native,
+    contracts: [],
+    analyze: async () => ({
+      workflowId: 'unavailable',
+      pairGeneration: 0,
+      definitionRevision: 0,
+      companionRevision: null,
+      contractDigest: draftDigest,
+      issues: [],
+      structurallyValid: false,
+    }),
+    activate: () => undefined,
+    openDraft: (pair) => openDocumentSession(pair, draftDigest),
+    closeDocument: closeDocumentSession,
+    renameDocument: () => undefined,
+    renameLayout: (workspaceId, from, to) => layoutStore.renameWorkflowPath(workspaceId, from, to),
+    recoverDraft: async (pair) => {
+      await native.recoveryWrite({ key: pair.workflowId, content: JSON.stringify(pair) })
+    },
+  })
 
   const editorModes: readonly { id: EditorMode; label: string }[] = [
     { id: 'visual', label: 'Visual' },
@@ -24,9 +63,40 @@
     { id: 'yaml', label: 'YAML' },
   ]
 
-  function runCommand(id: string): void {
-    void executeCommand(id, globalContext)
+  function runCommand(id: string, context: CommandContext = globalContext): void {
+    void executeCommand(id, context)
   }
+
+  async function refreshRecent(): Promise<void> {
+    recent = await actions.recentWorkspaces.list()
+  }
+
+  async function openWorkspace(rootPath?: string): Promise<void> {
+    await actions.openWorkspace(rootPath)
+    await refreshRecent()
+  }
+
+  $effect(() => {
+    const intent = $workspaceIntent
+    if (intent.revision === 0 || intent.revision === handledIntent) return
+    handledIntent = intent.revision
+    if (intent.kind === 'open-folder') void openWorkspace()
+    else if (intent.kind === 'quick-open') quickOpenVisible = true
+  })
+
+  onMount(() => {
+    void refreshRecent()
+    void actions.handleStartupPaths()
+    if (!('__TAURI_INTERNALS__' in window)) return
+    let dispose: (() => void) | undefined
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type !== 'drop') return
+        for (const path of event.payload.paths) void actions.handleExternalPath(path)
+      })
+      .then((unlisten) => (dispose = unlisten))
+    return () => dispose?.()
+  })
 </script>
 
 <svelte:head>
@@ -49,7 +119,7 @@
     <ActivityRail />
     <aside class="panel left-panel" aria-label="Workspace panel">
       {#if $activeActivity === 'explorer' && $workspace.tree.length > 0}
-        <Explorer />
+        <Explorer onContext={(entry) => (contextEntryId = entry.id)} />
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
@@ -65,12 +135,43 @@
           </button>
         {/each}
       </div>
-      <section class="editor-region" aria-label="Workflow editor"></section>
+      <section class="editor-region" aria-label="Workflow editor">
+        {#if $workspace.id === null}
+          <OpenWorkspace {recent} onOpen={openWorkspace} onDropPath={(path) => actions.handleExternalPath(path)} />
+        {/if}
+      </section>
     </section>
     <aside class="panel inspector-panel" aria-label="Inspector"></aside>
   </div>
 
   <StatusBar />
+  {#if quickOpenVisible}
+    <QuickOpen
+      entries={$workspace.entries}
+      onOpen={(entry) => {
+        quickOpenVisible = false
+        selectWorkspaceEntry(entry.id)
+      }}
+      onClose={() => (quickOpenVisible = false)}
+    />
+  {/if}
+  {#if contextEntryId}
+    <div class="context-layer">
+      <WorkflowContextMenu
+        commands={listCommands()}
+        onRun={(id) => {
+          const entry = $workspace.entries.find(({ id }) => id === contextEntryId)
+          contextEntryId = null
+          runCommand(id, {
+            surface: 'global',
+            canMutate: entry?.readOnly === false,
+            hasSelection: Boolean(entry),
+          })
+        }}
+        onClose={() => (contextEntryId = null)}
+      />
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -200,10 +301,19 @@
   }
 
   .editor-region {
+    display: grid;
+    position: relative;
     min-width: 0;
     min-height: 0;
     background-color: var(--color-canvas);
     background-image: radial-gradient(var(--color-grid) 1px, transparent 1px);
     background-size: 1.25rem 1.25rem;
+  }
+
+  .context-layer {
+    position: fixed;
+    z-index: 40;
+    top: 8rem;
+    left: 17rem;
   }
 </style>
