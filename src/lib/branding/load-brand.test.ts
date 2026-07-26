@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { stringify } from 'yaml'
 import { activeBrand, themePreference } from '$src/stores/branding'
-import { applyBrandTheme, loadBrandManifest, loadBundledBrand, REQUIRED_THEME_TOKENS } from './load-brand'
+import {
+  applyBrandTheme,
+  getBundledBrandAssetUrl,
+  loadBrandManifest,
+  loadBundledBrand,
+  REQUIRED_THEME_TOKENS,
+} from './load-brand'
 
 const ALLOWED_COLOR = /^(?:#[\da-f]{3,8}|rgba?\([\d\s.,%/]+\))$/i
 
@@ -35,15 +41,37 @@ describe('LOOP24 bundled brand', () => {
     }
   })
 
-  it.each(['../outside.svg', '/absolute.svg', 'https://example.com/logo.svg'])(
-    'rejects unsafe asset path %s',
-    (path) => {
-      const manifest = structuredClone(loadBundledBrand())
-      manifest.assets.logo = path
+  it('resolves the asset path selected by the validated manifest', () => {
+    const brand = structuredClone(loadBundledBrand())
+    const logoUrl = getBundledBrandAssetUrl(brand, 'logo')
+    brand.assets.mark = brand.assets.logo
 
-      expect(() => loadBrandManifest(stringify(manifest))).toThrow(/asset path/i)
-    },
-  )
+    expect(logoUrl).toEqual(expect.any(String))
+    expect(getBundledBrandAssetUrl(brand, 'mark')).toBe(logoUrl)
+  })
+
+  it('rejects a validated manifest path missing from bundled resources', () => {
+    const brand = structuredClone(loadBundledBrand())
+    brand.assets.mark = 'missing.svg'
+
+    expect(() => getBundledBrandAssetUrl(brand, 'mark')).toThrow(
+      'Bundled brand asset assets.mark (missing.svg) was not found',
+    )
+  })
+
+  it.each([
+    '../outside.svg',
+    '%2e%2e/outside.svg',
+    'assets/%2E%2E/outside.svg',
+    '%2e./outside.svg',
+    '/absolute.svg',
+    'https://example.com/logo.svg',
+  ])('rejects unsafe asset path %s', (path) => {
+    const manifest = structuredClone(loadBundledBrand())
+    manifest.assets.logo = path
+
+    expect(() => loadBrandManifest(stringify(manifest))).toThrow(/asset path/i)
+  })
 
   it('rejects values that could inject CSS instead of a color', () => {
     const brand = loadBundledBrand()

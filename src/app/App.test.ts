@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { afterEach, describe, expect, it } from 'vitest'
+import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import App from './App.svelte'
 
@@ -8,6 +9,9 @@ describe('App', () => {
   afterEach(() => {
     showActivity('explorer')
     showEditorMode('visual')
+    document.documentElement.removeAttribute('data-brand')
+    document.documentElement.removeAttribute('data-theme')
+    document.documentElement.removeAttribute('style')
   })
 
   it('offers a workspace action without requiring Hermes', () => {
@@ -47,5 +51,17 @@ describe('App', () => {
 
     expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('applies the selected light theme across the shell chrome', () => {
+    applyBrandTheme(loadBundledBrand(), 'light')
+    render(App)
+
+    expect(document.documentElement.style.getPropertyValue('--color-yaml-gutter')).toBe('#ECE8D7')
+    expect(document.documentElement.style.getPropertyValue('--color-node-selected')).toBe('#FFF4B8')
+    expect(screen.getByRole('navigation', { name: 'Activities' }).style.backgroundColor).toBe(
+      'var(--color-yaml-gutter)',
+    )
+    expect(screen.getByRole('status').style.backgroundColor).toBe('var(--color-node-selected)')
   })
 })

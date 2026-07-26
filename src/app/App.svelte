@@ -13,7 +13,7 @@
   }
 
   const brand = loadBundledBrand()
-  const brandMarkUrl = getBundledBrandAssetUrl('mark')
+  const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
 
   const editorModes: readonly { id: EditorMode; label: string }[] = [
     { id: 'visual', label: 'Visual' },

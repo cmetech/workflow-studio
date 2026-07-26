@@ -5,10 +5,9 @@ import { THEME_TOKEN_NAMES } from './types'
 
 export const REQUIRED_THEME_TOKENS = THEME_TOKEN_NAMES
 
-const BUNDLED_ASSET_URLS: Readonly<Record<keyof BrandAssets, string>> = {
-  logo: new URL('../../../brands/loop24/logo.svg', import.meta.url).href,
-  mark: new URL('../../../brands/loop24/mark.svg', import.meta.url).href,
-  windowIcon: new URL('../../../brands/loop24/mark.svg', import.meta.url).href,
+const BUNDLED_ASSET_URLS: Readonly<Record<string, string>> = {
+  'logo.svg': new URL('../../../brands/loop24/logo.svg', import.meta.url).href,
+  'mark.svg': new URL('../../../brands/loop24/mark.svg', import.meta.url).href,
 }
 
 const HEX_COLOR = /^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i
@@ -53,10 +52,21 @@ function loadTheme(value: unknown, mode: ThemeMode): ThemeTokens {
 }
 
 function isSafeAssetPath(path: string): boolean {
-  if (/^(?:[a-z][a-z\d+.-]*:|[\\/])/i.test(path) || path.includes('?') || path.includes('#')) {
+  let normalizedPath: string
+  try {
+    normalizedPath = decodeURIComponent(path).replaceAll('\\', '/')
+  } catch {
     return false
   }
-  return !path.split(/[\\/]/).includes('..')
+
+  if (
+    /^(?:[a-z][a-z\d+.-]*:|\/)/i.test(normalizedPath) ||
+    normalizedPath.includes('?') ||
+    normalizedPath.includes('#')
+  ) {
+    return false
+  }
+  return !normalizedPath.split('/').includes('..')
 }
 
 function loadAssets(value: unknown): BrandAssets {
@@ -104,12 +114,23 @@ export function loadBrandManifest(source: string): BrandManifest {
 let bundledBrand: BrandManifest | undefined
 
 export function loadBundledBrand(): BrandManifest {
-  bundledBrand ??= loadBrandManifest(brandManifestText)
+  if (!bundledBrand) {
+    const brand = loadBrandManifest(brandManifestText)
+    for (const asset of ['logo', 'mark', 'windowIcon'] as const) {
+      getBundledBrandAssetUrl(brand, asset)
+    }
+    bundledBrand = brand
+  }
   return bundledBrand
 }
 
-export function getBundledBrandAssetUrl(asset: keyof BrandAssets): string {
-  return BUNDLED_ASSET_URLS[asset]
+export function getBundledBrandAssetUrl(brand: BrandManifest, asset: keyof BrandAssets): string {
+  const path = brand.assets[asset]
+  const url = BUNDLED_ASSET_URLS[path]
+  if (!url) {
+    throw new Error(`Bundled brand asset assets.${asset} (${path}) was not found`)
+  }
+  return url
 }
 
 export function resolveThemeMode(preference: ThemePreference): ThemeMode {

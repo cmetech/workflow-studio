@@ -22,7 +22,7 @@
   }
 </script>
 
-<nav class="activity-rail" aria-label="Activities">
+<nav class="activity-rail" aria-label="Activities" style:background-color="var(--color-yaml-gutter)">
   {#each activities as activity (activity.id)}
     {#if activity.id === 'settings'}
       <span class="spacer" aria-hidden="true"></span>
@@ -48,8 +48,8 @@
     align-items: center;
     min-height: 0;
     padding: 0.5rem 0.375rem;
-    border-right: 1px solid #292e3b;
-    background: #0d0f14;
+    border-right: 1px solid var(--color-border);
+    background: var(--color-yaml-gutter);
   }
 
   button {
@@ -61,23 +61,23 @@
     padding: 0;
     border: 1px solid transparent;
     border-radius: 0.375rem;
-    color: #8a91a3;
+    color: var(--color-text-muted);
     background: transparent;
   }
 
   button:hover {
-    color: #fafafa;
-    background: #151821;
+    color: var(--color-text);
+    background: var(--color-node);
   }
 
   button.active {
-    border-color: #78651e;
-    color: #fad22d;
-    background: #2b260d;
+    border-color: var(--color-edge);
+    color: var(--color-accent);
+    background: var(--color-node-selected);
   }
 
   button:focus-visible {
-    outline: 3px solid #4d97ed;
+    outline: 3px solid var(--color-focus);
     outline-offset: 1px;
   }
 
