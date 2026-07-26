@@ -15,8 +15,11 @@
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
+  import type { LayoutRecordV1 } from '$src/lib/layout/types'
+  import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
   import { $documentSession as documentSessionStore, openDocumentSession } from '$src/stores/documents'
+  import { $activeLayout as activeLayoutStore, setActiveLayout } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
@@ -37,6 +40,8 @@
   import ImportExportDialog from '$src/features/workspace/ImportExportDialog.svelte'
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
+  import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
+  import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
@@ -75,6 +80,10 @@
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
   let exportBlockingIssues = $state<readonly string[]>([])
+  let canvasProjection = $state<WorkflowProjection | null>(null)
+  let canvasWorkflowId = $state<string | null>(null)
+  let canvasStale = $state(false)
+  let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
@@ -133,8 +142,14 @@
     },
     currentDocument: () => documentSessionStore.get().pair,
     flushRecovery: (pair) => documentWorkspace.flushRecovery(pair),
-    closeWorkspace: () => documentWorkspace.closeWorkspace(),
-    closeDocument: (workflowId) => documentWorkspace.close(workflowId),
+    closeWorkspace: async () => {
+      await flushCanvasLayout()
+      await documentWorkspace.closeWorkspace()
+    },
+    closeDocument: async (workflowId) => {
+      await flushCanvasLayout()
+      await documentWorkspace.close(workflowId)
+    },
     renameDocument: (workspaceId, from, to, companionMoved) =>
       documentWorkspace.renameActivePair(workspaceId, from, to, companionMoved),
     companionCreated: (definitionPath, companionPath) =>
@@ -153,6 +168,33 @@
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
+  }
+
+  async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
+    const active = activeLayoutStore.get()
+    const pair = documentSessionStore.get().pair
+    if (
+      active?.workspaceId === next.workspaceId &&
+      active.workflowPath === next.workflowPath &&
+      pair?.definition.path === next.workflowPath
+    ) {
+      setActiveLayout(next)
+    }
+    await layoutStore.saveLayout(
+      next,
+      pair?.definition.path === next.workflowPath && pair.definition.diskHash
+        ? { definition: pair.definition.diskHash, companion: pair.companion?.diskHash ?? null }
+        : undefined,
+    )
+  }
+
+  async function flushCanvasLayout(): Promise<void> {
+    await graphCanvas?.flushPersistence()
+  }
+
+  async function disposeApplicationState(): Promise<void> {
+    await flushCanvasLayout()
+    await documentWorkspace.dispose()
   }
 
   async function refreshRecent(): Promise<void> {
@@ -188,6 +230,7 @@
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
     const requestToken = documentWorkspace.beginActivation()
+    await flushCanvasLayout()
     await contractReadiness
     const contract = await activeContractFor(entry)
     const workspaceId = $workspace.id
@@ -339,19 +382,30 @@
     } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
   })
 
+  $effect(() => {
+    const session = $documentSessionStore
+    const workflowId = session.pair?.workflowId ?? null
+    if (workflowId !== canvasWorkflowId) {
+      canvasWorkflowId = workflowId
+      canvasProjection = null
+    }
+    if (session.analysis?.structurallyValid && isWorkflowProjection(session.analysis.projection)) {
+      canvasProjection = session.analysis.projection
+    }
+    canvasStale = Boolean(
+      session.pair && (!session.analysis?.structurallyValid || !isWorkflowProjection(session.analysis?.projection)),
+    )
+  })
+
   onMount(() => {
     let dispose: (() => void) | undefined
     let disposed = false
     void (async () => {
       const currentWindow = '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null
       if (currentWindow) {
-        const unlistenClose = await installWindowCloseLifecycle(
-          currentWindow,
-          () => documentWorkspace.dispose(),
-          (error) => {
-            workspaceError = error instanceof Error ? error.message : 'The document lifecycle could not be flushed.'
-          },
-        )
+        const unlistenClose = await installWindowCloseLifecycle(currentWindow, disposeApplicationState, (error) => {
+          workspaceError = error instanceof Error ? error.message : 'The document lifecycle could not be flushed.'
+        })
         if (disposed) {
           unlistenClose()
           return
@@ -414,7 +468,7 @@
 
   onDestroy(() => {
     exportConfirmation?.resolve(false)
-    void documentWorkspace.dispose()
+    void disposeApplicationState()
   })
 </script>
 
@@ -502,6 +556,17 @@
             {recent}
             onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
             onDropPath={(path) => runWorkspaceOperation(actions.handleExternalPath(path))}
+          />
+        {:else if canvasProjection && $activeLayoutStore && $activeEditorMode !== 'yaml'}
+          <GraphCanvas
+            bind:this={graphCanvas}
+            projection={canvasProjection}
+            layout={$activeLayoutStore}
+            issues={$documentSessionStore.analysis?.issues ?? []}
+            stale={canvasStale}
+            readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+              ?.readOnly === true}
+            onPersistLayout={persistCanvasLayout}
           />
         {/if}
       </section>

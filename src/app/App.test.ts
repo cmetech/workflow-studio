@@ -1,19 +1,50 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { tick } from 'svelte'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
-import { $documentSession, closeDocumentSession, openDocumentSession } from '$src/stores/documents'
+import {
+  $documentSession,
+  closeDocumentSession,
+  openDocumentSession,
+  receiveDocumentAnalysis,
+} from '$src/stores/documents'
+import { clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import App from './App.svelte'
 
 describe('App', () => {
+  beforeAll(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      },
+    )
+  })
+
   afterEach(() => {
     showActivity('explorer')
     showEditorMode('visual')
     clearWorkspace()
     closeDocumentSession()
+    clearActiveLayout()
     $documentWorkspace.set({
       conflict: null,
       recoveryOffers: [],
@@ -174,6 +205,71 @@ describe('App', () => {
 
     expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('renders the current valid YAML projection in the visual canvas without replacing the document session', () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\ndescription: Test\nnodes:\n  - id: collect\n    command: Gather\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    const revision = $documentSession.get().revision!
+    receiveDocumentAnalysis({
+      ...revision,
+      issues: [],
+      structurallyValid: true,
+      projection: {
+        name: 'Flow',
+        description: 'Test',
+        profile: 'hermes-legacy',
+        nodes: [
+          {
+            id: 'collect',
+            kind: 'command',
+            value: 'Gather',
+            dependsOn: [],
+            options: {},
+            source: { path: '/nodes/0', start: 36, end: 72 },
+          },
+        ],
+        edges: [],
+        definition: { name: 'Flow' },
+        companion: null,
+      },
+    })
+    setActiveLayout({
+      schemaVersion: 1,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      nodePositions: { collect: { x: 20, y: 30 } },
+      viewport: { x: 0, y: 0, zoom: 1 },
+      panels: { left: 280, right: 320, problems: 180 },
+      editorMode: 'visual',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+    })
+    const before = $documentSession.get().pair
+
+    render(App)
+
+    expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeEnabled()
+    expect($documentSession.get().pair).toBe(before)
   })
 
   it('applies the selected light theme across the shell chrome', () => {
