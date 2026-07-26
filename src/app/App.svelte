@@ -1,6 +1,7 @@
 <script lang="ts">
   import { executeCommand } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
+  import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { activeEditorMode } from '$src/stores/shell'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
@@ -10,6 +11,9 @@
     canMutate: false,
     hasSelection: false,
   }
+
+  const brand = loadBundledBrand()
+  const brandMarkUrl = getBundledBrandAssetUrl('mark')
 
   const editorModes: readonly { id: EditorMode; label: string }[] = [
     { id: 'visual', label: 'Visual' },
@@ -23,14 +27,17 @@
 </script>
 
 <svelte:head>
-  <title>Workflow Studio</title>
+  <title>{brand.displayName}</title>
 </svelte:head>
 
 <main class="application-shell">
   <header class="titlebar">
-    <div>
-      <p class="eyebrow">LOOP24</p>
-      <h1>Workflow Studio</h1>
+    <div class="brand-lockup">
+      <img src={brandMarkUrl} alt="LOOP24" />
+      <div class="title-copy">
+        <p class="eyebrow">LOOP24</p>
+        <h1 aria-label={brand.displayName}>Workflow Studio</h1>
+      </div>
     </div>
     <button type="button" class="open-folder" onclick={() => runCommand('workspace.open-folder')}>Open Folder</button>
   </header>
@@ -62,14 +69,16 @@
 <style>
   .application-shell {
     display: grid;
+    gap: 0;
     grid-template-rows: auto minmax(0, 1fr) auto;
     width: 100%;
     max-width: none;
     min-height: 100vh;
+    align-content: stretch;
     padding: 0;
     overflow: hidden;
-    color: #fafafa;
-    background: radial-gradient(circle at 80% 0, #4d97ed18, transparent 35%), #090a0d;
+    color: var(--color-text);
+    background: var(--color-background);
   }
 
   .titlebar {
@@ -78,13 +87,32 @@
     justify-content: space-between;
     min-height: 3rem;
     padding: 0.5rem 0.875rem;
-    border-bottom: 1px solid #292e3b;
-    background: #0d0f14;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-yaml-gutter);
+    box-shadow: 0 0.75rem 2.5rem var(--color-shadow);
+  }
+
+  .brand-lockup {
+    display: flex;
+    gap: 0.625rem;
+    align-items: center;
+  }
+
+  .brand-lockup img {
+    width: 2rem;
+    height: 2rem;
+    object-fit: contain;
+    object-position: left center;
+  }
+
+  .title-copy {
+    padding-left: 0.625rem;
+    border-left: 1px solid var(--color-border);
   }
 
   .eyebrow {
     margin: 0;
-    color: #fad22d;
+    color: var(--color-accent);
     font-size: 0.625rem;
     font-weight: 800;
     letter-spacing: 0.12em;
@@ -106,9 +134,9 @@
 
   .open-folder {
     padding: 0.375rem 0.625rem;
-    border: 1px solid #78651e;
-    color: #ffe463;
-    background: #2b260d;
+    border: 1px solid var(--color-edge);
+    color: var(--color-accent-contrast);
+    background: var(--color-accent);
   }
 
   .workbench {
@@ -119,22 +147,22 @@
 
   .panel {
     min-width: 0;
-    background: #101218;
+    background: var(--color-surface);
   }
 
   .left-panel {
-    border-right: 1px solid #292e3b;
+    border-right: 1px solid var(--color-border);
   }
 
   .inspector-panel {
-    border-left: 1px solid #292e3b;
+    border-left: 1px solid var(--color-border);
   }
 
   .editor-column {
     display: grid;
     grid-template-rows: 2.625rem minmax(0, 1fr);
     min-width: 0;
-    background: #0c0e13;
+    background: var(--color-canvas);
   }
 
   .editor-tabs {
@@ -142,33 +170,33 @@
     gap: 0.1875rem;
     align-items: center;
     padding: 0 0.625rem;
-    border-bottom: 1px solid #292e3b;
-    background: #101218;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
 
   .editor-tabs button {
     padding: 0.25rem 0.625rem;
     border: 1px solid transparent;
-    color: #8a91a3;
+    color: var(--color-text-muted);
     background: transparent;
   }
 
   .editor-tabs button.active {
-    border-color: #78651e;
-    color: #fad22d;
-    background: #2b260d;
+    border-color: var(--color-edge);
+    color: var(--color-accent-strong);
+    background: var(--color-node-selected);
   }
 
   button:focus-visible {
-    outline: 3px solid #4d97ed;
+    outline: 3px solid var(--color-focus);
     outline-offset: 1px;
   }
 
   .editor-region {
     min-width: 0;
     min-height: 0;
-    background-color: #0c0e13;
-    background-image: radial-gradient(#2c3140 1px, transparent 1px);
+    background-color: var(--color-canvas);
+    background-image: radial-gradient(var(--color-grid) 1px, transparent 1px);
     background-size: 1.25rem 1.25rem;
   }
 </style>

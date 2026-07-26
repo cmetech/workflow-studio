@@ -1,0 +1,52 @@
+schemaVersion: 1
+id: loop24
+displayName: LOOP24 Workflow Studio
+assets:
+  logo: logo.svg
+  mark: mark.svg
+  windowIcon: mark.svg
+themes:
+  dark:
+    background: '#090A0D'
+    surface: '#101218'
+    surface-elevated: '#151821'
+    text: '#FAFAFA'
+    text-muted: '#8A91A3'
+    accent: '#FAD22D'
+    accent-strong: '#FFDE5C'
+    accent-contrast: '#0C0C0C'
+    border: '#292E3B'
+    focus: '#4D97ED'
+    success: '#0FC373'
+    warning: '#FF8C0A'
+    error: '#FF3232'
+    canvas: '#090A0D'
+    grid: '#292E3B'
+    node: '#151821'
+    node-selected: '#2B260D'
+    edge: '#6E6144'
+    edge-selected: '#FAD22D'
+    yaml-gutter: '#0D0F14'
+    shadow: '#00000073'
+  light:
+    background: '#F7F5ED'
+    surface: '#FFFFFF'
+    surface-elevated: '#FFF9DB'
+    text: '#1A1A16'
+    text-muted: '#68634F'
+    accent: '#C9A227'
+    accent-strong: '#8A6D1A'
+    accent-contrast: '#0C0C0C'
+    border: '#D7CFAD'
+    focus: '#0F5FBF'
+    success: '#087A49'
+    warning: '#A34E00'
+    error: '#B42318'
+    canvas: '#F3F0E4'
+    grid: '#D7CFAD'
+    node: '#FFFFFF'
+    node-selected: '#FFF4B8'
+    edge: '#796F4E'
+    edge-selected: '#8A6D1A'
+    yaml-gutter: '#ECE8D7'
+    shadow: '#00000026'

@@ -1,0 +1,24 @@
+:root {
+  color-scheme: dark;
+  --color-background: #090a0d;
+  --color-surface: #101218;
+  --color-surface-elevated: #151821;
+  --color-text: #fafafa;
+  --color-text-muted: #8a91a3;
+  --color-accent: #fad22d;
+  --color-accent-strong: #ffde5c;
+  --color-accent-contrast: #0c0c0c;
+  --color-border: #292e3b;
+  --color-focus: #4d97ed;
+  --color-success: #0fc373;
+  --color-warning: #ff8c0a;
+  --color-error: #ff3232;
+  --color-canvas: #090a0d;
+  --color-grid: #292e3b;
+  --color-node: #151821;
+  --color-node-selected: #2b260d;
+  --color-edge: #6e6144;
+  --color-edge-selected: #fad22d;
+  --color-yaml-gutter: #0d0f14;
+  --color-shadow: #00000073;
+}
