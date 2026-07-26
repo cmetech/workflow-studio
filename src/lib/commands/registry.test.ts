@@ -87,6 +87,25 @@ describe('command registry', () => {
     expect(registry.listBindingConflicts()).toEqual([])
   })
 
+  it('ignores duplicate normalized bindings from one command when checking overlapping contexts', () => {
+    const registry = registryWith(
+      command({
+        id: 'workspace.quick-open',
+        label: 'Quick Open',
+        defaultBindings: ['Mod+P', 'mod+p'],
+        enabled: (context) => context.surface === 'global',
+      }),
+      command({
+        id: 'canvas.palette',
+        label: 'Canvas Palette',
+        defaultBindings: ['mod+p'],
+        enabled: (context) => context.surface === 'canvas',
+      }),
+    )
+
+    expect(registry.listBindingConflicts()).toEqual([])
+  })
+
   it('lists commands by category and label in a stable order', () => {
     const registry = registryWith(
       command({ id: 'view.yaml', label: 'YAML', category: 'View' }),

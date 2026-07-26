@@ -39,12 +39,11 @@
     <ActivityRail />
     <aside class="panel left-panel" aria-label="Workspace panel"></aside>
     <section class="editor-column" aria-label="Workflow workspace">
-      <div class="editor-tabs" role="tablist" aria-label="Editor mode">
+      <div class="editor-tabs" role="group" aria-label="Editor mode">
         {#each editorModes as mode (mode.id)}
           <button
             type="button"
-            role="tab"
-            aria-selected={$activeEditorMode === mode.id}
+            aria-pressed={$activeEditorMode === mode.id}
             class:active={$activeEditorMode === mode.id}
             onclick={() => runCommand(`view.editor.${mode.id}`)}
           >

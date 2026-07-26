@@ -33,4 +33,18 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Nodes' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'false')
   })
+
+  it('uses an accessible button group to select the editor mode', async () => {
+    render(App)
+
+    expect(screen.getByRole('group', { name: 'Editor mode' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'YAML' }))
+    await tick()
+
+    expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+  })
 })

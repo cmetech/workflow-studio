@@ -52,7 +52,7 @@ function compareCommands(left: AppCommand, right: AppCommand): number {
 }
 
 function createBindingConflicts(commands: readonly AppCommand[]): readonly BindingConflictDiagnostic[] {
-  const byBinding = new Map<string, AppCommand[]>()
+  const byBinding = new Map<string, Map<string, AppCommand>>()
 
   for (const command of commands) {
     for (const binding of command.defaultBindings) {
@@ -64,17 +64,18 @@ function createBindingConflicts(commands: readonly AppCommand[]): readonly Bindi
 
       const registered = byBinding.get(normalized)
       if (registered) {
-        registered.push(command)
+        registered.set(command.id, command)
       } else {
-        byBinding.set(normalized, [command])
+        byBinding.set(normalized, new Map([[command.id, command]]))
       }
     }
   }
 
   const conflicts: BindingConflictDiagnostic[] = []
 
-  for (const [binding, registered] of byBinding) {
-    const commandIds = [...new Set(registered.map(({ id }) => id))].sort()
+  for (const [binding, commandsById] of byBinding) {
+    const registered = [...commandsById.values()]
+    const commandIds = [...commandsById.keys()].sort()
     const contexts = commandContexts.filter(
       (context) => registered.filter((command) => command.enabled(context)).length > 1,
     )
