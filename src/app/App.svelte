@@ -3,6 +3,9 @@
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { activeEditorMode } from '$src/stores/shell'
+  import { activeActivity } from '$src/stores/shell'
+  import { workspace } from '$src/stores/workspace'
+  import Explorer from '$src/features/workspace/Explorer.svelte'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
 
@@ -44,7 +47,11 @@
 
   <div class="workbench">
     <ActivityRail />
-    <aside class="panel left-panel" aria-label="Workspace panel"></aside>
+    <aside class="panel left-panel" aria-label="Workspace panel">
+      {#if $activeActivity === 'explorer' && $workspace.tree.length > 0}
+        <Explorer />
+      {/if}
+    </aside>
     <section class="editor-column" aria-label="Workflow workspace">
       <div class="editor-tabs" role="group" aria-label="Editor mode">
         {#each editorModes as mode (mode.id)}
