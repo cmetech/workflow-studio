@@ -35,54 +35,23 @@ pub fn validate_relative(relative: &str) -> WorkspaceResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+#[cfg(test)]
 pub fn resolve_existing(root: &Path, relative: &str) -> WorkspaceResult<PathBuf> {
-    let lexical = resolve_existing_lexical(root, relative)?;
-    let resolved = lexical.canonicalize().map_err(|_| {
-        WorkspaceError::new(
-            "path_not_found",
-            "The requested workspace path does not exist.",
-        )
-    })?;
-    ensure_contained(&canonical_root(root)?, &resolved)?;
-    Ok(resolved)
-}
-
-pub fn resolve_existing_lexical(root: &Path, relative: &str) -> WorkspaceResult<PathBuf> {
     let fresh_root = canonical_root(root)?;
-    let relative = validate_relative(relative)?;
-    let candidate = fresh_root.join(relative);
+    let candidate = fresh_root.join(validate_relative(relative)?);
     let resolved = candidate.canonicalize().map_err(|_| {
         WorkspaceError::new(
             "path_not_found",
             "The requested workspace path does not exist.",
         )
     })?;
-    ensure_contained(&fresh_root, &resolved)?;
-    Ok(candidate)
-}
-
-pub fn resolve_destination(root: &Path, relative: &str) -> WorkspaceResult<PathBuf> {
-    let fresh_root = canonical_root(root)?;
-    let relative = validate_relative(relative)?;
-    let candidate = fresh_root.join(&relative);
-
-    if candidate.symlink_metadata().is_ok() {
-        let resolved = candidate.canonicalize().map_err(|_| {
-            WorkspaceError::new(
-                "path_not_found",
-                "The requested workspace path cannot be resolved.",
-            )
-        })?;
-        ensure_contained(&fresh_root, &resolved)?;
-        return Ok(candidate);
+    if !resolved.starts_with(&fresh_root) {
+        return Err(WorkspaceError::new(
+            "path_outside_workspace",
+            "The requested path resolves outside the selected workspace.",
+        ));
     }
-
-    let parent = candidate.parent().ok_or_else(invalid_relative_path)?;
-    let resolved_parent = parent.canonicalize().map_err(|_| {
-        WorkspaceError::new("parent_not_found", "The destination folder does not exist.")
-    })?;
-    ensure_contained(&fresh_root, &resolved_parent)?;
-    Ok(candidate)
+    Ok(resolved)
 }
 
 pub fn normalize_relative(root: &Path, path: &Path) -> Option<String> {
@@ -98,16 +67,6 @@ pub fn normalize_relative(root: &Path, path: &Path) -> Option<String> {
         })
         .collect();
     components.map(|parts| parts.join("/"))
-}
-
-pub(super) fn ensure_contained(root: &Path, resolved: &Path) -> WorkspaceResult<()> {
-    if !resolved.starts_with(root) {
-        return Err(WorkspaceError::new(
-            "path_outside_workspace",
-            "The requested path resolves outside the selected workspace.",
-        ));
-    }
-    Ok(())
 }
 
 fn invalid_relative_path() -> WorkspaceError {

@@ -62,7 +62,7 @@ export interface WorkspaceTrashResult {
 export interface PathOperationResult {
   readonly relativePath: string
   readonly destinationPath?: string
-  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'failed'
+  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'failed' | 'partial'
   readonly errorCode?: string
   readonly message?: string
 }

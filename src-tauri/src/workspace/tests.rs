@@ -212,21 +212,173 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
     let workspace = scope(root.path());
     let before = files::read(&workspace, "nested/flow.yaml", files::MAX_YAML_BYTES).unwrap();
     let parked = root.path().join("parked");
-    assert_code(
-        files::write_with_precommit_hook(
-            &workspace,
-            "nested/flow.yaml",
-            "id: mine\n",
-            Some(&before.sha256),
-            || {
-                fs::rename(root.path().join("nested"), &parked).unwrap();
-                create_dir_symlink(outside.path(), &root.path().join("nested"));
-            },
-        ),
-        "path_outside_workspace",
+    files::write_with_precommit_hook(
+        &workspace,
+        "nested/flow.yaml",
+        "id: mine\n",
+        Some(&before.sha256),
+        || {
+            fs::rename(root.path().join("nested"), &parked).unwrap();
+            create_dir_symlink(outside.path(), &root.path().join("nested"));
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(parked.join("flow.yaml")).unwrap(),
+        "id: mine\n"
     );
     assert_eq!(
         fs::read_to_string(outside.path().join("flow.yaml")).unwrap(),
+        "id: outside\n"
+    );
+}
+
+#[test]
+fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
+    let root = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("nested/flow.yaml"), "id: inside\n").unwrap();
+    fs::write(outside.path().join("flow.yaml"), "id: outside\n").unwrap();
+    let workspace = scope(root.path());
+    let parked = root.path().join("parked");
+
+    let read = files::read_with_bound_hook(&workspace, "nested/flow.yaml", 1024, || {
+        fs::rename(root.path().join("nested"), &parked).unwrap();
+        create_dir_symlink(outside.path(), &root.path().join("nested"));
+    })
+    .unwrap();
+
+    assert_eq!(read.text, "id: inside\n");
+    assert_eq!(
+        fs::read_to_string(outside.path().join("flow.yaml")).unwrap(),
+        "id: outside\n"
+    );
+}
+
+#[test]
+fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
+    let root = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("nested/inside.yaml"), "id: inside\n").unwrap();
+    fs::write(outside.path().join("outside.yaml"), "id: outside\n").unwrap();
+    let workspace = scope(root.path());
+    let parked = root.path().join("parked");
+    let mut swapped = false;
+
+    let entries = files::scan_with_entry_hook(&workspace, |relative| {
+        if relative == "nested" && !swapped {
+            swapped = true;
+            fs::rename(root.path().join("nested"), &parked).unwrap();
+            create_dir_symlink(outside.path(), &root.path().join("nested"));
+        }
+    })
+    .unwrap();
+
+    assert!(swapped);
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.relative_path == "nested/outside.yaml"));
+    assert_eq!(
+        fs::read_to_string(outside.path().join("outside.yaml")).unwrap(),
+        "id: outside\n"
+    );
+}
+
+#[test]
+fn bound_rename_and_trash_ignore_descendant_swaps_after_binding() {
+    let root = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("nested/old.yaml"), "id: inside\n").unwrap();
+    fs::write(outside.path().join("old.yaml"), "id: outside\n").unwrap();
+    let workspace = scope(root.path());
+    let parked = root.path().join("parked");
+
+    files::rename_pair_with_bound_hook(&workspace, "nested/old.yaml", "nested/new.yaml", || {
+        fs::rename(root.path().join("nested"), &parked).unwrap();
+        create_dir_symlink(outside.path(), &root.path().join("nested"));
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(parked.join("new.yaml")).unwrap(),
+        "id: inside\n"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.path().join("old.yaml")).unwrap(),
+        "id: outside\n"
+    );
+
+    fs::remove_file(root.path().join("nested")).unwrap();
+    fs::rename(&parked, root.path().join("nested")).unwrap();
+    let parked = root.path().join("parked-again");
+    let result = files::trash_paths_with_bound_hook(
+        &workspace,
+        &["nested/new.yaml".to_string()],
+        || {
+            fs::rename(root.path().join("nested"), &parked).unwrap();
+            create_dir_symlink(outside.path(), &root.path().join("nested"));
+        },
+        |quarantined| fs::remove_file(quarantined).map_err(|error| error.to_string()),
+    )
+    .unwrap();
+    assert_eq!(result.results[0].status, "trashed");
+    assert_eq!(
+        fs::read_to_string(outside.path().join("old.yaml")).unwrap(),
+        "id: outside\n"
+    );
+}
+
+#[test]
+fn no_clobber_move_preserves_both_unlink_and_cleanup_failures() {
+    let outcome = files::move_noclobber_outcome_for_test(
+        Ok(()),
+        Err("source unlink failed".to_string()),
+        Err("destination cleanup failed".to_string()),
+    );
+
+    assert_eq!(outcome.status, "partial");
+    assert_eq!(
+        outcome.unlink_error.as_deref(),
+        Some("source unlink failed")
+    );
+    assert_eq!(
+        outcome.cleanup_error.as_deref(),
+        Some("destination cleanup failed")
+    );
+}
+
+#[test]
+fn trash_preserves_each_capability_resolver_error_code() {
+    let root = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("outside.yaml"), "id: outside\n").unwrap();
+    create_file_symlink(
+        &outside.path().join("outside.yaml"),
+        &root.path().join("escape.yaml"),
+    );
+    let workspace = scope(root.path());
+
+    let result = files::trash_paths_with(
+        &workspace,
+        &["escape.yaml".to_string(), "missing.yaml".to_string()],
+        |_| panic!("resolver failures must not reach the OS Trash adapter"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "failed");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("path_outside_workspace")
+    );
+    assert_eq!(result.results[1].status, "failed");
+    assert_eq!(
+        result.results[1].error_code.as_deref(),
+        Some("path_not_found")
+    );
+    assert_eq!(
+        fs::read_to_string(outside.path().join("outside.yaml")).unwrap(),
         "id: outside\n"
     );
 }
@@ -405,12 +557,14 @@ fn two_path_trash_reports_each_result_when_the_second_operation_fails() {
     fs::write(root.path().join("flow.yaml"), "id: flow\n").unwrap();
     fs::write(root.path().join("flow.hermes.yaml"), "profile: default\n").unwrap();
     let workspace = scope(root.path());
+    let mut calls = 0;
     let result = files::trash_paths_with(
         &workspace,
         &["flow.yaml".to_string(), "flow.hermes.yaml".to_string()],
         |path| {
-            if path.ends_with("flow.yaml") && !path.ends_with("flow.hermes.yaml") {
-                Ok(())
+            calls += 1;
+            if calls == 1 {
+                fs::remove_file(path).map_err(|error| error.to_string())
             } else {
                 Err("simulated trash failure".to_string())
             }
@@ -453,9 +607,22 @@ fn windows_failed_replace_restores_original_read_only_permissions() {
     permissions.set_readonly(true);
     fs::set_permissions(&target, permissions.clone()).unwrap();
 
-    files::make_windows_target_replaceable(&target, Some(&permissions)).unwrap();
+    let parent =
+        cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority()).unwrap();
+    let permissions = cap_std::fs::Permissions::from_std(permissions);
+    files::make_windows_target_replaceable(
+        &parent,
+        std::ffi::OsStr::new("flow.yaml"),
+        Some(&permissions),
+    )
+    .unwrap();
     assert!(!fs::metadata(&target).unwrap().permissions().readonly());
-    files::restore_windows_permissions_after_failure(&target, Some(&permissions)).unwrap();
+    files::restore_windows_permissions_after_failure(
+        &parent,
+        std::ffi::OsStr::new("flow.yaml"),
+        Some(&permissions),
+    )
+    .unwrap();
 
     assert!(fs::metadata(&target).unwrap().permissions().readonly());
     assert_eq!(fs::read_to_string(&target).unwrap(), "id: before\n");

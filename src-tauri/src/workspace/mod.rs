@@ -5,6 +5,8 @@ mod watcher;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use same_file::Handle;
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -61,6 +63,7 @@ pub struct PathOperationResult {
 pub struct WorkspaceScope {
     root: PathBuf,
     identity: Handle,
+    directory: Dir,
 }
 
 impl WorkspaceScope {
@@ -72,7 +75,17 @@ impl WorkspaceScope {
                 "The selected workspace root is no longer available.",
             )
         })?;
-        Ok(Self { root, identity })
+        let directory = Dir::open_ambient_dir(&root, ambient_authority()).map_err(|error| {
+            WorkspaceError::new(
+                "workspace_root_missing",
+                format!("The selected workspace root could not be opened: {error}"),
+            )
+        })?;
+        Ok(Self {
+            root,
+            identity,
+            directory,
+        })
     }
 
     fn verify(&self) -> WorkspaceResult<&Path> {
@@ -90,6 +103,15 @@ impl WorkspaceScope {
             ));
         }
         Ok(&self.root)
+    }
+
+    fn directory(&self) -> WorkspaceResult<&Dir> {
+        self.verify()?;
+        Ok(&self.directory)
+    }
+
+    fn root_path(&self) -> WorkspaceResult<&Path> {
+        self.verify()
     }
 }
 

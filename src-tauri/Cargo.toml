@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+cap-std = "=3.4.5"
 notify = "8.2.0"
 same-file = "1.0.6"
 serde = { version = "1", features = ["derive"] }

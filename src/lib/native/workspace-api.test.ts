@@ -11,7 +11,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }))
 import { createBrowserBridge } from './browser-bridge'
 import { setNativeBridgeForTest } from './bridge'
 import { tauriBridge } from './tauri-bridge'
-import type { WorkspaceChangedEvent, WorkspaceNativeBridge } from './types'
+import type { PathOperationResult, WorkspaceChangedEvent, WorkspaceNativeBridge } from './types'
 import { watchWorkspaceChanges } from './workspace-api'
 
 beforeEach(() => {
@@ -94,6 +94,17 @@ describe('browser workspace bridge', () => {
 })
 
 describe('Tauri workspace bridge', () => {
+  it('represents a native partial filesystem outcome without collapsing it to failure', () => {
+    const result: PathOperationResult = {
+      relativePath: 'flow.yaml',
+      destinationPath: 'renamed.yaml',
+      status: 'partial',
+      errorCode: 'workspace_rename_partial',
+    }
+
+    expect(result.status).toBe('partial')
+  })
+
   it('uses typed command payloads and maps structured native failures', async () => {
     invoke.mockRejectedValueOnce({
       code: 'external_revision_conflict',
