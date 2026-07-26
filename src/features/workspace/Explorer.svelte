@@ -14,6 +14,8 @@
     readonly entry: WorkspaceTreeEntry
     readonly level: number
     readonly parentId: string | null
+    readonly positionInSet: number
+    readonly setSize: number
   }
 
   let { tree, activeId, onOpen }: Props = $props()
@@ -46,8 +48,8 @@
     parentId: string | null = null,
   ): readonly VisibleTreeRow[] {
     const rows: VisibleTreeRow[] = []
-    for (const entry of entries) {
-      rows.push({ entry, level, parentId })
+    for (const [index, entry] of entries.entries()) {
+      rows.push({ entry, level, parentId, positionInSet: index + 1, setSize: entries.length })
       if (isWorkspaceFolder(entry) && expanded.has(entry.id)) {
         rows.push(...flattenVisibleTree(entry.children, expanded, level + 1, entry.id))
       }
@@ -150,6 +152,8 @@
         role="treeitem"
         aria-label={treeItemLabel(row.entry)}
         aria-level={row.level}
+        aria-posinset={row.positionInSet}
+        aria-setsize={row.setSize}
         aria-selected={row.entry.id === selectedId}
         aria-expanded={isWorkspaceFolder(row.entry) ? expandedIds.has(row.entry.id) : undefined}
         aria-current={row.entry.id === selectedId ? 'page' : undefined}

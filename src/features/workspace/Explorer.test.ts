@@ -99,6 +99,48 @@ describe('Explorer', () => {
     expect(flows).toHaveFocus()
   })
 
+  it('exposes root and nested positions within each sibling group', async () => {
+    render(Explorer, { tree })
+    await tick()
+
+    expect(screen.getByRole('treeitem', { name: 'flows folder' })).toHaveAttribute('aria-posinset', '1')
+    expect(screen.getByRole('treeitem', { name: 'flows folder' })).toHaveAttribute('aria-setsize', '2')
+    expect(screen.getByRole('treeitem', { name: 'Resources folder' })).toHaveAttribute('aria-posinset', '2')
+    expect(screen.getByRole('treeitem', { name: 'Resources folder' })).toHaveAttribute('aria-setsize', '2')
+
+    expect(screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })).toHaveAttribute('aria-posinset', '1')
+    expect(screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })).toHaveAttribute('aria-setsize', '2')
+    expect(screen.getByRole('treeitem', { name: 'legacy.yml, legacy workflow' })).toHaveAttribute('aria-posinset', '2')
+    expect(screen.getByRole('treeitem', { name: 'legacy.yml, legacy workflow' })).toHaveAttribute('aria-setsize', '2')
+    expect(screen.getByRole('treeitem', { name: 'orphan.hermes.yaml, orphan companion, read only' })).toHaveAttribute(
+      'aria-posinset',
+      '1',
+    )
+    expect(screen.getByRole('treeitem', { name: 'orphan.hermes.yaml, orphan companion, read only' })).toHaveAttribute(
+      'aria-setsize',
+      '1',
+    )
+  })
+
+  it('moves from a nested item to the first and last visible tree items with Home and End', async () => {
+    render(Explorer, { tree })
+    await tick()
+
+    const flows = screen.getByRole('treeitem', { name: 'flows folder' })
+    const legacy = screen.getByRole('treeitem', { name: 'legacy.yml, legacy workflow' })
+    const orphan = screen.getByRole('treeitem', {
+      name: 'orphan.hermes.yaml, orphan companion, read only',
+    })
+
+    legacy.focus()
+    await fireEvent.keyDown(legacy, { key: 'Home' })
+    expect(flows).toHaveFocus()
+
+    legacy.focus()
+    await fireEvent.keyDown(legacy, { key: 'End' })
+    expect(orphan).toHaveFocus()
+  })
+
   it('collapses, expands, and moves to the first child with arrow keys', async () => {
     render(Explorer, { tree })
     await tick()
