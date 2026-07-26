@@ -75,6 +75,11 @@ export function receiveDocumentAnalysis(analysis: DocumentAnalysis): void {
   $documentSession.set({ ...current, analysis: accepted.analysis })
 }
 
+export function invalidateDocumentAnalysis(): void {
+  const current = $documentSession.get()
+  if (current.analysis) $documentSession.set({ ...current, analysis: null })
+}
+
 export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDigest: ContractDigest): WorkflowPairText {
   const current = $documentSession.get()
   if (current.pair?.workflowId !== pair.workflowId) return pair

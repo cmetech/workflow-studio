@@ -175,6 +175,22 @@ describe('recovery store', () => {
     expect([...port.records.values()].map(({ key }) => key)).toEqual(['workflow-1'])
   })
 
+  it('flushes for a close attempt without disabling later recovery persistence', async () => {
+    const port = memoryPort()
+    const controller = new RecoveryDraftController(createRecoveryStore(port), () => '2026-07-25T12:00:00.000Z')
+    controller.changed(pair('workflow-1'))
+    const flush = Reflect.get(controller, 'flush')
+    expect(typeof flush).toBe('function')
+    if (typeof flush !== 'function') return
+
+    await flush.call(controller)
+    controller.changed(pair('workflow-2'))
+    await flush.call(controller)
+
+    expect(port.recoveryWrite).toHaveBeenCalledTimes(2)
+    expect([...port.records.values()].map(({ key }) => key).sort()).toEqual(['workflow-1', 'workflow-2'])
+  })
+
   it('does not resurrect a failed older dirty write after a newer clean state is queued', async () => {
     vi.useFakeTimers()
     let rejectWrite: ((error: Error) => void) | undefined

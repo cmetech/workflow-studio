@@ -31,6 +31,7 @@ import {
   openDocumentSession,
   receiveDocumentAnalysis,
   updateDocumentSession,
+  invalidateDocumentAnalysis,
   isDocumentPairDirty,
 } from '$src/stores/documents'
 import { $activeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
@@ -54,10 +55,12 @@ export interface DocumentAnalysisClient {
 
 export interface RecoveryDraftLifecycle {
   changed(pair: WorkflowPairText): void
+  flush?(): Promise<void>
   close(): Promise<void>
 }
 
 export interface LayoutPersistenceLifecycle {
+  flush?(): Promise<void>
   close(): Promise<void>
 }
 
@@ -108,6 +111,9 @@ export class DocumentWorkspaceController {
   private unlisten: UnlistenWorkspace | null = null
   private layoutPersistence: LayoutPersistenceLifecycle | null = null
   private readonly analysisClient: DocumentAnalysisClient
+  private deferredAnalysis: DocumentAnalysis | null = null
+  private deferredAnalysisError: string | null = null
+  private deferredWorkspaceChanges: RereadWorkspaceChange[] = []
   private closeInProgress = false
   private teardownStarted = false
   private teardownComplete = false
@@ -116,10 +122,7 @@ export class DocumentWorkspaceController {
   constructor(private readonly dependencies: DocumentWorkspaceControllerDependencies) {
     this.analysisClient = dependencies.createAnalysisClient(
       (analysis) => this.receiveAnalysis(analysis),
-      (message) => {
-        if (this.publicationSuppressed()) return
-        $documentWorkspace.set({ ...$documentWorkspace.get(), analysisError: message })
-      },
+      (message) => this.receiveAnalysisError(message),
     )
   }
 
@@ -324,6 +327,12 @@ export class DocumentWorkspaceController {
         })
         return
       }
+    }
+    const active = $documentSession.get().pair
+    if (!active || $documentWorkspace.get().missingChange) return
+    if (this.activeContract) this.analysisClient.schedule(active, this.activeContract, 'open')
+    else if ($documentSession.get().revision) {
+      this.publishContractUnavailable(active, $documentSession.get().revision!.contractDigest)
     }
   }
 
@@ -545,26 +554,37 @@ export class DocumentWorkspaceController {
     if (this.disposePromise) return this.disposePromise
     this.closeInProgress = true
     this.activationGeneration += 1
-    const operation = Promise.allSettled([this.dependencies.recoveryDrafts.close(), this.flushActiveLayout()])
-      .then((results) => {
+    const operation = (async () => {
+      try {
+        const results = await Promise.allSettled([this.flushRecoveryForClose(), this.flushLayoutForClose()])
         const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
         if (failure) throw failure.reason
+        await this.finalizeLayoutAfterCloseFlush()
         this.teardownStarted = true
         this.unlisten?.()
         this.unlisten = null
         this.analysisClient.dispose()
         this.teardownComplete = true
-      })
-      .finally(() => {
-        if (!this.teardownComplete) this.closeInProgress = false
-        if (this.disposePromise === operation) this.disposePromise = null
-      })
+        this.clearDeferredPublications()
+      } catch (error: unknown) {
+        this.closeInProgress = false
+        await this.replayDeferredPublications()
+        throw error
+      }
+    })().finally(() => {
+      if (this.disposePromise === operation) this.disposePromise = null
+    })
     this.disposePromise = operation
     return operation
   }
 
   private receiveAnalysis(analysis: DocumentAnalysis): void {
-    if (this.publicationSuppressed()) return
+    if (this.teardownStarted) return
+    if (this.closeInProgress) {
+      this.deferredAnalysis = analysis
+      return
+    }
+    if ($documentWorkspace.get().missingChange) return
     receiveDocumentAnalysis(analysis)
     const session = $documentSession.get()
     const layout = $activeLayout.get()
@@ -575,6 +595,15 @@ export class DocumentWorkspaceController {
       ? { definition: session.pair.definition.diskHash, companion: session.pair.companion?.diskHash ?? null }
       : undefined
     void this.dependencies.layout.saveLayout(reconciled, hashes)
+  }
+
+  private receiveAnalysisError(message: string): void {
+    if (this.teardownStarted) return
+    if (this.closeInProgress) {
+      this.deferredAnalysisError = message
+      return
+    }
+    $documentWorkspace.set({ ...$documentWorkspace.get(), analysisError: message })
   }
 
   private publishContractUnavailable(pair: WorkflowPairText, contractDigest: DocumentAnalysis['contractDigest']): void {
@@ -596,9 +625,17 @@ export class DocumentWorkspaceController {
   }
 
   private async handleWorkspaceChange(change: RereadWorkspaceChange): Promise<void> {
-    if (this.publicationSuppressed()) return
+    if (this.teardownStarted) return
+    if (this.closeInProgress) {
+      this.deferredWorkspaceChanges.push(change)
+      return
+    }
     await this.dependencies.onWorkspaceChanged()
-    if (this.publicationSuppressed()) return
+    if (this.teardownStarted) return
+    if (this.closeInProgress) {
+      this.deferredWorkspaceChanges.push(change)
+      return
+    }
     const contract = this.activeContract
     const revision = $documentSession.get().revision
     let pair = $documentSession.get().pair
@@ -611,6 +648,7 @@ export class DocumentWorkspaceController {
     if (missingPaths.length > 0) {
       pair = invalidateMissingDiskIdentity(pair, missingPaths)
       updateDocumentSession(pair, revision.contractDigest)
+      invalidateDocumentAnalysis()
       this.dependencies.recoveryDrafts.changed(pair)
       const workspaceState = $documentWorkspace.get()
       const priorMissing = workspaceState.missingChange
@@ -775,6 +813,38 @@ export class DocumentWorkspaceController {
     const persistence = this.layoutPersistence
     await persistence?.close()
     if (this.layoutPersistence === persistence) this.layoutPersistence = null
+  }
+
+  private flushRecoveryForClose(): Promise<void> {
+    return this.dependencies.recoveryDrafts.flush?.() ?? this.dependencies.recoveryDrafts.close()
+  }
+
+  private flushLayoutForClose(): Promise<void> {
+    const persistence = this.layoutPersistence
+    return persistence?.flush?.() ?? persistence?.close() ?? Promise.resolve()
+  }
+
+  private async finalizeLayoutAfterCloseFlush(): Promise<void> {
+    const persistence = this.layoutPersistence
+    if (!persistence) return
+    if (persistence.flush) await this.flushActiveLayout()
+    else if (this.layoutPersistence === persistence) this.layoutPersistence = null
+  }
+
+  private async replayDeferredPublications(): Promise<void> {
+    const changes = this.deferredWorkspaceChanges
+    const analysis = this.deferredAnalysis
+    const analysisError = this.deferredAnalysisError
+    this.clearDeferredPublications()
+    for (const change of changes) await this.handleWorkspaceChange(change)
+    if (analysis) this.receiveAnalysis(analysis)
+    if (analysisError) this.receiveAnalysisError(analysisError)
+  }
+
+  private clearDeferredPublications(): void {
+    this.deferredWorkspaceChanges = []
+    this.deferredAnalysis = null
+    this.deferredAnalysisError = null
   }
 
   private publicationSuppressed(): boolean {

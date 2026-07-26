@@ -179,6 +179,23 @@ describe('layout persistence scheduling', () => {
     expect(save).toHaveBeenNthCalledWith(2, latest, 2)
   })
 
+  it('flushes for a close attempt without disabling later layout persistence', async () => {
+    const save = vi.fn<(layout: LayoutRecordV1, sequence: number) => Promise<void>>(async () => undefined)
+    const controller = new LayoutPersistenceController(save)
+    const first = record({ editorMode: 'split' })
+    const second = record({ editorMode: 'yaml' })
+    controller.viewportOrPanelsChanged(first)
+    const flush = Reflect.get(controller, 'flush')
+    expect(typeof flush).toBe('function')
+    if (typeof flush !== 'function') return
+
+    await flush.call(controller)
+    controller.viewportOrPanelsChanged(second)
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(save.mock.calls.map(([layout]) => layout.editorMode)).toEqual(['split', 'yaml'])
+  })
+
   it('clears an earlier queued persistence failure after flushing a later close record', async () => {
     const save = vi
       .fn<(layout: LayoutRecordV1) => Promise<void>>()

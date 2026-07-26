@@ -170,7 +170,9 @@ export class LayoutPersistenceController {
   private flushRequested = false
   private retryFailedRequested = false
   private runner: Promise<void> | null = null
+  private flushPromise: Promise<void> | null = null
   private closePromise: Promise<void> | null = null
+  private flushing = false
   private closing = false
   private closed = false
 
@@ -189,12 +191,26 @@ export class LayoutPersistenceController {
     this.schedule(layout, 500)
   }
 
+  flush(): Promise<void> {
+    if (this.closed) return Promise.resolve()
+    if (this.flushPromise) return this.flushPromise
+    this.flushing = true
+    this.cancelTimer()
+    const operation = this.finishFlush().finally(() => {
+      this.flushing = false
+      if (this.flushPromise === operation) this.flushPromise = null
+    })
+    this.flushPromise = operation
+    return operation
+  }
+
   close(): Promise<void> {
     if (this.closed) return Promise.resolve()
     if (this.closePromise) return this.closePromise
     this.closing = true
     this.cancelTimer()
     this.closePromise = this.finishClose().finally(() => {
+      if (!this.closed) this.closing = false
       this.closePromise = null
     })
     return this.closePromise
@@ -205,7 +221,7 @@ export class LayoutPersistenceController {
     this.sequence += 1
     this.pending = { sequence: this.sequence, layout: cloneLayout(layout) }
     this.cancelTimer()
-    if (this.closing) {
+    if (this.closing || this.flushing) {
       void this.requestFlush(false)
       return
     }
@@ -216,16 +232,17 @@ export class LayoutPersistenceController {
   }
 
   private async finishClose(): Promise<void> {
+    await this.finishFlush()
+    this.closed = true
+    this.closing = false
+  }
+
+  private async finishFlush(): Promise<void> {
     do {
       await this.requestFlush(true)
       await Promise.resolve()
     } while (this.pending !== null || this.runner !== null)
-    if (this.failed) {
-      this.closing = false
-      throw this.failed.error
-    }
-    this.closed = true
-    this.closing = false
+    if (this.failed) throw this.failed.error
   }
 
   private requestFlush(retryFailed: boolean): Promise<void> {

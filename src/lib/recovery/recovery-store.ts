@@ -97,13 +97,17 @@ export class RecoveryDraftController {
     }, RECOVERY_IDLE_MS)
   }
 
-  async close(): Promise<void> {
+  async flush(): Promise<void> {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
     const pending = this.pending
     this.pending = null
     if (pending) this.enqueueSave(pending, this.changeVersion)
     await this.queue
+  }
+
+  close(): Promise<void> {
+    return this.flush()
   }
 
   private cancelTimer(): void {
