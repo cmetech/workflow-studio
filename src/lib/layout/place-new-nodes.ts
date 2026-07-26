@@ -2,7 +2,6 @@ import type { LayoutNodeProjection, LayoutProjection, LayoutRecordV1 } from './t
 
 export const LAYOUT_COLUMN_WIDTH = 320
 export const LAYOUT_ROW_HEIGHT = 160
-export const MAX_LAYOUT_COORDINATE = 1_000_000
 
 interface Position {
   x: number
@@ -65,31 +64,40 @@ export function migrateManualYamlNodeRename(
 }
 
 function placeNode(node: LayoutNodeProjection, positions: ReadonlyMap<string, Position>): Position {
-  const dependencies = node.dependsOn.flatMap((id) => (positions.get(id) ? [positions.get(id)!] : []))
+  const dependencies = node.dependsOn
+    .flatMap((id) => (positions.get(id) ? [{ id, position: positions.get(id)! }] : []))
+    .sort((left, right) => compareText(left.id, right.id))
   const start =
     dependencies.length === 0
       ? { x: 0, y: 0 }
-      : dependencies.reduce((deepest, position) => (position.x > deepest.x ? position : deepest), dependencies[0]!)
+      : dependencies.reduce(
+          (deepest, dependency) => (dependency.position.x > deepest.position.x ? dependency : deepest),
+          dependencies[0]!,
+        ).position
   const x = dependencies.length === 0 ? 0 : nextColumn(start.x)
   let y = dependencies.length === 0 ? 0 : gridRow(start.y)
-  const availableRows = Math.floor((MAX_LAYOUT_COORDINATE * 2) / LAYOUT_ROW_HEIGHT) + 1
-  for (let attempt = 0; attempt < availableRows; attempt += 1) {
+  for (let attempt = 0; attempt <= positions.size; attempt += 1) {
     if (!collides({ x, y }, positions)) return { x, y }
-    y += LAYOUT_ROW_HEIGHT
-    if (y > MAX_LAYOUT_COORDINATE) y = -MAX_LAYOUT_COORDINATE
+    y = nextRow(y)
   }
   return { x, y }
 }
 
 function nextColumn(x: number): number {
-  return Math.min(MAX_LAYOUT_COORDINATE, (Math.floor(x / LAYOUT_COLUMN_WIDTH) + 1) * LAYOUT_COLUMN_WIDTH)
+  const preferred = x + LAYOUT_COLUMN_WIDTH
+  return Number.isFinite(preferred) && preferred > x ? preferred : nextUp(x)
 }
 
 function gridRow(y: number): number {
-  return Math.max(
-    -MAX_LAYOUT_COORDINATE,
-    Math.min(MAX_LAYOUT_COORDINATE, Math.round(y / LAYOUT_ROW_HEIGHT) * LAYOUT_ROW_HEIGHT),
-  )
+  const row = Math.round(y / LAYOUT_ROW_HEIGHT) * LAYOUT_ROW_HEIGHT
+  return Number.isFinite(row) ? row : y
+}
+
+function nextRow(y: number): number {
+  const preferred = y + LAYOUT_ROW_HEIGHT
+  if (Number.isFinite(preferred) && preferred > y) return preferred
+  const above = nextUp(y)
+  return Number.isFinite(above) ? above : nextDown(y)
 }
 
 function collides(candidate: Position, positions: ReadonlyMap<string, Position>): boolean {
@@ -102,11 +110,15 @@ function collides(candidate: Position, positions: ReadonlyMap<string, Position>)
 
 export function validPosition(value: unknown): value is Position {
   if (!isRecord(value)) return false
-  return boundedCoordinate(value.x) && boundedCoordinate(value.y)
+  return rightExtendableFinite(value.x) && finiteNumber(value.y)
 }
 
-function boundedCoordinate(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_LAYOUT_COORDINATE
+function rightExtendableFinite(value: unknown): value is number {
+  return finiteNumber(value) && value < Number.MAX_VALUE
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function sameNodeShapeAfterRename(
@@ -137,6 +149,33 @@ function stableValue(value: unknown): string {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
+}
+
+const floatBuffer = new ArrayBuffer(8)
+const floatView = new DataView(floatBuffer)
+
+function nextUp(value: number): number {
+  if (value === Number.POSITIVE_INFINITY) return value
+  if (Object.is(value, -0) || value === 0) return Number.MIN_VALUE
+  floatView.setFloat64(0, value, false)
+  let high = floatView.getUint32(0, false)
+  let low = floatView.getUint32(4, false)
+  if (value > 0) {
+    if (low === 0xffff_ffff) {
+      high += 1
+      low = 0
+    } else low += 1
+  } else if (low === 0) {
+    high -= 1
+    low = 0xffff_ffff
+  } else low -= 1
+  floatView.setUint32(0, high, false)
+  floatView.setUint32(4, low, false)
+  return floatView.getFloat64(0, false)
+}
+
+function nextDown(value: number): number {
+  return -nextUp(-value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

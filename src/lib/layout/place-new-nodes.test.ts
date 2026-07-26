@@ -51,10 +51,39 @@ describe('layout reconciliation', () => {
     expect(reconciled.nodePositions.publish!.x).toBeGreaterThan(reconciled.nodePositions.package!.x)
   })
 
+  it('uses a stable dependency ID tie-break independent of dependency list order', () => {
+    const saved = {
+      ...baseLayout,
+      nodePositions: { alpha: { x: 640, y: 320 }, zeta: { x: 640, y: 0 } },
+    }
+    const forward = reconcileLayout(
+      projection([{ id: 'alpha' }, { id: 'zeta' }, { id: 'joined', dependsOn: ['zeta', 'alpha'] }]),
+      saved,
+    )
+    const reversed = reconcileLayout(
+      projection([{ id: 'alpha' }, { id: 'zeta' }, { id: 'joined', dependsOn: ['alpha', 'zeta'] }]),
+      saved,
+    )
+
+    expect(forward.nodePositions.joined).toEqual(reversed.nodePositions.joined)
+    expect(forward.nodePositions.joined).toEqual({ x: 960, y: 320 })
+  })
+
+  it('accepts finite negative, non-grid, and prior-boundary positions and always places a child strictly right', () => {
+    for (const x of [-123.5, 42.25, 1_000_000, 2_000_000]) {
+      const saved = { ...baseLayout, nodePositions: { parent: { x, y: -77.25 } } }
+      const reconciled = reconcileLayout(projection([{ id: 'parent' }, { id: 'child', dependsOn: ['parent'] }]), saved)
+
+      expect(reconciled.nodePositions.parent).toEqual({ x, y: -77.25 })
+      expect(Number.isFinite(reconciled.nodePositions.child!.x)).toBe(true)
+      expect(reconciled.nodePositions.child!.x).toBeGreaterThan(x)
+    }
+  })
+
   it('ignores non-finite and out-of-bounds saved positions before deterministic placement', () => {
     const saved = structuredClone(baseLayout)
     saved.nodePositions.build = { x: Number.NaN, y: 1 }
-    saved.nodePositions.lint = { x: 2_000_000, y: 0 }
+    saved.nodePositions.lint = { x: Number.POSITIVE_INFINITY, y: 0 }
 
     const reconciled = reconcileLayout(projection([{ id: 'build' }, { id: 'lint' }]), saved)
 

@@ -59,7 +59,7 @@ describe('layout app-data store', () => {
       nodePositions: {
         build: { x: 0, y: 0 },
         nan: { x: null as unknown as number, y: 4 },
-        huge: { x: 1_000_001, y: 0 },
+        huge: { x: Number.MAX_VALUE, y: 0 },
       },
     })
     const future = { schemaVersion: 2, opaque: { keep: true } }
@@ -154,7 +154,7 @@ describe('layout persistence scheduling', () => {
     await vi.advanceTimersByTimeAsync(299)
     expect(save).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
-    expect(save).toHaveBeenCalledWith(moved)
+    expect(save).toHaveBeenCalledWith(moved, 1)
   })
 
   it('waits 500ms for viewport/panels and close flushes the latest pending record after queued writes', async () => {
@@ -169,17 +169,17 @@ describe('layout persistence scheduling', () => {
 
     controller.viewportOrPanelsChanged(first)
     await vi.advanceTimersByTimeAsync(500)
-    expect(save).toHaveBeenCalledWith(first)
+    expect(save).toHaveBeenCalledWith(first, 1)
     controller.viewportOrPanelsChanged(latest)
     const closing = controller.close()
     expect(save).toHaveBeenCalledTimes(1)
     finishFirst?.()
     await closing
 
-    expect(save).toHaveBeenNthCalledWith(2, latest)
+    expect(save).toHaveBeenNthCalledWith(2, latest, 2)
   })
 
-  it('reports an earlier queued persistence failure after flushing a later close record', async () => {
+  it('clears an earlier queued persistence failure after flushing a later close record', async () => {
     const save = vi
       .fn<(layout: LayoutRecordV1) => Promise<void>>()
       .mockRejectedValueOnce(new Error('disk unavailable'))
@@ -190,7 +190,72 @@ describe('layout persistence scheduling', () => {
     await vi.advanceTimersByTimeAsync(300)
     controller.viewportOrPanelsChanged(record({ editorMode: 'split' }))
 
-    await expect(controller.close()).rejects.toThrow('disk unavailable')
+    await expect(controller.close()).resolves.toBeUndefined()
     expect(save).toHaveBeenCalledTimes(2)
+  })
+
+  it('globally coalesces reversed drag and panel timers to the newest full snapshot', async () => {
+    const save = vi.fn<(layout: LayoutRecordV1, sequence: number) => Promise<void>>(async () => undefined)
+    const controller = new LayoutPersistenceController(save)
+
+    controller.dragCompleted(record({ editorMode: 'visual' }))
+    await vi.advanceTimersByTimeAsync(100)
+    controller.viewportOrPanelsChanged(record({ editorMode: 'yaml' }))
+    await vi.advanceTimersByTimeAsync(300)
+    expect(save).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[0]![0].editorMode).toBe('yaml')
+  })
+
+  it('includes a newer event that arrives while close is flushing an older snapshot', async () => {
+    let finishFirst: (() => void) | undefined
+    const save = vi
+      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirst = resolve)))
+      .mockResolvedValue(undefined)
+    const controller = new LayoutPersistenceController(save)
+    controller.dragCompleted(record({ editorMode: 'visual' }))
+
+    const closing = controller.close()
+    await vi.advanceTimersByTimeAsync(0)
+    controller.viewportOrPanelsChanged(record({ editorMode: 'yaml' }))
+    finishFirst?.()
+    await closing
+
+    expect(save.mock.calls.map(([layout]) => layout.editorMode)).toEqual(['visual', 'yaml'])
+  })
+
+  it('retains the newest failed payload and retries it on close without an unhandled rejection', async () => {
+    const save = vi
+      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue(undefined)
+    const controller = new LayoutPersistenceController(save)
+    const latest = record({ editorMode: 'split' })
+
+    controller.dragCompleted(latest)
+    await vi.advanceTimersByTimeAsync(300)
+    await controller.close()
+
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(save.mock.calls.map(([layout]) => layout.editorMode)).toEqual(['split', 'split'])
+  })
+
+  it('clears an older failure only after a newer full snapshot succeeds', async () => {
+    const save = vi
+      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('old failed'))
+      .mockResolvedValue(undefined)
+    const controller = new LayoutPersistenceController(save)
+
+    controller.dragCompleted(record({ editorMode: 'visual' }))
+    await vi.advanceTimersByTimeAsync(300)
+    controller.viewportOrPanelsChanged(record({ editorMode: 'yaml' }))
+    await vi.advanceTimersByTimeAsync(500)
+
+    await expect(controller.close()).resolves.toBeUndefined()
+    expect(save.mock.calls.map(([layout]) => layout.editorMode)).toEqual(['visual', 'yaml'])
   })
 })

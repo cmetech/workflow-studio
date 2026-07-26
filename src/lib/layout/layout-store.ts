@@ -1,9 +1,10 @@
-import { MAX_LAYOUT_COORDINATE, validPosition } from './place-new-nodes'
+import { validPosition } from './place-new-nodes'
 import type { LayoutContentHashes, LayoutLoadRequest, LayoutRecordV1 } from './types'
 
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 8
 const MAX_PANEL_SIZE = 10_000
+const MAX_VIEWPORT_COORDINATE = 1_000_000
 
 export interface LayoutNativePort {
   layoutLoad(): Promise<string | null>
@@ -161,15 +162,19 @@ interface ScheduledLayout {
 }
 
 export class LayoutPersistenceController {
-  private positionTimer: ReturnType<typeof setTimeout> | undefined
-  private interfaceTimer: ReturnType<typeof setTimeout> | undefined
-  private pendingPosition: ScheduledLayout | null = null
-  private pendingInterface: ScheduledLayout | null = null
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private pending: ScheduledLayout | null = null
+  private failed: { scheduled: ScheduledLayout; error: unknown } | null = null
   private sequence = 0
-  private queue: Promise<void> = Promise.resolve()
-  private failure: unknown = null
+  private successfulSequence = 0
+  private flushRequested = false
+  private retryFailedRequested = false
+  private runner: Promise<void> | null = null
+  private closePromise: Promise<void> | null = null
+  private closing = false
+  private closed = false
 
-  constructor(private readonly persist: (layout: LayoutRecordV1) => Promise<void>) {}
+  constructor(private readonly persist: (layout: LayoutRecordV1, sequence: number) => Promise<void>) {}
 
   pointerMoved(_layout: LayoutRecordV1): void {
     void _layout
@@ -177,55 +182,98 @@ export class LayoutPersistenceController {
   }
 
   dragCompleted(layout: LayoutRecordV1): void {
-    this.pendingPosition = this.scheduled(layout)
-    if (this.positionTimer) clearTimeout(this.positionTimer)
-    this.positionTimer = setTimeout(() => {
-      this.positionTimer = undefined
-      const pending = this.pendingPosition
-      this.pendingPosition = null
-      if (pending) this.enqueue(pending.layout)
-    }, 300)
+    this.schedule(layout, 300)
   }
 
   viewportOrPanelsChanged(layout: LayoutRecordV1): void {
-    this.pendingInterface = this.scheduled(layout)
-    if (this.interfaceTimer) clearTimeout(this.interfaceTimer)
-    this.interfaceTimer = setTimeout(() => {
-      this.interfaceTimer = undefined
-      const pending = this.pendingInterface
-      this.pendingInterface = null
-      if (pending) this.enqueue(pending.layout)
-    }, 500)
+    this.schedule(layout, 500)
   }
 
-  async close(): Promise<void> {
-    if (this.positionTimer) clearTimeout(this.positionTimer)
-    if (this.interfaceTimer) clearTimeout(this.interfaceTimer)
-    this.positionTimer = undefined
-    this.interfaceTimer = undefined
-    const pending = [this.pendingPosition, this.pendingInterface]
-      .filter((value): value is ScheduledLayout => value !== null)
-      .sort((left, right) => right.sequence - left.sequence)[0]
-    this.pendingPosition = null
-    this.pendingInterface = null
-    if (pending) this.enqueue(pending.layout)
-    await this.queue
-    if (this.failure !== null) throw this.failure
-  }
-
-  private scheduled(layout: LayoutRecordV1): ScheduledLayout {
-    this.sequence += 1
-    return { sequence: this.sequence, layout: cloneLayout(layout) }
-  }
-
-  private enqueue(layout: LayoutRecordV1): void {
-    this.queue = this.queue.then(async () => {
-      try {
-        await this.persist(layout)
-      } catch (error: unknown) {
-        if (this.failure === null) this.failure = error
-      }
+  close(): Promise<void> {
+    if (this.closed) return Promise.resolve()
+    if (this.closePromise) return this.closePromise
+    this.closing = true
+    this.cancelTimer()
+    this.closePromise = this.finishClose().finally(() => {
+      this.closePromise = null
     })
+    return this.closePromise
+  }
+
+  private schedule(layout: LayoutRecordV1, delay: number): void {
+    if (this.closed) return
+    this.sequence += 1
+    this.pending = { sequence: this.sequence, layout: cloneLayout(layout) }
+    this.cancelTimer()
+    if (this.closing) {
+      void this.requestFlush(false)
+      return
+    }
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      void this.requestFlush(false)
+    }, delay)
+  }
+
+  private async finishClose(): Promise<void> {
+    do {
+      await this.requestFlush(true)
+      await Promise.resolve()
+    } while (this.pending !== null || this.runner !== null)
+    if (this.failed) {
+      this.closing = false
+      throw this.failed.error
+    }
+    this.closed = true
+    this.closing = false
+  }
+
+  private requestFlush(retryFailed: boolean): Promise<void> {
+    this.flushRequested = true
+    this.retryFailedRequested ||= retryFailed
+    if (!this.runner) {
+      this.runner = this.runFlushes().finally(() => {
+        this.runner = null
+      })
+    }
+    return this.runner
+  }
+
+  private async runFlushes(): Promise<void> {
+    while (this.flushRequested) {
+      this.flushRequested = false
+      const candidate = this.takeCandidate()
+      if (!candidate) continue
+      try {
+        await this.persist(candidate.layout, candidate.sequence)
+        this.successfulSequence = Math.max(this.successfulSequence, candidate.sequence)
+        if (this.failed && this.failed.scheduled.sequence <= this.successfulSequence) this.failed = null
+      } catch (error: unknown) {
+        if (!this.failed || candidate.sequence >= this.failed.scheduled.sequence) {
+          this.failed = { scheduled: candidate, error }
+        }
+      }
+    }
+  }
+
+  private takeCandidate(): ScheduledLayout | null {
+    if (this.pending && this.pending.sequence > this.successfulSequence) {
+      const pending = this.pending
+      this.pending = null
+      this.retryFailedRequested = false
+      return pending
+    }
+    if (this.retryFailedRequested && this.failed) {
+      this.retryFailedRequested = false
+      return this.failed.scheduled
+    }
+    this.retryFailedRequested = false
+    return null
+  }
+
+  private cancelTimer(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
   }
 }
 
@@ -308,7 +356,7 @@ function validPanels(value: unknown): value is { left: number; right: number; pr
 }
 
 function boundedCoordinate(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_LAYOUT_COORDINATE
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_VIEWPORT_COORDINATE
 }
 
 function panelSize(value: unknown): value is number {
