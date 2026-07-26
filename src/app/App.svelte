@@ -517,10 +517,20 @@
           <p class="document-outcome" role="alert">{$documentWorkspaceState.analysisError}</p>
         {/if}
         {#if $documentWorkspaceState.missingChange}
-          <p class="document-outcome" role="alert">
-            {$documentWorkspaceState.missingChange.dirty ? 'Unsaved workflow' : 'Workflow'} file missing after external
-            {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
-          </p>
+          <div class="document-outcome" role="alert">
+            <p>
+              {$documentWorkspaceState.missingChange.dirty ? 'Unsaved workflow' : 'Workflow'} file missing after external
+              {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
+            </p>
+            <div class="missing-actions">
+              <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
+                >Keep Mine / Recreate</button
+              >
+              <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.closeMissing())}
+                >Close and Recover Later</button
+              >
+            </div>
+          </div>
         {/if}
         {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
           <p class="document-outcome" role="alert">

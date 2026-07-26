@@ -82,7 +82,7 @@ export type SaveWorkflowPairResult =
       readonly status: 'blocked'
       readonly pair: WorkflowPairText
       readonly issues: readonly DocumentAnalysis['issues'][number][]
-      readonly reason: 'analysis_missing_or_stale' | 'structurally_invalid'
+      readonly reason: 'analysis_missing_or_stale' | 'structurally_invalid' | 'backing_file_missing'
     }
   | {
       readonly status: 'saved' | 'partial'

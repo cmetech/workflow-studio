@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import {
+  confirmDocumentSaved,
   confirmPairStructureSaved,
   createDocumentRevision,
   removeCompanion,
@@ -23,7 +24,7 @@ import type { RecoveryStore } from '$src/lib/recovery/recovery-store'
 import { createRecoveryDraft } from '$src/lib/recovery/recovery-store'
 import type { RecoveryDraft } from '$src/lib/recovery/types'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
-import { historyStore, migrateHistoryWorkflowIdentity } from '$src/stores/history'
+import { createHistoryState, historyStore, migrateHistoryWorkflowIdentity } from '$src/stores/history'
 import {
   $documentSession,
   closeDocumentSession,
@@ -107,6 +108,7 @@ export class DocumentWorkspaceController {
   private unlisten: UnlistenWorkspace | null = null
   private layoutPersistence: LayoutPersistenceLifecycle | null = null
   private readonly analysisClient: DocumentAnalysisClient
+  private closeInProgress = false
   private teardownStarted = false
   private teardownComplete = false
   private disposePromise: Promise<void> | null = null
@@ -115,14 +117,14 @@ export class DocumentWorkspaceController {
     this.analysisClient = dependencies.createAnalysisClient(
       (analysis) => this.receiveAnalysis(analysis),
       (message) => {
-        if (this.teardownStarted) return
+        if (this.publicationSuppressed()) return
         $documentWorkspace.set({ ...$documentWorkspace.get(), analysisError: message })
       },
     )
   }
 
   beginActivation(): number {
-    if (this.teardownStarted) return this.activationGeneration
+    if (this.publicationSuppressed()) return this.activationGeneration
     return ++this.activationGeneration
   }
 
@@ -140,31 +142,33 @@ export class DocumentWorkspaceController {
     requestToken: number = this.beginActivation(),
   ): Promise<WorkflowPairText | null> {
     const generation = requestToken
-    if (generation !== this.activationGeneration || this.teardownStarted) return null
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
     const [definition, companion] = await Promise.all([
       this.dependencies.read(entry.definitionPath),
       entry.companionPath ? this.dependencies.read(entry.companionPath) : Promise.resolve(null),
     ])
-    if (generation !== this.activationGeneration || this.teardownStarted) return null
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
 
     if ($documentSession.get().pair) await this.dependencies.recoveryDrafts.close()
     await this.flushActiveLayout()
-    if (generation !== this.activationGeneration || this.teardownStarted) return null
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
     const pair = openedPair(entry, definition, companion)
     this.activeContract = contract
     this.activeWorkspaceId = workspaceId
     const contractDigest = contract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
+    historyStore.set(createHistoryState())
     openDocumentSession(pair, contractDigest)
     $documentWorkspace.set({ ...emptyState })
     await this.loadActiveLayout(workspaceId, pair)
     await this.loadRecoveryOffers(pair)
-    if (generation !== this.activationGeneration || this.teardownStarted) return null
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
     if (contract) this.analysisClient.schedule(pair, contract, 'open')
     else this.publishContractUnavailable(pair, contractDigest)
     return pair
   }
 
   changed(pair: WorkflowPairText): void {
+    if (this.publicationSuppressed()) return
     const contract = this.activeContract
     const revision = $documentSession.get().revision
     if (!revision || $documentSession.get().pair?.workflowId !== pair.workflowId) return
@@ -177,16 +181,17 @@ export class DocumentWorkspaceController {
   async openDraft(workspaceId: string, pair: WorkflowPairText, contract: AuthoringContract | null): Promise<void> {
     const generation = this.beginActivation()
     if ($documentSession.get().pair) await this.dependencies.recoveryDrafts.close()
-    if (generation !== this.activationGeneration || this.teardownStarted) return
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     await this.flushActiveLayout()
-    if (generation !== this.activationGeneration || this.teardownStarted) return
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     this.activeContract = contract
     this.activeWorkspaceId = workspaceId
     const contractDigest = contract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
+    historyStore.set(createHistoryState())
     openDocumentSession(pair, contractDigest)
     $documentWorkspace.set({ ...emptyState })
     await this.loadActiveLayout(workspaceId, pair)
-    if (generation !== this.activationGeneration || this.teardownStarted) return
+    if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     this.dependencies.recoveryDrafts.changed(pair)
     if (contract) this.analysisClient.schedule(pair, contract, 'open')
     else this.publishContractUnavailable(pair, contractDigest)
@@ -194,7 +199,30 @@ export class DocumentWorkspaceController {
 
   async save(): Promise<SaveWorkflowPairResult | null> {
     const session = $documentSession.get()
-    if (!session.pair || !this.activeContract) return null
+    if (!session.pair) return null
+    const missingChange = $documentWorkspace.get().missingChange
+    if (missingChange) {
+      const missingPath = missingChange.paths[0] ?? session.pair.definition.path
+      const outcome: SaveWorkflowPairResult = {
+        status: 'blocked',
+        pair: session.pair,
+        issues: [
+          {
+            code: 'backing_file_missing',
+            layer: 'operational',
+            severity: 'error',
+            blocking: true,
+            message: `Backing YAML file is missing: ${missingChange.paths.join(', ')}. Choose Keep Mine / Recreate or Close and Recover Later.`,
+            document: session.pair.companion?.path === missingPath ? 'companion' : 'definition',
+            path: missingPath,
+          },
+        ],
+        reason: 'backing_file_missing',
+      }
+      $documentWorkspace.set({ ...$documentWorkspace.get(), saveOutcome: outcome })
+      return outcome
+    }
+    if (!this.activeContract) return null
     const generation = this.activationGeneration
     const workflowId = session.pair.workflowId
     const definitionPath = session.pair.definition.path
@@ -221,6 +249,89 @@ export class DocumentWorkspaceController {
       this.dependencies.recoveryDrafts.changed(active)
     }
     return outcome
+  }
+
+  async recreateMissing(): Promise<void> {
+    if (this.publicationSuppressed()) return
+    const missingChange = $documentWorkspace.get().missingChange
+    const session = $documentSession.get()
+    if (!missingChange || !session.pair || !session.revision) return
+    const generation = this.activationGeneration
+    const workflowId = session.pair.workflowId
+
+    for (const path of missingChange.paths) {
+      const currentSession = $documentSession.get()
+      const current = currentSession.pair
+      if (
+        this.publicationSuppressed() ||
+        generation !== this.activationGeneration ||
+        !current ||
+        current.workflowId !== workflowId
+      )
+        return
+      const document =
+        current.definition.path === path
+          ? current.definition
+          : current.companion?.path === path
+            ? current.companion
+            : null
+      if (!document) continue
+      try {
+        const written = await this.dependencies.write({
+          relativePath: path,
+          text: document.text,
+          expectedCurrentHash: null,
+        })
+        const active = $documentSession.get().pair
+        if (
+          this.publicationSuppressed() ||
+          generation !== this.activationGeneration ||
+          !active ||
+          !samePairIdentity(active, current)
+        )
+          return
+        const saved = confirmDocumentSaved(active, document.kind, {
+          revision: document.revision,
+          diskHash: written.sha256,
+        })
+        updateDocumentSession(saved, currentSession.revision?.contractDigest ?? session.revision.contractDigest)
+        this.clearMissingPaths([path])
+        this.dependencies.recoveryDrafts.changed(saved)
+      } catch (error: unknown) {
+        let disk: WorkspaceReadResult
+        try {
+          disk = await this.dependencies.read(path)
+        } catch {
+          throw error
+        }
+        const active = $documentSession.get().pair
+        if (
+          this.publicationSuppressed() ||
+          generation !== this.activationGeneration ||
+          !active ||
+          active.workflowId !== workflowId
+        )
+          return
+        $documentWorkspace.set({
+          ...$documentWorkspace.get(),
+          conflict: {
+            pair: active,
+            document: document.kind,
+            disk,
+            choices: ['keep-mine', 'reload-disk', 'compare'],
+            diffViewed: false,
+          },
+        })
+        return
+      }
+    }
+  }
+
+  async closeMissing(): Promise<void> {
+    const pair = $documentSession.get().pair
+    if (!pair || !$documentWorkspace.get().missingChange) return
+    await this.flushRecovery(pair)
+    await this.close(pair.workflowId)
   }
 
   async flushRecovery(pair?: WorkflowPairText): Promise<void> {
@@ -269,7 +380,7 @@ export class DocumentWorkspaceController {
     }
     await this.dependencies.recovery.discard(priorWorkflowId)
 
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
 
     const activeAfterRecovery = $documentSession.get().pair
     if (
@@ -410,7 +521,7 @@ export class DocumentWorkspaceController {
   }
 
   resolveConflict(choice: ExternalChangeChoice): void {
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
     const conflict = $documentWorkspace.get().conflict
     const contract = this.activeContract
     const revision = $documentSession.get().revision
@@ -422,6 +533,7 @@ export class DocumentWorkspaceController {
       return
     }
     updateDocumentSession(result.pair, revision.contractDigest)
+    this.clearMissingPaths([conflict.disk.relativePath])
     this.dependencies.recoveryDrafts.changed(result.pair)
     if (contract) this.analysisClient.schedule(result.pair, contract, 'open')
     else this.publishContractUnavailable(result.pair, revision.contractDigest)
@@ -431,18 +543,20 @@ export class DocumentWorkspaceController {
   dispose(): Promise<void> {
     if (this.teardownComplete) return Promise.resolve()
     if (this.disposePromise) return this.disposePromise
-    if (!this.teardownStarted) {
-      this.teardownStarted = true
-      this.activationGeneration += 1
-      this.unlisten?.()
-      this.unlisten = null
-      this.analysisClient.dispose()
-    }
-    const operation = Promise.all([this.dependencies.recoveryDrafts.close(), this.flushActiveLayout()])
-      .then(() => {
+    this.closeInProgress = true
+    this.activationGeneration += 1
+    const operation = Promise.allSettled([this.dependencies.recoveryDrafts.close(), this.flushActiveLayout()])
+      .then((results) => {
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+        if (failure) throw failure.reason
+        this.teardownStarted = true
+        this.unlisten?.()
+        this.unlisten = null
+        this.analysisClient.dispose()
         this.teardownComplete = true
       })
       .finally(() => {
+        if (!this.teardownComplete) this.closeInProgress = false
         if (this.disposePromise === operation) this.disposePromise = null
       })
     this.disposePromise = operation
@@ -450,7 +564,7 @@ export class DocumentWorkspaceController {
   }
 
   private receiveAnalysis(analysis: DocumentAnalysis): void {
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
     receiveDocumentAnalysis(analysis)
     const session = $documentSession.get()
     const layout = $activeLayout.get()
@@ -464,7 +578,7 @@ export class DocumentWorkspaceController {
   }
 
   private publishContractUnavailable(pair: WorkflowPairText, contractDigest: DocumentAnalysis['contractDigest']): void {
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
     receiveDocumentAnalysis({
       ...createDocumentRevision(pair, contractDigest),
       issues: [
@@ -482,9 +596,9 @@ export class DocumentWorkspaceController {
   }
 
   private async handleWorkspaceChange(change: RereadWorkspaceChange): Promise<void> {
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
     await this.dependencies.onWorkspaceChanged()
-    if (this.teardownStarted) return
+    if (this.publicationSuppressed()) return
     const contract = this.activeContract
     const revision = $documentSession.get().revision
     let pair = $documentSession.get().pair
@@ -495,12 +609,19 @@ export class DocumentWorkspaceController {
     const activePaths = [pair.definition.path, ...(pair.companion ? [pair.companion.path] : [])]
     const missingPaths = activePaths.filter((path) => change.event.paths.includes(path) && !availablePaths.has(path))
     if (missingPaths.length > 0) {
+      pair = invalidateMissingDiskIdentity(pair, missingPaths)
+      updateDocumentSession(pair, revision.contractDigest)
+      this.dependencies.recoveryDrafts.changed(pair)
+      const workspaceState = $documentWorkspace.get()
+      const priorMissing = workspaceState.missingChange
+      const mergedPaths = [...(priorMissing?.paths ?? [])]
+      for (const path of missingPaths) if (!mergedPaths.includes(path)) mergedPaths.push(path)
       $documentWorkspace.set({
-        ...$documentWorkspace.get(),
+        ...workspaceState,
         missingChange: {
-          kind: change.event.kind === 'rename' ? 'rename' : 'remove',
-          paths: missingPaths,
-          dirty: isDocumentPairDirty(pair),
+          kind: priorMissing?.kind === 'rename' || change.event.kind === 'rename' ? 'rename' : 'remove',
+          paths: mergedPaths,
+          dirty: priorMissing?.dirty === true || isDocumentPairDirty(pair),
         },
       })
     }
@@ -572,7 +693,7 @@ export class DocumentWorkspaceController {
     }
     await this.dependencies.recovery.discard(priorWorkflowId)
 
-    if (this.teardownStarted) return true
+    if (this.publicationSuppressed()) return true
 
     const layoutRequest = {
       workspaceId,
@@ -594,7 +715,7 @@ export class DocumentWorkspaceController {
     const loaded = await this.dependencies.layout.loadLayout(layoutRequest)
     const activeAfterLayout = $documentSession.get().pair
     if (
-      this.teardownStarted ||
+      this.publicationSuppressed() ||
       operationGeneration !== this.activationGeneration ||
       !activeAfterLayout ||
       !samePairIdentity(activeAfterLayout, migrated)
@@ -625,7 +746,7 @@ export class DocumentWorkspaceController {
 
   private async loadRecoveryOffers(pair: WorkflowPairText): Promise<void> {
     const drafts = await this.dependencies.recovery.list()
-    if (this.teardownStarted || $documentSession.get().pair?.workflowId !== pair.workflowId) return
+    if (this.publicationSuppressed() || $documentSession.get().pair?.workflowId !== pair.workflowId) return
     const offers = drafts
       .filter((draft) => draft.workflowId === pair.workflowId)
       .filter(
@@ -644,7 +765,7 @@ export class DocumentWorkspaceController {
         ? { savedHashes: { definition: pair.definition.diskHash, companion: pair.companion?.diskHash ?? null } }
         : {}),
     })
-    if (this.teardownStarted || $documentSession.get().pair?.workflowId !== pair.workflowId) return
+    if (this.publicationSuppressed() || $documentSession.get().pair?.workflowId !== pair.workflowId) return
     const layout = loaded ?? defaultLayout(workspaceId, pair.definition.path)
     setActiveLayout(layout)
     this.layoutPersistence = this.dependencies.createLayoutPersistence(layout)
@@ -654,6 +775,10 @@ export class DocumentWorkspaceController {
     const persistence = this.layoutPersistence
     await persistence?.close()
     if (this.layoutPersistence === persistence) this.layoutPersistence = null
+  }
+
+  private publicationSuppressed(): boolean {
+    return this.closeInProgress || this.teardownStarted
   }
 }
 
@@ -710,6 +835,16 @@ function samePairIdentity(left: WorkflowPairText, right: WorkflowPairText): bool
     left.definition.path === right.definition.path &&
     (left.companion?.path ?? null) === (right.companion?.path ?? null)
   )
+}
+
+function invalidateMissingDiskIdentity(pair: WorkflowPairText, paths: readonly string[]): WorkflowPairText {
+  const missing = new Set(paths)
+  return {
+    ...pair,
+    definition: missing.has(pair.definition.path) ? { ...pair.definition, diskHash: null } : pair.definition,
+    companion:
+      pair.companion && missing.has(pair.companion.path) ? { ...pair.companion, diskHash: null } : pair.companion,
+  }
 }
 
 function isLayoutProjection(value: unknown): value is LayoutProjection {

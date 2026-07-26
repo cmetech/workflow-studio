@@ -72,6 +72,7 @@ export class RecoveryDraftController {
   private timer: ReturnType<typeof setTimeout> | undefined
   private pending: WorkflowPairText | null = null
   private queue: Promise<void> = Promise.resolve()
+  private changeVersion = 0
 
   constructor(
     private readonly store: RecoveryStore,
@@ -79,6 +80,7 @@ export class RecoveryDraftController {
   ) {}
 
   changed(pair: WorkflowPairText): void {
+    this.changeVersion += 1
     if (!isDirty(pair)) {
       this.cancelTimer()
       this.pending = null
@@ -91,7 +93,7 @@ export class RecoveryDraftController {
       this.timer = undefined
       const pending = this.pending
       this.pending = null
-      if (pending) this.enqueue(() => this.store.save(createRecoveryDraft(pending, this.now())))
+      if (pending) this.enqueueSave(pending, this.changeVersion)
     }, RECOVERY_IDLE_MS)
   }
 
@@ -100,7 +102,7 @@ export class RecoveryDraftController {
     this.timer = undefined
     const pending = this.pending
     this.pending = null
-    if (pending) this.enqueue(() => this.store.save(createRecoveryDraft(pending, this.now())))
+    if (pending) this.enqueueSave(pending, this.changeVersion)
     await this.queue
   }
 
@@ -113,6 +115,17 @@ export class RecoveryDraftController {
     const next = this.queue.catch(() => undefined).then(operation)
     this.queue = next
     void next.catch(() => undefined)
+  }
+
+  private enqueueSave(pair: WorkflowPairText, changeVersion: number): void {
+    this.enqueue(async () => {
+      try {
+        await this.store.save(createRecoveryDraft(pair, this.now()))
+      } catch (error: unknown) {
+        if (changeVersion === this.changeVersion && !this.pending) this.pending = pair
+        throw error
+      }
+    })
   }
 }
 
@@ -250,8 +263,10 @@ function documentDraft(document: WorkflowPairText['definition']): RecoveryDocume
 function isDirty(pair: WorkflowPairText): boolean {
   return (
     pair.generation !== pair.savedGeneration ||
+    pair.definition.diskHash === null ||
     pair.definition.revision !== pair.definition.savedRevision ||
-    (pair.companion !== null && pair.companion.revision !== pair.companion.savedRevision)
+    (pair.companion !== null &&
+      (pair.companion.diskHash === null || pair.companion.revision !== pair.companion.savedRevision))
   )
 }
 

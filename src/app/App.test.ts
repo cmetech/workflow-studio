@@ -109,6 +109,8 @@ describe('App', () => {
     render(App)
 
     expect(screen.getByText(/unsaved workflow file missing after external remove: flow.yaml/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Keep Mine / Recreate' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Close and Recover Later' })).toBeEnabled()
   })
 
   it('keeps the Explorer header and import affordance visible for an opened empty workspace', () => {

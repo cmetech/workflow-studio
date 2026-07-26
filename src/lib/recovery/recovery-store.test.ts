@@ -162,6 +162,45 @@ describe('recovery store', () => {
     vi.useRealTimers()
   })
 
+  it('retains a dirty draft when close persistence fails so the next close retries the native write', async () => {
+    const port = memoryPort()
+    vi.mocked(port.recoveryWrite).mockRejectedValueOnce(new Error('native recovery write failed'))
+    const controller = new RecoveryDraftController(createRecoveryStore(port), () => '2026-07-25T12:00:00.000Z')
+    controller.changed(pair())
+
+    await expect(controller.close()).rejects.toThrow('native recovery write failed')
+    await expect(controller.close()).resolves.toBeUndefined()
+
+    expect(port.recoveryWrite).toHaveBeenCalledTimes(2)
+    expect([...port.records.values()].map(({ key }) => key)).toEqual(['workflow-1'])
+  })
+
+  it('does not resurrect a failed older dirty write after a newer clean state is queued', async () => {
+    vi.useFakeTimers()
+    let rejectWrite: ((error: Error) => void) | undefined
+    const port = memoryPort()
+    vi.mocked(port.recoveryWrite).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectWrite = reject
+        }),
+    )
+    const controller = new RecoveryDraftController(createRecoveryStore(port))
+    const dirty = pair()
+    const clean = { ...dirty, definition: { ...dirty.definition, savedRevision: dirty.definition.revision } }
+    controller.changed(dirty)
+    await vi.advanceTimersByTimeAsync(750)
+    controller.changed(clean)
+    rejectWrite?.(new Error('obsolete write failed'))
+
+    await expect(controller.close()).resolves.toBeUndefined()
+    await expect(controller.close()).resolves.toBeUndefined()
+
+    expect(port.recoveryWrite).toHaveBeenCalledOnce()
+    expect(port.records.size).toBe(0)
+    vi.useRealTimers()
+  })
+
   it('persists a companion-only structural generation even when both document revisions are clean', async () => {
     vi.useFakeTimers()
     const port = memoryPort()

@@ -5,6 +5,7 @@ import type { WorkspaceReadResult, WorkspaceWriteResult } from '$src/lib/native/
 import type { RereadWorkspaceChange } from '$src/lib/native/workspace-api'
 import { createDocumentRevision } from '$src/lib/documents/revisions'
 import { editDocumentText } from '$src/lib/documents/revisions'
+import { createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
 import { createHistoryState, historyStore, recordTransaction, undoTransaction } from '$src/stores/history'
 import {
@@ -189,6 +190,27 @@ describe('DocumentWorkspaceController', () => {
       paths: ['flow.yaml'],
       dirty: false,
     })
+    expect($documentSession.get().pair?.definition.diskHash).toBeNull()
+  })
+
+  it('blocks Save after a clean active definition is deleted instead of reporting it unchanged', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    const { deps, watcher } = dependencies({
+      createAnalysisClient: vi.fn((onAnalysis) => {
+        publish = onAnalysis
+        return { schedule: vi.fn(), dispose: vi.fn() }
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    publish?.({ ...createDocumentRevision(opened!, digest), issues: [], structurallyValid: true })
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+
+    const outcome = await controller.save()
+
+    expect(outcome).toMatchObject({ status: 'blocked', reason: 'backing_file_missing' })
+    expect(deps.write).not.toHaveBeenCalled()
   })
 
   it('surfaces dirty active content when its backing definition is deleted externally', async () => {
@@ -206,6 +228,157 @@ describe('DocumentWorkspaceController', () => {
       dirty: true,
     })
     expect($documentSession.get().pair?.definition.text).toBe('name: mine\n')
+    expect($documentSession.get().pair?.definition.diskHash).toBeNull()
+  })
+
+  it('recreates missing dirty content with an expected-missing no-clobber write', async () => {
+    const { deps, watcher } = dependencies({
+      write: vi.fn(async ({ relativePath, text }) => ({
+        relativePath,
+        sha256: 'f'.repeat(64),
+        size: text.length,
+        modifiedAt: 'recreated',
+      })),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: mine\n'))
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+    const recreate = Reflect.get(controller, 'recreateMissing')
+    expect(typeof recreate).toBe('function')
+    if (typeof recreate !== 'function') return
+
+    await recreate.call(controller)
+
+    expect(deps.write).toHaveBeenCalledWith({
+      relativePath: 'flow.yaml',
+      text: 'name: mine\n',
+      expectedCurrentHash: null,
+    })
+    expect($documentSession.get().pair?.definition).toMatchObject({
+      text: 'name: mine\n',
+      diskHash: 'f'.repeat(64),
+      savedRevision: 1,
+    })
+    expect($documentWorkspace.get().missingChange).toBeNull()
+  })
+
+  it('surfaces an external conflict when a missing path reappears before recreation commits', async () => {
+    const { deps, watcher } = dependencies({
+      write: vi.fn(async () => {
+        throw Object.assign(new Error('path already exists'), { code: 'external_revision_conflict' })
+      }),
+      read: vi.fn(async (path) => read(path, 'name: reappeared\n')),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: mine\n'))
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+    const recreate = Reflect.get(controller, 'recreateMissing')
+    expect(typeof recreate).toBe('function')
+    if (typeof recreate !== 'function') return
+
+    await recreate.call(controller)
+
+    expect(deps.write).toHaveBeenCalledWith(expect.objectContaining({ expectedCurrentHash: null }))
+    expect($documentWorkspace.get().conflict).toMatchObject({
+      document: 'definition',
+      disk: { relativePath: 'flow.yaml', text: 'name: reappeared\n' },
+    })
+    expect($documentWorkspace.get().missingChange?.paths).toEqual(['flow.yaml'])
+    expect($documentSession.get().pair?.definition.text).toBe('name: mine\n')
+  })
+
+  it('flushes dirty recovery before closing a missing workflow for later recovery', async () => {
+    const order: string[] = []
+    const { deps, watcher } = dependencies({
+      recoveryDrafts: {
+        changed: vi.fn(() => order.push('recovery-changed')),
+        close: vi.fn(async () => {
+          order.push('recovery-close')
+        }),
+      },
+      createLayoutPersistence: vi.fn(() => ({
+        close: vi.fn(async () => {
+          order.push('layout-close')
+        }),
+      })),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: mine\n'))
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+    order.length = 0
+    const closeMissing = Reflect.get(controller, 'closeMissing')
+    expect(typeof closeMissing).toBe('function')
+    if (typeof closeMissing !== 'function') return
+
+    await closeMissing.call(controller)
+
+    expect(order).toEqual(['recovery-changed', 'recovery-close', 'layout-close'])
+    expect($documentSession.get().pair).toBeNull()
+  })
+
+  it('persists clean missing YAML before closing the only remaining in-memory copy', async () => {
+    const recovery = {
+      save: vi.fn(async () => undefined),
+      list: vi.fn(async () => []),
+      discard: vi.fn(async () => undefined),
+    }
+    const recoveryDrafts = new RecoveryDraftController(recovery, () => '2026-07-25T12:00:00.000Z')
+    const { deps, watcher } = dependencies({ recovery, recoveryDrafts })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+
+    await controller.closeMissing()
+
+    expect(recovery.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowId: 'workflow:workspace:flow.yaml',
+        definition: expect.objectContaining({ path: 'flow.yaml', text: 'name: flow.yaml\n', diskHash: null }),
+      }),
+    )
+    expect($documentSession.get().pair).toBeNull()
+  })
+
+  it('merges definition and companion paths removed in separate watcher batches until both are recreated', async () => {
+    const { deps, watcher } = dependencies({
+      write: vi.fn(async ({ relativePath, text }) => ({
+        relativePath,
+        sha256: `${relativePath}-recreated`.padEnd(64, 'f').slice(0, 64),
+        size: text.length,
+        modifiedAt: 'recreated',
+      })),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+    await watcher()?.({ event: { paths: ['flow.hermes.yaml'], kind: 'remove' }, files: [] })
+
+    expect($documentWorkspace.get().missingChange?.paths).toEqual(['flow.yaml', 'flow.hermes.yaml'])
+    await controller.recreateMissing()
+    expect(deps.write).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        relativePath: 'flow.yaml',
+        expectedCurrentHash: null,
+      }),
+    )
+    expect(deps.write).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        relativePath: 'flow.hermes.yaml',
+        expectedCurrentHash: null,
+      }),
+    )
+    expect($documentWorkspace.get().missingChange).toBeNull()
   })
 
   it('clears missing-file state when the active file becomes readable again', async () => {
@@ -324,10 +497,10 @@ describe('DocumentWorkspaceController', () => {
     expect(client.dispose).toHaveBeenCalled()
   })
 
-  it('neutralizes worker callbacks before awaiting asynchronous teardown flushes', async () => {
+  it('suppresses worker callbacks during close persistence but restores them when the close fails', async () => {
     let publish: ((analysis: DocumentAnalysis) => void) | undefined
     let fail: ((message: string) => void) | undefined
-    let releaseFlush: (() => void) | undefined
+    let rejectFlush: ((error: Error) => void) | undefined
     const client = { schedule: vi.fn(), dispose: vi.fn() }
     const { deps } = dependencies({
       createAnalysisClient: vi.fn((onAnalysis, onError) => {
@@ -339,8 +512,8 @@ describe('DocumentWorkspaceController', () => {
         changed: vi.fn(),
         close: vi.fn(
           () =>
-            new Promise<void>((resolve) => {
-              releaseFlush = resolve
+            new Promise<void>((_resolve, reject) => {
+              rejectFlush = reject
             }),
         ),
       },
@@ -348,16 +521,95 @@ describe('DocumentWorkspaceController', () => {
     const controller = new DocumentWorkspaceController(deps)
     const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
     const disposing = controller.dispose()
-    await vi.waitFor(() => expect(releaseFlush).toBeDefined())
+    await vi.waitFor(() => expect(rejectFlush).toBeDefined())
 
-    expect(client.dispose).toHaveBeenCalledOnce()
+    expect(client.dispose).not.toHaveBeenCalled()
     publish?.({ ...createDocumentRevision(opened!, digest), issues: [], structurallyValid: true })
     fail?.('late worker failure')
     expect($documentSession.get().analysis).toBeNull()
     expect($documentWorkspace.get().analysisError).toBeNull()
 
-    releaseFlush?.()
-    await disposing
+    rejectFlush?.(new Error('recovery flush failed'))
+    await expect(disposing).rejects.toThrow('recovery flush failed')
+    publish?.({ ...createDocumentRevision(opened!, digest), issues: [], structurallyValid: true })
+    fail?.('worker resumed')
+    expect($documentSession.get().analysis).not.toBeNull()
+    expect($documentWorkspace.get().analysisError).toBe('worker resumed')
+    expect(client.dispose).not.toHaveBeenCalled()
+  })
+
+  it('keeps production recovery, analysis, and watching usable after native close failure and retries a real write', async () => {
+    const records: { id: string; key: string; content: string; size: number }[] = []
+    let sequence = 0
+    const recoveryNative = {
+      recoveryList: vi.fn(async () => records),
+      recoveryWrite: vi.fn(async ({ key, content }: { key: string; content: string }) => {
+        if (recoveryNative.recoveryWrite.mock.calls.length === 1) throw new Error('native recovery write failed')
+        sequence += 1
+        records.push({ id: `record-${sequence}`, key, content, size: content.length })
+      }),
+      recoveryDelete: vi.fn(async (id: string) => {
+        const index = records.findIndex((record) => record.id === id)
+        if (index >= 0) records.splice(index, 1)
+      }),
+    }
+    const recovery = createRecoveryStore(recoveryNative)
+    const recoveryDrafts = new RecoveryDraftController(recovery, () => '2026-07-25T12:00:00.000Z')
+    const unlisten = vi.fn()
+    let registeredWatcher: ((change: RereadWorkspaceChange) => Promise<void>) | undefined
+    const { deps, client } = dependencies({
+      watch: vi.fn(async (handler) => {
+        registeredWatcher = handler
+        return unlisten
+      }),
+      recovery,
+      recoveryDrafts,
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const first = await controller.activate('workspace', entry('a.yaml'), contract)
+    controller.changed(editDocumentText(first!, 'definition', 'name: dirty a\n'))
+
+    await expect(controller.dispose()).rejects.toThrow('native recovery write failed')
+    expect(client.dispose).not.toHaveBeenCalled()
+    expect(unlisten).not.toHaveBeenCalled()
+
+    await registeredWatcher?.({ event: { paths: ['other.yaml'], kind: 'modify' }, files: [] })
+    expect(deps.onWorkspaceChanged).toHaveBeenCalled()
+    const second = await controller.activate('workspace', entry('b.yaml'), contract)
+    expect(second?.definition.path).toBe('b.yaml')
+    controller.changed(editDocumentText(second!, 'definition', 'name: dirty b\n'))
+    const writesBeforeRetryClose = recoveryNative.recoveryWrite.mock.calls.length
+
+    await expect(controller.dispose()).resolves.toBeUndefined()
+    expect(recoveryNative.recoveryWrite.mock.calls.length).toBe(writesBeforeRetryClose + 1)
+    expect(client.dispose).toHaveBeenCalledOnce()
+    expect(unlisten).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the controller usable and retries the same layout persistence after native close failure', async () => {
+    const closer = {
+      close: vi.fn().mockRejectedValueOnce(new Error('layout flush failed')).mockResolvedValue(undefined),
+    }
+    const unlisten = vi.fn()
+    const { deps, client } = dependencies({
+      watch: vi.fn(async () => unlisten),
+      createLayoutPersistence: vi.fn(() => closer),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+
+    await expect(controller.dispose()).rejects.toThrow('layout flush failed')
+    expect(client.dispose).not.toHaveBeenCalled()
+    expect(unlisten).not.toHaveBeenCalled()
+    controller.changed(editDocumentText(opened!, 'definition', 'name: still usable\n'))
+    expect(client.schedule).toHaveBeenLastCalledWith(expect.anything(), contract, 'edit')
+
+    await expect(controller.dispose()).resolves.toBeUndefined()
+    expect(closer.close).toHaveBeenCalledTimes(2)
+    expect(client.dispose).toHaveBeenCalledOnce()
+    expect(unlisten).toHaveBeenCalledOnce()
   })
 
   it('publishes analysis only when it still matches the active path identity', async () => {
@@ -586,6 +838,54 @@ describe('DocumentWorkspaceController', () => {
 
     const undo = undoTransaction(historyStore.get(), $documentSession.get().pair!)
     expect(undo).toMatchObject({ ok: true, pair: { definition: { text: opened!.definition.text } } })
+  })
+
+  it('binds undo history to each activation so another workflow cannot block undo', async () => {
+    const { deps } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const first = await controller.activate('workspace', entry('a.yaml'), contract)
+    const editedA = editDocumentText(first!, 'definition', 'name: edited a\n')
+    historyStore.set(
+      recordTransaction(createHistoryState(), {
+        mutation: { type: 'replace-document', document: 'definition', text: editedA.definition.text },
+        label: 'Edit A',
+        workflowId: first!.workflowId,
+        pairGeneration: first!.generation,
+        before: { definition: first!.definition.text, companion: null },
+        after: { definition: editedA.definition.text, companion: null },
+        beforeRevisions: { definition: 0, companion: null },
+        afterRevisions: { definition: 1, companion: null },
+        selection: { document: 'definition' },
+      }),
+    )
+    controller.changed(editedA)
+
+    const second = await controller.activate('workspace', entry('b.yaml'), contract)
+    expect(historyStore.get().undo).toEqual([])
+    const editedB = editDocumentText(second!, 'definition', 'name: edited b\n')
+    historyStore.set(
+      recordTransaction(historyStore.get(), {
+        mutation: { type: 'replace-document', document: 'definition', text: editedB.definition.text },
+        label: 'Edit B',
+        workflowId: second!.workflowId,
+        pairGeneration: second!.generation,
+        before: { definition: second!.definition.text, companion: null },
+        after: { definition: editedB.definition.text, companion: null },
+        beforeRevisions: { definition: 0, companion: null },
+        afterRevisions: { definition: 1, companion: null },
+        selection: { document: 'definition' },
+      }),
+    )
+    controller.changed(editedB)
+    const undoB = undoTransaction(historyStore.get(), editedB)
+    expect(undoB).toMatchObject({ ok: true, pair: { definition: { text: second!.definition.text } } })
+    if (undoB.ok) historyStore.set(undoB.history)
+
+    await controller.activate('workspace', entry('a.yaml'), contract)
+    expect(undoTransaction(historyStore.get(), $documentSession.get().pair!)).toMatchObject({
+      ok: false,
+      message: 'There is no transaction to undo.',
+    })
   })
 
   it('updates companion structure on disk actions and invalidates analysis by generation', async () => {
