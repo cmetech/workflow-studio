@@ -1,4 +1,5 @@
 mod commands;
+mod layout;
 mod recovery;
 mod workspace;
 
@@ -6,6 +7,7 @@ mod workspace;
 pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
+        .manage(layout::LayoutState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -16,6 +18,8 @@ pub fn run() {
             workspace::workspace_write,
             workspace::workspace_rename_pair,
             workspace::workspace_trash_paths,
+            layout::layout_load,
+            layout::layout_save,
             recovery::recovery_list,
             recovery::recovery_write,
             recovery::recovery_delete,

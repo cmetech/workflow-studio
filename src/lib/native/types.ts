@@ -86,7 +86,12 @@ export interface NativeBridge {
   hostHealth(): Promise<HostInfo>
 }
 
-export interface WorkspaceNativeBridge extends NativeBridge {
+export interface LayoutNativeBridge extends NativeBridge {
+  layoutLoad(): Promise<string | null>
+  layoutSave(content: string): Promise<void>
+}
+
+export interface WorkspaceNativeBridge extends LayoutNativeBridge {
   workspaceSetRoot(rootPath: string): Promise<WorkspaceRootInfo>
   workspaceScan(): Promise<readonly WorkspaceFileEntry[]>
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>

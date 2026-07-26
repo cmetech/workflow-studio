@@ -69,6 +69,8 @@ export const tauriBridge: WorkspaceNativeBridge = {
   recoveryList: () => invokeTyped<readonly RecoveryBlob[]>('recovery_list'),
   recoveryWrite: (request) => invokeTyped<void>('recovery_write', { ...request }),
   recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),
+  layoutLoad: () => invokeTyped<string | null>('layout_load'),
+  layoutSave: (content) => invokeTyped<void>('layout_save', { content }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

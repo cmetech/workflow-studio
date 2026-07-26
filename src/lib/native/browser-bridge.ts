@@ -26,6 +26,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   const handlers = new Set<WorkspaceChangedHandler>()
   const recovery = new Map<string, { key: string; content: string }>()
   let recoverySequence = 0
+  let layoutContent: string | null = null
   let selectedRoot = '/browser/workspace'
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
@@ -153,6 +154,10 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     },
     recoveryDelete: async (id) => {
       recovery.delete(id)
+    },
+    layoutLoad: async () => layoutContent,
+    layoutSave: async (content) => {
+      layoutContent = content
     },
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)

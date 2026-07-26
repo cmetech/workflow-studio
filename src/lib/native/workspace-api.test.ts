@@ -167,6 +167,16 @@ describe('Tauri workspace bridge', () => {
     })
   })
 
+  it('uses opaque typed app-data layout commands without renderer path arguments', async () => {
+    invoke.mockResolvedValueOnce('[{"schemaVersion":2}]').mockResolvedValueOnce(undefined)
+
+    await expect(tauriBridge.layoutLoad()).resolves.toBe('[{"schemaVersion":2}]')
+    await tauriBridge.layoutSave('[{"schemaVersion":2}]')
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'layout_load', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(2, 'layout_save', { content: '[{"schemaVersion":2}]' })
+  })
+
   it('never infers behavior by parsing native error strings', async () => {
     invoke.mockRejectedValueOnce('external_revision_conflict: misleading text')
 
@@ -212,6 +222,8 @@ describe('workspace change API', () => {
       recoveryList: vi.fn(),
       recoveryWrite: vi.fn(),
       recoveryDelete: vi.fn(),
+      layoutLoad: vi.fn(),
+      layoutSave: vi.fn(),
       onWorkspaceChanged: vi.fn(async (handler) => {
         notify = handler
         return () => undefined
