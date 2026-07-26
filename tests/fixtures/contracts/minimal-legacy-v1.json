@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "contract_reader_version": 1,
+  "profile": "hermes-legacy",
+  "normalizer_version": 1,
+  "contract_digest": "sha256:f81d6ac3e55450516389bf7da7e91a30f4cbb971e0a38e0c3d9ac2f6ab5d1666",
+  "definition_schema": {
+    "type": "object"
+  },
+  "sidecar_schema": {
+    "type": "object"
+  },
+  "node_kinds": [],
+  "semantic_rules": [],
+  "compatibility_codes": {},
+  "documentation": {
+    "topics": [],
+    "examples": []
+  },
+  "limits": {
+    "max_document_bytes": 2097152
+  },
+  "x-workflow-studio-fixture": {
+    "test_fixture": true
+  }
+}

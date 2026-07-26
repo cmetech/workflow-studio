@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "contract_reader_version": 1,
+  "profile": "archon-2026-07",
+  "normalizer_version": 1,
+  "contract_digest": "sha256:c9821f0f3de2c84d2e791c71e84181ea4b5a26bef63d9b53ee7fbbf11f2ec62b",
+  "definition_schema": {
+    "type": "object"
+  },
+  "sidecar_schema": {
+    "type": "object"
+  },
+  "node_kinds": [],
+  "semantic_rules": [],
+  "compatibility_codes": {},
+  "documentation": {
+    "topics": [],
+    "examples": []
+  },
+  "limits": {
+    "max_document_bytes": 2097152
+  },
+  "x-workflow-studio-fixture": {
+    "test_fixture": true
+  }
+}
