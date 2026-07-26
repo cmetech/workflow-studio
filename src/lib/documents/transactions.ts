@@ -6,31 +6,31 @@ import { patchWorkflowDocument, type MutationReference } from '$src/lib/yaml/pat
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 
 export interface TransactionTexts {
-  definition: string
-  companion: string | null
+  readonly definition: string
+  readonly companion: string | null
 }
 
 export interface TransactionRevisions {
-  definition: number
-  companion: number | null
+  readonly definition: number
+  readonly companion: number | null
 }
 
 export interface TransactionSelectionHint {
-  document: 'definition' | 'companion'
-  nodeId?: string
-  path?: readonly (string | number)[]
+  readonly document: 'definition' | 'companion'
+  readonly nodeId?: string
+  readonly path?: readonly (string | number)[]
 }
 
 export interface YamlTransaction {
-  mutation: WorkflowMutation
-  label: string
-  workflowId: string
-  pairGeneration: number
-  before: TransactionTexts
-  after: TransactionTexts
-  beforeRevisions: TransactionRevisions
-  afterRevisions: TransactionRevisions
-  selection: TransactionSelectionHint
+  readonly mutation: WorkflowMutation
+  readonly label: string
+  readonly workflowId: string
+  readonly pairGeneration: number
+  readonly before: TransactionTexts
+  readonly after: TransactionTexts
+  readonly beforeRevisions: TransactionRevisions
+  readonly afterRevisions: TransactionRevisions
+  readonly selection: TransactionSelectionHint
 }
 
 export type ApplyWorkflowMutationResult =
@@ -138,7 +138,7 @@ export async function applyWorkflowMutation(
 }
 
 function requiresStructuralValidation(mutation: WorkflowMutation): boolean {
-  return mutation.type === 'rename-node' || mutation.type === 'set-dependencies' || mutation.type === 'delete-node'
+  return mutation.type !== 'replace-document'
 }
 
 function pairTexts(pair: WorkflowPairText): TransactionTexts {

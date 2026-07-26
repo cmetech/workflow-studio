@@ -7,8 +7,8 @@ const MAX_TRANSACTIONS = 200
 const MAX_TEXT_BYTES = 16 * 1024 * 1024
 
 export interface HistoryState {
-  undo: readonly YamlTransaction[]
-  redo: readonly YamlTransaction[]
+  readonly undo: readonly YamlTransaction[]
+  readonly redo: readonly YamlTransaction[]
 }
 
 export type HistoryOperationResult =
@@ -16,15 +16,15 @@ export type HistoryOperationResult =
   | { ok: false; code: 'history_revision_conflict'; message: string; history: HistoryState }
 
 export function createHistoryState(): HistoryState {
-  return { undo: [], redo: [] }
+  return historyState([], [])
 }
 
 export const historyStore = atom<HistoryState>(createHistoryState())
 
 export function recordTransaction(history: HistoryState, transaction: YamlTransaction): HistoryState {
-  const undo = [...history.undo, transaction]
+  const undo = [...history.undo, snapshotTransaction(transaction)]
   while (undo.length > MAX_TRANSACTIONS || historyBytes(undo) > MAX_TEXT_BYTES) undo.shift()
-  return { undo, redo: [] }
+  return historyState(undo, [])
 }
 
 export function undoTransaction(history: HistoryState, pair: WorkflowPairText): HistoryOperationResult {
@@ -44,7 +44,7 @@ export function undoTransaction(history: HistoryState, pair: WorkflowPairText): 
     ok: true,
     pair: restored,
     transaction,
-    history: { undo: history.undo.slice(0, -1), redo: [...history.redo, redoTransaction] },
+    history: historyState(history.undo.slice(0, -1), [...history.redo, redoTransaction]),
   }
 }
 
@@ -61,7 +61,7 @@ export function redoTransaction(history: HistoryState, pair: WorkflowPairText): 
     ok: true,
     pair: restored,
     transaction,
-    history: { undo: [...history.undo, undoTransaction], redo: history.redo.slice(0, -1) },
+    history: historyState([...history.undo, undoTransaction], history.redo.slice(0, -1)),
   }
 }
 
@@ -103,7 +103,23 @@ function withBoundaries(
   beforeRevisions: TransactionRevisions,
   afterRevisions: TransactionRevisions,
 ): YamlTransaction {
-  return { ...transaction, beforeRevisions, afterRevisions }
+  return snapshotTransaction({ ...transaction, beforeRevisions, afterRevisions })
+}
+
+function snapshotTransaction(transaction: YamlTransaction): YamlTransaction {
+  return deepFreeze(structuredClone(transaction))
+}
+
+function historyState(undo: readonly YamlTransaction[], redo: readonly YamlTransaction[]): HistoryState {
+  return Object.freeze({ undo: Object.freeze([...undo]), redo: Object.freeze([...redo]) })
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const child of Object.values(value)) deepFreeze(child)
+  }
+  return value
 }
 
 function historyBytes(transactions: readonly YamlTransaction[]): number {

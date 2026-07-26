@@ -1,14 +1,4 @@
-import {
-  isAlias,
-  isMap,
-  isScalar,
-  isSeq,
-  stringify,
-  type Document,
-  type Scalar,
-  type YAMLMap,
-  type YAMLSeq,
-} from 'yaml'
+import { isAlias, isMap, isScalar, isSeq, stringify, type Document, type Scalar, YAMLMap, type YAMLSeq } from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { DocumentKind } from '$src/lib/documents/types'
 import { parseWorkflowYaml } from './parse-document'
@@ -71,7 +61,11 @@ export function patchWorkflowDocument(
 
   const document = parsed.parsed.document
   if (mutation.type === 'set-field' || mutation.type === 'delete-field') {
-    if (pathCrossesAlias(document, mutation.path)) return ambiguousAlias()
+    const aliasCrossing = aliasCrossingPath(document, mutation.path)
+    if (aliasCrossing) {
+      if (mutation.type !== 'set-field' || aliasCrossing.relativePath.length === 0) return ambiguousAlias()
+      return patchAliasMappingOverride(source, document, aliasCrossing, mutation.value, contract, documentKind)
+    }
     if (!document.hasIn(mutation.path)) {
       if (mutation.type === 'set-field') {
         const parentPath = mutation.path.slice(0, -1)
@@ -170,6 +164,13 @@ export function patchWorkflowDocument(
     }
     for (const reference of referenceScalarNodes(document, nodes, fields, contract)) {
       const rewritten = rewriteReferences(reference.scalar.value, reference.rule, mutation.from, mutation.to)
+      if (rewritten === null) {
+        return {
+          ok: false,
+          code: 'mutation_contract_invalid',
+          message: `Reference rule "${reference.rule.id}" does not expose a safe node-ID capture span.`,
+        }
+      }
       if (rewritten === reference.scalar.value) continue
       const workingReference = working.getIn(reference.documentPath, true)
       if (isScalar(workingReference)) workingReference.value = rewritten
@@ -183,7 +184,10 @@ export function patchWorkflowDocument(
     if (index === -1) return missingNode(mutation.nodeId)
     if (hasGraphAlias(document, nodes, fields, contract)) return ambiguousAlias()
     const references = referenceScalarNodes(document, nodes, fields, contract)
-      .filter(({ scalar, rule }) => findReferences(scalar.value, rule).includes(mutation.nodeId))
+      .filter(
+        ({ nodeId, scalar, rule }) =>
+          nodeId !== mutation.nodeId && findReferences(scalar.value, rule).includes(mutation.nodeId),
+      )
       .map(({ nodeId, fieldPath, scalar }) => ({ nodeId, fieldPath, value: scalar.value }))
     if (references.length > 0) {
       return {
@@ -202,6 +206,12 @@ export function patchWorkflowDocument(
           (dependency) => !(isScalar(dependency) && dependency.value === mutation.nodeId),
         )
       }
+    }
+    if (nodes.items.length === 1) {
+      const workingNodes = working.getIn(fields.nodesPath, true)
+      if (!isSeq(workingNodes)) return ambiguousAlias()
+      workingNodes.items = []
+      return patchClonedPaths(source, document, working, [fields.nodesPath], contract, 'definition')
     }
     const dependencyEdits = clonedPathEdits(source, document, working, dependencyPaths, contract, 'definition')
     if (!dependencyEdits) return ambiguousAlias()
@@ -365,7 +375,7 @@ function applySourceEdits(source: string, edits: readonly SourceEdit[]): string 
 }
 
 function nodeRange(node: unknown): readonly [number, number, number] | null {
-  if (!isScalar(node) && !isMap(node) && !isSeq(node)) return null
+  if (!isAlias(node) && !isScalar(node) && !isMap(node) && !isSeq(node)) return null
   const range = node.range
   return range && range.length === 3 ? range : null
 }
@@ -503,6 +513,20 @@ function setPreservingScalarStyle(document: Document.Parsed, path: readonly (str
     current.value = value
     return
   }
+  if (isSeq(current) && Array.isArray(value)) {
+    const replacement = document.createNode(value)
+    if (isSeq(replacement)) {
+      current.items = replacement.items
+      return
+    }
+  }
+  if (isMap(current) && isRecord(value)) {
+    const replacement = document.createNode(value)
+    if (isMap(replacement)) {
+      current.items = replacement.items
+      return
+    }
+  }
   document.setIn(path, value)
 }
 
@@ -510,11 +534,60 @@ function isScalarCompatible(value: unknown): value is string | number | boolean 
   return value === null || ['string', 'number', 'boolean'].includes(typeof value)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 function pathCrossesAlias(document: Document.Parsed, path: readonly (string | number)[]): boolean {
+  return aliasCrossingPath(document, path) !== null
+}
+
+interface AliasCrossing {
+  readonly aliasPath: readonly (string | number)[]
+  readonly relativePath: readonly (string | number)[]
+}
+
+function aliasCrossingPath(document: Document.Parsed, path: readonly (string | number)[]): AliasCrossing | null {
   for (let length = 1; length <= path.length; length += 1) {
-    if (isAlias(document.getIn(path.slice(0, length), true))) return true
+    if (isAlias(document.getIn(path.slice(0, length), true))) {
+      return { aliasPath: path.slice(0, length), relativePath: path.slice(length) }
+    }
   }
-  return false
+  return null
+}
+
+function patchAliasMappingOverride(
+  source: string,
+  document: Document.Parsed,
+  crossing: AliasCrossing,
+  value: unknown,
+  contract: AuthoringContract,
+  documentKind: DocumentKind,
+): PatchWorkflowDocumentResult {
+  const working = document.clone() as Document.Parsed
+  const alias = working.getIn(crossing.aliasPath, true)
+  if (!isAlias(alias) || !isMap(alias.resolve(working))) return ambiguousAlias()
+
+  const override = new YAMLMap(working.schema)
+  override.add(working.createPair('<<', alias))
+  override.setIn(crossing.relativePath, value)
+  working.setIn(crossing.aliasPath, override)
+  const edits = clonedPathEdits(source, document, working, [crossing.aliasPath], contract, documentKind)
+  const edit = edits?.[0]
+  if (!edit) return ambiguousAlias()
+  const indentation = `${source.slice(lineStart(source, edit.start), edit.start).match(/^\s*/)?.[0] ?? ''}  `
+  const replacement = reindentCollection(edit.text, indentation)
+  return verifiedPatch(applySourceEdits(source, [{ ...edit, text: `\n${replacement}` }]), contract, documentKind)
+}
+
+function reindentCollection(value: string, indentation: string): string {
+  const lines = value.trimEnd().split('\n')
+  const continuationIndents = lines
+    .slice(1)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.length - line.trimStart().length)
+  const commonIndent = continuationIndents.length > 0 ? Math.min(...continuationIndents) : 0
+  return lines.map((line, index) => `${indentation}${index === 0 ? line : line.slice(commonIndent)}`).join('\n')
 }
 
 interface ReferenceScalar {
@@ -618,19 +691,22 @@ function findReferences(value: string, rule: SemanticRuleDescriptor): string[] {
   return references
 }
 
-function rewriteReferences(value: string, rule: SemanticRuleDescriptor, from: string, to: string): string {
+function rewriteReferences(value: string, rule: SemanticRuleDescriptor, from: string, to: string): string | null {
   const parser = referenceExpression(rule)
-  if (!parser) return value
-  return value.replace(parser.expression, (...args: unknown[]) => {
-    const match = String(args[0])
-    const captures = args.slice(1, -2)
-    const id = captures[parser.captureGroup - 1]
-    if (id !== from) return match
-    const relativeOffset = match.indexOf(from)
-    return relativeOffset === -1
-      ? match
-      : `${match.slice(0, relativeOffset)}${to}${match.slice(relativeOffset + from.length)}`
-  })
+  if (!parser) return null
+  const edits: SourceEdit[] = []
+  parser.expression.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = parser.expression.exec(value)) !== null) {
+    const capturedId = match[parser.captureGroup]
+    const span = match.indices?.[parser.captureGroup]
+    if (typeof capturedId !== 'string' || !span) return null
+    if (capturedId === from) {
+      edits.push({ start: span[0], end: span[1], text: to })
+    }
+    if (match[0].length === 0) parser.expression.lastIndex += 1
+  }
+  return applySourceEdits(value, edits)
 }
 
 function referenceExpression(rule: SemanticRuleDescriptor): { expression: RegExp; captureGroup: number } | null {
@@ -638,14 +714,14 @@ function referenceExpression(rule: SemanticRuleDescriptor): { expression: RegExp
   const captureGroup = typeof capture === 'number' && Number.isInteger(capture) && capture >= 1 ? capture : 1
   if (typeof rule.parameters.pattern === 'string') {
     try {
-      return { expression: new RegExp(rule.parameters.pattern, 'g'), captureGroup }
+      return { expression: new RegExp(rule.parameters.pattern, 'gd'), captureGroup }
     } catch {
       return null
     }
   }
   if (rule.parameters.syntax === '$ID.output(.path)*') {
     return {
-      expression: /\$([A-Za-z_][A-Za-z0-9_-]*)\.output(?:\.[A-Za-z_][A-Za-z0-9_-]*)*/g,
+      expression: new RegExp('\\$([A-Za-z_][A-Za-z0-9_-]*)\\.output(?:\\.[A-Za-z_][A-Za-z0-9_-]*)*', 'gd'),
       captureGroup: 1,
     }
   }

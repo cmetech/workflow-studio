@@ -2,6 +2,7 @@ defaults: &defaults
   timeout: 30
 metadata:
   inherited: *defaults
+  unchanged: *defaults
 nodes:
   - id: prepare
     command: prepare

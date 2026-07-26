@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { parse } from 'yaml'
+import { parse, parseDocument } from 'yaml'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import aliases from '../../../tests/fixtures/yaml/patch-golden/aliases.yaml?raw'
 import ambiguousNodesAlias from '../../../tests/fixtures/yaml/patch-golden/ambiguous-nodes-alias.yaml?raw'
@@ -72,6 +72,11 @@ function expectUntouched(source: string, output: string, slice: string): void {
   expect(output).toContain(slice)
 }
 
+function expectExactPrefixAndSuffix(source: string, output: string, start: number, end: number): void {
+  expect(output.startsWith(source.slice(0, start))).toBe(true)
+  expect(output.endsWith(source.slice(end))).toBe(true)
+}
+
 describe('source-preserving YAML patches', () => {
   it('sets and deletes nested fields while preserving unrelated byte slices', () => {
     const setResult = patchWorkflowDocument(
@@ -86,6 +91,9 @@ describe('source-preserving YAML patches', () => {
     )
     expect(setResult).toMatchObject({ ok: true })
     if (!setResult.ok) return
+
+    const ownerStart = richDefinition.indexOf('old # edited owner')
+    expectExactPrefixAndSuffix(richDefinition, setResult.text, ownerStart, ownerStart + 'old'.length)
 
     expect(parse(setResult.text)).toMatchObject({ metadata: { owner: 'new owner', untouched: 'keep quoted' } })
     expectUntouched(
@@ -109,6 +117,9 @@ describe('source-preserving YAML patches', () => {
     )
     expect(deleteResult).toMatchObject({ ok: true })
     if (!deleteResult.ok) return
+    const ownerLineStart = setResult.text.indexOf('  owner:')
+    const ownerLineEnd = setResult.text.indexOf('\n', ownerLineStart) + 1
+    expectExactPrefixAndSuffix(setResult.text, deleteResult.text, ownerLineStart, ownerLineEnd)
     expect(parse(deleteResult.text).metadata).toEqual({ untouched: 'keep quoted' })
     expectUntouched(setResult.text, deleteResult.text, '  untouched: "keep quoted" # keep this comment\n')
     expectUntouched(setResult.text, deleteResult.text, '# workflow footer\n')
@@ -123,6 +134,10 @@ describe('source-preserving YAML patches', () => {
 
     expect(result).toMatchObject({ ok: true })
     if (!result.ok) return
+    const insertion = richDefinition.indexOf('nodes:')
+    const metadataEnd = richDefinition.indexOf('nodes:')
+    expect(result.text.startsWith(richDefinition.slice(0, insertion))).toBe(true)
+    expect(result.text.endsWith(richDefinition.slice(metadataEnd))).toBe(true)
     expect(parse(result.text).metadata).toMatchObject({ owner: 'old', reviewer: 'Ada' })
     expectUntouched(richDefinition, result.text, '  owner: old # edited owner\n')
     expectUntouched(richDefinition, result.text, '  untouched: "keep quoted" # keep this comment\n')
@@ -192,6 +207,25 @@ describe('source-preserving YAML patches', () => {
     expect(parse(result.text).nodes[0].command).toBe('changed')
     expectUntouched(aliases, result.text, 'defaults: &defaults\n  timeout: 30\n')
     expectUntouched(aliases, result.text, '  inherited: *defaults\n')
+    expectUntouched(aliases, result.text, '  unchanged: *defaults\n')
+  })
+
+  it('creates an explicit local override for an unambiguous alias-derived mapping field', () => {
+    const result = patchWorkflowDocument(
+      aliases,
+      { type: 'set-field', document: 'definition', path: ['metadata', 'inherited', 'timeout'], value: 45 },
+      mutationContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    const aliasStart = aliases.indexOf('*defaults', aliases.indexOf('inherited:'))
+    expectExactPrefixAndSuffix(aliases, result.text, aliasStart, aliasStart + '*defaults'.length)
+    expect(result.text).toContain('    <<: *defaults\n')
+    expect(result.text).toContain('    timeout: 45\n')
+    expect(result.text).toContain('defaults: &defaults\n  timeout: 30\n')
+    expect(result.text).toContain('  unchanged: *defaults\n')
+    expect(parseDocument(result.text, { merge: true }).toJS().metadata.inherited.timeout).toBe(45)
   })
 
   it('refuses graph mutations when the node sequence is alias-derived and ambiguous', () => {
@@ -219,10 +253,47 @@ describe('source-preserving YAML patches', () => {
         )
         expect(result).toMatchObject({ ok: true })
         if (!result.ok) return
+        const start = richDefinition.indexOf('old # edited owner')
+        expectExactPrefixAndSuffix(richDefinition, result.text, start, start + 'old'.length)
         expect(parse(result.text).metadata.owner).toBe(value)
         expectUntouched(richDefinition, result.text, 'settings: {retries: 2, mode: "careful"}\n')
         expectUntouched(richDefinition, result.text, '# workflow footer\n')
       }),
+    )
+  })
+
+  it('round-trips bounded generated node insert/delete mutations exactly', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/), { minLength: 1, maxLength: 12 }),
+        fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/),
+        (ids, candidate) => {
+          fc.pre(!ids.includes(candidate))
+          const source = [
+            'name: Generated',
+            'description: Generated transaction property',
+            'nodes:',
+            ...ids.flatMap((id) => [`  - id: ${id}`, `    command: run ${id}`]),
+            '',
+          ].join('\n')
+          const added = patchWorkflowDocument(
+            source,
+            { type: 'add-node', node: { id: candidate, command: `run ${candidate}` } },
+            mutationContract,
+          )
+          expect(added).toMatchObject({ ok: true })
+          if (!added.ok) return
+          const deleted = patchWorkflowDocument(
+            added.text,
+            { type: 'delete-node', nodeId: candidate },
+            mutationContract,
+          )
+          expect(deleted).toMatchObject({ ok: true })
+          if (!deleted.ok) return
+          expect(deleted.text).toBe(source)
+        },
+      ),
+      { numRuns: 40 },
     )
   })
 })

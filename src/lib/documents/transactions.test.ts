@@ -29,7 +29,29 @@ const mutationContract: AuthoringContract = {
   profile: 'hermes-legacy',
   normalizer_version: 1,
   contract_digest: `sha256:${'4'.repeat(64)}`,
-  definition_schema: { type: 'object' },
+  definition_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      description: { type: 'string' },
+      nodes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            depends_on: { type: 'array', items: { type: 'string' } },
+            command: { type: 'string' },
+            prompt: { type: 'string' },
+          },
+          required: ['id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['name', 'description', 'nodes'],
+    additionalProperties: false,
+  },
   sidecar_schema: { type: 'object' },
   node_kinds: [nodeKind('command', 'nodes[].command'), nodeKind('prompt', 'nodes[].prompt')],
   semantic_rules: [
@@ -161,6 +183,113 @@ describe('workflow YAML transactions', () => {
     }
   })
 
+  it.each([
+    ['add-node', { type: 'add-node', node: { id: 'incomplete' } } as const, 'missing_node_kind'],
+    [
+      'set-field',
+      {
+        type: 'set-field',
+        document: 'definition',
+        path: ['nodes', 1, 'depends_on'],
+        value: ['consume'],
+      } as const,
+      'self_dependency',
+    ],
+    [
+      'delete-field',
+      { type: 'delete-field', document: 'definition', path: ['description'] } as const,
+      'schema_required',
+    ],
+  ])('analyzes %s before committing the semantic mutation', async (_label, mutation, issueCode) => {
+    const result = await applyWorkflowMutation(pair(), mutation, mutationContract)
+
+    expect(result).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    if (!result.ok && result.code === 'mutation_invalid_workflow') {
+      expect(result.issues.map(({ code }) => code)).toContain(issueCode)
+    }
+  })
+
+  it('allows raw replace-document to preserve invalid editor text without semantic analysis', async () => {
+    const text = 'name: [unterminated\n'
+    const result = await applyWorkflowMutation(
+      pair(),
+      { type: 'replace-document', document: 'definition', text },
+      mutationContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (result.ok) expect(result.pair.definition.text).toBe(text)
+  })
+
+  it('ignores recognized references inside the node being deleted because they do not survive', async () => {
+    const source = `name: Self reference cleanup
+description: Delete the only invalid node
+nodes:
+  - id: prepare
+    prompt: "Self $prepare.output"
+`
+    const result = await applyWorkflowMutation(
+      pair(source),
+      { type: 'delete-node', nodeId: 'prepare' },
+      mutationContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (result.ok) expect(result.pair.definition.text).not.toContain('$prepare.output')
+  })
+
+  it('rewrites the declared custom-pattern capture span when earlier match text repeats the node ID', async () => {
+    const patternContract: AuthoringContract = {
+      ...mutationContract,
+      semantic_rules: mutationContract.semantic_rules.map((rule) =>
+        rule.id === 'output-reference-v1'
+          ? {
+              ...rule,
+              parameters: {
+                pattern: '(prepare-prefix:)\\$([A-Za-z_][A-Za-z0-9_-]*)\\.output',
+                node_id_capture_group: 2,
+                require_upstream: true,
+              },
+            }
+          : rule,
+      ),
+    }
+    const source = validSource.replace('Use $prepare.output', 'prepare-prefix:$prepare.output')
+    const result = await applyWorkflowMutation(
+      pair(source),
+      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      patternContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (result.ok) expect(result.pair.definition.text).toContain('prepare-prefix:$setup.output')
+  })
+
+  it('fails safely when a custom reference pattern does not expose its declared capture group', async () => {
+    const invalidCaptureContract: AuthoringContract = {
+      ...mutationContract,
+      semantic_rules: mutationContract.semantic_rules.map((rule) =>
+        rule.id === 'output-reference-v1'
+          ? {
+              ...rule,
+              parameters: {
+                pattern: '\\$([A-Za-z_][A-Za-z0-9_-]*)\\.output',
+                node_id_capture_group: 2,
+                require_upstream: true,
+              },
+            }
+          : rule,
+      ),
+    }
+    const result = await applyWorkflowMutation(
+      pair(),
+      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      invalidCaptureContract,
+    )
+
+    expect(result).toMatchObject({ ok: false, code: 'mutation_contract_invalid' })
+  })
+
   it('supports exact undo/redo, clears redo on a new command, and detects revision conflicts', async () => {
     const first = await applyWorkflowMutation(
       pair(),
@@ -236,5 +365,31 @@ describe('workflow YAML transactions', () => {
       0,
     )
     expect(retainedBytes).toBeLessThanOrEqual(16 * 1024 * 1024)
+  })
+
+  it('clones and deeply freezes history snapshots so caller mutation cannot alter retention accounting', async () => {
+    const template = await applyWorkflowMutation(
+      pair(),
+      { type: 'set-field', document: 'definition', path: ['description'], value: 'Changed' },
+      mutationContract,
+    )
+    expect(template).toMatchObject({ ok: true })
+    if (!template.ok) return
+
+    const callerOwned = structuredClone(template.transaction)
+    const history = recordTransaction(createHistoryState(), callerOwned)
+    const retained = history.undo[0]
+    expect(retained).toBeDefined()
+    if (!retained) return
+
+    ;(callerOwned.before as { definition: string }).definition = 'tampered after record'
+    ;(callerOwned.mutation as unknown as { path: (string | number)[] }).path[0] = 'tampered'
+
+    expect(retained.before.definition).toBe(validSource)
+    expect(retained.mutation).toEqual(template.transaction.mutation)
+    expect(Object.isFrozen(history)).toBe(true)
+    expect(Object.isFrozen(history.undo)).toBe(true)
+    expect(Object.isFrozen(retained)).toBe(true)
+    expect(Object.isFrozen(retained.mutation)).toBe(true)
   })
 })

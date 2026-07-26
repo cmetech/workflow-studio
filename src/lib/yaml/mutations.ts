@@ -1,10 +1,15 @@
 import type { DocumentKind } from '$src/lib/documents/types'
 
 export type WorkflowMutation =
-  | { type: 'set-field'; document: DocumentKind; path: readonly (string | number)[]; value: unknown }
-  | { type: 'delete-field'; document: DocumentKind; path: readonly (string | number)[] }
-  | { type: 'add-node'; node: Record<string, unknown>; afterNodeId?: string }
-  | { type: 'delete-node'; nodeId: string }
-  | { type: 'rename-node'; from: string; to: string }
-  | { type: 'set-dependencies'; nodeId: string; dependsOn: readonly string[] }
-  | { type: 'replace-document'; document: DocumentKind; text: string }
+  | {
+      readonly type: 'set-field'
+      readonly document: DocumentKind
+      readonly path: readonly (string | number)[]
+      readonly value: unknown
+    }
+  | { readonly type: 'delete-field'; readonly document: DocumentKind; readonly path: readonly (string | number)[] }
+  | { readonly type: 'add-node'; readonly node: Readonly<Record<string, unknown>>; readonly afterNodeId?: string }
+  | { readonly type: 'delete-node'; readonly nodeId: string }
+  | { readonly type: 'rename-node'; readonly from: string; readonly to: string }
+  | { readonly type: 'set-dependencies'; readonly nodeId: string; readonly dependsOn: readonly string[] }
+  | { readonly type: 'replace-document'; readonly document: DocumentKind; readonly text: string }
