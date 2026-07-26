@@ -5,10 +5,10 @@ import { THEME_TOKEN_NAMES } from './types'
 
 export const REQUIRED_THEME_TOKENS = THEME_TOKEN_NAMES
 
-const BUNDLED_ASSET_URLS: Readonly<Record<string, string>> = {
-  'logo.svg': new URL('../../../brands/loop24/logo.svg', import.meta.url).href,
-  'mark.svg': new URL('../../../brands/loop24/mark.svg', import.meta.url).href,
-}
+const BUNDLED_ASSET_URLS: ReadonlyMap<string, string> = new Map([
+  ['logo.svg', new URL('../../../brands/loop24/logo.svg', import.meta.url).href],
+  ['mark.svg', new URL('../../../brands/loop24/mark.svg', import.meta.url).href],
+])
 
 const HEX_COLOR = /^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i
 const RGB_COLOR = /^rgba?\(\s*[\d.]+%?\s*[, ]\s*[\d.]+%?\s*[, ]\s*[\d.]+%?(?:\s*[,/]\s*[\d.]+%?)?\s*\)$/i
@@ -126,7 +126,7 @@ export function loadBundledBrand(): BrandManifest {
 
 export function getBundledBrandAssetUrl(brand: BrandManifest, asset: keyof BrandAssets): string {
   const path = brand.assets[asset]
-  const url = BUNDLED_ASSET_URLS[path]
+  const url = BUNDLED_ASSET_URLS.get(path)
   if (!url) {
     throw new Error(`Bundled brand asset assets.${asset} (${path}) was not found`)
   }

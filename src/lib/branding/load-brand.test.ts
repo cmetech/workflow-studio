@@ -59,6 +59,15 @@ describe('LOOP24 bundled brand', () => {
     )
   })
 
+  it.each(['constructor', 'toString', '__proto__'])('rejects inherited object key path %s', (path) => {
+    const brand = structuredClone(loadBundledBrand())
+    brand.assets.mark = path
+
+    expect(() => getBundledBrandAssetUrl(brand, 'mark')).toThrow(
+      `Bundled brand asset assets.mark (${path}) was not found`,
+    )
+  })
+
   it.each([
     '../outside.svg',
     '%2e%2e/outside.svg',
