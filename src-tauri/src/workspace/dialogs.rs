@@ -1,20 +1,41 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
 use same_file::Handle;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-use super::{files, WorkspaceError, WorkspaceResult};
+use super::{files, PathOperationResult, WorkspaceError, WorkspaceResult};
+
+static NEXT_EXPORT_TEMP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 pub struct DialogGrantState {
-    imports: Mutex<HashSet<PathBuf>>,
-    exports: Mutex<HashSet<PathBuf>>,
+    imports: Mutex<HashMap<PathBuf, GrantedImport>>,
+    exports: Mutex<HashMap<PathBuf, GrantedExport>>,
+}
+
+struct GrantedImport {
+    path: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: Handle,
+    file_identity: Handle,
+    file: File,
+}
+
+struct GrantedExport {
+    path: PathBuf,
+    identity: Handle,
+    directory: Dir,
+    pending_collision: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +54,7 @@ pub struct ExportYamlFile {
 #[derive(Debug, Serialize)]
 pub struct ExternalExportResult {
     paths: Vec<String>,
+    results: Vec<PathOperationResult>,
 }
 
 #[tauri::command]
@@ -73,11 +95,7 @@ pub fn dialog_choose_export_directory(
         return Ok(None);
     };
     let canonical = canonical_directory(&path.into_path().map_err(|_| invalid_dialog_path())?)?;
-    grants
-        .exports
-        .lock()
-        .map_err(|_| grant_state_error())?
-        .insert(canonical.clone());
+    grant_export_directory(&canonical, &grants)?;
     unicode(&canonical).map(Some)
 }
 
@@ -108,16 +126,74 @@ fn chosen_directory(app: &AppHandle) -> WorkspaceResult<Option<String>> {
 }
 
 fn grant_import_pair(path: &Path, grants: &DialogGrantState) -> WorkspaceResult<PathBuf> {
-    let canonical = canonical_yaml_file(path)?;
-    let mut permitted = grants.imports.lock().map_err(|_| grant_state_error())?;
-    permitted.insert(canonical.clone());
+    let definition = bind_import_file(path)?;
+    let canonical = definition.path.clone();
+    let parent_path = definition.parent_path.clone();
+    let mut companion_grant = None;
     if !is_companion(&canonical) {
         let companion = companion_for(&canonical);
-        if companion.is_file() {
-            permitted.insert(canonical_yaml_file(&companion)?);
+        match fs::symlink_metadata(&companion) {
+            Ok(_) => {
+                let bound = bind_import_file(&companion)?;
+                if bound.parent_path != parent_path
+                    || bound.parent_identity != definition.parent_identity
+                {
+                    return Err(WorkspaceError::new(
+                        "external_parent_changed",
+                        "The definition and companion must remain in the same selected directory.",
+                    ));
+                }
+                companion_grant = Some(bound);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error("external_read_failed", error)),
         }
     }
+    let mut permitted = grants.imports.lock().map_err(|_| grant_state_error())?;
+    permitted.insert(canonical.clone(), definition);
+    if let Some(bound) = companion_grant {
+        permitted.insert(bound.path.clone(), bound);
+    }
     Ok(canonical)
+}
+
+fn bind_import_file(path: &Path) -> WorkspaceResult<GrantedImport> {
+    require_yaml(path)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| path_not_found())?;
+    if metadata.file_type().is_symlink() {
+        return Err(WorkspaceError::new(
+            "external_symlink_rejected",
+            "Selected import files must not be symbolic links.",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(path_not_found());
+    }
+    let canonical = path.canonicalize().map_err(|_| path_not_found())?;
+    let parent_path = canonical.parent().ok_or_else(path_not_found)?.to_path_buf();
+    let parent_identity =
+        Handle::from_path(&parent_path).map_err(|error| io_error("external_read_failed", error))?;
+    let file = File::open(&canonical).map_err(|error| io_error("external_read_failed", error))?;
+    let file_identity = Handle::from_file(
+        file.try_clone()
+            .map_err(|error| io_error("external_read_failed", error))?,
+    )
+    .map_err(|error| io_error("external_read_failed", error))?;
+    let named_identity =
+        Handle::from_path(&canonical).map_err(|error| io_error("external_read_failed", error))?;
+    if file_identity != named_identity {
+        return Err(WorkspaceError::new(
+            "external_path_changed",
+            "The selected import file changed while permission was granted.",
+        ));
+    }
+    Ok(GrantedImport {
+        path: canonical,
+        parent_path,
+        parent_identity,
+        file_identity,
+        file,
+    })
 }
 
 fn read_granted_yaml(
@@ -125,19 +201,30 @@ fn read_granted_yaml(
     grants: &DialogGrantState,
 ) -> WorkspaceResult<ExternalYamlReadResult> {
     let expected = path.to_path_buf();
-    let was_granted = grants
+    let mut granted = grants
         .imports
         .lock()
         .map_err(|_| grant_state_error())?
-        .remove(&expected);
-    if !was_granted {
+        .remove(&expected)
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "dialog_permission_required",
+                "Select this exact YAML file in the import dialog before reading it.",
+            )
+        })?;
+    let current_parent = Handle::from_path(&granted.parent_path).map_err(|_| {
+        WorkspaceError::new(
+            "external_parent_changed",
+            "The selected import directory changed.",
+        )
+    })?;
+    if current_parent != granted.parent_identity {
         return Err(WorkspaceError::new(
-            "dialog_permission_required",
-            "Select this exact YAML file in the import dialog before reading it.",
+            "external_parent_changed",
+            "The selected import directory changed before the file was read.",
         ));
     }
-    require_yaml(path)?;
-    let metadata = fs::symlink_metadata(path).map_err(|_| path_not_found())?;
+    let metadata = fs::symlink_metadata(&granted.path).map_err(|_| path_not_found())?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(WorkspaceError::new(
             "external_path_changed",
@@ -150,23 +237,21 @@ fn read_granted_yaml(
             "The selected YAML file exceeds 2 MiB.",
         ));
     }
-    let mut file = File::open(path).map_err(|cause| io_error("external_read_failed", cause))?;
-    let identity = Handle::from_file(
-        file.try_clone()
-            .map_err(|cause| io_error("external_read_failed", cause))?,
-    )
-    .map_err(|cause| io_error("external_read_failed", cause))?;
-    let canonical = path.canonicalize().map_err(|_| path_not_found())?;
+    let canonical = granted.path.canonicalize().map_err(|_| path_not_found())?;
     let named_identity =
         Handle::from_path(&canonical).map_err(|cause| io_error("external_read_failed", cause))?;
-    if canonical != expected || identity != named_identity {
+    if canonical != expected || granted.file_identity != named_identity {
         return Err(WorkspaceError::new(
             "external_path_changed",
             "The selected YAML path changed before it was read.",
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    (&mut file)
+    granted
+        .file
+        .seek(SeekFrom::Start(0))
+        .map_err(|cause| io_error("external_read_failed", cause))?;
+    (&mut granted.file)
         .take(files::MAX_YAML_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|cause| io_error("external_read_failed", cause))?;
@@ -188,63 +273,84 @@ fn read_granted_yaml(
     })
 }
 
+fn grant_export_directory(path: &Path, grants: &DialogGrantState) -> WorkspaceResult<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| path_not_found())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(WorkspaceError::new(
+            "external_path_changed",
+            "The selected export folder must be a regular directory.",
+        ));
+    }
+    let canonical = canonical_directory(path)?;
+    if canonical != path {
+        return Err(WorkspaceError::new(
+            "external_path_changed",
+            "The selected export folder must already be canonical.",
+        ));
+    }
+    let identity =
+        Handle::from_path(&canonical).map_err(|cause| io_error("external_export_failed", cause))?;
+    let directory = Dir::open_ambient_dir(&canonical, ambient_authority())
+        .map_err(|cause| io_error("external_export_failed", cause))?;
+    grants
+        .exports
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .insert(
+            canonical.clone(),
+            GrantedExport {
+                path: canonical,
+                identity,
+                directory,
+                pending_collision: None,
+            },
+        );
+    Ok(())
+}
+
 fn export_granted_yaml_pair(
     directory: &Path,
     overwrite: bool,
     files_to_write: &[ExportYamlFile],
     grants: &DialogGrantState,
 ) -> WorkspaceResult<ExternalExportResult> {
+    export_granted_yaml_pair_with_commit_hook(directory, overwrite, files_to_write, grants, |_| {})
+}
+
+fn export_granted_yaml_pair_with_commit_hook(
+    directory: &Path,
+    overwrite: bool,
+    files_to_write: &[ExportYamlFile],
+    grants: &DialogGrantState,
+    mut before_commit: impl FnMut(usize),
+) -> WorkspaceResult<ExternalExportResult> {
     let expected = directory.to_path_buf();
-    let was_granted = grants
+    let mut grant = grants
         .exports
         .lock()
         .map_err(|_| grant_state_error())?
-        .contains(&expected);
-    if !was_granted {
-        return Err(WorkspaceError::new(
-            "dialog_permission_required",
-            "Select this exact export folder before writing the YAML pair.",
-        ));
-    }
-    let canonical = canonical_directory(directory)?;
-    if canonical != expected {
+        .remove(&expected)
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "dialog_permission_required",
+                "Select this exact export folder before writing the YAML pair.",
+            )
+        })?;
+    let canonical = canonical_directory(directory).map_err(|_| {
+        WorkspaceError::new(
+            "external_path_changed",
+            "The selected export folder changed.",
+        )
+    })?;
+    let current_identity =
+        Handle::from_path(&canonical).map_err(|cause| io_error("external_export_failed", cause))?;
+    if canonical != expected || grant.path != expected || current_identity != grant.identity {
         return Err(WorkspaceError::new(
             "external_path_changed",
             "The selected export folder changed.",
         ));
     }
     validate_export_pair(files_to_write)?;
-    let destinations: Vec<PathBuf> = files_to_write
-        .iter()
-        .map(|file| canonical.join(&file.file_name))
-        .collect();
-    for destination in &destinations {
-        match fs::symlink_metadata(destination) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(WorkspaceError::new(
-                    "external_path_changed",
-                    "An export destination is not a regular file.",
-                ))
-            }
-            Ok(_) if !overwrite => {
-                return Err(WorkspaceError::new(
-                    "destination_exists",
-                    "One or more YAML export files already exist.",
-                ))
-            }
-            Ok(_) => {}
-            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
-            Err(cause) => return Err(io_error("external_export_failed", cause)),
-        }
-    }
-
-    grants
-        .exports
-        .lock()
-        .map_err(|_| grant_state_error())?
-        .remove(&expected);
-
-    let mut staged = Vec::with_capacity(files_to_write.len());
     for file in files_to_write {
         if file.text.len() as u64 > files::MAX_YAML_BYTES {
             return Err(WorkspaceError::new(
@@ -252,37 +358,172 @@ fn export_granted_yaml_pair(
                 "An exported YAML file exceeds 2 MiB.",
             ));
         }
-        let mut temporary = tempfile::NamedTempFile::new_in(&canonical)
-            .map_err(|cause| io_error("external_export_failed", cause))?;
-        temporary
-            .write_all(file.text.as_bytes())
-            .and_then(|_| temporary.as_file().sync_all())
-            .map_err(|cause| io_error("external_export_failed", cause))?;
-        staged.push(temporary);
     }
-    for (temporary, destination) in staged.into_iter().zip(&destinations) {
-        if overwrite {
-            temporary.persist(destination)
-        } else {
-            temporary.persist_noclobber(destination)
+    let fingerprint = export_fingerprint(files_to_write);
+    let confirmed_overwrite = match grant.pending_collision.take() {
+        Some(pending) => {
+            if !overwrite || pending != fingerprint {
+                return Err(WorkspaceError::new(
+                    "export_confirmation_mismatch",
+                    "The confirmed export no longer matches the exact pending YAML pair.",
+                ));
+            }
+            true
         }
-        .map_err(|cause| {
-            io_error(
-                if cause.error.kind() == std::io::ErrorKind::AlreadyExists {
+        None => false,
+    };
+
+    if !confirmed_overwrite {
+        let mut collision = false;
+        for file in files_to_write {
+            match grant.directory.symlink_metadata(&file.file_name) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    return Err(WorkspaceError::new(
+                        "external_path_changed",
+                        "An export destination is not a regular file.",
+                    ));
+                }
+                Ok(_) => collision = true,
+                Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+                Err(cause) => return Err(io_error("external_export_failed", cause)),
+            }
+        }
+        if collision {
+            grant.pending_collision = Some(fingerprint);
+            grants
+                .exports
+                .lock()
+                .map_err(|_| grant_state_error())?
+                .insert(expected, grant);
+            return Err(WorkspaceError::new(
+                "destination_exists",
+                "One or more YAML export files already exist.",
+            ));
+        }
+    } else {
+        for file in files_to_write {
+            match grant.directory.symlink_metadata(&file.file_name) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    return Err(WorkspaceError::new(
+                        "external_path_changed",
+                        "An export destination is not a regular file.",
+                    ))
+                }
+                Ok(_) => {}
+                Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
+                Err(cause) => return Err(io_error("external_export_failed", cause)),
+            }
+        }
+    }
+
+    let mut staged = Vec::with_capacity(files_to_write.len());
+    for file in files_to_write {
+        let temporary_name = format!(
+            ".workflow-studio-export-{}-{}",
+            std::process::id(),
+            NEXT_EXPORT_TEMP.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut temporary = match grant.directory.open_with(&temporary_name, &options) {
+            Ok(temporary) => temporary,
+            Err(cause) => {
+                remove_staged_exports(&grant.directory, &staged);
+                return Err(io_error("external_export_failed", cause));
+            }
+        };
+        if let Err(cause) = temporary
+            .write_all(file.text.as_bytes())
+            .and_then(|_| temporary.sync_all())
+        {
+            drop(temporary);
+            let _ = grant.directory.remove_file(&temporary_name);
+            remove_staged_exports(&grant.directory, &staged);
+            return Err(io_error("external_export_failed", cause));
+        }
+        staged.push(temporary_name);
+    }
+    let mut results = Vec::with_capacity(files_to_write.len());
+    for (index, (temporary, file)) in staged.iter().zip(files_to_write).enumerate() {
+        before_commit(index);
+        let committed = if confirmed_overwrite {
+            grant
+                .directory
+                .rename(temporary, &grant.directory, &file.file_name)
+        } else {
+            grant
+                .directory
+                .hard_link(temporary, &grant.directory, &file.file_name)
+                .and_then(|_| grant.directory.remove_file(temporary))
+        };
+        let destination = canonical.join(&file.file_name);
+        match committed {
+            Ok(()) => results.push(export_path_result(
+                &file.file_name,
+                &destination,
+                "written",
+                None,
+            )),
+            Err(cause) => {
+                let code = if cause.kind() == std::io::ErrorKind::AlreadyExists {
                     "destination_exists"
                 } else {
                     "external_export_failed"
-                },
-                cause.error,
-            )
-        })?;
+                };
+                results.push(export_path_result(
+                    &file.file_name,
+                    &destination,
+                    "failed",
+                    Some((code, cause.to_string())),
+                ));
+                for remaining in &staged[index..] {
+                    let _ = grant.directory.remove_file(remaining);
+                }
+                return Err(WorkspaceError::new(
+                    "external_export_partial",
+                    "The YAML export could not commit every staged file.",
+                )
+                .with_path_results(results));
+            }
+        }
     }
-    Ok(ExternalExportResult {
-        paths: destinations
-            .iter()
-            .map(|path| unicode(path))
-            .collect::<WorkspaceResult<Vec<_>>>()?,
-    })
+    let paths = files_to_write
+        .iter()
+        .map(|file| unicode(&canonical.join(&file.file_name)))
+        .collect::<WorkspaceResult<Vec<_>>>()?;
+    Ok(ExternalExportResult { paths, results })
+}
+
+fn remove_staged_exports(directory: &Dir, staged: &[String]) {
+    for temporary in staged {
+        let _ = directory.remove_file(temporary);
+    }
+}
+
+fn export_fingerprint(files: &[ExportYamlFile]) -> String {
+    let mut digest = Sha256::new();
+    for file in files {
+        digest.update((file.file_name.len() as u64).to_le_bytes());
+        digest.update(file.file_name.as_bytes());
+        digest.update((file.text.len() as u64).to_le_bytes());
+        digest.update(file.text.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn export_path_result(
+    relative_path: &str,
+    destination: &Path,
+    status: &str,
+    failure: Option<(&str, String)>,
+) -> PathOperationResult {
+    PathOperationResult {
+        relative_path: relative_path.to_string(),
+        destination_path: unicode(destination).ok(),
+        status: status.to_string(),
+        error_code: failure.as_ref().map(|(code, _)| (*code).to_string()),
+        message: failure.map(|(_, message)| message),
+    }
 }
 
 fn validate_export_pair(files: &[ExportYamlFile]) -> WorkspaceResult<()> {
@@ -329,15 +570,6 @@ fn canonical_directory(path: &Path) -> WorkspaceResult<PathBuf> {
             "workspace_root_invalid",
             "The selected path is not a directory.",
         ));
-    }
-    Ok(canonical)
-}
-
-fn canonical_yaml_file(path: &Path) -> WorkspaceResult<PathBuf> {
-    require_yaml(path)?;
-    let canonical = path.canonicalize().map_err(|_| path_not_found())?;
-    if !canonical.is_file() {
-        return Err(path_not_found());
     }
     Ok(canonical)
 }
@@ -419,7 +651,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        export_granted_yaml_pair, grant_import_pair, read_granted_yaml, DialogGrantState,
+        export_granted_yaml_pair, export_granted_yaml_pair_with_commit_hook,
+        grant_export_directory, grant_import_pair, read_granted_yaml, DialogGrantState,
         ExportYamlFile,
     };
 
@@ -460,7 +693,7 @@ mod tests {
         let root = tempdir().unwrap();
         let canonical = root.path().canonicalize().unwrap();
         let grants = DialogGrantState::default();
-        grants.exports.lock().unwrap().insert(canonical.clone());
+        grant_export_directory(&canonical, &grants).unwrap();
         let pair = [
             ExportYamlFile {
                 file_name: "flow.yaml".into(),
@@ -488,7 +721,7 @@ mod tests {
         let canonical = root.path().canonicalize().unwrap();
         fs::write(root.path().join("flow.yaml"), "old: true\n").unwrap();
         let grants = DialogGrantState::default();
-        grants.exports.lock().unwrap().insert(canonical.clone());
+        grant_export_directory(&canonical, &grants).unwrap();
         let pair = [ExportYamlFile {
             file_name: "flow.yaml".into(),
             text: "name: flow\n".into(),
@@ -502,5 +735,174 @@ mod tests {
             "name: flow\n"
         );
         assert!(export_granted_yaml_pair(&canonical, true, &pair, &grants).is_err());
+    }
+
+    #[test]
+    fn first_export_attempt_is_no_clobber_even_if_renderer_claims_overwrite() {
+        let root = tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        fs::write(root.path().join("flow.yaml"), "old: true\n").unwrap();
+        let grants = DialogGrantState::default();
+        grant_export_directory(&canonical, &grants).unwrap();
+        let pair = [ExportYamlFile {
+            file_name: "flow.yaml".into(),
+            text: "name: flow\n".into(),
+        }];
+
+        let first = export_granted_yaml_pair(&canonical, true, &pair, &grants).unwrap_err();
+        assert_eq!(first.code, "destination_exists");
+        assert_eq!(
+            fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+            "old: true\n"
+        );
+        export_granted_yaml_pair(&canonical, true, &pair, &grants).unwrap();
+    }
+
+    #[test]
+    fn collision_confirmation_rejects_changed_content_and_consumes_the_grant() {
+        let root = tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        fs::write(root.path().join("flow.yaml"), "old: true\n").unwrap();
+        let grants = DialogGrantState::default();
+        grant_export_directory(&canonical, &grants).unwrap();
+        let first = [ExportYamlFile {
+            file_name: "flow.yaml".into(),
+            text: "name: first\n".into(),
+        }];
+        let changed = [ExportYamlFile {
+            file_name: "flow.yaml".into(),
+            text: "name: changed\n".into(),
+        }];
+
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, false, &first, &grants)
+                .unwrap_err()
+                .code,
+            "destination_exists"
+        );
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, true, &changed, &grants)
+                .unwrap_err()
+                .code,
+            "export_confirmation_mismatch"
+        );
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, true, &first, &grants)
+                .unwrap_err()
+                .code,
+            "dialog_permission_required"
+        );
+    }
+
+    #[test]
+    fn export_rejects_a_selected_directory_replaced_after_the_grant() {
+        let root = tempdir().unwrap();
+        let selected = root.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let canonical = selected.canonicalize().unwrap();
+        let grants = DialogGrantState::default();
+        grant_export_directory(&canonical, &grants).unwrap();
+        fs::rename(&selected, root.path().join("original")).unwrap();
+        fs::create_dir(&selected).unwrap();
+        let pair = [ExportYamlFile {
+            file_name: "flow.yaml".into(),
+            text: "name: flow\n".into(),
+        }];
+
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, false, &pair, &grants)
+                .unwrap_err()
+                .code,
+            "external_path_changed"
+        );
+        assert!(!selected.join("flow.yaml").exists());
+    }
+
+    #[test]
+    fn export_reports_exact_per_file_state_when_the_second_commit_fails() {
+        let root = tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        let grants = DialogGrantState::default();
+        grant_export_directory(&canonical, &grants).unwrap();
+        let pair = [
+            ExportYamlFile {
+                file_name: "flow.yaml".into(),
+                text: "name: flow\n".into(),
+            },
+            ExportYamlFile {
+                file_name: "flow.hermes.yaml".into(),
+                text: "language_compatibility: hermes-legacy\n".into(),
+            },
+        ];
+
+        let result =
+            export_granted_yaml_pair_with_commit_hook(&canonical, false, &pair, &grants, |index| {
+                if index == 1 {
+                    fs::write(canonical.join("flow.hermes.yaml"), "raced: true\n").unwrap();
+                }
+            })
+            .unwrap_err();
+
+        assert_eq!(result.code, "external_export_partial");
+        assert_eq!(result.path_results.len(), 2);
+        assert_eq!(result.path_results[0].relative_path, "flow.yaml");
+        assert_eq!(result.path_results[0].status, "written");
+        assert_eq!(result.path_results[1].relative_path, "flow.hermes.yaml");
+        assert_eq!(result.path_results[1].status, "failed");
+    }
+
+    #[test]
+    fn import_rejects_a_parent_directory_replaced_after_the_grant() {
+        let root = tempdir().unwrap();
+        let selected = root.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let definition = selected.join("flow.yaml");
+        fs::write(&definition, "name: flow\n").unwrap();
+        let grants = DialogGrantState::default();
+        let canonical = grant_import_pair(&definition, &grants).unwrap();
+        fs::rename(&selected, root.path().join("original")).unwrap();
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("flow.yaml"), "name: attacker\n").unwrap();
+
+        assert_eq!(
+            read_granted_yaml(&canonical, &grants).unwrap_err().code,
+            "external_parent_changed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_rejects_selected_symlinks_and_companions_outside_the_bound_parent() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
+        symlink(
+            outside.path().join("outside.yaml"),
+            root.path().join("flow.yaml"),
+        )
+        .unwrap();
+        let grants = DialogGrantState::default();
+        assert_eq!(
+            grant_import_pair(&root.path().join("flow.yaml"), &grants)
+                .unwrap_err()
+                .code,
+            "external_symlink_rejected"
+        );
+
+        fs::remove_file(root.path().join("flow.yaml")).unwrap();
+        fs::write(root.path().join("flow.yaml"), "name: flow\n").unwrap();
+        symlink(
+            outside.path().join("outside.yaml"),
+            root.path().join("flow.hermes.yaml"),
+        )
+        .unwrap();
+        assert_eq!(
+            grant_import_pair(&root.path().join("flow.yaml"), &grants)
+                .unwrap_err()
+                .code,
+            "external_symlink_rejected"
+        );
     }
 }

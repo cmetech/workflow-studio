@@ -26,6 +26,13 @@ describe('App', () => {
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
+  it('visibly disables contract-dependent creation when no validated production contract is bundled', async () => {
+    render(App)
+
+    expect(await screen.findByText(/no validated production authoring contract is bundled/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'New Workflow' })).toBeDisabled()
+  })
+
   it('renders the approved five-region workbench and updates the active activity accessibly', async () => {
     render(App)
 

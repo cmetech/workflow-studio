@@ -9,6 +9,9 @@
     activeId?: string | null
     onOpen?: (entry: WorkspaceEntry) => void
     onContext?: (entry: WorkspaceEntry) => void
+    onNew?: (opener: HTMLElement) => void
+    onImport?: (opener: HTMLElement) => void
+    contractAvailable?: boolean
   }
 
   interface VisibleTreeRow {
@@ -19,7 +22,7 @@
     readonly setSize: number
   }
 
-  let { tree, activeId, onOpen, onContext }: Props = $props()
+  let { tree, activeId, onOpen, onContext, onNew, onImport, contractAvailable = false }: Props = $props()
   const displayedTree = $derived(tree ?? $workspace.tree)
   const selectedId = $derived(activeId === undefined ? $workspace.activeEntryId : activeId)
   let expandedIds = $state<Set<string>>(new Set())
@@ -104,6 +107,7 @@
     if (event.key === 'F10' && event.shiftKey && !isWorkspaceFolder(row.entry)) {
       event.preventDefault()
       event.stopPropagation()
+      ;(event.currentTarget as HTMLElement).focus()
       onContext?.(row.entry)
       return
     }
@@ -149,6 +153,14 @@
 <section class="explorer" aria-labelledby="workspace-explorer-heading">
   <header>
     <h2 id="workspace-explorer-heading">Explorer</h2>
+    <div class="header-actions">
+      <button type="button" disabled={!contractAvailable} onclick={(event) => onNew?.(event.currentTarget)}
+        >New Workflow</button
+      >
+      <button type="button" disabled={!contractAvailable} onclick={(event) => onImport?.(event.currentTarget)}
+        >Import</button
+      >
+    </div>
   </header>
 
   <div class="tree" role="tree" aria-label="Workspace workflows">
@@ -175,6 +187,7 @@
         oncontextmenu={(event) => {
           if (isWorkspaceFolder(row.entry)) return
           event.preventDefault()
+          event.currentTarget.focus()
           onContext?.(row.entry)
         }}
       >
@@ -210,6 +223,7 @@
     align-items: center;
     padding: 0 0.75rem;
     border-bottom: 1px solid var(--color-border);
+    justify-content: space-between;
   }
 
   h2 {
@@ -219,6 +233,17 @@
     font-weight: 800;
     letter-spacing: 0.13em;
     text-transform: uppercase;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .header-actions button {
+    width: auto;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.375rem;
   }
 
   .tree {

@@ -52,7 +52,14 @@ function readPathResults(error: object): readonly PathOperationResult[] {
 }
 
 function isPathOperationStatus(value: unknown): value is PathOperationResult['status'] {
-  return value === 'moved' || value === 'rolledBack' || value === 'trashed' || value === 'failed' || value === 'partial'
+  return (
+    value === 'moved' ||
+    value === 'rolledBack' ||
+    value === 'trashed' ||
+    value === 'written' ||
+    value === 'failed' ||
+    value === 'partial'
+  )
 }
 
 export const tauriBridge: WorkspaceNativeBridge = {
@@ -71,7 +78,7 @@ export const tauriBridge: WorkspaceNativeBridge = {
     }),
   externalReadYaml: (path) => invokeTyped<{ path: string; text: string }>('external_read_yaml', { path }),
   externalExportYamlPair: ({ directoryPath, overwrite, files }) =>
-    invokeTyped<{ paths: readonly string[] }>('external_export_yaml_pair', {
+    invokeTyped<{ paths: readonly string[]; results: readonly PathOperationResult[] }>('external_export_yaml_pair', {
       directoryPath,
       overwrite,
       files: files.map((file) => ({ ...file })),

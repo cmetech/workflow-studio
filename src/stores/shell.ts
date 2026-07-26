@@ -11,9 +11,10 @@ export type WorkspaceIntentKind = 'open-folder' | 'quick-open' | `workflow.${str
 export interface WorkspaceIntent {
   readonly kind: WorkspaceIntentKind | null
   readonly revision: number
+  readonly targetEntryId: string | null
 }
 
-export const $workspaceIntent = atom<WorkspaceIntent>({ kind: null, revision: 0 })
+export const $workspaceIntent = atom<WorkspaceIntent>({ kind: null, revision: 0, targetEntryId: null })
 export const workspaceIntent = $workspaceIntent
 
 export function showActivity(activity: ActivityId): void {
@@ -25,20 +26,20 @@ export function showEditorMode(mode: EditorMode): void {
 }
 
 export function openFolder(): void {
-  requestWorkspaceIntent('open-folder')
+  requestWorkspaceIntent('open-folder', null)
 }
 
 export function openQuickOpen(): void {
-  requestWorkspaceIntent('quick-open')
+  requestWorkspaceIntent('quick-open', null)
 }
 
-export function requestWorkflowAction(id: `workflow.${string}`): void {
-  requestWorkspaceIntent(id)
+export function requestWorkflowAction(id: `workflow.${string}`, targetEntryId: string | null): void {
+  requestWorkspaceIntent(id, targetEntryId)
 }
 
-function requestWorkspaceIntent(kind: WorkspaceIntentKind): void {
+function requestWorkspaceIntent(kind: WorkspaceIntentKind, targetEntryId: string | null): void {
   const current = $workspaceIntent.get()
-  $workspaceIntent.set({ kind, revision: current.revision + 1 })
+  $workspaceIntent.set({ kind, revision: current.revision + 1, targetEntryId })
 }
 
 export function openCommandPalette(): void {

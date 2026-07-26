@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { requiredFirstNodeFields, type NewWorkflowInput } from './workspace-actions'
 
@@ -6,9 +7,12 @@
     contracts: readonly AuthoringContract[]
     onCreate?: (input: NewWorkflowInput) => void | Promise<void>
     onCancel?: () => void
+    opener?: HTMLElement | undefined
   }
 
-  let { contracts, onCreate, onCancel }: Props = $props()
+  let { contracts, onCreate, onCancel, opener }: Props = $props()
+  let dialog = $state<HTMLDivElement>()
+  let nameInput = $state<HTMLInputElement>()
   function initialContract(): AuthoringContract | undefined {
     return contracts.find(({ profile }) => profile === 'archon-2026-07') ?? contracts[0]
   }
@@ -46,43 +50,96 @@
     if (!complete || !descriptor) return
     void onCreate?.({ name, description, profile, firstNodeId, firstNodeKind: descriptor.id, firstNodeValues })
   }
+
+  function cancel(): void {
+    onCancel?.()
+    opener?.focus()
+  }
+
+  function handleKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      cancel()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const focusable = [
+      ...(dialog?.querySelectorAll<HTMLElement>('input, textarea, select, button:not(:disabled)') ?? []),
+    ]
+    if (focusable.length === 0) return
+    const first = focusable[0]!
+    const last = focusable.at(-1)!
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  onMount(() => nameInput?.focus())
 </script>
 
-<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-workflow-title">
-  <h2 id="new-workflow-title">New Workflow</h2>
-  <label>Name <input bind:value={name} /></label>
-  <label>Description <textarea bind:value={description}></textarea></label>
-  <label>
-    Profile
-    <select value={profile} onchange={(event) => chooseProfile(event.currentTarget.value as WorkflowProfile)}>
-      {#each contracts as contract (contract.profile)}
-        <option value={contract.profile}>{contract.profile}</option>
-      {/each}
-    </select>
-  </label>
-  <label>
-    First node kind
-    <select bind:value={firstNodeKind} onchange={() => (firstNodeValues = {})}>
-      {#each kinds as kind (kind.id)}<option value={kind.id}>{kind.label}</option>{/each}
-    </select>
-  </label>
-  <label>First node ID <input bind:value={firstNodeId} /></label>
-  {#each fields as field (field.id)}
+<div
+  role="presentation"
+  class="backdrop"
+  data-dialog-backdrop
+  onclick={(event) => event.target === event.currentTarget && cancel()}
+>
+  <div
+    bind:this={dialog}
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="new-workflow-title"
+    tabindex="-1"
+    onkeydown={handleKeydown}
+  >
+    <h2 id="new-workflow-title">New Workflow</h2>
+    <label>Name <input bind:this={nameInput} bind:value={name} /></label>
+    <label>Description <textarea bind:value={description}></textarea></label>
     <label>
-      {field.label}{requiredIds.has(field.id) ? '' : ' (optional)'}
-      <input
-        value={firstNodeValues[field.id] ?? ''}
-        oninput={(event) => (firstNodeValues = { ...firstNodeValues, [field.id]: event.currentTarget.value })}
-      />
+      Profile
+      <select value={profile} onchange={(event) => chooseProfile(event.currentTarget.value as WorkflowProfile)}>
+        {#each contracts as contract (contract.profile)}
+          <option value={contract.profile}>{contract.profile}</option>
+        {/each}
+      </select>
     </label>
-  {/each}
-  <footer>
-    <button type="button" class="secondary" onclick={onCancel}>Cancel</button>
-    <button type="button" disabled={!complete} onclick={submit}>Create Workflow</button>
-  </footer>
+    <label>
+      First node kind
+      <select bind:value={firstNodeKind} onchange={() => (firstNodeValues = {})}>
+        {#each kinds as kind (kind.id)}<option value={kind.id}>{kind.label}</option>{/each}
+      </select>
+    </label>
+    <label>First node ID <input bind:value={firstNodeId} /></label>
+    {#each fields as field (field.id)}
+      <label>
+        {field.label}{requiredIds.has(field.id) ? '' : ' (optional)'}
+        <input
+          value={firstNodeValues[field.id] ?? ''}
+          oninput={(event) => (firstNodeValues = { ...firstNodeValues, [field.id]: event.currentTarget.value })}
+        />
+      </label>
+    {/each}
+    <footer>
+      <button type="button" class="secondary" onclick={cancel}>Cancel</button>
+      <button type="button" disabled={!complete} onclick={submit}>Create Workflow</button>
+    </footer>
+  </div>
 </div>
 
 <style>
+  .backdrop {
+    position: fixed;
+    z-index: 50;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--color-shadow) 65%, transparent);
+  }
+
   .dialog {
     display: grid;
     gap: 0.75rem;

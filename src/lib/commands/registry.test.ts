@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { CommandDisabledError, createCommandRegistry, listCommands, type CommandRegistry } from './registry'
+import {
+  CommandDisabledError,
+  createCommandRegistry,
+  executeCommand,
+  listCommands,
+  type CommandRegistry,
+} from './registry'
 import type { AppCommand, CommandContext } from './types'
+import { workspaceIntent } from '$src/stores/shell'
 
 const globalContext: CommandContext = {
   surface: 'global',
@@ -172,5 +179,29 @@ describe('command registry', () => {
     await registry.executeCommand('workspace.open', globalContext)
 
     expect(receivedContext).toEqual(globalContext)
+  })
+
+  it('routes every workflow action with the exact target identity from command context', async () => {
+    const context: CommandContext = {
+      surface: 'global',
+      canMutate: true,
+      hasSelection: true,
+      targetEntryId: 'workspace:ops/flow.yaml',
+      contractAvailable: true,
+    }
+    const ids = [
+      'workflow.open',
+      'workflow.duplicate',
+      'workflow.rename',
+      'workflow.create-companion',
+      'workflow.remove-companion',
+      'workflow.export',
+      'workflow.trash',
+    ] as const
+
+    for (const id of ids) {
+      await executeCommand(id, context)
+      expect(workspaceIntent.get()).toMatchObject({ kind: id, targetEntryId: 'workspace:ops/flow.yaml' })
+    }
   })
 })

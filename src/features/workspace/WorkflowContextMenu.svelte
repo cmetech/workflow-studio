@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import type { AppCommand, CommandContext } from '$src/lib/commands/types'
 
   interface Props {
@@ -7,6 +7,7 @@
     context?: CommandContext
     onRun?: (id: string) => void | Promise<void>
     onClose?: () => void
+    opener?: HTMLElement | undefined
   }
 
   const workflowCommandOrder = [
@@ -19,7 +20,7 @@
     'workflow.trash',
   ] as const
   const defaultContext: CommandContext = { surface: 'global', canMutate: true, hasSelection: true }
-  let { commands, context = defaultContext, onRun, onClose }: Props = $props()
+  let { commands, context = defaultContext, onRun, onClose, opener }: Props = $props()
   const visibleCommands = $derived(
     workflowCommandOrder.flatMap((id) => {
       const command = commands.find((candidate) => candidate.id === id)
@@ -27,34 +28,70 @@
     }),
   )
   let focusedIndex = $state(0)
+  let menu: HTMLDivElement
+
+  function enabledIndexes(): number[] {
+    return visibleCommands.flatMap((command, index) => (command.enabled(context) ? [index] : []))
+  }
 
   async function focus(index: number): Promise<void> {
-    focusedIndex = Math.max(0, Math.min(index, visibleCommands.length - 1))
+    focusedIndex = index
     await tick()
-    document.querySelector<HTMLButtonElement>(`[data-workflow-menu-index="${focusedIndex}"]`)?.focus()
+    menu.querySelector<HTMLButtonElement>(`[data-workflow-menu-index="${focusedIndex}"]`)?.focus()
+  }
+
+  function moveFocus(direction: 1 | -1): void {
+    const enabled = enabledIndexes()
+    if (enabled.length === 0) return
+    const current = enabled.indexOf(focusedIndex)
+    const next =
+      current < 0 ? (direction === 1 ? 0 : enabled.length - 1) : (current + direction + enabled.length) % enabled.length
+    void focus(enabled[next]!)
+  }
+
+  function close(): void {
+    onClose?.()
+    void tick().then(() => opener?.focus())
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault()
-      onClose?.()
+      close()
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
-      void focus((focusedIndex + 1) % visibleCommands.length)
+      moveFocus(1)
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
-      void focus((focusedIndex - 1 + visibleCommands.length) % visibleCommands.length)
+      moveFocus(-1)
     } else if (event.key === 'Home') {
       event.preventDefault()
-      void focus(0)
+      const first = enabledIndexes()[0]
+      if (first !== undefined) void focus(first)
     } else if (event.key === 'End') {
       event.preventDefault()
-      void focus(visibleCommands.length - 1)
+      const last = enabledIndexes().at(-1)
+      if (last !== undefined) void focus(last)
     }
   }
+
+  onMount(() => {
+    const first = enabledIndexes()[0]
+    if (first !== undefined) {
+      focusedIndex = first
+      menu.querySelector<HTMLButtonElement>(`[data-workflow-menu-index="${first}"]`)?.focus()
+    }
+  })
 </script>
 
-<div class="context-menu" role="menu" aria-label="Workflow actions" tabindex="-1" onkeydown={handleKeydown}>
+<div
+  bind:this={menu}
+  class="context-menu"
+  role="menu"
+  aria-label="Workflow actions"
+  tabindex="-1"
+  onkeydown={handleKeydown}
+>
   {#each visibleCommands as command, index (command.id)}
     <button
       type="button"

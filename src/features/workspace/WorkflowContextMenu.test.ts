@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
+import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { AppCommand } from '$src/lib/commands/types'
 import WorkflowContextMenu from './WorkflowContextMenu.svelte'
@@ -26,5 +27,26 @@ describe('WorkflowContextMenu', () => {
     expect(onRun).toHaveBeenCalledWith('workflow.rename')
     await fireEvent.keyDown(menu, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('focuses the first enabled item, skips disabled items, and restores the opener on Escape', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    render(WorkflowContextMenu, {
+      commands: [
+        command('workflow.open', 'Open', false),
+        command('workflow.duplicate', 'Duplicate Pair'),
+        command('workflow.rename', 'Rename Pair'),
+      ],
+      opener,
+    })
+    await tick()
+    expect(screen.getByRole('menuitem', { name: 'Duplicate Pair' })).toHaveFocus()
+    await fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowUp' })
+    expect(screen.getByRole('menuitem', { name: 'Rename Pair' })).toHaveFocus()
+    await fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(opener).toHaveFocus()
+    opener.remove()
   })
 })

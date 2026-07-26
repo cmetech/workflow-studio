@@ -181,8 +181,11 @@ function workflowCommand(
     label,
     category: 'Workflow',
     defaultBindings: options.binding ? [options.binding] : [],
-    enabled: (context) => context.hasSelection && (!options.mutating || context.canMutate),
-    run: () => requestWorkflowAction(id),
+    enabled: (context) =>
+      context.hasSelection &&
+      (!options.mutating || context.canMutate) &&
+      (id !== 'workflow.create-companion' || context.contractAvailable !== false),
+    run: (context) => requestWorkflowAction(id, context.targetEntryId ?? null),
   }
 }
 

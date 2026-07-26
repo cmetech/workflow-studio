@@ -6,6 +6,8 @@ export interface CommandContext {
   surface: 'global' | 'canvas' | 'yaml' | 'form'
   canMutate: boolean
   hasSelection: boolean
+  targetEntryId?: string | null
+  contractAvailable?: boolean
 }
 
 export interface AppCommand {

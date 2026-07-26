@@ -10,6 +10,7 @@ pub fn run() {
         .manage(workspace::WorkspaceState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(layout::LayoutState::default())
+        .manage(startup::RecentWorkspaceState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

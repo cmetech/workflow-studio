@@ -4,19 +4,35 @@
   import { executeCommand, listCommands } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
+  import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+  import type { AuthoringContract } from '$src/lib/contract/types'
+  import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+  import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
   import { activeEditorMode } from '$src/stores/shell'
   import { activeActivity, workspaceIntent } from '$src/stores/shell'
-  import { workspace } from '$src/stores/workspace'
+  import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
   import { getNativeBridge } from '$src/lib/native/bridge'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
+  import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore } from '$src/lib/layout/layout-store'
   import { createWorkspaceActions } from '$src/features/workspace/workspace-actions'
-  import { openDocumentSession, closeDocumentSession } from '$src/stores/documents'
+  import { openWorkflowPair } from '$src/features/documents/document-actions'
+  import {
+    $documentSession as documentSessionStore,
+    openDocumentSession,
+    closeDocumentSession,
+    receiveDocumentAnalysis,
+    renameOpenDocumentPath,
+  } from '$src/stores/documents'
+  import { createRecoveryDraft, createRecoveryStore } from '$src/lib/recovery/recovery-store'
+  import { createWorkspaceActionCoordinator } from '$src/features/workspace/workspace-action-coordinator'
   import Explorer from '$src/features/workspace/Explorer.svelte'
   import OpenWorkspace from '$src/features/workspace/OpenWorkspace.svelte'
   import QuickOpen from '$src/features/workspace/QuickOpen.svelte'
   import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
+  import NewWorkflowDialog from '$src/features/workspace/NewWorkflowDialog.svelte'
+  import ImportExportDialog from '$src/features/workspace/ImportExportDialog.svelte'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
 
@@ -30,30 +46,50 @@
   const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
   const native = getNativeBridge()
   const layoutStore = createLayoutStore(native)
+  const recoveryStore = createRecoveryStore(native)
   const draftDigest = `sha256:${'0'.repeat(64)}` as const
+  const availableContracts: AuthoringContract[] = []
+  let contracts = $state<readonly AuthoringContract[]>([])
+  let contractsLoaded = $state(false)
   let recent = $state<readonly RecentWorkspace[]>([])
   let quickOpenVisible = $state(false)
   let contextEntryId = $state<string | null>(null)
+  let contextOpener = $state<HTMLElement | undefined>()
+  let newDialogOpener = $state<HTMLElement | undefined>()
+  let newDialogVisible = $state(false)
+  let importDialogOpener = $state<HTMLElement | undefined>()
+  let importDialogVisible = $state(false)
+  let exportConfirmation = $state<{
+    paths: readonly string[]
+    resolve: (confirmed: boolean) => void
+  } | null>(null)
   let handledIntent = 0
   const actions = createWorkspaceActions({
     native,
-    contracts: [],
-    analyze: async () => ({
-      workflowId: 'unavailable',
-      pairGeneration: 0,
-      definitionRevision: 0,
-      companionRevision: null,
-      contractDigest: draftDigest,
-      issues: [],
-      structurallyValid: false,
-    }),
-    activate: () => undefined,
+    contracts: availableContracts,
+    analyze: ({ definitionText, companionText, contract }) =>
+      analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: crypto.randomUUID(),
+          workflowId: 'candidate',
+          pairGeneration: 0,
+          definition: { path: 'candidate.yaml', text: definitionText, revision: 0 },
+          companion:
+            companionText === null ? null : { path: 'candidate.hermes.yaml', text: companionText, revision: 0 },
+          profile: contract.profile,
+          contractDigest: contract.contract_digest,
+          reason: 'explicit-validate',
+        },
+        contract,
+      ),
+    activate: (entry) => void openEntry(entry),
     openDraft: (pair) => openDocumentSession(pair, draftDigest),
     closeDocument: closeDocumentSession,
-    renameDocument: () => undefined,
+    renameDocument: renameOpenDocumentPath,
     renameLayout: (workspaceId, from, to) => layoutStore.renameWorkflowPath(workspaceId, from, to),
     recoverDraft: async (pair) => {
-      await native.recoveryWrite({ key: pair.workflowId, content: JSON.stringify(pair) })
+      await recoveryStore.save(createRecoveryDraft(pair, new Date().toISOString()))
     },
   })
 
@@ -76,15 +112,107 @@
     await refreshRecent()
   }
 
+  async function refreshWorkspace(): Promise<void> {
+    const current = $workspace
+    if (!current.id || !current.displayName) return
+    loadWorkspaceEntries(current.id, current.displayName, await native.workspaceScan())
+  }
+
+  async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
+    if (!entry.companionPath) return contracts.find(({ profile }) => profile === 'hermes-legacy')
+    const companion = await native.workspaceRead(entry.companionPath)
+    const parsed = parseWorkflowYaml(companion.text, {
+      document: 'companion',
+      maxBytes: Math.max(...contracts.map(({ limits }) => limits.max_document_bytes)),
+    }).parsed
+    const value = parsed?.document.toJS({ maxAliasCount: 1_000 })
+    const profile =
+      value && typeof value === 'object' && 'language_compatibility' in value
+        ? value.language_compatibility
+        : 'hermes-legacy'
+    return contracts.find((contract) => contract.profile === profile)
+  }
+
+  async function openEntry(entry: WorkflowPairEntry): Promise<void> {
+    const contract = await activeContractFor(entry)
+    if (!contract) return
+    selectWorkspaceEntry(entry.id)
+    let scheduledAnalysis: Promise<void> = Promise.resolve()
+    await openWorkflowPair({
+      workflowId: entry.id,
+      definitionPath: entry.definitionPath,
+      companionPath: entry.companionPath,
+      contractDigest: contract.contract_digest,
+      native,
+      scheduleAnalysis: (pair) => {
+        scheduledAnalysis = analyzeWorkflowPair(
+          {
+            type: 'analyze',
+            requestId: crypto.randomUUID(),
+            workflowId: pair.workflowId,
+            pairGeneration: pair.generation,
+            definition: {
+              path: pair.definition.path,
+              text: pair.definition.text,
+              revision: pair.definition.revision,
+            },
+            companion: pair.companion
+              ? { path: pair.companion.path, text: pair.companion.text, revision: pair.companion.revision }
+              : null,
+            profile: contract.profile,
+            contractDigest: contract.contract_digest,
+            reason: 'open',
+          },
+          contract,
+        ).then(receiveDocumentAnalysis)
+      },
+    })
+    await scheduledAnalysis
+  }
+
+  function confirmExact(action: 'remove-companion' | 'trash', paths: readonly string[]): Promise<boolean> {
+    const verb = action === 'trash' ? 'Move to Trash' : 'Remove companion'
+    return Promise.resolve(window.confirm(`${verb} exactly these files?\n\n${paths.join('\n')}`))
+  }
+
+  function confirmExportCollision(paths: readonly string[]): Promise<boolean> {
+    return new Promise((resolve) => {
+      exportConfirmation = { paths, resolve }
+    })
+  }
+
+  const coordinateWorkspaceAction = createWorkspaceActionCoordinator({
+    actions,
+    getEntry: (id) => $workspace.entries.find((entry) => entry.id === id),
+    getWorkspaceId: () => $workspace.id,
+    read: (path) => native.workspaceRead(path),
+    open: openEntry,
+    refresh: refreshWorkspace,
+    promptRename: async (entry) => window.prompt('Rename workflow definition to:', entry.definitionPath),
+    promptCompanion: async () => {
+      const contract = contracts[0]
+      return contract ? { profile: contract.profile, metadata: {} } : null
+    },
+    confirm: confirmExact,
+    currentDocument: () => documentSessionStore.get(),
+    confirmExportCollision,
+  })
+
   $effect(() => {
     const intent = $workspaceIntent
     if (intent.revision === 0 || intent.revision === handledIntent) return
     handledIntent = intent.revision
     if (intent.kind === 'open-folder') void openWorkspace()
     else if (intent.kind === 'quick-open') quickOpenVisible = true
+    else if (intent.kind?.startsWith('workflow.')) void coordinateWorkspaceAction(intent)
   })
 
   onMount(() => {
+    void loadBundledAuthoringContracts().then((loaded) => {
+      availableContracts.splice(0, availableContracts.length, ...loaded)
+      contracts = loaded
+      contractsLoaded = true
+    })
     void refreshRecent()
     void actions.handleStartupPaths()
     if (!('__TAURI_INTERNALS__' in window)) return
@@ -112,14 +240,45 @@
         <h1 aria-label={brand.displayName}>Workflow Studio</h1>
       </div>
     </div>
-    <button type="button" class="open-folder" onclick={() => runCommand('workspace.open-folder')}>Open Folder</button>
+    <div class="title-actions">
+      <button
+        type="button"
+        disabled={contracts.length === 0}
+        onclick={(event) => {
+          newDialogOpener = event.currentTarget
+          newDialogVisible = true
+        }}>New Workflow</button
+      >
+      <button type="button" class="open-folder" onclick={() => runCommand('workspace.open-folder')}>Open Folder</button>
+    </div>
   </header>
+
+  {#if contractsLoaded && contracts.length === 0}
+    <p class="contract-unavailable" aria-live="polite">
+      No validated production authoring contract is bundled. Contract-dependent creation and import are disabled.
+    </p>
+  {/if}
 
   <div class="workbench">
     <ActivityRail />
     <aside class="panel left-panel" aria-label="Workspace panel">
       {#if $activeActivity === 'explorer' && $workspace.tree.length > 0}
-        <Explorer onContext={(entry) => (contextEntryId = entry.id)} />
+        <Explorer
+          contractAvailable={contracts.length > 0}
+          onOpen={(entry) => entry.kind === 'workflow' && void openEntry(entry)}
+          onContext={(entry) => {
+            contextEntryId = entry.id
+            contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+          }}
+          onNew={(opener) => {
+            newDialogOpener = opener
+            newDialogVisible = true
+          }}
+          onImport={(opener) => {
+            importDialogOpener = opener
+            importDialogVisible = true
+          }}
+        />
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
@@ -150,7 +309,7 @@
       entries={$workspace.entries}
       onOpen={(entry) => {
         quickOpenVisible = false
-        selectWorkspaceEntry(entry.id)
+        if (entry.kind === 'workflow') void openEntry(entry)
       }}
       onClose={() => (quickOpenVisible = false)}
     />
@@ -159,18 +318,61 @@
     <div class="context-layer">
       <WorkflowContextMenu
         commands={listCommands()}
+        opener={contextOpener}
         onRun={(id) => {
-          const entry = $workspace.entries.find(({ id }) => id === contextEntryId)
+          const targetEntryId = contextEntryId
+          const entry = $workspace.entries.find(({ id }) => id === targetEntryId)
           contextEntryId = null
           runCommand(id, {
             surface: 'global',
             canMutate: entry?.readOnly === false,
             hasSelection: Boolean(entry),
+            targetEntryId,
+            contractAvailable: contracts.length > 0,
           })
         }}
         onClose={() => (contextEntryId = null)}
       />
     </div>
+  {/if}
+  {#if newDialogVisible && contracts.length > 0}
+    <NewWorkflowDialog
+      {contracts}
+      opener={newDialogOpener}
+      onCancel={() => (newDialogVisible = false)}
+      onCreate={async (input) => {
+        await actions.createWorkflow(input)
+        await refreshWorkspace()
+        newDialogVisible = false
+      }}
+    />
+  {/if}
+  {#if importDialogVisible && contracts[0]}
+    <ImportExportDialog
+      mode="import"
+      opener={importDialogOpener}
+      onCancel={() => (importDialogVisible = false)}
+      onConfirm={async () => {
+        await actions.importWorkflow({ profile: contracts[0]!.profile })
+        await refreshWorkspace()
+        importDialogVisible = false
+      }}
+    />
+  {/if}
+  {#if exportConfirmation}
+    <ImportExportDialog
+      mode="export"
+      paths={exportConfirmation.paths}
+      collision={true}
+      onCancel={() => {
+        exportConfirmation?.resolve(false)
+        exportConfirmation = null
+      }}
+      onConfirm={() => {
+        exportConfirmation?.resolve(true)
+        exportConfirmation = null
+      }}
+    />
   {/if}
 </main>
 
@@ -189,6 +391,19 @@
     background: var(--color-background);
   }
 
+  .contract-unavailable {
+    position: fixed;
+    z-index: 45;
+    right: 1rem;
+    bottom: 2.25rem;
+    max-width: 28rem;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--color-warning);
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
   .titlebar {
     display: flex;
     align-items: center;
@@ -204,6 +419,11 @@
     display: flex;
     gap: 0.625rem;
     align-items: center;
+  }
+
+  .title-actions {
+    display: flex;
+    gap: 0.5rem;
   }
 
   .brand-lockup img {

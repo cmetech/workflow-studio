@@ -53,4 +53,18 @@ describe('NewWorkflowDialog', () => {
       }),
     )
   })
+
+  it('focuses the first field and restores its opener when Escape dismisses the modal', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onCancel = vi.fn()
+    render(NewWorkflowDialog, { contracts: [contract], onCancel, opener })
+
+    expect(screen.getByLabelText('Name')).toHaveFocus()
+    await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
 })

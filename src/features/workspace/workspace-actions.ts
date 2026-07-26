@@ -1,7 +1,7 @@
 import { stringify } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
-import type { DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
-import { createDocumentRevision, isAnalysisCurrent } from '$src/lib/documents/revisions'
+import type { DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
+import { isAnalysisCurrent } from '$src/lib/documents/revisions'
 import type {
   WorkspaceReadResult,
   WorkspaceRenameRequest,
@@ -27,6 +27,13 @@ export interface ExportYamlFile {
   readonly text: string
 }
 
+export interface WorkspaceActionPathResult {
+  readonly path: string
+  readonly status: 'written' | 'failed'
+  readonly errorCode?: string
+  readonly message?: string
+}
+
 export interface StartupPath {
   readonly kind: 'directory' | 'yaml'
   readonly path: string
@@ -49,7 +56,7 @@ export interface WorkspaceActionsNative {
     readonly directoryPath: string
     readonly overwrite: boolean
     readonly files: readonly ExportYamlFile[]
-  }): Promise<{ readonly paths: readonly string[] }>
+  }): Promise<{ readonly paths: readonly string[]; readonly results?: readonly unknown[] }>
   recentWorkspacesLoad(): Promise<string>
   recentWorkspacesSave(content: string): Promise<void>
   pathAvailable(path: string): Promise<boolean>
@@ -87,6 +94,7 @@ export class WorkspaceActionError extends Error {
     readonly code: string,
     message: string,
     readonly paths: readonly string[] = [],
+    readonly pathResults: readonly unknown[] = [],
   ) {
     super(message)
     this.name = 'WorkspaceActionError'
@@ -100,21 +108,37 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     save: (content) => dependencies.native.recentWorkspacesSave(content),
     isAvailable: (rootPath) => dependencies.native.pathAvailable(rootPath),
   })
+  let rootGeneration = 0
+  let rootQueue: Promise<void> = Promise.resolve()
 
-  async function selectRoot(rootPath: string): Promise<WorkspaceRootInfo> {
-    const selected = await dependencies.native.workspaceSetRoot(rootPath)
-    const files = await dependencies.native.workspaceScan()
-    loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files)
-    await recentWorkspaces.record(selected.rootPath, now())
-    return selected
+  async function selectRoot(rootPath: string, generation: number): Promise<WorkspaceRootInfo | null> {
+    let result: WorkspaceRootInfo | null = null
+    const operation = rootQueue.then(async () => {
+      if (generation !== rootGeneration) return
+      const selected = await dependencies.native.workspaceSetRoot(rootPath)
+      if (generation !== rootGeneration) return
+      const files = await dependencies.native.workspaceScan()
+      if (generation !== rootGeneration) return
+      loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files)
+      await recentWorkspaces.record(selected.rootPath, now())
+      if (generation === rootGeneration) result = selected
+    })
+    rootQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    )
+    await operation
+    return result
   }
 
   async function openWorkspace(rootPath?: string): Promise<WorkspaceRootInfo | null> {
+    const generation = ++rootGeneration
     const selectedPath = rootPath ?? (await dependencies.native.chooseWorkspaceFolder())
-    return selectedPath === null ? null : selectRoot(selectedPath)
+    if (selectedPath === null || generation !== rootGeneration) return null
+    return selectRoot(selectedPath, generation)
   }
 
-  async function createWorkflow(input: NewWorkflowInput): Promise<{ path: string; text: string }> {
+  async function createWorkflow(input: NewWorkflowInput) {
     const activeContract = contractFor(dependencies.contracts, input.profile)
     const descriptor = activeContract.node_kinds.find(
       (kind) =>
@@ -155,21 +179,15 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       )
     }
     const relativePath = `${safeBasename(input.name)}.yaml`
-    await dependencies.native.workspaceWrite({ relativePath, text, expectedCurrentHash: null })
+    const writes: { path: string; text: string }[] = [{ path: relativePath, text }]
     if (companionText !== null) {
-      await dependencies.native.workspaceWrite({
-        relativePath: companionPathFor(relativePath),
-        text: companionText,
-        expectedCurrentHash: null,
-      })
+      writes.push({ path: companionPathFor(relativePath), text: companionText })
     }
-    return { path: relativePath, text }
+    const outcome = await writeExactPair(writes)
+    return { path: relativePath, text, ...outcome }
   }
 
-  async function duplicateWorkflow(input: {
-    definitionPath: string
-    companionPath: string | null
-  }): Promise<{ definitionPath: string; companionPath: string | null }> {
+  async function duplicateWorkflow(input: { definitionPath: string; companionPath: string | null }) {
     const [definition, companion, files] = await Promise.all([
       dependencies.native.workspaceRead(input.definitionPath),
       input.companionPath ? dependencies.native.workspaceRead(input.companionPath) : Promise.resolve(null),
@@ -178,19 +196,11 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     const occupied = new Set(files.map(({ relativePath }) => relativePath))
     const destination = collisionSafeCopyPath(input.definitionPath, occupied)
     const companionDestination = companion ? companionPathFor(destination) : null
-    await dependencies.native.workspaceWrite({
-      relativePath: destination,
-      text: definition.text,
-      expectedCurrentHash: null,
-    })
-    if (companion && companionDestination) {
-      await dependencies.native.workspaceWrite({
-        relativePath: companionDestination,
-        text: companion.text,
-        expectedCurrentHash: null,
-      })
-    }
-    return { definitionPath: destination, companionPath: companionDestination }
+    const outcome = await writeExactPair([
+      { path: destination, text: definition.text },
+      ...(companion && companionDestination ? [{ path: companionDestination, text: companion.text }] : []),
+    ])
+    return { definitionPath: destination, companionPath: companionDestination, ...outcome }
   }
 
   async function renameWorkflow(input: {
@@ -248,9 +258,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 
   async function removeCompanion(input: { companionPath: string; expectedHash: string }): Promise<void> {
-    const result = await dependencies.native.workspaceTrashPaths([
-      { relativePath: input.companionPath, expectedCurrentHash: input.expectedHash },
-    ])
+    const result = await trashExact([{ relativePath: input.companionPath, expectedCurrentHash: input.expectedHash }])
     requireTrashSuccess(result, [input.companionPath])
   }
 
@@ -264,13 +272,20 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     companionPath: string | null
     companionHash: string | null
   }): Promise<void> {
+    if ((input.companionPath === null) !== (input.companionHash === null)) {
+      throw new WorkspaceActionError(
+        'invalid_trash_request',
+        'A companion path and its expected hash must be supplied together.',
+        [input.definitionPath, ...(input.companionPath ? [input.companionPath] : [])],
+      )
+    }
     const requests: WorkspaceTrashRequest[] = [
       { relativePath: input.definitionPath, expectedCurrentHash: input.definitionHash },
     ]
     if (input.companionPath && input.companionHash) {
       requests.push({ relativePath: input.companionPath, expectedCurrentHash: input.companionHash })
     }
-    const result = await dependencies.native.workspaceTrashPaths(requests)
+    const result = await trashExact(requests)
     requireTrashSuccess(
       result,
       requests.map(({ relativePath }) => relativePath),
@@ -304,35 +319,32 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     }
     const files = await dependencies.native.workspaceScan()
     const destination = collisionSafeImportPath(name, new Set(files.map(({ relativePath }) => relativePath)))
-    await dependencies.native.workspaceWrite({
-      relativePath: destination,
-      text: definition.text,
-      expectedCurrentHash: null,
-    })
     const companionDestination = companion ? companionPathFor(destination) : null
-    if (companion && companionDestination) {
-      await dependencies.native.workspaceWrite({
-        relativePath: companionDestination,
-        text: companion.text,
-        expectedCurrentHash: null,
-      })
+    const outcome = await writeExactPair([
+      { path: destination, text: definition.text },
+      ...(companion && companionDestination ? [{ path: companionDestination, text: companion.text }] : []),
+    ])
+    return {
+      status: outcome.status === 'completed' ? ('imported' as const) : ('partial' as const),
+      definitionPath: destination,
+      companionPath: companionDestination,
+      results: outcome.results,
+      recoveryRetained: outcome.recoveryRetained,
     }
-    return { status: 'imported' as const, definitionPath: destination, companionPath: companionDestination }
   }
 
   async function exportWorkflow(input: {
     pair: WorkflowPairText
     analysis: DocumentAnalysis | null
+    activeRevision: DocumentRevision
     confirmCollision: (paths: readonly string[]) => Promise<boolean>
   }) {
-    if (
-      !input.analysis?.structurallyValid ||
-      !isAnalysisCurrent(
-        createDocumentRevision(input.pair, input.analysis?.contractDigest ?? `sha256:${'0'.repeat(64)}`),
-        input.analysis,
-      )
-    ) {
-      return { status: 'blocked' as const, issues: input.analysis?.issues ?? [] }
+    if (!input.analysis?.structurallyValid || !isAnalysisCurrent(input.activeRevision, input.analysis)) {
+      return {
+        status: 'blocked' as const,
+        reason: 'analysis_missing_or_stale' as const,
+        issues: input.analysis?.issues ?? [],
+      }
     }
     const directoryPath = await dependencies.native.chooseExportDirectory()
     if (directoryPath === null) return { status: 'cancelled' as const }
@@ -344,20 +356,20 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     ]
     try {
       const result = await dependencies.native.externalExportYamlPair({ directoryPath, overwrite: false, files })
-      return { status: 'exported' as const, paths: result.paths }
+      return { status: 'exported' as const, paths: result.paths, results: result.results ?? [] }
     } catch (error: unknown) {
       if (!hasCode(error, 'destination_exists')) throw error
       const paths = files.map(({ fileName }) => joinPath(directoryPath, fileName))
       if (!(await input.confirmCollision(paths))) return { status: 'cancelled' as const }
       const result = await dependencies.native.externalExportYamlPair({ directoryPath, overwrite: true, files })
-      return { status: 'exported' as const, paths: result.paths }
+      return { status: 'exported' as const, paths: result.paths, results: result.results ?? [] }
     }
   }
 
   async function handleStartupPaths(): Promise<void> {
-    for (const startup of await dependencies.native.startupPaths()) {
-      await handleExternalPath(startup.path, startup)
-    }
+    await Promise.all(
+      (await dependencies.native.startupPaths()).map((startup) => handleExternalPath(startup.path, startup)),
+    )
   }
 
   async function handleExternalPath(path: string, classified?: StartupPath): Promise<void> {
@@ -366,16 +378,16 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       await openWorkspace(path)
       return
     }
+    const generation = ++rootGeneration
     const rootPath = classified?.rootPath ?? parentPath(path)
     const relativePath = classified?.relativePath ?? fileName(path)
-    const selected = await selectRoot(rootPath)
+    const selected = await selectRoot(rootPath, generation)
+    if (selected === null || generation !== rootGeneration) return
     const entries = pairWorkflowFiles(selected.workspaceId, await dependencies.native.workspaceScan())
-    const targetDefinition = relativePath.endsWith('.hermes.yaml')
-      ? relativePath.replace(/\.hermes\.yaml$/, '.yaml')
-      : relativePath
     const target = entries.find(
       (candidate): candidate is WorkflowPairEntry =>
-        candidate.kind === 'workflow' && candidate.definitionPath === targetDefinition,
+        candidate.kind === 'workflow' &&
+        (candidate.definitionPath === relativePath || candidate.companionPath === relativePath),
     )
     if (target) {
       selectWorkspaceEntry(target.id)
@@ -386,6 +398,57 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       (candidate) => candidate.kind === 'orphan-companion' && candidate.companionPath === relativePath,
     )
     if (orphan) selectWorkspaceEntry(orphan.id)
+  }
+
+  async function writeExactPair(writes: readonly { path: string; text: string }[]) {
+    const results: WorkspaceActionPathResult[] = []
+    for (const [index, write] of writes.entries()) {
+      try {
+        await dependencies.native.workspaceWrite({
+          relativePath: write.path,
+          text: write.text,
+          expectedCurrentHash: null,
+        })
+        results.push({ path: write.path, status: 'written' })
+      } catch (error: unknown) {
+        results.push({
+          path: write.path,
+          status: 'failed',
+          errorCode: errorCode(error),
+          message: error instanceof Error ? error.message : String(error),
+        })
+        for (const skipped of writes.slice(index + 1)) {
+          results.push({
+            path: skipped.path,
+            status: 'failed',
+            errorCode: 'workspace_write_not_attempted',
+            message: 'This path was not written because an earlier pair write failed.',
+          })
+        }
+        const recovery = unsavedPair(writes[0]!.path, writes[0]!.text, writes[1]?.text ?? null)
+        dependencies.openDraft(recovery)
+        await dependencies.recoverDraft(recovery)
+        return { status: 'partial' as const, results, recoveryRetained: true as const }
+      }
+    }
+    return { status: 'completed' as const, results, recoveryRetained: false as const }
+  }
+
+  async function trashExact(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult> {
+    try {
+      return await dependencies.native.workspaceTrashPaths(requests)
+    } catch (error: unknown) {
+      const pathResults =
+        typeof error === 'object' && error !== null && 'pathResults' in error && Array.isArray(error.pathResults)
+          ? error.pathResults
+          : []
+      throw new WorkspaceActionError(
+        errorCode(error),
+        error instanceof Error ? error.message : 'The native Trash operation failed.',
+        requests.map(({ relativePath }) => relativePath),
+        pathResults,
+      )
+    }
   }
 
   return {
@@ -464,14 +527,20 @@ function valueForDescriptor(descriptor: AuthoringContract['node_kinds'][number],
 }
 
 function requireTrashSuccess(result: WorkspaceTrashResult, expectedPaths: readonly string[]): void {
+  const expected = new Set(expectedPaths)
+  const exact =
+    result.results.length === expectedPaths.length &&
+    new Set(result.results.map(({ relativePath }) => relativePath)).size === result.results.length &&
+    result.results.every(({ relativePath }) => expected.has(relativePath))
   const successful = new Set(
     result.results.filter(({ status }) => status === 'trashed').map(({ relativePath }) => relativePath),
   )
-  if (expectedPaths.some((path) => !successful.has(path))) {
+  if (!exact || expectedPaths.some((path) => !successful.has(path))) {
     throw new WorkspaceActionError(
       'workspace_trash_partial',
       'Not every requested file reached the operating-system Trash.',
       expectedPaths,
+      result.results,
     )
   }
 }
@@ -606,4 +675,10 @@ function record(value: unknown): Record<string, unknown> {
 
 function hasCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code
+}
+
+function errorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'workspace_write_failed'
 }

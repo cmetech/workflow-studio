@@ -6,6 +6,7 @@ import type { WorkspaceFileEntry } from '$src/lib/workspace/types'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
 import type { ExportYamlFile } from './workspace-actions'
 import { createWorkspaceActions, type WorkspaceActionsNative } from './workspace-actions'
+import { workspace } from '$src/stores/workspace'
 
 const digest = `sha256:${'1'.repeat(64)}` as const
 
@@ -77,6 +78,27 @@ const contract: AuthoringContract = {
   documentation: { topics: [], examples: [] },
   limits: { max_document_bytes: 2 * 1024 * 1024 },
   extensions: {},
+}
+
+const archonContract: AuthoringContract = {
+  ...contract,
+  profile: 'archon-2026-07',
+  sidecar_schema: {
+    type: 'object',
+    properties: { language_compatibility: { enum: ['archon-2026-07'] } },
+  },
+  node_kinds: contract.node_kinds.map((kind) => ({
+    ...kind,
+    applicability: { ...kind.applicability, profiles: ['archon-2026-07'] },
+    fields: kind.fields.map((descriptor) => ({
+      ...descriptor,
+      applicability: { ...descriptor.applicability, profiles: ['archon-2026-07'] },
+    })),
+  })),
+  semantic_rules: contract.semantic_rules.map((rule) => ({
+    ...rule,
+    applicability: { ...rule.applicability, profiles: ['archon-2026-07'] },
+  })),
 }
 
 function validAnalysis(): DocumentAnalysis {
@@ -195,6 +217,26 @@ describe('workspace actions', () => {
     vi.mocked(native.chooseWorkspaceFolder).mockResolvedValueOnce(null)
     await expect(api.openWorkspace()).resolves.toBeNull()
     expect(native.workspaceSetRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('serializes root changes so the latest open request wins after an older native call resolves', async () => {
+    let releaseSlow: ((value: { workspaceId: string; rootPath: string }) => void) | undefined
+    vi.mocked(native.workspaceSetRoot).mockImplementation((rootPath) =>
+      rootPath === '/slow'
+        ? new Promise((resolve) => (releaseSlow = resolve))
+        : Promise.resolve({ workspaceId: 'fast', rootPath }),
+    )
+    const api = actions()
+    const slow = api.openWorkspace('/slow')
+    await vi.waitFor(() => expect(native.workspaceSetRoot).toHaveBeenCalledWith('/slow'))
+    const fast = api.openWorkspace('/fast')
+    releaseSlow?.({ workspaceId: 'slow', rootPath: '/slow' })
+
+    await expect(slow).resolves.toBeNull()
+    await expect(fast).resolves.toMatchObject({ workspaceId: 'fast', rootPath: '/fast' })
+    expect(workspace.get()).toMatchObject({ id: 'fast', displayName: 'fast' })
+    expect(native.recentWorkspacesSave).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(native.recentWorkspacesSave).mock.calls[0]?.[0]).toContain('/fast')
   })
 
   it('requires all contract-driven first-write values and creates valid YAML only once complete', async () => {
@@ -410,6 +452,7 @@ describe('workspace actions', () => {
       actions().exportWorkflow({
         pair,
         analysis: { ...validAnalysis(), structurallyValid: false },
+        activeRevision: { ...validAnalysis(), companionRevision: 0 },
         confirmCollision: async () => true,
       }),
     ).resolves.toMatchObject({ status: 'blocked' })
@@ -419,7 +462,12 @@ describe('workspace actions', () => {
       Object.assign(new Error('exists'), { code: 'destination_exists' }),
     )
     const confirmCollision = vi.fn(async () => true)
-    await actions().exportWorkflow({ pair, analysis: { ...validAnalysis(), companionRevision: 0 }, confirmCollision })
+    await actions().exportWorkflow({
+      pair,
+      analysis: { ...validAnalysis(), companionRevision: 0 },
+      activeRevision: { ...validAnalysis(), companionRevision: 0 },
+      confirmCollision,
+    })
     expect(confirmCollision).toHaveBeenCalledWith(['/exports/flow.yaml', '/exports/flow.hermes.yaml'])
     expect(native.externalExportYamlPair).toHaveBeenLastCalledWith({
       directoryPath: '/exports',
@@ -439,5 +487,157 @@ describe('workspace actions', () => {
     await actions().handleStartupPaths()
     expect(native.workspaceSetRoot).toHaveBeenCalledWith('/startup')
     expect(activate).toHaveBeenCalledWith(expect.objectContaining({ definitionPath: 'flow.yaml' }))
+  })
+
+  it('returns explicit per-path partial state and recovery when duplicate companion write fails', async () => {
+    vi.mocked(native.workspaceWrite)
+      .mockResolvedValueOnce({ relativePath: 'flow-copy.yaml', sha256: 'a'.repeat(64), size: 10, modifiedAt: '0' })
+      .mockRejectedValueOnce(Object.assign(new Error('companion failed'), { code: 'workspace_write_failed' }))
+
+    await expect(
+      actions().duplicateWorkflow({ definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' }),
+    ).resolves.toMatchObject({
+      status: 'partial',
+      results: [
+        { path: 'flow-copy.yaml', status: 'written' },
+        { path: 'flow-copy.hermes.yaml', status: 'failed', errorCode: 'workspace_write_failed' },
+      ],
+      recoveryRetained: true,
+    })
+    expect(recoverDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns explicit per-path partial state and recovery when New Workflow companion write fails', async () => {
+    vi.mocked(native.workspaceWrite)
+      .mockResolvedValueOnce({ relativePath: 'release.yaml', sha256: 'a'.repeat(64), size: 10, modifiedAt: '0' })
+      .mockRejectedValueOnce(Object.assign(new Error('companion failed'), { code: 'workspace_write_failed' }))
+    const api = createWorkspaceActions({
+      native,
+      contracts: [archonContract],
+      analyze: vi.fn(async () => ({ ...validAnalysis(), contractDigest: archonContract.contract_digest })),
+      activate,
+      openDraft,
+      closeDocument,
+      renameDocument,
+      renameLayout,
+      recoverDraft,
+    })
+
+    await expect(
+      api.createWorkflow({
+        name: 'Release',
+        description: 'Ship it',
+        profile: 'archon-2026-07',
+        firstNodeId: 'first',
+        firstNodeKind: 'command',
+        firstNodeValues: { 'command-value': 'echo ready' },
+      }),
+    ).resolves.toMatchObject({
+      status: 'partial',
+      results: [
+        { path: 'release.yaml', status: 'written' },
+        { path: 'release.hermes.yaml', status: 'failed', errorCode: 'workspace_write_failed' },
+      ],
+      recoveryRetained: true,
+    })
+    expect(recoverDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns explicit per-path partial state and recovery when import companion write fails', async () => {
+    vi.mocked(native.externalReadYaml).mockImplementation(async (path) =>
+      path.endsWith('.hermes.yaml')
+        ? { path, text: 'language_compatibility: hermes-legacy\n' }
+        : { path, text: 'name: Imported\ndescription: Valid\nnodes:\n  - id: first\n    command: hi\n' },
+    )
+    vi.mocked(native.workspaceWrite)
+      .mockResolvedValueOnce({ relativePath: 'import.yaml', sha256: 'a'.repeat(64), size: 10, modifiedAt: '0' })
+      .mockRejectedValueOnce(Object.assign(new Error('companion failed'), { code: 'workspace_write_failed' }))
+
+    await expect(actions().importWorkflow({ profile: 'hermes-legacy' })).resolves.toMatchObject({
+      status: 'partial',
+      results: [
+        { path: 'import.yaml', status: 'written' },
+        { path: 'import.hermes.yaml', status: 'failed', errorCode: 'workspace_write_failed' },
+      ],
+      recoveryRetained: true,
+    })
+    expect(recoverDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a companion without its hash before mutating Trash and retains exact unexpected outcomes', async () => {
+    const api = actions()
+    await expect(
+      api.trashWorkflow({
+        definitionPath: 'flow.yaml',
+        definitionHash: 'a'.repeat(64),
+        companionPath: 'flow.hermes.yaml',
+        companionHash: null,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_trash_request', paths: ['flow.yaml', 'flow.hermes.yaml'] })
+    expect(native.workspaceTrashPaths).not.toHaveBeenCalled()
+
+    vi.mocked(native.workspaceTrashPaths).mockResolvedValueOnce({
+      results: [
+        { relativePath: 'flow.yaml', status: 'trashed' },
+        { relativePath: 'unexpected.yaml', status: 'failed', errorCode: 'unexpected' },
+      ],
+    })
+    await expect(
+      api.trashWorkflow({
+        definitionPath: 'flow.yaml',
+        definitionHash: 'a'.repeat(64),
+        companionPath: null,
+        companionHash: null,
+      }),
+    ).rejects.toMatchObject({
+      code: 'workspace_trash_partial',
+      pathResults: expect.arrayContaining([expect.objectContaining({ relativePath: 'unexpected.yaml' })]),
+    })
+    expect(closeDocument).not.toHaveBeenCalled()
+  })
+
+  it('rejects export analysis stale against an independently supplied active revision', async () => {
+    const pair: WorkflowPairText = {
+      workflowId: 'flow',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'flow:def',
+        kind: 'definition',
+        path: 'flow.yaml',
+        text: 'definition',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: null,
+    }
+    await expect(
+      actions().exportWorkflow({
+        pair,
+        analysis: validAnalysis(),
+        activeRevision: { ...validAnalysis(), contractDigest: `sha256:${'9'.repeat(64)}` },
+        confirmCollision: async () => true,
+      }),
+    ).resolves.toMatchObject({ status: 'blocked', reason: 'analysis_missing_or_stale' })
+    expect(native.chooseExportDirectory).not.toHaveBeenCalled()
+  })
+
+  it('activates a .yml definition when startup selects its actual canonical companion path', async () => {
+    vi.mocked(native.startupPaths).mockResolvedValueOnce([
+      {
+        kind: 'yaml',
+        path: '/startup/flow.hermes.yaml',
+        rootPath: '/startup',
+        relativePath: 'flow.hermes.yaml',
+      },
+    ])
+    vi.mocked(native.workspaceScan).mockResolvedValue([entry('flow.yml'), entry('flow.hermes.yaml')])
+
+    await actions().handleStartupPaths()
+
+    expect(activate).toHaveBeenCalledWith(
+      expect.objectContaining({ definitionPath: 'flow.yml', companionPath: 'flow.hermes.yaml' }),
+    )
   })
 })

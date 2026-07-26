@@ -23,4 +23,23 @@ describe('ImportExportDialog', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Replace YAML Pair' }))
     expect(onConfirm).toHaveBeenCalledTimes(1)
   })
+
+  it('traps modal dismissal to Escape or the backdrop and restores the opener', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onCancel = vi.fn()
+    const view = render(ImportExportDialog, { mode: 'import', onCancel, opener })
+
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(opener).toHaveFocus()
+
+    const backdrop = view.container.querySelector('[data-dialog-backdrop]')
+    expect(backdrop).not.toBeNull()
+    await fireEvent.click(backdrop!)
+    expect(onCancel).toHaveBeenCalledTimes(2)
+    opener.remove()
+  })
 })

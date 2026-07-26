@@ -13,10 +13,18 @@
   let activeIndex = $state(0)
   let searchInput: HTMLInputElement
   const results = $derived(
-    entries.filter((entry) =>
-      `${entry.name}\n${entry.relativePath}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
-    ),
+    entries
+      .filter((entry) => entry.kind === 'workflow')
+      .filter((entry) =>
+        `${entry.name}\n${entry.relativePath}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
+      ),
   )
+  const activeOption = $derived(results[activeIndex])
+  const activeOptionId = $derived(activeOption ? `quick-open-option-${optionId(activeOption.id)}` : undefined)
+
+  function optionId(id: string): string {
+    return id.replace(/[^a-zA-Z0-9_-]/g, '-')
+  }
 
   function open(index: number): void {
     const entry = results[index]
@@ -50,6 +58,7 @@
     aria-controls="quick-open-results"
     aria-expanded="true"
     aria-autocomplete="list"
+    aria-activedescendant={activeOptionId}
     bind:value={query}
     oninput={() => (activeIndex = 0)}
     onkeydown={handleKeydown}
@@ -58,6 +67,7 @@
   <div id="quick-open-results" role="listbox" aria-label="Workflow matches">
     {#each results as entry, index (entry.id)}
       <button
+        id={`quick-open-option-${optionId(entry.id)}`}
         type="button"
         role="option"
         aria-selected={index === activeIndex}

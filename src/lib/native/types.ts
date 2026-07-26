@@ -68,7 +68,7 @@ export interface WorkspaceTrashRequest {
 export interface PathOperationResult {
   readonly relativePath: string
   readonly destinationPath?: string
-  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'failed' | 'partial'
+  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'written' | 'failed' | 'partial'
   readonly errorCode?: string
   readonly message?: string
 }
@@ -106,7 +106,7 @@ export interface WorkspaceNativeBridge extends LayoutNativeBridge {
     readonly directoryPath: string
     readonly overwrite: boolean
     readonly files: readonly { readonly fileName: string; readonly text: string }[]
-  }): Promise<{ readonly paths: readonly string[] }>
+  }): Promise<{ readonly paths: readonly string[]; readonly results: readonly PathOperationResult[] }>
   recentWorkspacesLoad(): Promise<string>
   recentWorkspacesSave(content: string): Promise<void>
   pathAvailable(path: string): Promise<boolean>

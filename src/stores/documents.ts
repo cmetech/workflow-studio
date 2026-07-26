@@ -143,3 +143,14 @@ function mergeSavedPairStructure(current: WorkflowPairText, saved: WorkflowPairT
 export function closeDocumentSession(): void {
   $documentSession.set(emptyDocumentSession)
 }
+
+export function renameOpenDocumentPath(from: string, to: string): void {
+  const current = $documentSession.get()
+  if (!current.pair) return
+  const definition =
+    current.pair.definition.path === from ? { ...current.pair.definition, path: to } : current.pair.definition
+  const companion =
+    current.pair.companion?.path === from ? { ...current.pair.companion, path: to } : current.pair.companion
+  if (definition === current.pair.definition && companion === current.pair.companion) return
+  $documentSession.set({ ...current, pair: { ...current.pair, definition, companion } })
+}

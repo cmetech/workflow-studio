@@ -1,14 +1,137 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
+use same_file::Handle;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 const RECENT_FILE: &str = "recent-workspaces-v1.json";
 const MAX_RECENT_BYTES: u64 = 64 * 1024;
+static NEXT_RECENT_TEMP: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+pub struct RecentWorkspaceState {
+    storage: Mutex<Option<RecentStorage>>,
+}
+
+struct RecentStorage {
+    root: PathBuf,
+    identity: Handle,
+    directory: Dir,
+}
+
+impl std::fmt::Debug for RecentStorage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecentStorage")
+            .field("root", &self.root)
+            .finish()
+    }
+}
+
+impl RecentStorage {
+    fn open(path: &Path) -> StartupResult<Self> {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|cause| io_error("recent_workspace_root_invalid", cause))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(error(
+                "recent_workspace_root_invalid",
+                "Application data must be a regular directory, not a symbolic link.",
+            ));
+        }
+        let root = path
+            .canonicalize()
+            .map_err(|cause| io_error("recent_workspace_root_invalid", cause))?;
+        let identity = Handle::from_path(&root)
+            .map_err(|cause| io_error("recent_workspace_root_invalid", cause))?;
+        let directory = Dir::open_ambient_dir(&root, ambient_authority())
+            .map_err(|cause| io_error("recent_workspace_root_invalid", cause))?;
+        Ok(Self {
+            root,
+            identity,
+            directory,
+        })
+    }
+
+    fn verify(&self) -> StartupResult<()> {
+        let current = self
+            .root
+            .canonicalize()
+            .ok()
+            .and_then(|path| Handle::from_path(path).ok());
+        if current.as_ref() != Some(&self.identity) {
+            return Err(error(
+                "recent_workspace_root_changed",
+                "Application data was replaced and must be rebound before recent workspaces are accessed.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn load(&self) -> StartupResult<String> {
+        self.verify()?;
+        match self.directory.symlink_metadata(RECENT_FILE) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(error(
+                "recent_workspace_invalid",
+                "The recent workspace file is not a regular file.",
+            )),
+            Ok(metadata) if metadata.len() > MAX_RECENT_BYTES => Err(error(
+                "recent_workspace_too_large",
+                "The recent workspace file exceeds 64 KiB.",
+            )),
+            Ok(_) => {
+                let mut text = String::new();
+                self.directory
+                    .open(RECENT_FILE)
+                    .and_then(|mut file| file.read_to_string(&mut text))
+                    .map_err(|cause| io_error("recent_workspace_read_failed", cause))?;
+                Ok(text)
+            }
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(cause) => Err(io_error("recent_workspace_read_failed", cause)),
+        }
+    }
+
+    fn save(&self, content: &[u8]) -> StartupResult<()> {
+        self.verify()?;
+        if self
+            .directory
+            .symlink_metadata(RECENT_FILE)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            return Err(error(
+                "recent_workspace_invalid",
+                "Refusing to replace a non-regular recent workspace file.",
+            ));
+        }
+        let temporary = format!(
+            ".recent-workspaces-{}-{}",
+            std::process::id(),
+            NEXT_RECENT_TEMP.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = self
+            .directory
+            .open_with(&temporary, &options)
+            .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
+        file.write_all(content)
+            .and_then(|_| file.sync_all())
+            .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
+        drop(file);
+        self.directory
+            .rename(&temporary, &self.directory, RECENT_FILE)
+            .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct StartupPath {
@@ -42,26 +165,19 @@ pub fn startup_paths() -> Vec<StartupPath> {
 }
 
 #[tauri::command]
-pub fn recent_workspaces_load(app: AppHandle) -> StartupResult<String> {
-    let path = recent_path(&app)?;
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Err(error(
-            "recent_workspace_invalid",
-            "The recent workspace file is not a regular file.",
-        )),
-        Ok(metadata) if metadata.len() > MAX_RECENT_BYTES => Err(error(
-            "recent_workspace_too_large",
-            "The recent workspace file exceeds 64 KiB.",
-        )),
-        Ok(_) => fs::read_to_string(path)
-            .map_err(|cause| io_error("recent_workspace_read_failed", cause)),
-        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(cause) => Err(io_error("recent_workspace_read_failed", cause)),
-    }
+pub fn recent_workspaces_load(
+    app: AppHandle,
+    state: State<'_, RecentWorkspaceState>,
+) -> StartupResult<String> {
+    with_recent_storage(&app, &state, RecentStorage::load)
 }
 
 #[tauri::command]
-pub fn recent_workspaces_save(content: String, app: AppHandle) -> StartupResult<()> {
+pub fn recent_workspaces_save(
+    content: String,
+    app: AppHandle,
+    state: State<'_, RecentWorkspaceState>,
+) -> StartupResult<()> {
     if content.len() as u64 > MAX_RECENT_BYTES {
         return Err(error(
             "recent_workspace_too_large",
@@ -89,13 +205,16 @@ pub fn recent_workspaces_save(content: String, app: AppHandle) -> StartupResult<
             "Recent workspace data must contain at most 20 unique roots with timestamps.",
         ));
     }
-    let path = recent_path(&app)?;
-    atomic_write(&path, content.as_bytes())
+    with_recent_storage(&app, &state, |storage| storage.save(content.as_bytes()))
 }
 
 #[tauri::command]
-pub fn recent_workspace_available(path: String, app: AppHandle) -> StartupResult<bool> {
-    let content = recent_workspaces_load(app)?;
+pub fn recent_workspace_available(
+    path: String,
+    app: AppHandle,
+    state: State<'_, RecentWorkspaceState>,
+) -> StartupResult<bool> {
+    let content = with_recent_storage(&app, &state, RecentStorage::load)?;
     let records: Vec<RecentRecord> = match serde_json::from_str(&content) {
         Ok(records) => records,
         Err(_) => return Ok(false),
@@ -138,7 +257,11 @@ fn classify_startup_path(value: OsString) -> Option<StartupPath> {
     })
 }
 
-fn recent_path(app: &AppHandle) -> StartupResult<PathBuf> {
+fn with_recent_storage<T>(
+    app: &AppHandle,
+    state: &State<'_, RecentWorkspaceState>,
+    operation: impl FnOnce(&RecentStorage) -> StartupResult<T>,
+) -> StartupResult<T> {
     let root = app.path().app_data_dir().map_err(|cause| {
         error(
             "recent_workspace_path_unavailable",
@@ -146,35 +269,16 @@ fn recent_path(app: &AppHandle) -> StartupResult<PathBuf> {
         )
     })?;
     fs::create_dir_all(&root).map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
-    let canonical = root
-        .canonicalize()
-        .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
-    Ok(canonical.join(RECENT_FILE))
-}
-
-fn atomic_write(path: &Path, content: &[u8]) -> StartupResult<()> {
-    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(error(
-            "recent_workspace_invalid",
-            "Refusing to replace a symbolic link.",
-        ));
-    }
-    let parent = path.parent().ok_or_else(|| {
+    let mut storage = state.storage.lock().map_err(|_| {
         error(
-            "recent_workspace_write_failed",
-            "Recent path has no parent.",
+            "recent_workspace_state_unavailable",
+            "Recent workspace state is unavailable.",
         )
     })?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
-    temporary
-        .write_all(content)
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|cause| io_error("recent_workspace_write_failed", cause))?;
-    temporary
-        .persist(path)
-        .map_err(|cause| io_error("recent_workspace_write_failed", cause.error))?;
-    Ok(())
+    if storage.is_none() {
+        *storage = Some(RecentStorage::open(&root)?);
+    }
+    operation(storage.as_ref().expect("recent storage initialized"))
 }
 
 fn is_yaml(path: &Path) -> bool {
@@ -207,7 +311,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{collect_startup_paths, is_yaml};
+    use super::{collect_startup_paths, is_yaml, RecentStorage};
 
     #[test]
     fn startup_accepts_only_existing_directories_and_yaml_files() {
@@ -234,5 +338,37 @@ mod tests {
     fn yaml_extensions_are_case_insensitive_but_not_substrings() {
         assert!(is_yaml(std::path::Path::new("flow.YML")));
         assert!(!is_yaml(std::path::Path::new("flow.yaml.exe")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recent_storage_rejects_an_app_data_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let linked = root.path().join("app-data");
+        symlink(outside.path(), &linked).unwrap();
+
+        assert_eq!(
+            RecentStorage::open(&linked).unwrap_err().code,
+            "recent_workspace_root_invalid"
+        );
+    }
+
+    #[test]
+    fn recent_storage_rejects_app_data_replacement_after_binding() {
+        let root = tempdir().unwrap();
+        let app_data = root.path().join("app-data");
+        fs::create_dir(&app_data).unwrap();
+        let storage = RecentStorage::open(&app_data).unwrap();
+        fs::rename(&app_data, root.path().join("original")).unwrap();
+        fs::create_dir(&app_data).unwrap();
+
+        assert_eq!(
+            storage.save(b"[]").unwrap_err().code,
+            "recent_workspace_root_changed"
+        );
+        assert!(!app_data.join("recent-workspaces-v1.json").exists());
     }
 }
