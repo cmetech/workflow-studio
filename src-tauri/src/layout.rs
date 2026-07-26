@@ -594,6 +594,10 @@ mod tests {
         save_layout_file_with_bound_hook, select_windows_atomic_commit, LayoutState,
     };
 
+    fn assert_windows_root_rename_denied(result: std::io::Result<()>) {
+        result.expect_err("the selected directory handles must deny root rename/delete sharing");
+    }
+
     #[test]
     fn windows_existing_target_commit_seam_interleaves_before_handle_relative_replace() {
         let events = std::cell::RefCell::new(Vec::new());
@@ -618,6 +622,14 @@ mod tests {
             events.into_inner(),
             vec!["ambient-root-swapped", "handle-relative-replace"]
         );
+    }
+
+    #[test]
+    fn windows_bound_root_interleave_requires_rename_denial() {
+        assert_windows_root_rename_denied(Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "selected directory handle denies delete sharing",
+        )));
     }
 
     #[test]
@@ -784,49 +796,35 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_commit_stays_bound_when_the_ambient_root_is_swapped() {
+    fn windows_denied_root_swap_keeps_the_original_commit_bound_and_clean() {
         let parent = tempfile::tempdir().unwrap();
         let app_data = parent.path().join("app-data");
         let parked = parent.path().join("original-app-data");
+        let replacement = parent.path().join("replacement-app-data");
         std::fs::create_dir(&app_data).unwrap();
         let state = LayoutState::default();
         save_layout_file(&app_data, "original-layout", &state).unwrap();
-        let replacement_staged_name = std::cell::RefCell::new(None);
+        let staged_name = std::cell::RefCell::new(None);
 
-        let error = save_layout_file_with_commit_hook(
+        save_layout_file_with_commit_hook(
             &app_data,
             "updated-original-layout",
             &state,
             |temporary_name| {
-                std::fs::rename(&app_data, &parked).unwrap();
-                std::fs::create_dir(&app_data).unwrap();
-                std::fs::write(app_data.join("layouts-v1.json"), "replacement-root-layout")
-                    .unwrap();
-                std::fs::write(
-                    app_data.join(temporary_name),
-                    "replacement-staged-lookalike",
-                )
-                .unwrap();
-                *replacement_staged_name.borrow_mut() = Some(temporary_name.clone());
+                assert_windows_root_rename_denied(std::fs::rename(&app_data, &parked));
+                *staged_name.borrow_mut() = Some(temporary_name.clone());
             },
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(error.code, "layout_root_changed");
         assert_eq!(
             std::fs::read_to_string(app_data.join("layouts-v1.json")).unwrap(),
-            "replacement-root-layout"
-        );
-        let replacement_staged_name = replacement_staged_name.into_inner().unwrap();
-        assert_eq!(
-            std::fs::read_to_string(app_data.join(replacement_staged_name)).unwrap(),
-            "replacement-staged-lookalike"
-        );
-        assert_eq!(
-            std::fs::read_to_string(parked.join("layouts-v1.json")).unwrap(),
             "updated-original-layout"
         );
-        let original_entries = std::fs::read_dir(&parked)
+        assert!(!parked.exists());
+        assert!(!replacement.exists());
+        assert!(!app_data.join(staged_name.into_inner().unwrap()).exists());
+        let original_entries = std::fs::read_dir(&app_data)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -859,10 +857,12 @@ mod tests {
             .readonly());
 
         let parked = parent.path().join("parked");
-        std::fs::rename(&app_data, &parked).unwrap();
-        std::fs::create_dir(&app_data).unwrap();
-        let error = save_layout_file(&app_data, "[]", &state).unwrap_err();
-        assert_eq!(error.code, "layout_root_changed");
-        assert!(!app_data.join("layouts-v1.json").exists());
+        assert_windows_root_rename_denied(std::fs::rename(&app_data, &parked));
+        save_layout_file(&app_data, "[]", &state).unwrap();
+        assert_eq!(
+            load_layout_file(&app_data, &state).unwrap().as_deref(),
+            Some("[]")
+        );
+        assert!(!parked.exists());
     }
 }
