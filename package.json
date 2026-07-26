@@ -3,7 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "engines": { "node": ">=22.12.0", "npm": ">=10" },
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -11,6 +14,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify": "npm run format:check && npm run lint && npm run check && npm run test:unit && npm run test:rust",
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:watch": "vitest",

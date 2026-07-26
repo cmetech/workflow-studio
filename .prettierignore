@@ -1,0 +1,9 @@
+coverage/
+dist/
+node_modules/
+src-tauri/gen/
+src-tauri/target/
+AGENTS.md
+docs/
+svelte.config.js
+vite.config.ts
