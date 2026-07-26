@@ -33,6 +33,7 @@ import {
   updateDocumentSession,
   invalidateDocumentAnalysis,
   isDocumentPairDirty,
+  type DocumentSyncOrigin,
 } from '$src/stores/documents'
 import { $activeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import {
@@ -170,12 +171,12 @@ export class DocumentWorkspaceController {
     return pair
   }
 
-  changed(pair: WorkflowPairText): void {
+  changed(pair: WorkflowPairText, origin: DocumentSyncOrigin = 'visual'): void {
     if (this.publicationSuppressed()) return
     const contract = this.activeContract
     const revision = $documentSession.get().revision
     if (!revision || $documentSession.get().pair?.workflowId !== pair.workflowId) return
-    updateDocumentSession(pair, revision.contractDigest)
+    updateDocumentSession(pair, revision.contractDigest, origin)
     this.dependencies.recoveryDrafts.changed(pair)
     if (contract) this.analysisClient.schedule(pair, contract, 'edit')
     else this.publishContractUnavailable(pair, revision.contractDigest)
@@ -483,7 +484,7 @@ export class DocumentWorkspaceController {
           }
         : null,
     }
-    updateDocumentSession(recovered, session.revision.contractDigest)
+    updateDocumentSession(recovered, session.revision.contractDigest, 'recovery')
     this.dependencies.recoveryDrafts.changed(recovered)
     if (this.activeContract) this.analysisClient.schedule(recovered, this.activeContract, 'edit')
     $documentWorkspace.set({ ...$documentWorkspace.get(), recoveryOffers: [] })
@@ -546,7 +547,7 @@ export class DocumentWorkspaceController {
       $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: result.conflict })
       return
     }
-    updateDocumentSession(result.pair, revision.contractDigest)
+    updateDocumentSession(result.pair, revision.contractDigest, choice === 'reload-disk' ? 'disk' : 'unknown')
     this.clearMissingPaths([conflict.disk.relativePath])
     this.dependencies.recoveryDrafts.changed(result.pair)
     if (contract) this.analysisClient.schedule(result.pair, contract, 'open')
@@ -673,7 +674,7 @@ export class DocumentWorkspaceController {
       const result = handleExternalChange(pair, disk)
       if (result.status === 'reloaded') {
         pair = result.pair
-        updateDocumentSession(pair, revision.contractDigest)
+        updateDocumentSession(pair, revision.contractDigest, 'disk')
         if (contract) this.analysisClient.schedule(pair, contract, 'open')
       } else if (result.status === 'conflict') {
         $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: result.conflict })

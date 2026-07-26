@@ -23,7 +23,7 @@ function issueToDiagnostic(
   issue: ValidationIssue,
   onFocus: ((issue: ValidationIssue) => void) | undefined,
 ): Diagnostic {
-  const from = positionFor(text, issue.line, issue.column)
+  const from = issuePositionForText(text, issue)
   const to = Math.min(text.length, from + (from < text.length ? 1 : 0))
   return {
     from,
@@ -44,7 +44,8 @@ function issueToDiagnostic(
   }
 }
 
-function positionFor(text: string, line: number | undefined, column: number | undefined): number {
+export function issuePositionForText(text: string, issue: Pick<ValidationIssue, 'line' | 'column'>): number {
+  const { line, column } = issue
   if (line === undefined || column === undefined) return 0
   const lines = lineStarts(text)
   const lineIndex = clamp(Math.trunc(line) - 1, 0, lines.length - 1)

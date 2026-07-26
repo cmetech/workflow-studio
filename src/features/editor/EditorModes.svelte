@@ -1,9 +1,16 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import type { EditorView } from '@codemirror/view'
   import type { EditorMode } from '$src/lib/commands/types'
+  import { isAnalysisCurrent } from '$src/lib/documents/revisions'
   import type { DocumentAnalysis, DocumentKind, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
-  import { activeYamlDocument, showYamlDocument } from '$src/stores/shell'
+  import {
+    $problemFocus as problemFocusStore,
+    acknowledgeProblemFocus,
+    type DocumentSyncOrigin,
+  } from '$src/stores/documents'
+  import { activeYamlDocument, showEditorMode, showYamlDocument } from '$src/stores/shell'
   import YamlEditor from './YamlEditor.svelte'
 
   interface Props {
@@ -13,16 +20,94 @@
     projection: WorkflowProjection | null
     mode: EditorMode
     readOnly?: boolean
+    syncOrigins?: Readonly<Record<DocumentKind, DocumentSyncOrigin>>
     onTextChange: (document: DocumentKind, text: string) => void
   }
 
-  let { pair, revision, analysis, projection, mode, readOnly = false, onTextChange }: Props = $props()
+  let {
+    pair,
+    revision,
+    analysis,
+    projection,
+    mode,
+    readOnly = false,
+    syncOrigins = { definition: 'unknown', companion: 'unknown' },
+    onTextChange,
+  }: Props = $props()
   let definitionEditor = $state<ReturnType<typeof YamlEditor>>()
   let companionEditor = $state<ReturnType<typeof YamlEditor>>()
+  let definitionTab = $state<HTMLButtonElement>()
+  let companionTab = $state<HTMLButtonElement>()
+  let handledProblemRequest = 0
+  const tabPrefix = $derived(`yaml-${encodeURIComponent(pair.workflowId)}`)
+  const definitionTabId = $derived(`${tabPrefix}-definition-tab`)
+  const companionTabId = $derived(`${tabPrefix}-companion-tab`)
+  const definitionPanelId = $derived(`${tabPrefix}-definition-panel`)
+  const companionPanelId = $derived(`${tabPrefix}-companion-panel`)
 
   $effect(() => {
     if (!pair.companion && $activeYamlDocument === 'companion') showYamlDocument('definition')
   })
+
+  $effect(() => {
+    const request = $problemFocusStore
+    if (!request.requested || request.requestRevision === handledProblemRequest) return
+    handledProblemRequest = request.requestRevision
+    void consumeProblemFocus(request.requestRevision)
+  })
+
+  async function consumeProblemFocus(requestRevision: number): Promise<void> {
+    const request = problemFocusStore.get()
+    const issue = request.issue
+    const target = request.targetRevision
+    if (
+      !request.requested ||
+      request.requestRevision !== requestRevision ||
+      !issue ||
+      !target ||
+      !isAnalysisCurrent(revision, target) ||
+      (issue.document === 'companion' && !pair.companion)
+    ) {
+      acknowledgeProblemFocus(requestRevision)
+      return
+    }
+    showYamlDocument(issue.document)
+    if (mode === 'visual') showEditorMode('yaml')
+    await tick()
+    const editor = issue.document === 'definition' ? definitionEditor : companionEditor
+    editor?.focusProblem(issue)
+    acknowledgeProblemFocus(requestRevision)
+  }
+
+  function activateTab(document: DocumentKind, focus: boolean): void {
+    if (document === 'companion' && !pair.companion) return
+    showYamlDocument(document)
+    if (focus) void tick().then(() => (document === 'definition' ? definitionTab : companionTab)?.focus())
+  }
+
+  function handleTabKey(event: KeyboardEvent, document: DocumentKind): void {
+    const target =
+      event.key === 'Home'
+        ? 'definition'
+        : event.key === 'End'
+          ? pair.companion
+            ? 'companion'
+            : 'definition'
+          : event.key === 'ArrowRight'
+            ? document === 'definition' && pair.companion
+              ? 'companion'
+              : 'definition'
+            : event.key === 'ArrowLeft'
+              ? document === 'companion'
+                ? 'definition'
+                : pair.companion
+                  ? 'companion'
+                  : 'definition'
+              : null
+    if (!target) return
+    event.preventDefault()
+    activateTab(target, true)
+  }
 
   export function getView(document: DocumentKind): EditorView {
     if (document === 'definition' && definitionEditor) return definitionEditor.getView()
@@ -35,26 +120,36 @@
 <section class:hidden={mode === 'visual'} class="editor-modes" aria-label="YAML editors" data-mode={mode}>
   <div class="yaml-tabs" role="tablist" aria-label="Workflow YAML files">
     <button
+      bind:this={definitionTab}
+      id={definitionTabId}
       type="button"
       role="tab"
+      aria-label="Definition YAML"
       aria-selected={$activeYamlDocument === 'definition'}
-      aria-controls="definition-yaml-panel"
-      onclick={() => showYamlDocument('definition')}>Definition</button
+      aria-controls={definitionPanelId}
+      tabindex={$activeYamlDocument === 'definition' ? 0 : -1}
+      onclick={() => activateTab('definition', false)}
+      onkeydown={(event) => handleTabKey(event, 'definition')}>Definition</button
     >
     {#if pair.companion}
       <button
+        bind:this={companionTab}
+        id={companionTabId}
         type="button"
         role="tab"
+        aria-label="Companion YAML"
         aria-selected={$activeYamlDocument === 'companion'}
-        aria-controls="companion-yaml-panel"
-        onclick={() => showYamlDocument('companion')}>Companion</button
+        aria-controls={companionPanelId}
+        tabindex={$activeYamlDocument === 'companion' ? 0 : -1}
+        onclick={() => activateTab('companion', false)}
+        onkeydown={(event) => handleTabKey(event, 'companion')}>Companion</button
       >
     {/if}
   </div>
   <div
-    id="definition-yaml-panel"
+    id={definitionPanelId}
     role="tabpanel"
-    aria-label="Definition YAML"
+    aria-labelledby={definitionTabId}
     class:inactive={$activeYamlDocument !== 'definition'}
   >
     <YamlEditor
@@ -65,15 +160,17 @@
       {analysis}
       nodes={projection?.nodes ?? []}
       {readOnly}
+      active={$activeYamlDocument === 'definition' && mode !== 'visual'}
       focusOnSelection={mode !== 'visual'}
+      syncOrigin={syncOrigins.definition}
       onTextChange={(text) => onTextChange('definition', text)}
     />
   </div>
   {#if pair.companion}
     <div
-      id="companion-yaml-panel"
+      id={companionPanelId}
       role="tabpanel"
-      aria-label="Companion YAML"
+      aria-labelledby={companionTabId}
       class:inactive={$activeYamlDocument !== 'companion'}
     >
       <YamlEditor
@@ -84,7 +181,9 @@
         {analysis}
         nodes={[]}
         {readOnly}
+        active={$activeYamlDocument === 'companion' && mode !== 'visual'}
         focusOnSelection={mode !== 'visual'}
+        syncOrigin={syncOrigins.companion}
         onTextChange={(text) => onTextChange('companion', text)}
       />
     </div>

@@ -3,6 +3,13 @@ import type { CanvasPosition } from '$src/features/canvas/types'
 
 export const $canvasPositions = atom<Readonly<Record<string, CanvasPosition>>>({})
 export const $canvasSelection = atom<readonly string[]>([])
+export const $canvasWorkflowIdentity = atom<string | null>(null)
+
+export function activateCanvasWorkflowIdentity(workflowId: string | null): void {
+  if ($canvasWorkflowIdentity.get() === workflowId) return
+  $canvasSelection.set([])
+  $canvasWorkflowIdentity.set(workflowId)
+}
 
 export function replaceCanvasPositions(positions: Readonly<Record<string, CanvasPosition>>): void {
   $canvasPositions.set(clonePositions(positions))
@@ -20,6 +27,7 @@ export function setCanvasSelection(ids: readonly string[]): void {
 export function clearCanvasState(): void {
   $canvasPositions.set({})
   $canvasSelection.set([])
+  $canvasWorkflowIdentity.set(null)
 }
 
 function clonePositions(positions: Readonly<Record<string, CanvasPosition>>): Record<string, CanvasPosition> {

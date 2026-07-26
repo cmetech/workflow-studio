@@ -7,6 +7,7 @@ import { editDocumentText, isAnalysisCurrent } from '$src/lib/documents/revision
 import type { DocumentAnalysis, DocumentKind, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
+import type { DocumentSyncOrigin } from '$src/stores/documents'
 
 export const externalEditorUpdate = Annotation.define<boolean>()
 export const editorSelectionSync = Annotation.define<'canvas' | 'problem'>()
@@ -96,6 +97,40 @@ export function rangeForSelectedNode(
 
 export function nodeAtCursor(nodes: readonly SourceRangedNode[], position: number): string | null {
   return nodes.find(({ source }) => position >= source.start && position <= source.end)?.id ?? null
+}
+
+export function rangeSynchronizationIsCurrent(revision: DocumentRevision, analysis: DocumentAnalysis | null): boolean {
+  return Boolean(
+    analysis?.structurallyValid && isAnalysisCurrent(revision, analysis) && isWorkflowProjection(analysis.projection),
+  )
+}
+
+export interface MinimalEditorChange {
+  readonly from: number
+  readonly to: number
+  readonly insert: string
+}
+
+export function externalEditorChange(
+  current: string,
+  next: string,
+  origin: DocumentSyncOrigin,
+): { readonly kind: 'mapped'; readonly change: MinimalEditorChange } | { readonly kind: 'reset' } {
+  if (origin !== 'visual' && origin !== 'form') return { kind: 'reset' }
+  let prefix = 0
+  const prefixLimit = Math.min(current.length, next.length)
+  while (prefix < prefixLimit && current.charCodeAt(prefix) === next.charCodeAt(prefix)) prefix += 1
+  let currentSuffix = current.length
+  let nextSuffix = next.length
+  while (
+    currentSuffix > prefix &&
+    nextSuffix > prefix &&
+    current.charCodeAt(currentSuffix - 1) === next.charCodeAt(nextSuffix - 1)
+  ) {
+    currentSuffix -= 1
+    nextSuffix -= 1
+  }
+  return { kind: 'mapped', change: { from: prefix, to: currentSuffix, insert: next.slice(prefix, nextSuffix) } }
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

@@ -23,7 +23,11 @@
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
-  import { $documentSession as documentSessionStore, openDocumentSession } from '$src/stores/documents'
+  import {
+    $documentSession as documentSessionStore,
+    $documentSyncOrigins as documentSyncOriginsStore,
+    openDocumentSession,
+  } from '$src/stores/documents'
   import { $activeLayout as activeLayoutStore, setActiveLayout } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
@@ -56,6 +60,7 @@
   import {
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
+    activateCanvasWorkflowIdentity,
   } from '$src/stores/canvas'
   import { historyStore, recordTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
@@ -256,7 +261,7 @@
       positions: canvasPositionsStore.get(),
       commit: (pair, transaction) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
-        documentWorkspace.changed(pair)
+        documentWorkspace.changed(pair, 'visual')
       },
       commitPositions: async (updates) => {
         const active = activeLayoutStore.get()
@@ -292,7 +297,7 @@
   function editYamlDocument(document: DocumentKind, text: string): void {
     const pair = documentSessionStore.get().pair
     if (!pair) return
-    applyAuthoritativeEditorText(pair, document, text, (next) => documentWorkspace.changed(next))
+    applyAuthoritativeEditorText(pair, document, text, (next) => documentWorkspace.changed(next, 'user'))
   }
 
   async function chooseCanvasNode(descriptor: NodeKindDescriptor): Promise<void> {
@@ -515,6 +520,10 @@
       quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
       quickOpenVisible = true
     } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
+  })
+
+  $effect.pre(() => {
+    activateCanvasWorkflowIdentity($documentSessionStore.pair?.workflowId ?? null)
   })
 
   $effect(() => {
@@ -773,6 +782,18 @@
                     analysis={$documentSessionStore.analysis}
                     projection={canvasProjection}
                     mode={$activeEditorMode}
+                    syncOrigins={{
+                      definition:
+                        $documentSyncOriginsStore.definition?.revision ===
+                        $documentSessionStore.pair.definition.revision
+                          ? $documentSyncOriginsStore.definition.origin
+                          : 'unknown',
+                      companion:
+                        $documentSessionStore.pair.companion &&
+                        $documentSyncOriginsStore.companion?.revision === $documentSessionStore.pair.companion.revision
+                          ? $documentSyncOriginsStore.companion.origin
+                          : 'unknown',
+                    }}
                     readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
                       ?.readOnly === true}
                     onTextChange={editYamlDocument}

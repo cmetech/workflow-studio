@@ -6,11 +6,13 @@ import { showActivity, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import {
   $documentSession,
+  $problemFocus,
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
+import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import App from './App.svelte'
 
@@ -344,6 +346,7 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBe(graph)
     expect(screen.getByRole('tabpanel', { name: 'Definition YAML' })).toBeVisible()
     expect(screen.getByRole('textbox')).toBe(editor)
+    setCanvasSelection(['collect'])
 
     openDocumentSession(
       {
@@ -364,8 +367,60 @@ describe('App', () => {
       `sha256:${'1'.repeat(64)}`,
     )
     await tick()
+    expect($canvasSelection.get()).toEqual([])
     expect(screen.getByRole('textbox')).not.toBe(editor)
     expect(screen.getByRole('textbox')).toHaveTextContent(/name: Other/)
+  })
+
+  it('routes ProblemsPanel focus through the identity-gated active YAML tab and clears the request', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\nnodes: []\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      issues: [
+        {
+          code: 'nodes_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Add at least one node.',
+          document: 'definition',
+          line: 99,
+          column: 99,
+        },
+      ],
+      structurallyValid: false,
+    })
+    showEditorMode('visual')
+    render(App)
+
+    await fireEvent.click(screen.getByRole('button', { name: /add at least one node/i }))
+    await tick()
+    await tick()
+
+    expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('tab', { name: 'Definition YAML' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('textbox', { name: 'Definition YAML' })).toHaveFocus()
+    expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false })
   })
 
   it('applies the selected light theme across the shell chrome', () => {
