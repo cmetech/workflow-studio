@@ -9,13 +9,14 @@
     SvelteFlow,
     type Viewport,
   } from '@xyflow/svelte'
-  import { Map, Network } from 'lucide-svelte'
+  import { Copy, Map, Network, Plus, Trash2 } from 'lucide-svelte'
   import '@xyflow/svelte/dist/style.css'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import {
     $canvasPositions as canvasPositionsStore,
+    $canvasSelection as canvasSelectionStore,
     moveCanvasPosition,
     replaceCanvasPositions,
     setCanvasSelection,
@@ -24,6 +25,12 @@
   import type { CanvasDragDetail, CanvasEdge, CanvasNode } from './types'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
+
+  export interface CanvasAuthoringFeedback {
+    readonly status: 'committed' | 'rejected' | 'resolution_required'
+    readonly code?: string
+    readonly message?: string
+  }
 
   interface Props {
     projection: WorkflowProjection
@@ -35,6 +42,14 @@
     readOnly?: boolean
     onPersistLayout?: (layout: LayoutRecordV1) => void | Promise<void>
     onPersistenceError?: (error: unknown) => void
+    onConnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
+    onDisconnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
+    onRequestAdd?: (request: {
+      readonly afterNodeId?: string
+      readonly viewportCenter: { readonly x: number; readonly y: number }
+    }) => void | Promise<void>
+    onDuplicate?: (nodeIds: readonly string[]) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
+    onRequestDelete?: (nodeIds: readonly string[]) => void | Promise<void>
   }
 
   let {
@@ -47,6 +62,11 @@
     readOnly = false,
     onPersistLayout = () => undefined,
     onPersistenceError = () => undefined,
+    onConnect,
+    onDisconnect,
+    onRequestAdd,
+    onDuplicate,
+    onRequestDelete,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -57,6 +77,8 @@
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
   let minimapVisible = $state(false)
+  let selection = $state<readonly string[]>(canvasSelectionStore.get())
+  let authoringFeedback = $state('')
   let root: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: LayoutRecordV1 | null = null
@@ -107,6 +129,42 @@
   function selectionChanged(ids: readonly string[]): void {
     if (transitionLocked) return
     setCanvasSelection(ids)
+    selection = [...ids]
+  }
+
+  function canAuthor(): boolean {
+    return !readOnly && !stale && !transitionLocked
+  }
+
+  function viewportCenter(): { x: number; y: number } {
+    const zoom = flowViewport.zoom || 1
+    return {
+      x: (root.clientWidth / 2 - flowViewport.x) / zoom,
+      y: (root.clientHeight / 2 - flowViewport.y) / zoom,
+    }
+  }
+
+  async function handleAuthoringResult(
+    operation: (() => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>) | undefined,
+  ): Promise<void> {
+    if (!canAuthor() || !operation) return
+    const result = await operation()
+    authoringFeedback = result.status === 'committed' ? '' : (result.message ?? 'The canvas action was rejected.')
+  }
+
+  function requestAdd(afterNodeId?: string): void {
+    if (!canAuthor() || !onRequestAdd) return
+    void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenter() })
+  }
+
+  function requestDuplicate(): void {
+    if (selection.length === 0) return
+    void handleAuthoringResult(() => onDuplicate?.(selection) ?? { status: 'committed' })
+  }
+
+  function requestDelete(): void {
+    if (!canAuthor() || selection.length === 0) return
+    void onRequestDelete?.(selection)
   }
 
   function layoutWithPositions(): LayoutRecordV1 {
@@ -141,11 +199,27 @@
   onMount(() => {
     const drag = (event: Event) => handleDrag((event as CustomEvent<CanvasDragDetail>).detail)
     const stop = (event: Event) => handleDragStop((event as CustomEvent<CanvasDragDetail>).detail)
+    const connect = (event: Event) => {
+      const detail = (event as CustomEvent<{ source: string; target: string }>).detail
+      void handleAuthoringResult(() => onConnect?.(detail.source, detail.target) ?? { status: 'committed' })
+    }
+    const disconnect = (event: Event) => {
+      const detail = (event as CustomEvent<{ source: string; target: string }>).detail
+      void handleAuthoringResult(() => onDisconnect?.(detail.source, detail.target) ?? { status: 'committed' })
+    }
     root.addEventListener('workflowdragmove', drag)
     root.addEventListener('workflowdragstop', stop)
+    root.addEventListener('workflowconnect', connect)
+    root.addEventListener('workflowdisconnect', disconnect)
+    const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
+      selection = [...ids]
+    })
     return () => {
       root.removeEventListener('workflowdragmove', drag)
       root.removeEventListener('workflowdragstop', stop)
+      root.removeEventListener('workflowconnect', connect)
+      root.removeEventListener('workflowdisconnect', disconnect)
+      unsubscribeSelection()
     }
   })
 
@@ -162,6 +236,28 @@
   bind:this={root}
 >
   <div class="canvas-toolbar" aria-label="Canvas tools">
+    <button type="button" aria-label="Add node" disabled={!canAuthor()} onclick={() => requestAdd()}>
+      <Plus size={15} aria-hidden="true" />
+      Add
+    </button>
+    <button
+      type="button"
+      aria-label="Duplicate selection"
+      disabled={!canAuthor() || selection.length === 0}
+      onclick={requestDuplicate}
+    >
+      <Copy size={15} aria-hidden="true" />
+      Duplicate
+    </button>
+    <button
+      type="button"
+      aria-label="Delete selection"
+      disabled={!canAuthor() || selection.length === 0}
+      onclick={requestDelete}
+    >
+      <Trash2 size={15} aria-hidden="true" />
+      Delete
+    </button>
     <button type="button" aria-label="Arrange graph" disabled={readOnly || stale || transitionLocked} onclick={arrange}>
       <Network size={15} aria-hidden="true" />
       Arrange
@@ -206,6 +302,16 @@
       if (node) handleDragStop({ id: node.id, position: node.position })
     }}
     onselectionchange={({ nodes }) => selectionChanged(nodes.map(({ id }) => id))}
+    onconnect={({ source, target }) => {
+      if (source && target) void handleAuthoringResult(() => onConnect?.(source, target) ?? { status: 'committed' })
+    }}
+    onbeforedelete={async ({ nodes, edges }) => {
+      if (nodes.length > 0) requestDelete()
+      for (const edge of edges) {
+        await handleAuthoringResult(() => onDisconnect?.(edge.source, edge.target) ?? { status: 'committed' })
+      }
+      return false
+    }}
     onmoveend={(_event, viewport) => viewportChanged(viewport)}
   >
     <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
@@ -226,6 +332,9 @@
       Last valid graph shown read-only while current YAML has structural errors.
     </div>
   {/if}
+  <p class="sr-only" role="status" aria-label="Canvas authoring feedback" aria-live="polite">
+    {authoringFeedback}
+  </p>
 </section>
 
 <style>
@@ -292,6 +401,18 @@
     color: var(--color-text);
     background: color-mix(in srgb, var(--color-surface) 94%, transparent);
     font-size: 0.72rem;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {

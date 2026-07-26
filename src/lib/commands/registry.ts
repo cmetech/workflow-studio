@@ -40,10 +40,27 @@ export class CommandNotFoundError extends Error {
 const commandSurfaces: readonly CommandContext['surface'][] = ['global', 'canvas', 'yaml', 'form']
 let documentSaveHandler: (() => void | Promise<void>) | null = null
 
+export interface CanvasCommandHandlers {
+  readonly addNode: () => void | Promise<void>
+  readonly copySelection: () => void | Promise<void>
+  readonly deleteSelection: () => void | Promise<void>
+  readonly duplicateSelection: () => void | Promise<void>
+  readonly pasteSelection: () => void | Promise<void>
+}
+
+let canvasCommandHandlers: CanvasCommandHandlers | null = null
+
 export function setDocumentSaveHandler(handler: () => void | Promise<void>): () => void {
   documentSaveHandler = handler
   return () => {
     if (documentSaveHandler === handler) documentSaveHandler = null
+  }
+}
+
+export function setCanvasCommandHandlers(handlers: CanvasCommandHandlers): () => void {
+  canvasCommandHandlers = handlers
+  return () => {
+    if (canvasCommandHandlers === handlers) canvasCommandHandlers = null
   }
 }
 
@@ -198,7 +215,30 @@ function workflowCommand(
   }
 }
 
+function canvasCommand(
+  action: keyof CanvasCommandHandlers,
+  label: string,
+  options: { readonly selection?: boolean; readonly mutating?: boolean } = {},
+): AppCommand {
+  return {
+    id: `canvas.${action.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`,
+    label,
+    category: 'Canvas',
+    defaultBindings: [],
+    enabled: (context) =>
+      context.surface === 'canvas' &&
+      (!options.selection || context.hasSelection) &&
+      (!options.mutating || context.canMutate),
+    run: () => canvasCommandHandlers?.[action](),
+  }
+}
+
 const initialCommands: readonly AppCommand[] = [
+  canvasCommand('addNode', 'Add Node', { mutating: true }),
+  canvasCommand('copySelection', 'Copy Selection', { selection: true }),
+  canvasCommand('deleteSelection', 'Delete Selection', { selection: true, mutating: true }),
+  canvasCommand('duplicateSelection', 'Duplicate Selection', { selection: true, mutating: true }),
+  canvasCommand('pasteSelection', 'Paste Selection', { mutating: true }),
   {
     id: 'document.save',
     label: 'Save Workflow Pair',

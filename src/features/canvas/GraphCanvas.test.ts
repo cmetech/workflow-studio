@@ -125,7 +125,7 @@ describe('GraphCanvas', () => {
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
     render(GraphCanvas, { projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
 
-    expect(screen.getByRole('status')).toHaveTextContent(/last valid graph.*read-only/i)
+    expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Show minimap' })).toBeEnabled()
 
@@ -301,5 +301,49 @@ describe('GraphCanvas', () => {
     expect(incoming).toHaveAttribute('tabindex', '0')
     expect(getComputedStyle(incoming).width).toBe('32px')
     expect(getComputedStyle(incoming).height).toBe('32px')
+  })
+
+  it('routes semantic connection events without changing layout and announces one typed rejection politely', async () => {
+    vi.useFakeTimers()
+    const onConnect = vi.fn(async () => ({
+      status: 'rejected' as const,
+      code: 'cycle',
+      message: 'Connecting review to collect would create a cycle.',
+    }))
+    const persistLayout = vi.fn()
+    const { container } = render(GraphCanvas, { projection, layout, onConnect, onPersistLayout: persistLayout })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const before = structuredClone($canvasPositions.get())
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowconnect', {
+        bubbles: true,
+        detail: { source: 'review', target: 'collect' },
+      }),
+    )
+    await vi.runAllTimersAsync()
+
+    expect(onConnect).toHaveBeenCalledOnce()
+    expect(onConnect).toHaveBeenCalledWith('review', 'collect')
+    expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(/create a cycle/i)
+    expect(screen.getAllByRole('status', { name: 'Canvas authoring feedback' })).toHaveLength(1)
+    expect($canvasPositions.get()).toEqual(before)
+    expect(persistLayout).not.toHaveBeenCalled()
+  })
+
+  it('requests descriptor picking, duplication, and precise deletion for the current selection', async () => {
+    const onRequestAdd = vi.fn()
+    const onDuplicate = vi.fn()
+    const onRequestDelete = vi.fn()
+    render(GraphCanvas, { projection, layout, onRequestAdd, onDuplicate, onRequestDelete })
+    setCanvasSelection(['review'])
+    await fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete selection' }))
+
+    expect(onRequestAdd).toHaveBeenCalledWith({ viewportCenter: { x: 400, y: 300 } })
+    expect(onDuplicate).toHaveBeenCalledWith(['review'])
+    expect(onRequestDelete).toHaveBeenCalledWith(['review'])
   })
 })

@@ -3,6 +3,7 @@ import {
   CommandDisabledError,
   createCommandRegistry,
   executeCommand,
+  setCanvasCommandHandlers,
   setDocumentSaveHandler,
   listCommands,
   type CommandRegistry,
@@ -40,6 +41,11 @@ function registryWith(...commands: AppCommand[]): CommandRegistry {
 describe('command registry', () => {
   it('registers the initial shell commands from one table', () => {
     expect(listCommands().map(({ id }) => id)).toEqual([
+      'canvas.add-node',
+      'canvas.copy-selection',
+      'canvas.delete-selection',
+      'canvas.duplicate-selection',
+      'canvas.paste-selection',
       'workspace.open-folder',
       'workspace.quick-open',
       'document.save',
@@ -215,6 +221,32 @@ describe('command registry', () => {
       expect(command?.defaultBindings).toEqual(['Mod+S'])
       await executeCommand('document.save', { ...globalContext, canMutate: true })
       expect(save).toHaveBeenCalledOnce()
+    } finally {
+      unbind()
+    }
+  })
+
+  it('routes enabled canvas authoring commands through the active canvas handlers', async () => {
+    const handlers = {
+      addNode: vi.fn(),
+      copySelection: vi.fn(),
+      deleteSelection: vi.fn(),
+      duplicateSelection: vi.fn(),
+      pasteSelection: vi.fn(),
+    }
+    const unbind = setCanvasCommandHandlers(handlers)
+    const context: CommandContext = { surface: 'canvas', canMutate: true, hasSelection: true }
+    try {
+      for (const [id, handler] of [
+        ['canvas.add-node', handlers.addNode],
+        ['canvas.copy-selection', handlers.copySelection],
+        ['canvas.delete-selection', handlers.deleteSelection],
+        ['canvas.duplicate-selection', handlers.duplicateSelection],
+        ['canvas.paste-selection', handlers.pasteSelection],
+      ] as const) {
+        await executeCommand(id, context)
+        expect(handler).toHaveBeenCalledOnce()
+      }
     } finally {
       unbind()
     }
