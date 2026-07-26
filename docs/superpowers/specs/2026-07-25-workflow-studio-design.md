@@ -235,6 +235,8 @@ The approved workspace has five primary regions:
 
 The YAML view exposes separate Definition and Companion tabs. Split view keeps the active YAML file beside the graph. Selecting a node focuses its YAML location and inspector; moving the YAML cursor to a recognized node highlights that node.
 
+The durable visual reference is the [approved Explorer-first workbench mockup](../../mockups/workspace-explorer-layout.html).
+
 ## 10. Visual DAG editor
 
 ### 10.1 Graph constraints

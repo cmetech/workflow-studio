@@ -8,8 +8,15 @@ This repository currently contains the approved product and implementation docum
 
 1. Read the [Hermes workflow-language analysis](docs/analysis/2026-07-25-hermes-workflow-language-foundation-review.md).
 2. Read the [approved design specification](docs/superpowers/specs/2026-07-25-workflow-studio-design.md).
-3. Follow the implementation plan after it is added under `docs/superpowers/plans/`.
-4. Use the clean-session prompt under `docs/handoffs/` when starting implementation in a new LLM context.
+3. Open the [approved Explorer workbench mockup](docs/mockups/workspace-explorer-layout.html).
+4. Read the [implementation roadmap](docs/superpowers/plans/2026-07-25-workflow-studio-roadmap.md).
+5. Execute the linked phase plans in order:
+
+   - [Native foundation](docs/superpowers/plans/2026-07-25-workflow-studio-foundation-plan.md)
+   - [YAML document and workspace](docs/superpowers/plans/2026-07-25-workflow-studio-document-workspace-plan.md)
+   - [Visual authoring](docs/superpowers/plans/2026-07-25-workflow-studio-visual-authoring-plan.md)
+   - [Integration and release](docs/superpowers/plans/2026-07-25-workflow-studio-integration-release-plan.md)
+6. Use the [clean-session implementation prompt](docs/handoffs/2026-07-25-workflow-studio-clean-session-prompt.md) when starting implementation in a new LLM context.
 
 ## Status
 
