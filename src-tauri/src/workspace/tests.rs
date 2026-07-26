@@ -570,6 +570,76 @@ fn trash_rolls_back_through_bound_handles_if_the_selected_root_is_replaced() {
 }
 
 #[test]
+fn trash_never_reports_success_if_the_root_changes_after_os_handoff() {
+    let parent = tempdir().unwrap();
+    let root_path = parent.path().join("workspace");
+    fs::create_dir(&root_path).unwrap();
+    fs::write(root_path.join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(&root_path);
+    let displaced = parent.path().join("displaced");
+    let os_trash_path = parent.path().join("os-trash-flow.yaml");
+
+    let result = files::trash_paths_with_post_delete_hook(
+        &workspace,
+        &["flow.yaml".to_string()],
+        |quarantine| fs::rename(quarantine, &os_trash_path).map_err(|error| error.to_string()),
+        || {
+            fs::rename(&root_path, &displaced).unwrap();
+            fs::create_dir(&root_path).unwrap();
+            fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap();
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "partial");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("workspace_trash_partial")
+    );
+    assert_eq!(
+        fs::read_to_string(&os_trash_path).unwrap(),
+        "id: original\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root_path.join("flow.yaml")).unwrap(),
+        "id: replacement\n"
+    );
+}
+
+#[test]
+fn write_restores_read_only_permissions_only_after_staged_unlink_commits() {
+    let root = tempdir().unwrap();
+    let target = root.path().join("flow.yaml");
+    fs::write(&target, "id: original\n").unwrap();
+    let mut permissions = fs::metadata(&target).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&target, permissions).unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+    let mut observed = Vec::new();
+
+    files::write_with_permission_order_hook(
+        &workspace,
+        "flow.yaml",
+        "id: mine\n",
+        Some(&before.sha256),
+        |phase, read_only| observed.push((phase.to_string(), read_only)),
+    )
+    .unwrap();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("beforeCommit".to_string(), false),
+            ("afterCommit".to_string(), false),
+            ("afterRestore".to_string(), true),
+        ]
+    );
+    assert!(fs::metadata(&target).unwrap().permissions().readonly());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "id: mine\n");
+}
+
+#[test]
 fn trash_preserves_each_capability_resolver_error_code() {
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();

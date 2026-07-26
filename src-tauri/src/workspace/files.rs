@@ -5,9 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
-#[cfg(windows)]
-use cap_std::fs::Permissions;
-use cap_std::fs::{Dir, File, Metadata, OpenOptions};
+use cap_std::fs::{Dir, File, Metadata, OpenOptions, Permissions};
 use same_file::Handle;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -401,9 +399,7 @@ pub fn write(
         relative,
         text,
         expected_current_hash,
-        || {},
-        || {},
-        || {},
+        WriteHooks::none(),
     )
 }
 
@@ -420,9 +416,12 @@ pub fn write_with_precommit_hook(
         relative,
         text,
         expected_current_hash,
-        hook,
-        || {},
-        || {},
+        WriteHooks {
+            pre_hash: hook,
+            post_hash: || {},
+            post_quarantine: || {},
+            permission: noop_permission_hook,
+        },
     )
 }
 
@@ -439,9 +438,12 @@ pub fn write_with_post_hash_hook(
         relative,
         text,
         expected_current_hash,
-        || {},
-        hook,
-        || {},
+        WriteHooks {
+            pre_hash: || {},
+            post_hash: hook,
+            post_quarantine: || {},
+            permission: noop_permission_hook,
+        },
     )
 }
 
@@ -458,21 +460,76 @@ pub fn write_with_post_quarantine_hook(
         relative,
         text,
         expected_current_hash,
-        || {},
-        || {},
-        hook,
+        WriteHooks {
+            pre_hash: || {},
+            post_hash: || {},
+            post_quarantine: hook,
+            permission: noop_permission_hook,
+        },
     )
 }
 
-fn write_impl(
+#[cfg(test)]
+pub fn write_with_permission_order_hook(
     scope: &WorkspaceScope,
     relative: &str,
     text: &str,
     expected_current_hash: Option<&str>,
-    pre_hash_hook: impl FnOnce(),
-    post_hash_hook: impl FnOnce(),
-    post_quarantine_hook: impl FnOnce(),
+    permission_hook: impl FnMut(&str, bool),
 ) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        WriteHooks {
+            pre_hash: || {},
+            post_hash: || {},
+            post_quarantine: || {},
+            permission: permission_hook,
+        },
+    )
+}
+
+struct WriteHooks<PreHash, PostHash, PostQuarantine, Permission> {
+    pre_hash: PreHash,
+    post_hash: PostHash,
+    post_quarantine: PostQuarantine,
+    permission: Permission,
+}
+
+impl WriteHooks<fn(), fn(), fn(), fn(&str, bool)> {
+    fn none() -> Self {
+        Self {
+            pre_hash: || {},
+            post_hash: || {},
+            post_quarantine: || {},
+            permission: noop_permission_hook,
+        }
+    }
+}
+
+fn noop_permission_hook(_: &str, _: bool) {}
+
+fn write_impl<PreHash, PostHash, PostQuarantine, Permission>(
+    scope: &WorkspaceScope,
+    relative: &str,
+    text: &str,
+    expected_current_hash: Option<&str>,
+    hooks: WriteHooks<PreHash, PostHash, PostQuarantine, Permission>,
+) -> WorkspaceResult<WorkspaceWriteResult>
+where
+    PreHash: FnOnce(),
+    PostHash: FnOnce(),
+    PostQuarantine: FnOnce(),
+    Permission: FnMut(&str, bool),
+{
+    let WriteHooks {
+        pre_hash: pre_hash_hook,
+        post_hash: post_hash_hook,
+        post_quarantine: post_quarantine_hook,
+        permission: mut permission_hook,
+    } = hooks;
     require_yaml(relative)?;
     if text.len() as u64 > MAX_YAML_BYTES {
         return Err(WorkspaceError::new(
@@ -512,10 +569,6 @@ fn write_impl(
             return Err(revision_conflict());
         }
         let prior_permissions = metadata.permissions();
-        temporary
-            .file_mut()
-            .set_permissions(prior_permissions.clone())
-            .map_err(|error| io_error("workspace_write_failed", error))?;
         #[cfg(windows)]
         make_windows_file_replaceable(&current, &prior_permissions)?;
 
@@ -545,6 +598,7 @@ fn write_impl(
             ));
         }
         post_quarantine_hook();
+        permission_hook("beforeCommit", bound_read_only(&staged)?);
         let commit = move_noclobber_with_expected(&staged, &bound, &staged_identity, || {}, || {});
         if !matches!(commit, MoveNoClobberOutcome::Moved) {
             let rollback =
@@ -554,6 +608,27 @@ fn write_impl(
             return Err(write_commit_recovery_error(&commit, &rollback));
         }
         temporary.disarm();
+        permission_hook("afterCommit", bound_read_only(&bound)?);
+        if let Err(error) =
+            restore_committed_permissions(&bound, &staged_identity, prior_permissions.clone())
+        {
+            let commit_cleanup = remove_verified_name(&bound, &staged_identity);
+            let rollback = if commit_cleanup.is_ok() {
+                move_noclobber_with_expected(&quarantine, &bound, &original_identity, || {}, || {})
+            } else {
+                MoveNoClobberOutcome::Partial {
+                    unlink_error: MoveIssue::new(
+                        "permission_restore_failed",
+                        error.message.clone(),
+                    ),
+                    cleanup_error: commit_cleanup.expect_err("failed cleanup has an error"),
+                }
+            };
+            #[cfg(windows)]
+            restore_windows_file_permissions(&current, &prior_permissions)?;
+            return Err(write_permission_recovery_error(error, &rollback));
+        }
+        permission_hook("afterRestore", bound_read_only(&bound)?);
         if let Err(issue) = remove_verified_name(&quarantine, &original_identity) {
             #[cfg(windows)]
             restore_windows_file_permissions(&current, &prior_permissions)?;
@@ -572,6 +647,7 @@ fn write_impl(
             Err(error) => return Err(capability_error("workspace_write_failed", error)),
         }
         post_hash_hook();
+        permission_hook("beforeCommit", bound_read_only(&staged)?);
         let commit = move_noclobber_with_expected(&staged, &bound, &staged_identity, || {}, || {});
         if !matches!(commit, MoveNoClobberOutcome::Moved) {
             return Err(write_move_error(
@@ -580,6 +656,7 @@ fn write_impl(
             ));
         }
         temporary.disarm();
+        permission_hook("afterCommit", bound_read_only(&bound)?);
     }
     sync_parent(&bound.parent)?;
 
@@ -593,6 +670,58 @@ fn write_impl(
         size: text.len() as u64,
         modified_at: modified_timestamp(&metadata),
     })
+}
+
+fn bound_read_only(path: &BoundPath) -> WorkspaceResult<bool> {
+    path.parent
+        .metadata(&path.name)
+        .map(|metadata| metadata.permissions().readonly())
+        .map_err(|error| capability_error("workspace_write_failed", error))
+}
+
+fn restore_committed_permissions(
+    committed: &BoundPath,
+    expected_identity: &Handle,
+    permissions: Permissions,
+) -> WorkspaceResult<()> {
+    let file = committed
+        .parent
+        .open(&committed.name)
+        .map_err(|error| capability_error("workspace_permission_restore_failed", error))?;
+    let identity = file_identity(&file)
+        .map_err(|error| io_error("workspace_permission_restore_failed", error))?;
+    if identity != *expected_identity {
+        return Err(WorkspaceError::new(
+            "workspace_permission_restore_failed",
+            "The committed target changed before permissions could be restored.",
+        ));
+    }
+    file.set_permissions(permissions)
+        .map_err(|error| io_error("workspace_permission_restore_failed", error))
+}
+
+fn write_permission_recovery_error(
+    permission_error: WorkspaceError,
+    rollback: &MoveNoClobberOutcome,
+) -> WorkspaceError {
+    let (status, rollback_message) = move_failure_details(rollback);
+    if status == "moved" {
+        WorkspaceError::new(
+            "workspace_permission_restore_failed",
+            format!(
+                "{} The verified original was restored.",
+                permission_error.message
+            ),
+        )
+    } else {
+        WorkspaceError::new(
+            "workspace_write_partial",
+            format!(
+                "{} Permission recovery rollback failed: {rollback_message}",
+                permission_error.message
+            ),
+        )
+    }
 }
 
 fn named_hash_matches(path: &BoundPath, identity: &Handle, expected_hash: &str) -> bool {
@@ -916,7 +1045,7 @@ pub fn trash_paths_with(
     relative_paths: &[String],
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, || {}, |_| {}, &mut delete)
+    trash_paths_impl(scope, relative_paths, || {}, |_| {}, || {}, &mut delete)
 }
 
 #[cfg(test)]
@@ -926,7 +1055,7 @@ pub fn trash_paths_with_bound_hook(
     hook: impl FnOnce(),
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, hook, |_| {}, &mut delete)
+    trash_paths_impl(scope, relative_paths, hook, |_| {}, || {}, &mut delete)
 }
 
 #[cfg(test)]
@@ -936,7 +1065,31 @@ pub fn trash_paths_with_handoff_hook(
     mut handoff_hook: impl FnMut(&Path),
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, || {}, &mut handoff_hook, &mut delete)
+    trash_paths_impl(
+        scope,
+        relative_paths,
+        || {},
+        &mut handoff_hook,
+        || {},
+        &mut delete,
+    )
+}
+
+#[cfg(test)]
+pub fn trash_paths_with_post_delete_hook(
+    scope: &WorkspaceScope,
+    relative_paths: &[String],
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
+    mut post_delete_hook: impl FnMut(),
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    trash_paths_impl(
+        scope,
+        relative_paths,
+        || {},
+        |_| {},
+        &mut post_delete_hook,
+        &mut delete,
+    )
 }
 
 fn trash_paths_impl(
@@ -944,6 +1097,7 @@ fn trash_paths_impl(
     relative_paths: &[String],
     bound_hook: impl FnOnce(),
     mut handoff_hook: impl FnMut(&Path),
+    mut post_delete_hook: impl FnMut(),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     if relative_paths.is_empty() || relative_paths.len() > 2 {
@@ -970,7 +1124,14 @@ fn trash_paths_impl(
     let mut results = Vec::with_capacity(relative_paths.len());
     for (relative, bound) in relative_paths.iter().zip(bound) {
         let result = match bound.and_then(|source| {
-            trash_bound_path(scope, &source, relative, &mut handoff_hook, delete)
+            trash_bound_path(
+                scope,
+                &source,
+                relative,
+                &mut handoff_hook,
+                &mut post_delete_hook,
+                delete,
+            )
         }) {
             Ok(()) => path_result(relative, None, "trashed", None, None),
             Err(error) => path_result(
@@ -995,6 +1156,7 @@ fn trash_bound_path(
     source: &BoundPath,
     relative: &str,
     handoff_hook: &mut impl FnMut(&Path),
+    post_delete_hook: &mut impl FnMut(),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<()> {
     ensure_bound_file(source)?;
@@ -1090,7 +1252,17 @@ fn trash_bound_path(
             error,
         ));
     }
-    if let Err(message) = delete(&ambient_path) {
+    let delete_result = delete(&ambient_path);
+    post_delete_hook();
+    if let Err(error) = scope.verify() {
+        return Err(trash_rollback_error(
+            &quarantine,
+            source,
+            &original_identity,
+            error,
+        ));
+    }
+    if let Err(message) = delete_result {
         let rollback =
             move_noclobber_with_expected(&quarantine, source, &original_identity, || {}, || {});
         return match rollback {
