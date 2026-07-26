@@ -1,10 +1,10 @@
 import { browserBridge } from './browser-bridge'
 import { tauriBridge } from './tauri-bridge'
-import type { NativeBridge } from './types'
+import type { NativeBridge, WorkspaceNativeBridge } from './types'
 
-let bridgeForTest: NativeBridge | undefined
+let bridgeForTest: WorkspaceNativeBridge | undefined
 
-export function getNativeBridge(): NativeBridge {
+export function getNativeBridge(): WorkspaceNativeBridge {
   if (bridgeForTest !== undefined) {
     return bridgeForTest
   }
@@ -13,5 +13,5 @@ export function getNativeBridge(): NativeBridge {
 }
 
 export function setNativeBridgeForTest(bridge: NativeBridge | undefined): void {
-  bridgeForTest = bridge
+  bridgeForTest = bridge === undefined ? undefined : { ...browserBridge, ...bridge }
 }

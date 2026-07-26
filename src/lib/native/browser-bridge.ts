@@ -1,9 +1,199 @@
-import type { NativeBridge } from './types'
+import type { WorkspaceFileEntry } from '../workspace/types'
+import {
+  NativeError,
+  type WorkspaceNativeBridge,
+  type WorkspaceChangedEvent,
+  type WorkspaceChangedHandler,
+  type WorkspaceReadResult,
+} from './types'
 
-export const browserBridge: NativeBridge = {
-  hostHealth: async () => ({
-    appVersion: 'browser',
-    os: 'browser',
-    arch: 'browser',
-  }),
+const FIXED_MODIFIED_AT = '2026-07-25T12:00:00.000Z'
+const MAX_YAML_BYTES = 2 * 1024 * 1024
+const DEFAULT_FILES = {
+  'examples/hello.yaml': 'id: hello\ntasks: {}\n',
+  'examples/hello.hermes.yaml': 'profile: default\n',
+} as const
+
+interface BrowserFile {
+  text: string
+  modifiedAt: string
 }
+
+export function createBrowserBridge(): WorkspaceNativeBridge {
+  const files = new Map<string, BrowserFile>(
+    Object.entries(DEFAULT_FILES).map(([path, text]) => [path, { text, modifiedAt: FIXED_MODIFIED_AT }]),
+  )
+  const handlers = new Set<WorkspaceChangedHandler>()
+  let selectedRoot = '/browser/workspace'
+
+  async function emit(event: WorkspaceChangedEvent): Promise<void> {
+    await Promise.all([...handlers].map((handler) => handler(event)))
+  }
+
+  return {
+    hostHealth: async () => ({
+      appVersion: 'browser',
+      os: 'browser',
+      arch: 'browser',
+    }),
+    workspaceSetRoot: async (rootPath) => {
+      selectedRoot = rootPath
+      return { workspaceId: 'browser-workspace', rootPath: selectedRoot }
+    },
+    workspaceScan: async () => scanFixture(files),
+    workspaceRead: async (relativePath) => readFixture(files, relativePath),
+    workspaceWrite: async ({ relativePath, text, expectedCurrentHash }) => {
+      validateRelativeYaml(relativePath)
+      if (byteLength(text) > MAX_YAML_BYTES) {
+        throw new NativeError('file_too_large', 'The YAML file exceeds the supported size limit.')
+      }
+      const existing = files.get(relativePath)
+      const currentHash = existing ? await sha256(existing.text) : null
+      if (currentHash !== expectedCurrentHash) {
+        throw new NativeError('external_revision_conflict', 'The file changed on disk before it could be saved.')
+      }
+      files.set(relativePath, { text, modifiedAt: FIXED_MODIFIED_AT })
+      await emit({ paths: [relativePath], kind: existing ? 'modify' : 'create' })
+      return {
+        relativePath,
+        sha256: await sha256(text),
+        size: byteLength(text),
+        modifiedAt: FIXED_MODIFIED_AT,
+      }
+    },
+    workspaceRenamePair: async ({ sourceDefinition, destinationDefinition }) => {
+      validateDefinition(sourceDefinition)
+      validateDefinition(destinationDefinition)
+      const source = files.get(sourceDefinition)
+      if (!source) throw new NativeError('path_not_found', 'The workflow definition does not exist.')
+      if (files.has(destinationDefinition)) {
+        throw new NativeError('destination_exists', 'The rename destination already exists.')
+      }
+      const sourceCompanion = companionFor(sourceDefinition)
+      const destinationCompanion = companionFor(destinationDefinition)
+      if (files.has(sourceCompanion) && files.has(destinationCompanion)) {
+        throw new NativeError('destination_exists', 'The companion rename destination already exists.')
+      }
+      files.delete(sourceDefinition)
+      files.set(destinationDefinition, source)
+      const paths = [destinationDefinition]
+      const companion = files.get(sourceCompanion)
+      if (companion) {
+        files.delete(sourceCompanion)
+        files.set(destinationCompanion, companion)
+        paths.push(destinationCompanion)
+      }
+      await emit({
+        paths: [sourceDefinition, destinationDefinition, sourceCompanion, destinationCompanion],
+        kind: 'rename',
+      })
+      return { paths }
+    },
+    workspaceTrashPaths: async (relativePaths) => {
+      if (relativePaths.length < 1 || relativePaths.length > 2) {
+        throw new NativeError('invalid_trash_request', 'Move to Trash accepts one or two exact workspace file paths.')
+      }
+      if (new Set(relativePaths).size !== relativePaths.length) {
+        throw new NativeError('invalid_trash_request', 'Move to Trash paths must be unique.')
+      }
+      for (const relativePath of relativePaths) {
+        validateRelativeYaml(relativePath)
+        if (!files.has(relativePath)) {
+          throw new NativeError('path_not_found', 'The workspace file does not exist.')
+        }
+      }
+      relativePaths.forEach((relativePath) => files.delete(relativePath))
+      await emit({ paths: [...relativePaths], kind: 'remove' })
+      return { paths: [...relativePaths] }
+    },
+    onWorkspaceChanged: async (handler) => {
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    },
+  }
+}
+
+function scanFixture(files: ReadonlyMap<string, BrowserFile>): readonly WorkspaceFileEntry[] {
+  const directories = new Set<string>()
+  for (const path of files.keys()) {
+    const parts = path.split('/')
+    for (let index = 1; index < parts.length; index += 1) {
+      directories.add(parts.slice(0, index).join('/'))
+    }
+  }
+  const entries: WorkspaceFileEntry[] = [...directories].map((relativePath) => ({
+    relativePath,
+    kind: 'directory',
+    size: 0,
+    modifiedAt: FIXED_MODIFIED_AT,
+    symlink: 'none',
+    readOnly: false,
+  }))
+  for (const [relativePath, file] of files) {
+    entries.push({
+      relativePath,
+      kind: 'file',
+      size: byteLength(file.text),
+      modifiedAt: file.modifiedAt,
+      symlink: 'none',
+      readOnly: false,
+    })
+  }
+  return entries.sort((left, right) =>
+    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+  )
+}
+
+async function readFixture(
+  files: ReadonlyMap<string, BrowserFile>,
+  relativePath: string,
+): Promise<WorkspaceReadResult> {
+  validateRelativeYaml(relativePath)
+  const file = files.get(relativePath)
+  if (!file) throw new NativeError('path_not_found', 'The workspace file does not exist.')
+  return {
+    relativePath,
+    text: file.text,
+    sha256: await sha256(file.text),
+    size: byteLength(file.text),
+    modifiedAt: file.modifiedAt,
+    readOnly: false,
+  }
+}
+
+function validateDefinition(relativePath: string): void {
+  validateRelativeYaml(relativePath)
+  if (relativePath.endsWith('.hermes.yaml')) {
+    throw new NativeError('invalid_definition_path', 'Pair rename requires a definition path.')
+  }
+}
+
+function validateRelativeYaml(relativePath: string): void {
+  const invalid =
+    relativePath.length === 0 ||
+    relativePath.startsWith('/') ||
+    relativePath.includes('\\') ||
+    relativePath.includes('\0') ||
+    relativePath.split('/').some((part) => part.length === 0 || part === '.' || part === '..')
+  if (invalid) {
+    throw new NativeError('invalid_relative_path', 'A normalized relative path is required.')
+  }
+  if (!(relativePath.endsWith('.yaml') || relativePath.endsWith('.yml'))) {
+    throw new NativeError('unsupported_file_type', 'Only YAML workflow files are supported.')
+  }
+}
+
+function companionFor(definition: string): string {
+  return definition.replace(/\.(?:yaml|yml)$/, '.hermes.yaml')
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).byteLength
+}
+
+export const browserBridge: WorkspaceNativeBridge = createBrowserBridge()
