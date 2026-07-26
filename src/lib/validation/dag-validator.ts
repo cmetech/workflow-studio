@@ -134,8 +134,13 @@ function validateReferences(
 
   for (const rule of rules) {
     if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.profile)) continue
-    const parser = referenceParser(rule)
-    if (!parser) continue
+    const parserResult = referenceParser(rule)
+    if (parserResult.kind === 'not-reference') continue
+    if (parserResult.kind === 'invalid') {
+      issues.push(referenceRuleIssue(rule, parserResult.message))
+      continue
+    }
+    const parser = parserResult.parser
 
     for (const node of projection.nodes) {
       if (rule.applicability.node_kinds && !rule.applicability.node_kinds.includes(node.kind)) continue
@@ -181,28 +186,80 @@ interface ReferenceParser {
   captureGroup: number
 }
 
-function referenceParser(rule: SemanticRuleDescriptor): ReferenceParser | null {
+type ReferenceParserResult =
+  { kind: 'not-reference' } | { kind: 'invalid'; message: string } | { kind: 'valid'; parser: ReferenceParser }
+
+function referenceParser(rule: SemanticRuleDescriptor): ReferenceParserResult {
+  const hasPattern = Object.hasOwn(rule.parameters, 'pattern')
+  const hasSyntax = Object.hasOwn(rule.parameters, 'syntax')
+  if (!hasPattern && !hasSyntax) return { kind: 'not-reference' }
+
+  const syntax = rule.parameters.syntax
+  if (hasSyntax && syntax !== '$ID.output(.path)*') {
+    return { kind: 'invalid', message: `Reference rule "${rule.id}" declares an unsupported syntax.` }
+  }
+
   const pattern = rule.parameters.pattern
-  if (typeof pattern === 'string') {
+  if (hasPattern) {
+    if (typeof pattern !== 'string') {
+      return { kind: 'invalid', message: `Reference rule "${rule.id}" must declare a string pattern.` }
+    }
     const captureGroup = rule.parameters.node_id_capture_group
+    if (
+      captureGroup !== undefined &&
+      (typeof captureGroup !== 'number' || !Number.isInteger(captureGroup) || captureGroup < 1)
+    ) {
+      return { kind: 'invalid', message: `Reference rule "${rule.id}" declares an invalid capture group.` }
+    }
     try {
       return {
-        expression: new RegExp(pattern, 'g'),
-        captureGroup: typeof captureGroup === 'number' && Number.isInteger(captureGroup) ? captureGroup : 1,
+        kind: 'valid',
+        parser: {
+          expression: new RegExp(pattern, 'g'),
+          captureGroup: typeof captureGroup === 'number' ? captureGroup : 1,
+        },
       }
     } catch {
-      return null
+      return { kind: 'invalid', message: `Reference rule "${rule.id}" declares an invalid pattern.` }
     }
   }
 
-  if (rule.parameters.syntax === '$ID.output(.path)*') {
+  if (syntax === '$ID.output(.path)*') {
     return {
-      expression: /\$([A-Za-z_][A-Za-z0-9_-]*)\.output(?:\.[A-Za-z_][A-Za-z0-9_-]*)*/g,
-      captureGroup: 1,
+      kind: 'valid',
+      parser: {
+        expression: /\$([A-Za-z_][A-Za-z0-9_-]*)\.output(?:\.[A-Za-z_][A-Za-z0-9_-]*)*/g,
+        captureGroup: 1,
+      },
     }
   }
 
-  return null
+  return { kind: 'not-reference' }
+}
+
+function referenceRuleIssue(rule: SemanticRuleDescriptor, message: string): ValidationIssue {
+  return {
+    code: 'reference_rule_invalid',
+    layer: 'semantic',
+    severity: 'error',
+    blocking: true,
+    message,
+    document: 'definition',
+    path: contractFieldPath(rule.field_paths[0]),
+    documentationId: rule.id,
+  }
+}
+
+function contractFieldPath(fieldPath: string | undefined): string {
+  if (!fieldPath) return '/'
+  if (fieldPath.startsWith('/')) return fieldPath
+  return `/${fieldPath
+    .replaceAll('[]', '')
+    .replaceAll('[*]', '')
+    .split('.')
+    .filter(Boolean)
+    .map((segment) => segment.replaceAll('~', '~0').replaceAll('/', '~1'))
+    .join('/')}`
 }
 
 function collectReferences(value: unknown, parser: ReferenceParser): string[] {

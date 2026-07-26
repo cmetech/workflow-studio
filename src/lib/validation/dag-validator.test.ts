@@ -1,7 +1,9 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import type { SemanticRuleDescriptor } from '$src/lib/contract/types'
+import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
+import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import type { ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
+import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { validateDag } from './dag-validator'
 
 function node(id: string, dependsOn: readonly string[] = [], value: unknown = `run ${id}`): ProjectedNode {
@@ -40,6 +42,51 @@ const outputReferenceRule: SemanticRuleDescriptor = {
   examples: ['$prepare.output.summary'],
 }
 
+const topologyRule: SemanticRuleDescriptor = {
+  id: 'workflow-dag-v1',
+  label: 'Workflow DAG',
+  description: 'Contract-owned graph fields.',
+  field_paths: ['nodes'],
+  applicability: { profiles: ['archon-2026-07'], documents: ['definition'] },
+  status: 'supported',
+  parameters: { nodes_path: 'nodes', id_field: 'id', dependencies_field: 'depends_on' },
+  examples: [],
+}
+
+const projectionContract: AuthoringContract = {
+  schema_version: 1,
+  contract_reader_version: 1,
+  profile: 'archon-2026-07',
+  normalizer_version: 1,
+  contract_digest: `sha256:${'d'.repeat(64)}`,
+  definition_schema: { type: 'object' },
+  sidecar_schema: { type: 'object' },
+  node_kinds: [
+    {
+      id: 'prompt',
+      label: 'Prompt',
+      description: 'Property-test prompt node.',
+      field_path: 'nodes[].prompt',
+      applicability: {
+        profiles: ['archon-2026-07'],
+        documents: ['definition'],
+        node_kinds: ['prompt'],
+      },
+      widget: 'multiline',
+      section: 'general',
+      order: 1,
+      status: 'supported',
+      examples: [],
+      fields: [],
+    },
+  ],
+  semantic_rules: [topologyRule],
+  compatibility_codes: {},
+  documentation: { topics: [], examples: [] },
+  limits: { max_document_bytes: 2 * 1024 * 1024 },
+  extensions: {},
+}
+
 describe('DAG semantic validation', () => {
   it('reports missing and duplicate node identifiers', () => {
     const result = validateDag(projection([node(''), node('same'), node('same')]), [])
@@ -67,18 +114,13 @@ describe('DAG semantic validation', () => {
   })
 
   it('maps cycle diagnostics through the contract-published node collection path', () => {
-    const topologyRule: SemanticRuleDescriptor = {
-      id: 'workflow-dag-v1',
-      label: 'Workflow DAG',
-      description: 'Contract-owned graph fields.',
+    const alternateTopologyRule = {
+      ...topologyRule,
       field_paths: ['steps'],
-      applicability: { profiles: ['archon-2026-07'], documents: ['definition'] },
-      status: 'supported',
       parameters: { nodes_path: 'steps', id_field: 'name', dependencies_field: 'after' },
-      examples: [],
     }
 
-    const result = validateDag(projection([node('a', ['b']), node('b', ['a'])]), [topologyRule])
+    const result = validateDag(projection([node('a', ['b']), node('b', ['a'])]), [alternateTopologyRule])
 
     expect(result.issues).toEqual([expect.objectContaining({ code: 'dependency_cycle', path: '/steps' })])
   })
@@ -109,6 +151,36 @@ describe('DAG semantic validation', () => {
     ])
   })
 
+  it('blocks a supported reference rule with a malformed declared pattern', () => {
+    const malformedRule = {
+      ...outputReferenceRule,
+      parameters: { pattern: '[', node_id_capture_group: 1, require_upstream: true },
+    }
+
+    const result = validateDag(projection([node('only')]), [malformedRule])
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({ code: 'reference_rule_invalid', layer: 'semantic', blocking: true }),
+    ])
+  })
+
+  it('blocks a supported reference rule with an unsupported declared syntax', () => {
+    const unsupportedRule = {
+      ...outputReferenceRule,
+      parameters: { syntax: '$ID.result(.path)*', require_upstream: true },
+    }
+
+    const result = validateDag(projection([node('only')]), [unsupportedRule])
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({ code: 'reference_rule_invalid', layer: 'semantic', blocking: true }),
+    ])
+  })
+
+  it('continues to ignore applicable semantic rules that do not declare reference parsing', () => {
+    expect(validateDag(projection([node('only')]), [topologyRule]).issues).toEqual([])
+  })
+
   it('returns a deterministic Kahn topological order using source node order as the tie breaker', () => {
     const graph = projection([
       node('root-b'),
@@ -125,25 +197,50 @@ describe('DAG semantic validation', () => {
     expect(first.topologicalOrder).toEqual(['root-b', 'root-a', 'middle', 'finish'])
   })
 
-  it('emits only edges whose endpoints exist for arbitrary acyclic dependency lists', () => {
+  it('projects stable existing-endpoint edges for arbitrary acyclic dependency lists', () => {
     const dependencies = fc.array(fc.array(fc.nat(), { maxLength: 12 }), { minLength: 1, maxLength: 12 })
 
     fc.assert(
       fc.property(dependencies, (rows) => {
-        const nodes = rows.map((candidates, index) =>
-          node(`node-${index}`, [
+        const nodes = rows.map((candidates, index) => ({
+          id: `node-${index}`,
+          dependsOn: [
             ...new Set(candidates.filter((candidate) => candidate < index).map((candidate) => `node-${candidate}`)),
+          ],
+        }))
+        const source = [
+          'name: Property workflow',
+          'description: Exercises production projection.',
+          'nodes:',
+          ...nodes.flatMap(({ id, dependsOn }) => [
+            `  - id: ${id}`,
+            ...(dependsOn.length === 0
+              ? []
+              : ['    depends_on:', ...dependsOn.map((dependency) => `      - ${dependency}`)]),
+            `    prompt: Run ${id}`,
           ]),
-        )
-        const graph = projection(nodes)
-        const result = validateDag(graph, [])
-        const ids = new Set(nodes.map(({ id }) => id))
+          '',
+        ].join('\n')
+        const parseResult = parseWorkflowYaml(source, {
+          document: 'definition',
+          maxBytes: projectionContract.limits.max_document_bytes,
+        })
+        expect(parseResult.issues).toEqual([])
+        expect(parseResult.parsed).not.toBeNull()
+        if (!parseResult.parsed) return
 
+        const projected = projectWorkflow(parseResult.parsed, null, 'archon-2026-07', projectionContract)
+        const graph = projected.projection
+        const result = validateDag(graph, projectionContract.semantic_rules)
+        const ids = new Set(graph.nodes.map(({ id }) => id))
+
+        expect(projected.issues).toEqual([])
         expect(result.issues).toEqual([])
         expect(result.topologicalOrder).toHaveLength(nodes.length)
         for (const edge of graph.edges) {
           expect(ids.has(edge.source)).toBe(true)
           expect(ids.has(edge.target)).toBe(true)
+          expect(edge.id).toBe(`dependency:${edge.source}->${edge.target}`)
         }
       }),
     )

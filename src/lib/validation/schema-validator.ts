@@ -19,6 +19,9 @@ const CONTRACT_ANNOTATION_KEYWORDS = [
   'x-hermes-compatibility-code',
   'x-hermes-migration',
 ] as const
+const SUPPORTED_STRING_FORMATS: Readonly<Record<string, RegExp>> = {
+  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+}
 
 export function compileContractValidators(contract: AuthoringContract): CompiledContractValidators {
   const cached = validatorCache.get(contract.contract_digest)
@@ -27,7 +30,9 @@ export function compileContractValidators(contract: AuthoringContract): Compiled
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: true })
   for (const keyword of CONTRACT_ANNOTATION_KEYWORDS) ajv.addKeyword({ keyword, valid: true })
   for (const format of collectDeclaredFormats(contract.definition_schema, contract.sidecar_schema)) {
-    ajv.addFormat(format, true)
+    const validator = SUPPORTED_STRING_FORMATS[format]
+    if (!validator) throw new Error(`Unsupported JSON Schema format "${format}".`)
+    ajv.addFormat(format, validator)
   }
 
   const compiled = {

@@ -84,6 +84,49 @@ describe('contract schema validation', () => {
     ])
   })
 
+  it('enforces supported formats declared by the contract as blocking schema issues', () => {
+    const activeContract = contract('archon-2026-07', {
+      type: 'object',
+      properties: { workflow_id: { type: 'string', format: 'uuid' } },
+      required: ['workflow_id'],
+      additionalProperties: false,
+    })
+
+    const issues = validateContractDocument(
+      parsed('workflow_id: definitely-not-a-uuid\n'),
+      'definition',
+      activeContract,
+    )
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'schema_format',
+        layer: 'contract',
+        blocking: true,
+        path: '/workflow_id',
+        line: 1,
+      }),
+    ])
+    expect(
+      validateContractDocument(
+        parsed('workflow_id: 123e4567-e89b-42d3-a456-426614174000\n'),
+        'definition',
+        activeContract,
+      ),
+    ).toEqual([])
+  })
+
+  it('rejects a contract that declares an unsupported format', () => {
+    const activeContract = contract('archon-2026-07', {
+      type: 'object',
+      properties: { value: { type: 'string', format: 'workflow-specific-code' } },
+    })
+
+    expect(() => compileContractValidators(activeContract)).toThrowError(
+      'Unsupported JSON Schema format "workflow-specific-code".',
+    )
+  })
+
   it('projects legacy unknown properties as non-blocking warnings without dropping them', () => {
     const activeContract = contract('hermes-legacy', {
       type: 'object',
