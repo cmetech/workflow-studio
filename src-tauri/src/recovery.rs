@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, DirEntry, File as CapabilityFile};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
@@ -113,17 +115,39 @@ fn write_blob(app_data: &Path, key: &str, content: &str) -> RecoveryResult<()> {
 }
 
 fn list_blobs(app_data: &Path) -> RecoveryResult<Vec<RecoveryBlob>> {
+    list_blobs_impl(app_data, |_| {})
+}
+
+#[cfg(test)]
+fn list_blobs_with_entry_hook(
+    app_data: &Path,
+    entry_hook: impl FnMut(&std::ffi::OsStr),
+) -> RecoveryResult<Vec<RecoveryBlob>> {
+    list_blobs_impl(app_data, entry_hook)
+}
+
+fn list_blobs_impl(
+    app_data: &Path,
+    mut entry_hook: impl FnMut(&std::ffi::OsStr),
+) -> RecoveryResult<Vec<RecoveryBlob>> {
     let root = recovery_root(app_data)?;
+    let directory = Dir::open_ambient_dir(&root, ambient_authority())
+        .map_err(|error| io_error("recovery_list_failed", error))?;
     let mut blobs = Vec::new();
     let mut removed_junk = false;
     let mut unexpected_entry = false;
-    for entry in fs::read_dir(&root).map_err(|error| io_error("recovery_list_failed", error))? {
+    for entry in directory
+        .entries()
+        .map_err(|error| io_error("recovery_list_failed", error))?
+    {
         let entry = entry.map_err(|error| io_error("recovery_list_failed", error))?;
         let file_type = entry
             .file_type()
             .map_err(|error| io_error("recovery_list_failed", error))?;
+        let file_name = entry.file_name();
+        entry_hook(&file_name);
         if file_type.is_symlink() {
-            remove_junk_file(&entry.path())?;
+            remove_junk_entry(&entry)?;
             removed_junk = true;
             continue;
         }
@@ -131,28 +155,28 @@ fn list_blobs(app_data: &Path) -> RecoveryResult<Vec<RecoveryBlob>> {
             unexpected_entry = true;
             continue;
         }
-        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
-            remove_junk_file(&entry.path())?;
+        let Some(id) = file_name.to_str().map(str::to_owned) else {
+            remove_junk_entry(&entry)?;
             removed_junk = true;
             continue;
         };
         if !valid_record_id(&id) {
-            remove_junk_file(&entry.path())?;
+            remove_junk_entry(&entry)?;
             removed_junk = true;
             continue;
         }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| io_error("recovery_list_failed", error))?;
-        if metadata.len() > MAX_BLOB_BYTES {
-            remove_junk_file(&entry.path())?;
-            removed_junk = true;
-            continue;
-        }
-        match read_blob(&entry.path(), id)? {
+        let file = match entry.open() {
+            Ok(file) => file,
+            Err(_) => {
+                remove_junk_entry(&entry)?;
+                removed_junk = true;
+                continue;
+            }
+        };
+        match read_blob(file, id)? {
             Some(blob) => blobs.push(blob),
             None => {
-                remove_junk_file(&entry.path())?;
+                remove_junk_entry(&entry)?;
                 removed_junk = true;
             }
         }
@@ -170,8 +194,7 @@ fn list_blobs(app_data: &Path) -> RecoveryResult<Vec<RecoveryBlob>> {
     Ok(blobs)
 }
 
-fn read_blob(path: &Path, id: String) -> RecoveryResult<Option<RecoveryBlob>> {
-    let file = File::open(path).map_err(|error| io_error("recovery_read_failed", error))?;
+fn read_blob(file: CapabilityFile, id: String) -> RecoveryResult<Option<RecoveryBlob>> {
     let size = file
         .metadata()
         .map_err(|error| io_error("recovery_read_failed", error))?
@@ -207,8 +230,10 @@ fn read_blob(path: &Path, id: String) -> RecoveryResult<Option<RecoveryBlob>> {
     }))
 }
 
-fn remove_junk_file(path: &Path) -> RecoveryResult<()> {
-    fs::remove_file(path).map_err(|error| io_error("recovery_cleanup_failed", error))
+fn remove_junk_entry(entry: &DirEntry) -> RecoveryResult<()> {
+    entry
+        .remove_file()
+        .map_err(|error| io_error("recovery_cleanup_failed", error))
 }
 
 fn delete_blob(app_data: &Path, id: &str) -> RecoveryResult<()> {
@@ -219,8 +244,9 @@ fn delete_blob(app_data: &Path, id: &str) -> RecoveryResult<()> {
         ));
     }
     let root = recovery_root(app_data)?;
-    let target = root.join(id);
-    match fs::remove_file(target) {
+    let directory = Dir::open_ambient_dir(&root, ambient_authority())
+        .map_err(|error| io_error("recovery_delete_failed", error))?;
+    match directory.remove_file(id) {
         Ok(()) => sync_directory(&root),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error("recovery_delete_failed", error)),
@@ -436,5 +462,48 @@ mod tests {
         std::fs::create_dir(recovery.join("unexpected-directory")).unwrap();
         let error = list_blobs(app_data.path()).unwrap_err();
         assert_eq!(error.code, "recovery_unexpected_entry");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_never_reads_blob_swapped_to_outside_symlink_after_classification() {
+        use std::os::unix::fs::symlink;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write_blob(app_data.path(), "inside", "ordinary draft").unwrap();
+        write_blob(outside.path(), "outside", "secret outside draft").unwrap();
+
+        let recovery = super::recovery_root(app_data.path()).unwrap();
+        let outside_recovery = super::recovery_root(outside.path()).unwrap();
+        let inside_path = std::fs::read_dir(&recovery)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let outside_path = std::fs::read_dir(&outside_recovery)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let outside_before = std::fs::read(&outside_path).unwrap();
+        let inside_name = inside_path.file_name().unwrap().to_owned();
+        let mut swapped = false;
+
+        let blobs = super::list_blobs_with_entry_hook(app_data.path(), |name| {
+            if name == inside_name {
+                std::fs::remove_file(&inside_path).unwrap();
+                symlink(&outside_path, &inside_path).unwrap();
+                swapped = true;
+            }
+        })
+        .unwrap();
+
+        assert!(swapped);
+        assert!(blobs.is_empty());
+        assert_eq!(std::fs::read(&outside_path).unwrap(), outside_before);
+        assert!(std::fs::symlink_metadata(&inside_path).is_err());
     }
 }
