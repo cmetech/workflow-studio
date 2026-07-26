@@ -24,6 +24,8 @@ pub struct LayoutState {
 
 struct LayoutScope {
     requested_root: PathBuf,
+    #[cfg(windows)]
+    root_path: PathBuf,
     root_identity: Handle,
     parent_path: PathBuf,
     parent_identity: Handle,
@@ -192,10 +194,7 @@ fn save_layout_impl(
             "The staged private layout file changed before commit.",
         ));
     }
-    scope
-        .directory
-        .rename(&temporary.name, &scope.directory, LAYOUT_FILE)
-        .map_err(|error| io_error("layout_write_failed", error))?;
+    commit_staged_layout(scope, &temporary.name)?;
     temporary.disarm();
     scope.verify()?;
     sync_directory(&scope.directory)?;
@@ -252,6 +251,8 @@ impl LayoutScope {
         let root_identity = directory_identity(&directory, "layout_directory_failed")?;
         Ok(Self {
             requested_root: app_data.to_path_buf(),
+            #[cfg(windows)]
+            root_path: root,
             root_identity,
             parent_path: parent_path.to_path_buf(),
             parent_identity,
@@ -275,6 +276,101 @@ impl LayoutScope {
         if current_identity != self.root_identity {
             return Err(root_changed());
         }
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> LayoutResult<()> {
+    scope
+        .directory
+        .rename(temporary_name, &scope.directory, LAYOUT_FILE)
+        .map_err(|error| io_error("layout_write_failed", error))
+}
+
+#[cfg(windows)]
+fn commit_staged_layout(scope: &LayoutScope, temporary_name: &OsString) -> LayoutResult<()> {
+    let destination_exists = match scope.directory.symlink_metadata(LAYOUT_FILE) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(io_error("layout_write_failed", error)),
+    };
+    scope.verify()?;
+    let result = select_windows_atomic_commit(
+        destination_exists,
+        || {
+            scope
+                .directory
+                .rename(temporary_name, &scope.directory, LAYOUT_FILE)
+                .map_err(|error| io_error("layout_write_failed", error))
+        },
+        || {
+            replace_file_windows(
+                &scope.root_path.join(temporary_name),
+                &scope.root_path.join(LAYOUT_FILE),
+            )
+        },
+    );
+    scope.verify()?;
+    result
+}
+
+#[cfg(any(test, windows))]
+fn select_windows_atomic_commit(
+    destination_exists: bool,
+    rename_new: impl FnOnce() -> LayoutResult<()>,
+    replace_existing: impl FnOnce() -> LayoutResult<()>,
+) -> LayoutResult<()> {
+    if destination_exists {
+        replace_existing()
+    } else {
+        rename_new()
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_windows(temporary: &Path, destination: &Path) -> LayoutResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    type Bool = i32;
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> Bool;
+    }
+
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            temporary_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        Err(io_error(
+            "layout_write_failed",
+            std::io::Error::last_os_error(),
+        ))
+    } else {
         Ok(())
     }
 }
@@ -467,8 +563,30 @@ fn layout_error(code: &'static str, message: impl Into<String>) -> LayoutError {
 mod tests {
     use super::{
         load_layout_file, load_layout_file_with_metadata_hook, save_layout_file,
-        save_layout_file_with_bound_hook, LayoutState,
+        save_layout_file_with_bound_hook, select_windows_atomic_commit, LayoutState,
     };
+
+    #[test]
+    fn windows_existing_target_commit_seam_selects_atomic_replace_not_rename() {
+        let renamed = std::cell::Cell::new(false);
+        let replaced = std::cell::Cell::new(false);
+
+        select_windows_atomic_commit(
+            true,
+            || {
+                renamed.set(true);
+                Ok(())
+            },
+            || {
+                replaced.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!renamed.get());
+        assert!(replaced.get());
+    }
 
     #[test]
     fn stores_one_fixed_private_layout_file_and_atomically_replaces_it() {
@@ -630,5 +748,38 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, "layout_changed_during_read");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_atomically_replaces_an_existing_layout_without_residue_or_scope_loss() {
+        let parent = tempfile::tempdir().unwrap();
+        let app_data = parent.path().join("app-data");
+        std::fs::create_dir(&app_data).unwrap();
+        let state = LayoutState::default();
+
+        save_layout_file(&app_data, "[{\"layout\":\"first\"}]", &state).unwrap();
+        save_layout_file(&app_data, "[{\"layout\":\"second\"}]", &state).unwrap();
+
+        assert_eq!(
+            load_layout_file(&app_data, &state).unwrap().as_deref(),
+            Some("[{\"layout\":\"second\"}]")
+        );
+        let entries = std::fs::read_dir(&app_data)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["layouts-v1.json"]);
+        assert!(!std::fs::metadata(app_data.join("layouts-v1.json"))
+            .unwrap()
+            .permissions()
+            .readonly());
+
+        let parked = parent.path().join("parked");
+        std::fs::rename(&app_data, &parked).unwrap();
+        std::fs::create_dir(&app_data).unwrap();
+        let error = save_layout_file(&app_data, "[]", &state).unwrap_err();
+        assert_eq!(error.code, "layout_root_changed");
+        assert!(!app_data.join("layouts-v1.json").exists());
     }
 }
