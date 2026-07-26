@@ -2,10 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { DocumentAnalysis } from '$src/lib/documents/types'
 import type { WorkspaceReadResult, WorkspaceWriteResult } from '$src/lib/native/types'
+import type { RereadWorkspaceChange } from '$src/lib/native/workspace-api'
+import { createDocumentRevision } from '$src/lib/documents/revisions'
+import { editDocumentText } from '$src/lib/documents/revisions'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
+import { createHistoryState, historyStore, recordTransaction, undoTransaction } from '$src/stores/history'
 import {
   $documentSession,
   closeDocumentSession,
+  isDocumentPairDirty,
   openDocumentSession,
   updateDocumentSession,
 } from '$src/stores/documents'
@@ -36,6 +41,14 @@ function entry(path: string): WorkflowPairEntry {
   }
 }
 
+function pairedEntry(path: string): WorkflowPairEntry {
+  return {
+    ...entry(path),
+    companionPath: path.replace(/\.(?:yaml|yml)$/, '.hermes.yaml'),
+    state: 'paired',
+  }
+}
+
 function read(path: string, text = `name: ${path}\n`): WorkspaceReadResult {
   return {
     relativePath: path,
@@ -48,12 +61,7 @@ function read(path: string, text = `name: ${path}\n`): WorkspaceReadResult {
 }
 
 function dependencies(overrides: Partial<DocumentWorkspaceControllerDependencies> = {}) {
-  let watcher:
-    | ((change: {
-        event: { paths: readonly string[]; kind: 'modify' }
-        files: readonly WorkspaceReadResult[]
-      }) => Promise<void>)
-    | undefined
+  let watcher: ((change: RereadWorkspaceChange) => Promise<void>) | undefined
   const client: DocumentAnalysisClient = { schedule: vi.fn(), dispose: vi.fn() }
   const deps: DocumentWorkspaceControllerDependencies = {
     read: vi.fn(async (path) => read(path)),
@@ -68,12 +76,16 @@ function dependencies(overrides: Partial<DocumentWorkspaceControllerDependencies
     recoveryDrafts: { changed: vi.fn(), close: vi.fn(async () => undefined) },
     layout: { loadLayout: vi.fn(async () => null), saveLayout: vi.fn(), renameWorkflowPath: vi.fn() },
     createLayoutPersistence: vi.fn(() => ({ close: vi.fn(async () => undefined) })),
+    onWorkspaceChanged: vi.fn(async () => undefined),
     ...overrides,
   }
   return { deps, client, watcher: () => watcher }
 }
 
-afterEach(() => closeDocumentSession())
+afterEach(() => {
+  closeDocumentSession()
+  historyStore.set(createHistoryState())
+})
 
 describe('DocumentWorkspaceController', () => {
   it('lets only the newest activation publish a session or schedule worker analysis', async () => {
@@ -104,6 +116,42 @@ describe('DocumentWorkspaceController', () => {
     )
   })
 
+  it('honors an activation request token allocated before delayed contract selection', async () => {
+    const { deps } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const requestA = controller.beginActivation()
+    const requestB = controller.beginActivation()
+
+    await controller.activate('workspace', entry('b.yaml'), contract, requestB)
+    await controller.activate('workspace', entry('a.yaml'), contract, requestA)
+
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+    expect(deps.read).not.toHaveBeenCalledWith('a.yaml')
+  })
+
+  it('does not let a slow companion read from request A overwrite request B', async () => {
+    let releaseCompanion: ((value: WorkspaceReadResult) => void) | undefined
+    const { deps } = dependencies({
+      read: vi.fn((path: string) =>
+        path === 'a.hermes.yaml'
+          ? new Promise<WorkspaceReadResult>((resolve) => {
+              releaseCompanion = resolve
+            })
+          : Promise.resolve(read(path)),
+      ),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const requestA = controller.beginActivation()
+    const openingA = controller.activate('workspace', pairedEntry('a.yaml'), contract, requestA)
+    await vi.waitFor(() => expect(releaseCompanion).toBeDefined())
+    const requestB = controller.beginActivation()
+    await controller.activate('workspace', entry('b.yaml'), contract, requestB)
+    releaseCompanion?.(read('a.hermes.yaml'))
+    await openingA
+
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+  })
+
   it('auto-reloads a clean watcher edit but exposes a conflict for dirty text', async () => {
     const { deps, client, watcher } = dependencies()
     const controller = new DocumentWorkspaceController(deps)
@@ -127,6 +175,134 @@ describe('DocumentWorkspaceController', () => {
     expect($documentWorkspace.get().conflict?.disk.text).toBe('name: newer disk\n')
   })
 
+  it('rescans Explorer and surfaces a clean active definition deleted externally', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+
+    expect(deps.onWorkspaceChanged).toHaveBeenCalledOnce()
+    expect($documentWorkspace.get().missingChange).toEqual({
+      kind: 'remove',
+      paths: ['flow.yaml'],
+      dirty: false,
+    })
+  })
+
+  it('surfaces dirty active content when its backing definition is deleted externally', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: mine\n'))
+
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+
+    expect($documentWorkspace.get().missingChange).toEqual({
+      kind: 'remove',
+      paths: ['flow.yaml'],
+      dirty: true,
+    })
+    expect($documentSession.get().pair?.definition.text).toBe('name: mine\n')
+  })
+
+  it('clears missing-file state when the active file becomes readable again', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'remove' }, files: [] })
+
+    await watcher()?.({ event: { paths: ['flow.yaml'], kind: 'create' }, files: [read('flow.yaml')] })
+
+    expect($documentWorkspace.get().missingChange).toBeNull()
+  })
+
+  it('clears a watcher missing warning after intentional companion removal is confirmed', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    await watcher()?.({ event: { paths: ['flow.hermes.yaml'], kind: 'remove' }, files: [] })
+
+    await controller.companionRemoved('flow.hermes.yaml')
+
+    expect($documentWorkspace.get().missingChange).toBeNull()
+  })
+
+  it('migrates an externally renamed active workflow and layout only for a unique saved hash match', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    vi.mocked(deps.layout.loadLayout).mockClear()
+    const moved = {
+      ...read('archive/renamed.yaml', opened!.definition.text),
+      sha256: opened!.definition.diskHash!,
+    }
+
+    await watcher()?.({
+      event: { paths: ['flow.yaml', 'archive/renamed.yaml'], kind: 'rename' },
+      files: [moved],
+    })
+
+    expect(deps.onWorkspaceChanged).toHaveBeenCalledOnce()
+    expect($documentSession.get().pair).toMatchObject({
+      workflowId: 'workflow:workspace:archive/renamed.yaml',
+      definition: { path: 'archive/renamed.yaml', diskHash: opened!.definition.diskHash },
+    })
+    expect(deps.layout.loadLayout).toHaveBeenCalledWith({
+      workspaceId: 'workspace',
+      workflowPath: 'archive/renamed.yaml',
+      savedHashes: { definition: opened!.definition.diskHash, companion: null },
+      missingWorkflowPaths: ['flow.yaml'],
+    })
+  })
+
+  it('does not guess an external rename when multiple new files share the saved hash', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const candidates = ['copy-a.yaml', 'copy-b.yaml'].map((path) => ({
+      ...read(path, opened!.definition.text),
+      sha256: opened!.definition.diskHash!,
+    }))
+
+    await watcher()?.({
+      event: { paths: ['flow.yaml', ...candidates.map(({ relativePath }) => relativePath)], kind: 'rename' },
+      files: candidates,
+    })
+
+    expect($documentSession.get().pair?.definition.path).toBe('flow.yaml')
+    expect($documentWorkspace.get().missingChange).toMatchObject({ kind: 'rename', paths: ['flow.yaml'] })
+    expect(deps.layout.loadLayout).toHaveBeenCalledTimes(1)
+  })
+
+  it('declines definition-only external rename migration for an active canonical pair', async () => {
+    const { deps, watcher } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    const moved = {
+      ...read('renamed.yaml', opened!.definition.text),
+      sha256: opened!.definition.diskHash!,
+    }
+
+    await watcher()?.({
+      event: { paths: ['flow.yaml', 'renamed.yaml'], kind: 'rename' },
+      files: [moved],
+    })
+
+    expect($documentSession.get().pair).toMatchObject({
+      definition: { path: 'flow.yaml' },
+      companion: { path: 'flow.hermes.yaml' },
+    })
+    expect($documentWorkspace.get().missingChange).toMatchObject({ kind: 'rename', paths: ['flow.yaml'] })
+  })
+
   it('debounces recovery through the controller, loads layout, and flushes every resource on teardown', async () => {
     const layoutCloser = { close: vi.fn(async () => undefined) }
     const unlisten = vi.fn()
@@ -146,6 +322,42 @@ describe('DocumentWorkspaceController', () => {
     expect(layoutCloser.close).toHaveBeenCalled()
     expect(unlisten).toHaveBeenCalled()
     expect(client.dispose).toHaveBeenCalled()
+  })
+
+  it('neutralizes worker callbacks before awaiting asynchronous teardown flushes', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    let fail: ((message: string) => void) | undefined
+    let releaseFlush: (() => void) | undefined
+    const client = { schedule: vi.fn(), dispose: vi.fn() }
+    const { deps } = dependencies({
+      createAnalysisClient: vi.fn((onAnalysis, onError) => {
+        publish = onAnalysis
+        fail = onError
+        return client
+      }),
+      recoveryDrafts: {
+        changed: vi.fn(),
+        close: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releaseFlush = resolve
+            }),
+        ),
+      },
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const disposing = controller.dispose()
+    await vi.waitFor(() => expect(releaseFlush).toBeDefined())
+
+    expect(client.dispose).toHaveBeenCalledOnce()
+    publish?.({ ...createDocumentRevision(opened!, digest), issues: [], structurallyValid: true })
+    fail?.('late worker failure')
+    expect($documentSession.get().analysis).toBeNull()
+    expect($documentWorkspace.get().analysisError).toBeNull()
+
+    releaseFlush?.()
+    await disposing
   })
 
   it('publishes analysis only when it still matches the active path identity', async () => {
@@ -222,6 +434,160 @@ describe('DocumentWorkspaceController', () => {
     expect(client.schedule).toHaveBeenLastCalledWith(expect.anything(), contract, 'contract-change')
   })
 
+  it('persists dirty recovery under the renamed identity before discarding the old draft', async () => {
+    const { deps } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty\n'))
+
+    await controller.renameActivePair('workspace', 'flow.yaml', 'renamed.yaml', false)
+
+    expect(deps.recovery.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowId: 'workflow:workspace:renamed.yaml',
+        definition: expect.objectContaining({ path: 'renamed.yaml', text: 'name: dirty\n' }),
+      }),
+    )
+    expect(vi.mocked(deps.recovery.save).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deps.recovery.discard).mock.invocationCallOrder[0]!,
+    )
+  })
+
+  it('retains the old recovery draft when renamed-identity persistence fails', async () => {
+    const { deps } = dependencies({
+      recovery: {
+        save: vi.fn(async () => Promise.reject(new Error('recovery write failed'))),
+        list: vi.fn(async () => []),
+        discard: vi.fn(),
+      },
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty\n'))
+
+    await expect(controller.renameActivePair('workspace', 'flow.yaml', 'renamed.yaml', false)).rejects.toThrow(
+      'recovery write failed',
+    )
+    expect(deps.recovery.discard).not.toHaveBeenCalledWith('workflow:workspace:flow.yaml')
+    expect($documentSession.get().pair?.definition.path).toBe('renamed.yaml')
+  })
+
+  it('does not replace B pending recovery when app-driven rename persistence finishes late', async () => {
+    let releaseSave: (() => void) | undefined
+    const { deps } = dependencies({
+      recovery: {
+        save: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releaseSave = resolve
+            }),
+        ),
+        list: vi.fn(async () => []),
+        discard: vi.fn(),
+      },
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('a.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty\n'))
+    const renaming = controller.renameActivePair('workspace', 'a.yaml', 'renamed.yaml', false)
+    await vi.waitFor(() => expect(releaseSave).toBeDefined())
+    await controller.activate('workspace', entry('b.yaml'), contract)
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+
+    releaseSave?.()
+    await renaming
+
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+  })
+
+  it('does not schedule renamed recovery after teardown starts during persistence', async () => {
+    let releaseSave: (() => void) | undefined
+    const { deps } = dependencies({
+      recovery: {
+        save: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releaseSave = resolve
+            }),
+        ),
+        list: vi.fn(async () => []),
+        discard: vi.fn(),
+      },
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty\n'))
+    const renaming = controller.renameActivePair('workspace', 'flow.yaml', 'renamed.yaml', false)
+    await vi.waitFor(() => expect(releaseSave).toBeDefined())
+    await controller.dispose()
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+
+    releaseSave?.()
+    await renaming
+
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+  })
+
+  it('does not replace B pending recovery when external rename persistence finishes late', async () => {
+    let releaseSave: (() => void) | undefined
+    const { deps, watcher } = dependencies({
+      recovery: {
+        save: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releaseSave = resolve
+            }),
+        ),
+        list: vi.fn(async () => []),
+        discard: vi.fn(),
+      },
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.start()
+    const opened = await controller.activate('workspace', entry('a.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty\n'))
+    const moved = { ...read('renamed.yaml', opened!.definition.text), sha256: opened!.definition.diskHash! }
+    const migrating = watcher()?.({
+      event: { paths: ['a.yaml', 'renamed.yaml'], kind: 'rename' },
+      files: [moved],
+    })
+    await vi.waitFor(() => expect(releaseSave).toBeDefined())
+    await controller.activate('workspace', entry('b.yaml'), contract)
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+
+    releaseSave?.()
+    await migrating
+
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+  })
+
+  it('rebases undo history onto the renamed workflow identity', async () => {
+    const { deps } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'definition', 'name: edited\n')
+    historyStore.set(
+      recordTransaction(createHistoryState(), {
+        mutation: { type: 'replace-document', document: 'definition', text: 'name: edited\n' },
+        label: 'Replace definition YAML',
+        workflowId: opened!.workflowId,
+        pairGeneration: opened!.generation,
+        before: { definition: opened!.definition.text, companion: null },
+        after: { definition: edited.definition.text, companion: null },
+        beforeRevisions: { definition: opened!.definition.revision, companion: null },
+        afterRevisions: { definition: edited.definition.revision, companion: null },
+        selection: { document: 'definition' },
+      }),
+    )
+    controller.changed(edited)
+    await controller.renameActivePair('workspace', 'flow.yaml', 'renamed.yaml', false)
+
+    const undo = undoTransaction(historyStore.get(), $documentSession.get().pair!)
+    expect(undo).toMatchObject({ ok: true, pair: { definition: { text: opened!.definition.text } } })
+  })
+
   it('updates companion structure on disk actions and invalidates analysis by generation', async () => {
     const { deps, client } = dependencies()
     const controller = new DocumentWorkspaceController(deps)
@@ -236,6 +602,62 @@ describe('DocumentWorkspaceController', () => {
     await controller.companionRemoved('flow.hermes.yaml')
     expect($documentSession.get().pair).toMatchObject({ generation: opened!.generation + 2, companion: null })
     expect(client.schedule).toHaveBeenLastCalledWith(expect.anything(), contract, 'contract-change')
+  })
+
+  it('confirms an already-created companion as saved and cancels recovery', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    const { deps } = dependencies({
+      createAnalysisClient: vi.fn((onAnalysis) => {
+        publish = onAnalysis
+        return { schedule: vi.fn(), dispose: vi.fn() }
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+    await controller.companionCreated('flow.yaml', 'flow.hermes.yaml')
+    const created = $documentSession.get().pair!
+
+    expect(created.savedGeneration).toBe(created.generation)
+    expect(isDocumentPairDirty(created)).toBe(false)
+    expect(deps.recoveryDrafts.changed).toHaveBeenLastCalledWith(created)
+
+    publish?.({ ...createDocumentRevision(created, digest), issues: [], structurallyValid: true })
+    const outcome = await controller.save()
+    expect(outcome).toMatchObject({
+      status: 'saved',
+      results: { definition: { status: 'unchanged' }, companion: { status: 'unchanged' } },
+    })
+    expect(deps.write).not.toHaveBeenCalled()
+    expect(deps.trash).not.toHaveBeenCalled()
+    expect(deps.recovery.discard).toHaveBeenCalledWith(created.workflowId)
+  })
+
+  it('confirms an already-removed companion as saved without scheduling a second disk removal', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    const { deps } = dependencies({
+      createAnalysisClient: vi.fn((onAnalysis) => {
+        publish = onAnalysis
+        return { schedule: vi.fn(), dispose: vi.fn() }
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    await controller.companionRemoved('flow.hermes.yaml')
+    const removed = $documentSession.get().pair!
+
+    expect(removed.companion).toBeNull()
+    expect(removed.savedGeneration).toBe(removed.generation)
+    expect(isDocumentPairDirty(removed)).toBe(false)
+    expect(deps.recoveryDrafts.changed).toHaveBeenLastCalledWith(removed)
+
+    publish?.({ ...createDocumentRevision(removed, digest), issues: [], structurallyValid: true })
+    const outcome = await controller.save()
+    expect(outcome).toMatchObject({
+      status: 'saved',
+      results: { definition: { status: 'unchanged' }, companion: null },
+    })
+    expect(deps.trash).not.toHaveBeenCalled()
+    expect(deps.recovery.discard).toHaveBeenCalledWith(removed.workflowId)
   })
 
   it('adopts recovery-backed drafts into the same lifecycle instead of bypassing it', async () => {

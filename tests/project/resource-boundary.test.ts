@@ -60,6 +60,7 @@ describe('native foundation resource boundary', () => {
     expect(permissionIdentifiers).not.toContain('fs:default')
     expect(permissionIdentifiers).not.toContain('fs:allow-all')
     expect(permissionIdentifiers.some((identifier) => identifier.startsWith('shell:'))).toBe(false)
+    expect(permissionIdentifiers).toContain('core:window:allow-destroy')
     expect(dependencies).not.toEqual(
       expect.arrayContaining([
         'electron',

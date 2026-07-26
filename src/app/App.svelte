@@ -39,6 +39,7 @@
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
+  import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
   const globalContext: CommandContext = {
     surface: 'global',
@@ -118,6 +119,7 @@
             : undefined,
         )
       }),
+    onWorkspaceChanged: refreshWorkspace,
   })
   const actions = createWorkspaceActions({
     native,
@@ -185,11 +187,13 @@
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
+    const requestToken = documentWorkspace.beginActivation()
     await contractReadiness
     const contract = await activeContractFor(entry)
-    selectWorkspaceEntry(entry.id)
     const workspaceId = $workspace.id
-    if (workspaceId) await documentWorkspace.activate(workspaceId, entry, contract ?? null)
+    if (!workspaceId) return
+    const opened = await documentWorkspace.activate(workspaceId, entry, contract ?? null, requestToken)
+    if (opened) selectWorkspaceEntry(entry.id)
   }
 
   function analyzeCandidateInWorker(input: {
@@ -339,6 +343,21 @@
     let dispose: (() => void) | undefined
     let disposed = false
     void (async () => {
+      const currentWindow = '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null
+      if (currentWindow) {
+        const unlistenClose = await installWindowCloseLifecycle(
+          currentWindow,
+          () => documentWorkspace.dispose(),
+          (error) => {
+            workspaceError = error instanceof Error ? error.message : 'The document lifecycle could not be flushed.'
+          },
+        )
+        if (disposed) {
+          unlistenClose()
+          return
+        }
+        dispose = unlistenClose
+      }
       await contractReadiness
       if (disposed) return
       await documentWorkspace.start()
@@ -359,9 +378,11 @@
         }
       }
       window.addEventListener('keydown', keydown)
+      const disposeClose = dispose
       dispose = () => {
         unbindSave()
         window.removeEventListener('keydown', keydown)
+        disposeClose?.()
       }
       await refreshRecent()
       if (disposed) return
@@ -370,8 +391,8 @@
       } catch (error: unknown) {
         workspaceError = error instanceof Error ? error.message : 'The startup workflow could not be opened.'
       }
-      if (disposed || !('__TAURI_INTERNALS__' in window)) return
-      const disposeDragDrop = await getCurrentWindow().onDragDropEvent((event) => {
+      if (disposed || !currentWindow) return
+      const disposeDragDrop = await currentWindow.onDragDropEvent((event) => {
         if (event.payload.type !== 'drop') return
         for (const path of event.payload.paths) runWorkspaceOperation(actions.handleExternalPath(path))
       })
@@ -494,6 +515,12 @@
         />
         {#if $documentWorkspaceState.analysisError}
           <p class="document-outcome" role="alert">{$documentWorkspaceState.analysisError}</p>
+        {/if}
+        {#if $documentWorkspaceState.missingChange}
+          <p class="document-outcome" role="alert">
+            {$documentWorkspaceState.missingChange.dirty ? 'Unsaved workflow' : 'Workflow'} file missing after external
+            {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
+          </p>
         {/if}
         {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
           <p class="document-outcome" role="alert">

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
-import { $documentSession, closeDocumentSession } from '$src/stores/documents'
+import { $documentSession, closeDocumentSession, openDocumentSession } from '$src/stores/documents'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import App from './App.svelte'
 
@@ -14,7 +14,13 @@ describe('App', () => {
     showEditorMode('visual')
     clearWorkspace()
     closeDocumentSession()
-    $documentWorkspace.set({ conflict: null, recoveryOffers: [], saveOutcome: null, analysisError: null })
+    $documentWorkspace.set({
+      conflict: null,
+      recoveryOffers: [],
+      saveOutcome: null,
+      analysisError: null,
+      missingChange: null,
+    })
     document.documentElement.removeAttribute('data-brand')
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.removeAttribute('style')
@@ -64,6 +70,7 @@ describe('App', () => {
       conflict: null,
       recoveryOffers: [],
       analysisError: null,
+      missingChange: null,
       saveOutcome: {
         status: 'blocked',
         pair: activePair!,
@@ -74,6 +81,34 @@ describe('App', () => {
     await tick()
 
     expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: analysis_missing_or_stale')
+  })
+
+  it('surfaces a dirty active file removed outside the application', async () => {
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: dirty\n',
+          revision: 1,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'0'.repeat(64)}`,
+    )
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      missingChange: { kind: 'remove', paths: ['flow.yaml'], dirty: true },
+    })
+    render(App)
+
+    expect(screen.getByText(/unsaved workflow file missing after external remove: flow.yaml/i)).toBeVisible()
   })
 
   it('keeps the Explorer header and import affordance visible for an opened empty workspace', () => {

@@ -21,6 +21,18 @@ export function createHistoryState(): HistoryState {
 
 export const historyStore = atom<HistoryState>(createHistoryState())
 
+export function migrateHistoryWorkflowIdentity(
+  history: HistoryState,
+  fromWorkflowId: string,
+  toWorkflowId: string,
+): HistoryState {
+  const migrate = (transaction: YamlTransaction): YamlTransaction =>
+    transaction.workflowId === fromWorkflowId
+      ? snapshotTransaction({ ...transaction, workflowId: toWorkflowId })
+      : snapshotTransaction(transaction)
+  return historyState(history.undo.map(migrate), history.redo.map(migrate))
+}
+
 export function recordTransaction(history: HistoryState, transaction: YamlTransaction): HistoryState {
   const undo = [...history.undo, snapshotTransaction(transaction)]
   while (undo.length > MAX_TRANSACTIONS || historyBytes(undo) > MAX_TEXT_BYTES) undo.shift()
