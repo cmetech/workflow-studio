@@ -5,7 +5,13 @@ import {
   createDocumentRevision,
   isAnalysisCurrent,
 } from '$src/lib/documents/revisions'
-import type { ContractDigest, DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
+import type {
+  ContractDigest,
+  DocumentAnalysis,
+  DocumentRevision,
+  ValidationIssue,
+  WorkflowPairText,
+} from '$src/lib/documents/types'
 
 export interface DocumentSessionState {
   pair: WorkflowPairText | null
@@ -20,6 +26,25 @@ const emptyDocumentSession: DocumentSessionState = {
 }
 
 export const $documentSession = atom<DocumentSessionState>(emptyDocumentSession)
+
+export interface ProblemFocusState {
+  readonly issue: ValidationIssue | null
+  readonly requested: boolean
+  readonly requestRevision: number
+}
+
+export const $problemFocus = atom<ProblemFocusState>({ issue: null, requested: false, requestRevision: 0 })
+
+export function selectProblem(issue: ValidationIssue): void {
+  const current = $problemFocus.get()
+  $problemFocus.set({ issue: structuredClone(issue), requested: false, requestRevision: current.requestRevision })
+}
+
+export function requestProblemFocus(): void {
+  const current = $problemFocus.get()
+  if (!current.issue) return
+  $problemFocus.set({ ...current, requested: true, requestRevision: current.requestRevision + 1 })
+}
 
 export function openDocumentSession(pair: WorkflowPairText, contractDigest: ContractDigest): void {
   $documentSession.set({
@@ -50,14 +75,29 @@ export function receiveDocumentAnalysis(analysis: DocumentAnalysis): void {
   $documentSession.set({ ...current, analysis: accepted.analysis })
 }
 
-export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDigest: ContractDigest): void {
+export function replaceDocumentSessionPair(pair: WorkflowPairText, contractDigest: ContractDigest): WorkflowPairText {
   const current = $documentSession.get()
-  if (current.pair?.workflowId !== pair.workflowId || current.pair.generation !== pair.generation) return
+  if (current.pair?.workflowId !== pair.workflowId) return pair
+  if (current.pair.generation !== pair.generation) {
+    let mergedGeneration = current.pair
+    mergedGeneration = mergeSavedDocument(mergedGeneration, pair, 'definition')
+    mergedGeneration = mergeSavedDocument(mergedGeneration, pair, 'companion')
+    updateDocumentSession(mergedGeneration, contractDigest)
+    return mergedGeneration
+  }
+  if (
+    current.pair.definition.revision < pair.definition.revision ||
+    (current.pair.companion?.revision ?? -1) < (pair.companion?.revision ?? -1)
+  ) {
+    updateDocumentSession(pair, contractDigest)
+    return pair
+  }
 
   let merged = current.pair
   merged = mergeSavedDocument(merged, pair, 'definition')
   merged = mergeSavedDocument(merged, pair, 'companion')
   updateDocumentSession(merged, contractDigest)
+  return merged
 }
 
 function mergeSavedDocument(

@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import ProblemsPanel from './ProblemsPanel.svelte'
+import { $problemFocus } from '$src/stores/documents'
+import { listCommands } from '$src/lib/commands/registry'
 
 const issues: readonly ValidationIssue[] = [
   {
@@ -27,11 +29,9 @@ const issues: readonly ValidationIssue[] = [
 
 describe('ProblemsPanel', () => {
   it('groups by file and layer, exposes blocking status, and announces only the summary politely', async () => {
-    const execute = vi.fn(async () => undefined)
     const { container } = render(ProblemsPanel, {
       issues,
       paths: { definition: 'flows/release.yaml', companion: 'flows/release.hermes.yaml' },
-      execute,
     })
 
     expect(screen.getByRole('heading', { name: 'Problems' })).toBeVisible()
@@ -44,10 +44,10 @@ describe('ProblemsPanel', () => {
     expect(screen.getByText('2 problems, 1 blocking')).toHaveAttribute('aria-live', 'polite')
 
     await fireEvent.click(screen.getByRole('button', { name: /A required node field is missing/ }))
-    expect(execute).toHaveBeenCalledWith('problems.focus.definition.required.build', {
-      surface: 'global',
-      canMutate: false,
-      hasSelection: true,
+    expect(listCommands().some((command) => command.id === 'problems.focus')).toBe(true)
+    expect($problemFocus.get()).toMatchObject({
+      issue: { code: 'required', document: 'definition', nodeId: 'build' },
+      requested: true,
     })
   })
 })

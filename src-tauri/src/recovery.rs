@@ -162,12 +162,11 @@ fn read_blob(path: &Path, id: String, size: u64) -> RecoveryResult<Option<Recove
     let Ok(content) = String::from_utf8(bytes[8 + key_len..].to_vec()) else {
         return Ok(None);
     };
-    let content_size = content.len() as u64;
     Ok(Some(RecoveryBlob {
         id,
         key,
         content,
-        size: content_size,
+        size,
     }))
 }
 
@@ -290,6 +289,12 @@ mod tests {
         assert!(records
             .iter()
             .any(|record| record.content == "{\"draft\":2}"));
+        assert!(records.iter().all(|record| {
+            record.size
+                == std::fs::metadata(app_data.path().join("recovery").join(&record.id))
+                    .unwrap()
+                    .len()
+        }));
         assert!(workspace.path().read_dir().unwrap().next().is_none());
         assert!(std::fs::read_dir(app_data.path().join("recovery"))
             .unwrap()

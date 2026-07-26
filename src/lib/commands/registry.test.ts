@@ -33,6 +33,7 @@ describe('command registry', () => {
   it('registers the initial shell commands from one table', () => {
     expect(listCommands().map(({ id }) => id)).toEqual([
       'workspace.open-folder',
+      'problems.focus',
       'workbench.command-palette',
       'view.activity.examples',
       'view.activity.explorer',

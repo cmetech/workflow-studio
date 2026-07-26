@@ -15,12 +15,48 @@
 
   let { files, diffViewed, onChoice }: Props = $props()
   let compareButton: HTMLButtonElement
+  let dialog: HTMLDivElement
 
-  onMount(() => compareButton.focus())
+  onMount(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    compareButton.focus()
+    return () => {
+      if (opener?.isConnected) opener.focus()
+    }
+  })
+
+  function trapFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return
+    const focusable = [...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (!first || !last) return
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 </script>
 
-<section class="backdrop" role="presentation">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="external-change-title">
+<section
+  class="backdrop"
+  role="presentation"
+  data-modal-background="blocked"
+  onclick={(event) => event.stopPropagation()}
+  onpointerdown={(event) => event.stopPropagation()}
+>
+  <div
+    bind:this={dialog}
+    class="dialog"
+    role="dialog"
+    tabindex="-1"
+    aria-modal="true"
+    aria-labelledby="external-change-title"
+    onkeydown={trapFocus}
+  >
     <header>
       <p class="eyebrow">External change</p>
       <h2 id="external-change-title">Workflow changed on disk</h2>

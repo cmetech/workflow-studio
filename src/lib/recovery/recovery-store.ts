@@ -50,7 +50,7 @@ export function createRecoveryStore(native: RecoveryNativePort): RecoveryStore {
       await prune(native)
     },
     async list() {
-      return readRecords(native).then((records) =>
+      return prune(native).then((records) =>
         latestRecords(records)
           .map(({ draft }) => draft)
           .sort(
@@ -60,8 +60,9 @@ export function createRecoveryStore(native: RecoveryNativePort): RecoveryStore {
       )
     },
     async discard(workflowId) {
-      const records = (await readRecords(native)).filter(({ draft }) => draft.workflowId === workflowId)
-      await Promise.all(records.map(({ blob }) => native.recoveryDelete(blob.id)))
+      const inventory = await readInventory(native)
+      const ids = inventory.blobs.filter((blob) => blob.key === workflowId).map((blob) => blob.id)
+      await Promise.all(ids.map((id) => native.recoveryDelete(id)))
     },
   }
 }
@@ -69,6 +70,7 @@ export function createRecoveryStore(native: RecoveryNativePort): RecoveryStore {
 export class RecoveryDraftController {
   private timer: ReturnType<typeof setTimeout> | undefined
   private pending: WorkflowPairText | null = null
+  private queue: Promise<void> = Promise.resolve()
 
   constructor(
     private readonly store: RecoveryStore,
@@ -77,8 +79,9 @@ export class RecoveryDraftController {
 
   changed(pair: WorkflowPairText): void {
     if (!isDirty(pair)) {
-      this.cancel()
-      void this.store.discard(pair.workflowId)
+      this.cancelTimer()
+      this.pending = null
+      this.enqueue(() => this.store.discard(pair.workflowId))
       return
     }
     this.pending = pair
@@ -87,7 +90,7 @@ export class RecoveryDraftController {
       this.timer = undefined
       const pending = this.pending
       this.pending = null
-      if (pending) void this.store.save(createRecoveryDraft(pending, this.now()))
+      if (pending) this.enqueue(() => this.store.save(createRecoveryDraft(pending, this.now())))
     }, RECOVERY_IDLE_MS)
   }
 
@@ -96,13 +99,19 @@ export class RecoveryDraftController {
     this.timer = undefined
     const pending = this.pending
     this.pending = null
-    if (pending) await this.store.save(createRecoveryDraft(pending, this.now()))
+    if (pending) this.enqueue(() => this.store.save(createRecoveryDraft(pending, this.now())))
+    await this.queue
   }
 
-  private cancel(): void {
+  private cancelTimer(): void {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
-    this.pending = null
+  }
+
+  private enqueue(operation: () => Promise<void>): void {
+    const next = this.queue.catch(() => undefined).then(operation)
+    this.queue = next
+    void next.catch(() => undefined)
   }
 }
 
@@ -111,18 +120,29 @@ interface ParsedRecoveryRecord {
   readonly draft: RecoveryDraft
 }
 
-async function readRecords(native: RecoveryNativePort): Promise<readonly ParsedRecoveryRecord[]> {
+interface RecoveryInventory {
+  readonly blobs: readonly RecoveryBlob[]
+  readonly records: readonly ParsedRecoveryRecord[]
+  readonly invalid: readonly RecoveryBlob[]
+}
+
+async function readInventory(native: RecoveryNativePort): Promise<RecoveryInventory> {
   const blobs = await native.recoveryList()
   const records: ParsedRecoveryRecord[] = []
+  const invalid: RecoveryBlob[] = []
   for (const blob of blobs) {
     const draft = parseRecoveryDraft(blob.content)
     if (draft && draft.workflowId === blob.key) records.push({ blob, draft })
+    else invalid.push(blob)
   }
-  return records
+  return { blobs, records, invalid }
 }
 
-async function prune(native: RecoveryNativePort): Promise<void> {
-  const allRecords = [...(await readRecords(native))]
+async function prune(native: RecoveryNativePort): Promise<ParsedRecoveryRecord[]> {
+  const inventory = await readInventory(native)
+  for (const blob of inventory.invalid) await native.recoveryDelete(blob.id)
+
+  const allRecords = [...inventory.records]
   const latestIds = new Set(latestRecords(allRecords).map(({ blob }) => blob.id))
   const superseded = allRecords
     .filter(({ blob }) => !latestIds.has(blob.id))
@@ -145,6 +165,7 @@ async function prune(native: RecoveryNativePort): Promise<void> {
     await native.recoveryDelete(removed.blob.id)
     totalBytes -= removed.blob.size
   }
+  return records
 }
 
 function latestRecords(records: readonly ParsedRecoveryRecord[]): ParsedRecoveryRecord[] {

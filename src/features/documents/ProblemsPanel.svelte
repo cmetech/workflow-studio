@@ -2,6 +2,7 @@
   import { executeCommand } from '$src/lib/commands/registry'
   import type { CommandContext } from '$src/lib/commands/types'
   import type { DocumentKind, IssueLayer, ValidationIssue } from '$src/lib/documents/types'
+  import { selectProblem } from '$src/stores/documents'
 
   interface Props {
     issues: readonly ValidationIssue[]
@@ -42,23 +43,13 @@
     })
   }
 
-  function focusCommand(issue: ValidationIssue): string {
-    const identity = issue.nodeId ?? issue.field ?? pathIdentity(issue.path) ?? 'document'
-    return `problems.focus.${issue.document}.${issue.code}.${identity}`
-  }
-
-  function pathIdentity(path: string | undefined): string | null {
-    if (!path) return null
-    const parts = path.split('/').filter(Boolean)
-    return parts.at(-1) ?? null
-  }
-
   function layerName(layer: IssueLayer): string {
     return layer[0]?.toUpperCase() + layer.slice(1)
   }
 
   function focusIssue(issue: ValidationIssue): void {
-    void execute(focusCommand(issue), focusContext)
+    selectProblem(issue)
+    void execute('problems.focus', focusContext)
   }
 </script>
 

@@ -674,6 +674,35 @@ fn trash_preserves_each_capability_resolver_error_code() {
 }
 
 #[test]
+fn trash_expected_hash_never_trashes_an_external_replacement() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: original\n").unwrap();
+    let workspace = scope(root.path());
+    let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
+    fs::write(root.path().join("flow.yaml"), "id: external\n").unwrap();
+
+    let result = files::trash_paths_checked_with(
+        &workspace,
+        &[files::TrashPathRequest {
+            relative_path: "flow.yaml".to_string(),
+            expected_current_hash: before.sha256,
+        }],
+        |_| panic!("a hash mismatch must not reach OS Trash"),
+    )
+    .unwrap();
+
+    assert_eq!(result.results[0].status, "failed");
+    assert_eq!(
+        result.results[0].error_code.as_deref(),
+        Some("external_revision_conflict")
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "id: external\n"
+    );
+}
+
+#[test]
 fn classifies_watcher_event_hints_without_file_content() {
     use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
     use notify::EventKind;

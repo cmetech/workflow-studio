@@ -199,10 +199,10 @@ pub fn workspace_rename_pair(
 
 #[tauri::command]
 pub fn workspace_trash_paths(
-    relative_paths: Vec<String>,
+    requests: Vec<files::TrashPathRequest>,
     state: State<'_, WorkspaceState>,
 ) -> WorkspaceResult<files::WorkspaceTrashResult> {
-    with_scope(&state, |scope| files::trash_paths(scope, &relative_paths))
+    with_scope(&state, |scope| files::trash_paths(scope, &requests))
 }
 
 fn with_scope<T>(

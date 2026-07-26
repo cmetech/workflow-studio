@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ContractDigest, DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
 import { editDocumentText } from '$src/lib/documents/revisions'
+import { removeCompanion } from '$src/lib/documents/revisions'
 import { createHistoryState } from '$src/stores/history'
-import { $documentSession, openDocumentSession, updateDocumentSession } from '$src/stores/documents'
+import {
+  $documentSession,
+  closeDocumentSession,
+  openDocumentSession,
+  updateDocumentSession,
+} from '$src/stores/documents'
 import {
   handleExternalChange,
   openWorkflowPair,
@@ -10,6 +16,7 @@ import {
   saveWorkflowPair,
   type DocumentActionNative,
 } from './document-actions'
+import type { WorkspaceTrashRequest } from '$src/lib/native/types'
 
 const digest = `sha256:${'a'.repeat(64)}` as ContractDigest
 
@@ -69,13 +76,15 @@ function native(): DocumentActionNative {
       size: text.length,
       modifiedAt: '2026-07-25T12:01:00.000Z',
     })),
-    workspaceTrashPaths: vi.fn(async (relativePaths: readonly string[]) => ({
-      results: relativePaths.map((relativePath: string) => ({ relativePath, status: 'trashed' as const })),
+    workspaceTrashPaths: vi.fn(async (requests: readonly WorkspaceTrashRequest[]) => ({
+      results: requests.map(({ relativePath }) => ({ relativePath, status: 'trashed' as const })),
     })),
   }
 }
 
 describe('document actions', () => {
+  afterEach(() => closeDocumentSession())
+
   it('opens both files at revision zero, clean, and schedules immediate analysis', async () => {
     const host = native()
     const scheduleAnalysis = vi.fn()
@@ -231,14 +240,104 @@ describe('document actions', () => {
       }
     })
 
-    await saveWorkflowPair({ pair: current, analysis: analysis(current), native: host })
+    const keepRecovery = vi.fn(async () => undefined)
+    const discardRecovery = vi.fn(async () => undefined)
+    const result = await saveWorkflowPair({
+      pair: current,
+      analysis: analysis(current),
+      native: host,
+      keepRecovery,
+      discardRecovery,
+    })
 
+    expect(result.pair.definition.text).toBe(newer.definition.text)
     expect($documentSession.get().pair?.definition).toMatchObject({
       text: newer.definition.text,
       revision: newer.definition.revision,
       savedRevision: current.definition.revision,
       diskHash: 'saved-snapshot-hash',
     })
+    expect(discardRecovery).not.toHaveBeenCalled()
+    expect(keepRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ definition: expect.objectContaining({ text: newer.definition.text }) }),
+    )
+  })
+
+  it('returns a concurrently changed pair generation as authoritative and recovery-backed', async () => {
+    const current = pair()
+    openDocumentSession(current, digest)
+    const changedGeneration = removeCompanion(editDocumentText(current, 'definition', 'id: generation-newer\n'))
+    const host = native()
+    vi.mocked(host.workspaceWrite).mockImplementationOnce(async ({ relativePath, text }) => {
+      updateDocumentSession(changedGeneration, digest)
+      return {
+        relativePath,
+        sha256: 'saved-definition-hash',
+        size: text.length,
+        modifiedAt: '2026-07-25T12:01:00.000Z',
+      }
+    })
+    const keepRecovery = vi.fn(async () => undefined)
+
+    const result = await saveWorkflowPair({
+      pair: current,
+      analysis: analysis(current),
+      native: host,
+      keepRecovery,
+    })
+
+    expect(result.pair).toMatchObject({
+      generation: changedGeneration.generation,
+      companion: null,
+      definition: { text: changedGeneration.definition.text, diskHash: 'saved-definition-hash' },
+    })
+    expect(keepRecovery).toHaveBeenCalledOnce()
+  })
+
+  it('uses a bound expected hash for companion deletion and treats failed or partial path results as partial save', async () => {
+    const current = pair({
+      definition: { ...pair().definition, revision: 1, savedRevision: 1 },
+      companion: null,
+    })
+    const host = native()
+    vi.mocked(host.workspaceRead).mockResolvedValueOnce({
+      relativePath: 'flows/release.hermes.yaml',
+      text: 'language_compatibility: hermes-legacy\n',
+      sha256: 'companion-old',
+      size: 42,
+      modifiedAt: '2026-07-25T13:00:00.000Z',
+      readOnly: false,
+    })
+    vi.mocked(host.workspaceTrashPaths).mockResolvedValueOnce({
+      results: [
+        {
+          relativePath: 'flows/release.hermes.yaml',
+          status: 'partial',
+          errorCode: 'workspace_trash_partial',
+          message: 'OS Trash handoff was incomplete.',
+        },
+      ],
+    })
+    const keepRecovery = vi.fn(async () => undefined)
+
+    const result = await saveWorkflowPair({
+      pair: current,
+      analysis: analysis(current),
+      native: host,
+      removedCompanion: { path: 'flows/release.hermes.yaml', diskHash: 'companion-old' },
+      keepRecovery,
+    })
+
+    expect(host.workspaceTrashPaths).toHaveBeenCalledWith([
+      { relativePath: 'flows/release.hermes.yaml', expectedCurrentHash: 'companion-old' },
+    ])
+    expect(result.status).toBe('partial')
+    if (result.status === 'blocked') return
+    expect(result.results.companion).toMatchObject({
+      status: 'failed',
+      errorCode: 'workspace_trash_partial',
+    })
+    expect(keepRecovery).toHaveBeenCalledOnce()
   })
 
   it('auto-reloads clean external changes and creates a three-choice conflict for dirty text', () => {

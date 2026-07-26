@@ -103,34 +103,49 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       })
       return { paths, results }
     },
-    workspaceTrashPaths: async (relativePaths) => {
-      if (relativePaths.length < 1 || relativePaths.length > 2) {
+    workspaceTrashPaths: async (requests) => {
+      if (requests.length < 1 || requests.length > 2) {
         throw new NativeError('invalid_trash_request', 'Move to Trash accepts one or two exact workspace file paths.')
       }
-      if (new Set(relativePaths).size !== relativePaths.length) {
+      if (new Set(requests.map(({ relativePath }) => relativePath)).size !== requests.length) {
         throw new NativeError('invalid_trash_request', 'Move to Trash paths must be unique.')
       }
-      for (const relativePath of relativePaths) {
+      const results = []
+      const trashedPaths: string[] = []
+      for (const { relativePath, expectedCurrentHash } of requests) {
         validateRelativeYaml(relativePath)
-        if (!files.has(relativePath)) {
-          throw new NativeError('path_not_found', 'The workspace file does not exist.')
+        const existing = files.get(relativePath)
+        if (!existing) {
+          results.push({
+            relativePath,
+            status: 'failed' as const,
+            errorCode: 'path_not_found',
+            message: 'The workspace file does not exist.',
+          })
+          continue
         }
+        if ((await sha256(existing.text)) !== expectedCurrentHash) {
+          results.push({
+            relativePath,
+            status: 'failed' as const,
+            errorCode: 'external_revision_conflict',
+            message: 'The file changed on disk before it could be moved to Trash.',
+          })
+          continue
+        }
+        files.delete(relativePath)
+        trashedPaths.push(relativePath)
+        results.push({ relativePath, status: 'trashed' as const })
       }
-      relativePaths.forEach((relativePath) => files.delete(relativePath))
-      await emit({ paths: [...relativePaths], kind: 'remove' })
-      return {
-        results: relativePaths.map((relativePath) => ({
-          relativePath,
-          status: 'trashed' as const,
-        })),
-      }
+      if (trashedPaths.length > 0) await emit({ paths: trashedPaths, kind: 'remove' })
+      return { results }
     },
     recoveryList: async () =>
       [...recovery].map(([id, record]) => ({
         id,
         key: record.key,
         content: record.content,
-        size: byteLength(record.content),
+        size: 8 + byteLength(record.key) + byteLength(record.content),
       })),
     recoveryWrite: async ({ key, content }) => {
       recoverySequence += 1

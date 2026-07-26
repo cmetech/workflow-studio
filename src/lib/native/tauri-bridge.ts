@@ -62,9 +62,9 @@ export const tauriBridge: WorkspaceNativeBridge = {
   workspaceRead: (relativePath) => invokeTyped<WorkspaceReadResult>('workspace_read', { relativePath }),
   workspaceWrite: (request) => invokeTyped<WorkspaceWriteResult>('workspace_write', { ...request }),
   workspaceRenamePair: (request) => invokeTyped<WorkspaceRenameResult>('workspace_rename_pair', { ...request }),
-  workspaceTrashPaths: (relativePaths) =>
+  workspaceTrashPaths: (requests) =>
     invokeTyped<WorkspaceTrashResult>('workspace_trash_paths', {
-      relativePaths: [...relativePaths],
+      requests: requests.map((request) => ({ ...request })),
     }),
   recoveryList: () => invokeTyped<readonly RecoveryBlob[]>('recovery_list'),
   recoveryWrite: (request) => invokeTyped<void>('recovery_write', { ...request }),

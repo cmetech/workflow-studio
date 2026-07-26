@@ -14,6 +14,7 @@ import type {
 import type {
   WorkspaceReadResult,
   WorkspaceTrashResult,
+  WorkspaceTrashRequest,
   WorkspaceWriteRequest,
   WorkspaceWriteResult,
 } from '$src/lib/native/types'
@@ -21,13 +22,13 @@ import { createRecoveryDraft } from '$src/lib/recovery/recovery-store'
 import type { RecoveryDraft } from '$src/lib/recovery/types'
 import type { HistoryState } from '$src/stores/history'
 import { recordTransaction } from '$src/stores/history'
-import { openDocumentSession, replaceDocumentSessionPair } from '$src/stores/documents'
+import { isDocumentPairDirty, openDocumentSession, replaceDocumentSessionPair } from '$src/stores/documents'
 import type { YamlTransaction } from '$src/lib/documents/transactions'
 
 export interface DocumentActionNative {
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
-  workspaceTrashPaths(relativePaths: readonly string[]): Promise<WorkspaceTrashResult>
+  workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
 }
 
 export interface OpenWorkflowPairOptions {
@@ -116,10 +117,11 @@ export async function saveWorkflowPair(options: SaveWorkflowPairOptions): Promis
   let nextPair = options.pair
   const definitionResult = await saveDocument(nextPair.definition, options.native)
   if (definitionResult.status === 'failed') {
-    const draft = await retainRecovery(nextPair, options)
+    const authoritativePair = replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)
+    const draft = await retainRecovery(authoritativePair, options)
     return {
       status: 'partial',
-      pair: nextPair,
+      pair: authoritativePair,
       results: { definition: definitionResult, companion: null },
       recoveryDraft: draft,
     }
@@ -145,22 +147,26 @@ export async function saveWorkflowPair(options: SaveWorkflowPairOptions): Promis
   }
 
   if (companionResult?.status === 'failed') {
-    replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)
-    const draft = await retainRecovery(nextPair, options)
+    const authoritativePair = replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)
+    const draft = await retainRecovery(authoritativePair, options)
     return {
       status: 'partial',
-      pair: nextPair,
+      pair: authoritativePair,
       results: { definition: definitionResult, companion: companionResult },
       recoveryDraft: draft,
     }
   }
 
-  replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)
-  await options.discardRecovery?.(nextPair.workflowId)
+  const authoritativePair = replaceDocumentSessionPair(nextPair, currentAnalysis.contractDigest)
+  const recoveryDraft = isDocumentPairDirty(authoritativePair)
+    ? await retainRecovery(authoritativePair, options)
+    : undefined
+  if (!recoveryDraft) await options.discardRecovery?.(authoritativePair.workflowId)
   return {
     status: 'saved',
-    pair: nextPair,
+    pair: authoritativePair,
     results: { definition: definitionResult, companion: companionResult },
+    ...(recoveryDraft ? { recoveryDraft } : {}),
   }
 }
 
@@ -287,7 +293,19 @@ async function deleteRemovedCompanion(
         message: 'The companion changed on disk before it could be removed.',
       }
     }
-    await native.workspaceTrashPaths([removed.path])
+    const result = await native.workspaceTrashPaths([
+      { relativePath: removed.path, expectedCurrentHash: removed.diskHash },
+    ])
+    const exact = result.results.filter((pathResult) => pathResult.relativePath === removed.path)
+    if (result.results.length !== 1 || exact.length !== 1 || exact[0]?.status !== 'trashed') {
+      const outcome = exact[0]
+      return {
+        path: removed.path,
+        status: 'failed',
+        errorCode: outcome?.errorCode ?? 'workspace_trash_failed',
+        message: outcome?.message ?? 'The native Trash operation did not confirm the exact companion path.',
+      }
+    }
     return { path: removed.path, status: 'deleted' }
   } catch (error: unknown) {
     return failedFile(removed.path, error)

@@ -80,7 +80,25 @@ describe('browser workspace bridge', () => {
     ])
     expect((await bridge.workspaceScan()).map((entry) => entry.relativePath)).toContain('examples/renamed.hermes.yaml')
 
-    const trashed = await bridge.workspaceTrashPaths(['examples/renamed.hermes.yaml'])
+    const companionBeforeTrash = await bridge.workspaceRead('examples/renamed.hermes.yaml')
+    const conflictedTrash = await bridge.workspaceTrashPaths([
+      { relativePath: 'examples/renamed.hermes.yaml', expectedCurrentHash: 'stale-hash' },
+    ])
+    expect(conflictedTrash.results).toEqual([
+      expect.objectContaining({
+        relativePath: 'examples/renamed.hermes.yaml',
+        status: 'failed',
+        errorCode: 'external_revision_conflict',
+      }),
+    ])
+    expect(await bridge.workspaceRead('examples/renamed.hermes.yaml')).toEqual(companionBeforeTrash)
+
+    const trashed = await bridge.workspaceTrashPaths([
+      {
+        relativePath: 'examples/renamed.hermes.yaml',
+        expectedCurrentHash: companionBeforeTrash.sha256,
+      },
+    ])
     expect(trashed.results).toEqual([
       {
         relativePath: 'examples/renamed.hermes.yaml',
@@ -134,6 +152,18 @@ describe('Tauri workspace bridge', () => {
       relativePath: 'flow.yaml',
       text: 'id: flow\n',
       expectedCurrentHash: 'old-hash',
+    })
+  })
+
+  it('passes exact expected-hash Trash requests without string encoding', async () => {
+    invoke.mockResolvedValueOnce({
+      results: [{ relativePath: 'flow.yaml', status: 'trashed' }],
+    })
+
+    await tauriBridge.workspaceTrashPaths([{ relativePath: 'flow.yaml', expectedCurrentHash: 'a'.repeat(64) }])
+
+    expect(invoke).toHaveBeenCalledWith('workspace_trash_paths', {
+      requests: [{ relativePath: 'flow.yaml', expectedCurrentHash: 'a'.repeat(64) }],
     })
   })
 

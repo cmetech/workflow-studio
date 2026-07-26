@@ -1,4 +1,5 @@
 import { openCommandPalette, openFolder, showActivity, showEditorMode } from '$src/stores/shell'
+import { requestProblemFocus } from '$src/stores/documents'
 import type { ActivityId, AppCommand, CommandContext, EditorMode } from './types'
 
 export interface BindingConflictDiagnostic {
@@ -164,6 +165,14 @@ function editorModeCommand(mode: EditorMode, label: string, binding: string): Ap
 }
 
 const initialCommands: readonly AppCommand[] = [
+  {
+    id: 'problems.focus',
+    label: 'Focus Selected Problem',
+    category: 'Navigation',
+    defaultBindings: [],
+    enabled: (context) => context.hasSelection,
+    run: requestProblemFocus,
+  },
   {
     id: 'workspace.open-folder',
     label: 'Open Folder',

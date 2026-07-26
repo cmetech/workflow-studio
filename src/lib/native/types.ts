@@ -60,6 +60,11 @@ export interface WorkspaceTrashResult {
   readonly results: readonly PathOperationResult[]
 }
 
+export interface WorkspaceTrashRequest {
+  readonly relativePath: string
+  readonly expectedCurrentHash: string
+}
+
 export interface PathOperationResult {
   readonly relativePath: string
   readonly destinationPath?: string
@@ -87,7 +92,7 @@ export interface WorkspaceNativeBridge extends NativeBridge {
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
   workspaceRenamePair(request: WorkspaceRenameRequest): Promise<WorkspaceRenameResult>
-  workspaceTrashPaths(relativePaths: readonly string[]): Promise<WorkspaceTrashResult>
+  workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
   recoveryList(): Promise<readonly RecoveryBlob[]>
   recoveryWrite(request: RecoveryWriteRequest): Promise<void>
   recoveryDelete(id: string): Promise<void>

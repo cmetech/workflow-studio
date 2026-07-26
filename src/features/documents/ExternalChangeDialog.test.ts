@@ -26,4 +26,33 @@ describe('ExternalChangeDialog', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Compare' }))
     expect(onChoice).toHaveBeenCalledWith('compare')
   })
+
+  it('traps forward and reverse focus, blocks backdrop interaction, and restores the opener', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onChoice = vi.fn()
+    const { unmount } = render(ExternalChangeDialog, {
+      files: [{ relativePath: 'flow.yaml', modifiedAt: '2026-07-25T13:00:00.000Z' }],
+      diffViewed: false,
+      onChoice,
+    })
+    await tick()
+    const dialog = screen.getByRole('dialog', { name: 'Workflow changed on disk' })
+    const compare = screen.getByRole('button', { name: 'Compare' })
+    const reload = screen.getByRole('button', { name: 'Reload Disk' })
+
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(compare).toHaveFocus()
+    await fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(reload).toHaveFocus()
+    await fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(compare).toHaveFocus()
+    await fireEvent.click(dialog.parentElement!)
+    expect(onChoice).not.toHaveBeenCalled()
+
+    unmount()
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
 })

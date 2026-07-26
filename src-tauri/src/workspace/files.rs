@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use cap_std::fs::{Dir, File, Metadata, OpenOptions, Permissions};
 use same_file::Handle;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::paths;
@@ -58,6 +58,18 @@ pub struct WorkspaceRenameResult {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceTrashResult {
     pub results: Vec<PathOperationResult>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrashPathRequest {
+    pub relative_path: String,
+    pub expected_current_hash: String,
+}
+
+struct TrashPathExpectation {
+    relative_path: String,
+    expected_current_hash: Option<String>,
 }
 
 pub fn scan(scope: &WorkspaceScope) -> WorkspaceResult<Vec<WorkspaceFileEntry>> {
@@ -1033,19 +1045,36 @@ fn move_error_code(outcome: &MoveNoClobberOutcome, fallback: &'static str) -> &'
 
 pub fn trash_paths(
     scope: &WorkspaceScope,
-    relative_paths: &[String],
+    requests: &[TrashPathRequest],
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_with(scope, relative_paths, |path| {
+    trash_paths_checked_with(scope, requests, |path| {
         trash::delete(path).map_err(|error| error.to_string())
     })
 }
 
+pub fn trash_paths_checked_with(
+    scope: &WorkspaceScope,
+    requests: &[TrashPathRequest],
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    let expected = requests
+        .iter()
+        .map(|request| TrashPathExpectation {
+            relative_path: request.relative_path.clone(),
+            expected_current_hash: Some(request.expected_current_hash.clone()),
+        })
+        .collect::<Vec<_>>();
+    trash_paths_impl(scope, &expected, || {}, |_| {}, || {}, &mut delete)
+}
+
+#[cfg(test)]
 pub fn trash_paths_with(
     scope: &WorkspaceScope,
     relative_paths: &[String],
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, || {}, |_| {}, || {}, &mut delete)
+    let requests = unchecked_trash_requests(relative_paths);
+    trash_paths_impl(scope, &requests, || {}, |_| {}, || {}, &mut delete)
 }
 
 #[cfg(test)]
@@ -1055,7 +1084,8 @@ pub fn trash_paths_with_bound_hook(
     hook: impl FnOnce(),
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    trash_paths_impl(scope, relative_paths, hook, |_| {}, || {}, &mut delete)
+    let requests = unchecked_trash_requests(relative_paths);
+    trash_paths_impl(scope, &requests, hook, |_| {}, || {}, &mut delete)
 }
 
 #[cfg(test)]
@@ -1065,9 +1095,10 @@ pub fn trash_paths_with_handoff_hook(
     mut handoff_hook: impl FnMut(&Path),
     mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
+    let requests = unchecked_trash_requests(relative_paths);
     trash_paths_impl(
         scope,
-        relative_paths,
+        &requests,
         || {},
         &mut handoff_hook,
         || {},
@@ -1082,9 +1113,10 @@ pub fn trash_paths_with_post_delete_hook(
     mut delete: impl FnMut(&Path) -> Result<(), String>,
     mut post_delete_hook: impl FnMut(),
 ) -> WorkspaceResult<WorkspaceTrashResult> {
+    let requests = unchecked_trash_requests(relative_paths);
     trash_paths_impl(
         scope,
-        relative_paths,
+        &requests,
         || {},
         |_| {},
         &mut post_delete_hook,
@@ -1094,40 +1126,45 @@ pub fn trash_paths_with_post_delete_hook(
 
 fn trash_paths_impl(
     scope: &WorkspaceScope,
-    relative_paths: &[String],
+    requests: &[TrashPathExpectation],
     bound_hook: impl FnOnce(),
     mut handoff_hook: impl FnMut(&Path),
     mut post_delete_hook: impl FnMut(),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
-    if relative_paths.is_empty() || relative_paths.len() > 2 {
+    if requests.is_empty() || requests.len() > 2 {
         return Err(WorkspaceError::new(
             "invalid_trash_request",
             "Move to Trash accepts one or two exact workspace file paths.",
         ));
     }
-    let unique: HashSet<&String> = relative_paths.iter().collect();
-    if unique.len() != relative_paths.len() {
+    let unique: HashSet<&str> = requests
+        .iter()
+        .map(|request| request.relative_path.as_str())
+        .collect();
+    if unique.len() != requests.len() {
         return Err(WorkspaceError::new(
             "invalid_trash_request",
             "Move to Trash paths must be unique.",
         ));
     }
 
-    let mut bound = Vec::with_capacity(relative_paths.len());
-    for relative in relative_paths {
-        require_yaml(relative)?;
-        bound.push(bind_path(scope, relative));
+    let mut bound = Vec::with_capacity(requests.len());
+    for request in requests {
+        require_yaml(&request.relative_path)?;
+        bound.push(bind_path(scope, &request.relative_path));
     }
     bound_hook();
 
-    let mut results = Vec::with_capacity(relative_paths.len());
-    for (relative, bound) in relative_paths.iter().zip(bound) {
+    let mut results = Vec::with_capacity(requests.len());
+    for (request, bound) in requests.iter().zip(bound) {
+        let relative = &request.relative_path;
         let result = match bound.and_then(|source| {
             trash_bound_path(
                 scope,
                 &source,
                 relative,
+                request.expected_current_hash.as_deref(),
                 &mut handoff_hook,
                 &mut post_delete_hook,
                 delete,
@@ -1155,6 +1192,7 @@ fn trash_bound_path(
     scope: &WorkspaceScope,
     source: &BoundPath,
     relative: &str,
+    expected_current_hash: Option<&str>,
     handoff_hook: &mut impl FnMut(&Path),
     post_delete_hook: &mut impl FnMut(),
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
@@ -1162,6 +1200,11 @@ fn trash_bound_path(
     ensure_bound_file(source)?;
     let original_identity = named_identity(source, "path_not_found")
         .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
+    if expected_current_hash
+        .is_some_and(|expected| !named_hash_matches(source, &original_identity, expected))
+    {
+        return Err(revision_conflict());
+    }
     let root = scope.directory()?;
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let file_name = Path::new(relative)
@@ -1308,6 +1351,17 @@ fn trash_bound_path(
         )),
         Err(issue) => Err(WorkspaceError::new(issue.code, issue.message)),
     }
+}
+
+#[cfg(test)]
+fn unchecked_trash_requests(relative_paths: &[String]) -> Vec<TrashPathExpectation> {
+    relative_paths
+        .iter()
+        .map(|relative_path| TrashPathExpectation {
+            relative_path: relative_path.clone(),
+            expected_current_hash: None,
+        })
+        .collect()
 }
 
 fn trash_rollback_error(
