@@ -1,10 +1,13 @@
 import { parse } from 'yaml'
 import { describe, expect, it, vi } from 'vitest'
-import type { AuthoringContract, NodeKindDescriptor } from '$src/lib/contract/types'
+import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import { applyWorkflowMutation } from '$src/lib/documents/transactions'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import { copySelection, duplicateSelection, pasteSelection } from './duplicate-selection'
+import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
+
+let contractSerial = 0
 
 function descriptor(id: string, profiles: AuthoringContract['profile'][]): NodeKindDescriptor {
   return {
@@ -22,16 +25,36 @@ function descriptor(id: string, profiles: AuthoringContract['profile'][]): NodeK
   }
 }
 
+function fieldDescriptor(
+  id: string,
+  fieldPath: string,
+  profiles: FieldDescriptor['applicability']['profiles'],
+): FieldDescriptor {
+  return {
+    id,
+    label: id,
+    description: `${id} field`,
+    field_path: fieldPath,
+    applicability: { profiles, documents: ['definition'] },
+    widget: 'text',
+    section: 'advanced',
+    order: 2,
+    status: 'supported',
+    examples: [],
+  }
+}
+
 function contract(
   profile: AuthoringContract['profile'] = 'hermes-legacy',
   additionalProperties = true,
 ): AuthoringContract {
+  contractSerial += 1
   return {
     schema_version: 1,
     contract_reader_version: 1,
     profile,
     normalizer_version: 1,
-    contract_digest: `sha256:${profile === 'hermes-legacy' ? 'b'.repeat(64) : 'c'.repeat(64)}`,
+    contract_digest: `sha256:${contractSerial.toString(16).padStart(64, '0')}`,
     definition_schema: {
       type: 'object',
       properties: {
@@ -167,6 +190,10 @@ function parsedNodes(text: string): Record<string, unknown>[] {
   return Array.isArray(definition.nodes) ? definition.nodes.map(record) : []
 }
 
+function intersects(left: { x: number; y: number }, right: { x: number; y: number }): boolean {
+  return Math.abs(left.x - right.x) < CANVAS_NODE_WIDTH && Math.abs(left.y - right.y) < CANVAS_NODE_HEIGHT
+}
+
 function context(text = source, activeContract = contract()) {
   const currentPair = pair(text, activeContract.profile)
   const commit = vi.fn(() => undefined)
@@ -206,8 +233,28 @@ describe('duplicate/copy/paste YAML transforms', () => {
       prompt: 'Review $prepare-2.output',
     })
     expect(nodes.find(({ id }) => id === 'finish')?.depends_on).toEqual(['review'])
-    expect(result.positions['prepare-2']).toEqual({ x: 368, y: 48 })
-    expect(result.positions['review-2']).toEqual({ x: 688, y: 48 })
+    for (const copied of Object.values(result.positions)) {
+      expect(Object.values(fixture.positions).some((existing) => intersects(copied, existing))).toBe(false)
+    }
+    expect(intersects(result.positions['prepare-2']!, result.positions['review-2']!)).toBe(false)
+  })
+
+  it('repairs overlapping source layout while placing a duplicated multi-node cluster', async () => {
+    const fixture = {
+      ...context(),
+      positions: {
+        bootstrap: { x: 0, y: 0 },
+        prepare: { x: 320, y: 0 },
+        review: { x: 320, y: 0 },
+        finish: { x: 960, y: 0 },
+      },
+    }
+
+    const result = await duplicateSelection(fixture, ['prepare', 'review'])
+
+    expect(result.status).toBe('committed')
+    if (result.status !== 'committed') return
+    expect(intersects(result.positions['prepare-2']!, result.positions['review-2']!)).toBe(false)
   })
 
   it('copies immutable raw YAML values rather than projected node objects', () => {
@@ -233,6 +280,87 @@ describe('duplicate/copy/paste YAML transforms', () => {
       record(record(record(destinationContract.definition_schema).properties).nodes).items,
     ).properties
     delete record(nodeProperties).legacy_only
+    const destination = context(source, destinationContract)
+
+    const result = await pasteSelection(destination, clipboard)
+
+    expect(result).toMatchObject({ status: 'rejected', code: 'profile_disallowed' })
+    expect(destination.applyMutation).not.toHaveBeenCalled()
+    expect(destination.commit).not.toHaveBeenCalled()
+  })
+
+  it('rejects a known legacy-only descriptor even when the destination schema permits extensions', async () => {
+    const sourceWithLegacyField = source.replace('command: prepare', 'command: prepare\n    legacy_only: retained')
+    const sourceContext = context(sourceWithLegacyField, contract('hermes-legacy', true))
+    const clipboard = copySelection(sourceContext, ['prepare'])
+    const destinationBase = contract('archon-2026-07', true)
+    const destinationContract: AuthoringContract = {
+      ...destinationBase,
+      node_kinds: destinationBase.node_kinds.map((kind) => ({
+        ...kind,
+        fields: [fieldDescriptor('legacy-only', 'nodes[].legacy_only', ['hermes-legacy'])],
+      })),
+    }
+    const destination = context(source, destinationContract)
+
+    const result = await pasteSelection(destination, clipboard)
+
+    expect(result).toMatchObject({ status: 'rejected', code: 'profile_disallowed' })
+    expect(destination.applyMutation).not.toHaveBeenCalled()
+    expect(destination.commit).not.toHaveBeenCalled()
+  })
+
+  it('recursively rejects a known disallowed field below wildcard arrays before any patch', async () => {
+    const sourceWithNestedLegacyField = source.replace(
+      'command: prepare',
+      'command: prepare\n    settings:\n      tools:\n        - name: compiler\n          legacy_option: retained',
+    )
+    const sourceContext = context(sourceWithNestedLegacyField, contract('hermes-legacy', true))
+    const clipboard = copySelection(sourceContext, ['prepare'])
+    const destinationBase = contract('archon-2026-07', true)
+    const destinationContract: AuthoringContract = {
+      ...destinationBase,
+      node_kinds: destinationBase.node_kinds.map((kind) => ({
+        ...kind,
+        fields: [fieldDescriptor('legacy-tool-option', 'nodes[].settings.tools[].legacy_option', ['hermes-legacy'])],
+      })),
+    }
+    const destination = context(source, destinationContract)
+
+    const result = await pasteSelection(destination, clipboard)
+
+    expect(result).toMatchObject({ status: 'rejected', code: 'profile_disallowed' })
+    expect(destination.applyMutation).not.toHaveBeenCalled()
+    expect(destination.commit).not.toHaveBeenCalled()
+  })
+
+  it('preflights nested combinator schema branches before any destination transaction', async () => {
+    const sourceWithNested = source.replace(
+      'command: prepare',
+      'command: prepare\n    settings:\n      mode: legacy\n      nested:\n        enabled: true',
+    )
+    const sourceContext = context(sourceWithNested, contract('hermes-legacy', true))
+    const clipboard = copySelection(sourceContext, ['prepare'])
+    const destinationContract = contract('archon-2026-07', true)
+    const itemSchema = record(record(record(destinationContract.definition_schema).properties).nodes).items
+    Object.assign(record(itemSchema), {
+      allOf: [
+        {
+          properties: {
+            settings: {
+              oneOf: [
+                {
+                  type: 'object',
+                  properties: { mode: { const: 'modern' } },
+                  required: ['mode'],
+                  additionalProperties: false,
+                },
+              ],
+            },
+          },
+        },
+      ],
+    })
     const destination = context(source, destinationContract)
 
     const result = await pasteSelection(destination, clipboard)

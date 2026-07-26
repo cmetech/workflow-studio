@@ -82,7 +82,7 @@
       <section aria-labelledby="dependency-impact-title">
         <h3 id="dependency-impact-title">Dependency entries removed</h3>
         <ul>
-          {#each impact.dependencies as dependency (`${dependency.nodeId}:${dependency.dependencyId}`)}
+          {#each impact.dependencies as dependency (dependency.key)}
             <li>
               <strong>{dependency.nodeId} · {dependency.fieldPath.join('.')}</strong> removes
               <code>{dependency.dependencyId}</code>
@@ -96,7 +96,7 @@
       <section aria-labelledby="reference-impact-title">
         <h3 id="reference-impact-title">References requiring resolution</h3>
         <ul>
-          {#each impact.references as reference (`${reference.nodeId}:${reference.fieldPath.join('.')}:${reference.referencedId}`)}
+          {#each impact.references as reference (reference.key)}
             <li>
               <strong>{reference.nodeId} · {reference.fieldPath.join('.')}</strong>
               <code>{reference.value}</code>

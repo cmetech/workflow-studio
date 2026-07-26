@@ -260,14 +260,122 @@ describe('canvas YAML actions', () => {
 
     expect(previewDeleteNodes(fixture.context.projection, ['middle'], contract)).toEqual({
       nodeIds: ['middle'],
-      dependencies: [{ nodeId: 'leaf', fieldPath: ['depends_on'], dependencyId: 'middle' }],
-      references: [{ nodeId: 'leaf', fieldPath: ['prompt'], value: 'Use $middle.output', referencedId: 'middle' }],
+      dependencies: [
+        {
+          key: 'dependency:/nodes/2/depends_on/0',
+          nodeId: 'leaf',
+          fieldPath: ['depends_on'],
+          yamlPath: ['nodes', 2, 'depends_on', 0],
+          dependencyId: 'middle',
+        },
+      ],
+      references: [
+        {
+          key: 'reference:/nodes/2/prompt:4-18',
+          nodeId: 'leaf',
+          fieldPath: ['prompt'],
+          yamlPath: ['nodes', 2, 'prompt'],
+          value: 'Use $middle.output',
+          referencedId: 'middle',
+          occurrence: 0,
+          start: 4,
+          end: 18,
+        },
+      ],
     })
 
     const result = await deleteNodes(fixture.context, ['middle'])
     expect(result).toMatchObject({ status: 'resolution_required' })
     expect(fixture.apply).not.toHaveBeenCalled()
     expect(fixture.commit).not.toHaveBeenCalled()
+  })
+
+  it('reports each surviving nested repeated reference exactly and rejects without a patch', async () => {
+    const nestedContract: AuthoringContract = {
+      ...contract,
+      contract_digest: `sha256:${'b'.repeat(64)}`,
+      definition_schema: {
+        ...contract.definition_schema,
+        properties: {
+          ...(contract.definition_schema.properties as Record<string, unknown>),
+          nodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                depends_on: { type: 'array', items: { type: 'string' } },
+                command: { type: 'string' },
+                prompt: { type: 'string' },
+                settings: { type: 'object', additionalProperties: true },
+              },
+              required: ['id'],
+              additionalProperties: false,
+            },
+          },
+        },
+      },
+      semantic_rules: contract.semantic_rules.map((rule) =>
+        rule.id === 'output-reference-v1' ? { ...rule, field_paths: ['nodes[].settings'] } : rule,
+      ),
+    }
+    const text = source.replace(
+      '    prompt: "Use $middle.output"',
+      '    prompt: leaf\n    settings:\n      messages:\n        - "$middle.output then $middle.output"',
+    )
+
+    const impact = previewDeleteNodes(projection(text), ['middle'], nestedContract)
+
+    expect(impact.references).toEqual([
+      {
+        key: 'reference:/nodes/2/settings/messages/0:0-14',
+        nodeId: 'leaf',
+        fieldPath: ['settings', 'messages', 0],
+        yamlPath: ['nodes', 2, 'settings', 'messages', 0],
+        value: '$middle.output then $middle.output',
+        referencedId: 'middle',
+        occurrence: 0,
+        start: 0,
+        end: 14,
+      },
+      {
+        key: 'reference:/nodes/2/settings/messages/0:20-34',
+        nodeId: 'leaf',
+        fieldPath: ['settings', 'messages', 0],
+        yamlPath: ['nodes', 2, 'settings', 'messages', 0],
+        value: '$middle.output then $middle.output',
+        referencedId: 'middle',
+        occurrence: 1,
+        start: 20,
+        end: 34,
+      },
+    ])
+    const fixture = actionContext(text)
+    const result = await deleteNodes({ ...fixture.context, contract: nestedContract }, ['middle'])
+    expect(result).toMatchObject({ status: 'resolution_required', impact: { references: impact.references } })
+    expect(fixture.apply).not.toHaveBeenCalled()
+    expect(fixture.commit).not.toHaveBeenCalled()
+  })
+
+  it('atomically deletes mutual references when every reference source and target is selected', async () => {
+    const text = `name: Mutual deletion
+description: Internal references disappear together
+nodes:
+  - id: root
+    command: root
+  - id: left
+    prompt: "$right.output"
+  - id: right
+    prompt: "$left.output"
+`
+    const fixture = actionContext(text)
+
+    const result = await deleteNodes(fixture.context, ['left', 'right'])
+
+    expect(result).toMatchObject({ status: 'committed' })
+    expect(fixture.apply).toHaveBeenCalledOnce()
+    expect(fixture.commit).toHaveBeenCalledOnce()
+    expect(parsedNodes(fixture.current().definition.text)).toEqual([{ id: 'root', command: 'root' }])
   })
 
   it('deletes an unreferenced node and its exact downstream dependency in one transaction', async () => {

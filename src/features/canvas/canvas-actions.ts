@@ -55,16 +55,23 @@ export type CanvasActionResult =
     }
 
 export interface DependencyImpact {
+  readonly key: string
   readonly nodeId: string
-  readonly fieldPath: readonly string[]
+  readonly fieldPath: readonly (string | number)[]
+  readonly yamlPath: readonly (string | number)[]
   readonly dependencyId: string
 }
 
 export interface ReferenceImpact {
+  readonly key: string
   readonly nodeId: string
-  readonly fieldPath: readonly string[]
+  readonly fieldPath: readonly (string | number)[]
+  readonly yamlPath: readonly (string | number)[]
   readonly value: string
   readonly referencedId: string
+  readonly occurrence: number
+  readonly start: number
+  readonly end: number
 }
 
 export interface DeleteImpact {
@@ -169,29 +176,61 @@ export function previewDeleteNodes(
   contract: AuthoringContract,
 ): DeleteImpact {
   const selected = new Set(nodeIds)
+  const fields = graphContractFields(contract)
+  const nodes = rawNodes(projection, contract)
   const dependencies: DependencyImpact[] = []
-  for (const node of projection.nodes) {
-    if (selected.has(node.id)) continue
-    for (const dependency of node.dependsOn) {
+  for (const [nodeIndex, rawNode] of nodes.entries()) {
+    const nodeId = String(valueAtPath(rawNode, fields?.idPath ?? ['id']))
+    if (selected.has(nodeId)) continue
+    const rawDependencies = valueAtPath(rawNode, fields?.dependenciesPath ?? ['depends_on'])
+    for (const [dependencyIndex, dependencyValue] of (Array.isArray(rawDependencies)
+      ? rawDependencies
+      : []
+    ).entries()) {
+      const dependency = String(dependencyValue)
       if (selected.has(dependency)) {
-        dependencies.push({ nodeId: node.id, fieldPath: dependencyFieldPath(contract), dependencyId: dependency })
+        const fieldPath = dependencyFieldPath(contract)
+        const yamlPath = [...(fields?.nodesPath ?? ['nodes']), nodeIndex, ...fieldPath, dependencyIndex]
+        dependencies.push({
+          key: `dependency:${yamlPointer(yamlPath)}`,
+          nodeId,
+          fieldPath,
+          yamlPath,
+          dependencyId: dependency,
+        })
       }
     }
   }
 
   const references: ReferenceImpact[] = []
-  for (const node of projection.nodes) {
-    if (selected.has(node.id)) continue
-    for (const rule of referenceRules(contract, node)) {
+  for (const [nodeIndex, rawNode] of nodes.entries()) {
+    const nodeId = String(valueAtPath(rawNode, fields?.idPath ?? ['id']))
+    if (selected.has(nodeId)) continue
+    const projectedNode = projection.nodes.find((candidate) => candidate.id === nodeId)
+    if (!projectedNode) continue
+    for (const rule of referenceRules(contract, projectedNode)) {
       for (const path of rule.field_paths) {
         const relative = nodeRelativePath(path)
         if (!relative) continue
-        const value = projectedValue(node, relative)
-        for (const text of stringValues(value)) {
-          for (const referencedId of findReferenceIds(text, rule)) {
-            if (selected.has(referencedId)) {
-              references.push({ nodeId: node.id, fieldPath: relative, value: text, referencedId })
+        const value = valueAtPath(rawNode, relative)
+        for (const leaf of stringLeaves(value, relative)) {
+          let occurrence = 0
+          for (const match of findReferenceMatches(leaf.value, rule)) {
+            if (selected.has(match.referencedId)) {
+              const yamlPath = [...(fields?.nodesPath ?? ['nodes']), nodeIndex, ...leaf.path]
+              references.push({
+                key: `reference:${yamlPointer(yamlPath)}:${match.start}-${match.end}`,
+                nodeId,
+                fieldPath: leaf.path,
+                yamlPath,
+                value: leaf.value,
+                referencedId: match.referencedId,
+                occurrence,
+                start: match.start,
+                end: match.end,
+              })
             }
+            occurrence += 1
           }
         }
       }
@@ -223,7 +262,7 @@ export async function deleteNodes(
   const result =
     selected.length === 1
       ? await commitMutation(context, mutation)
-      : await prepareAndCommitMultipleDeletes(context, selected, impact)
+      : await prepareAndCommitMultipleDeletes(context, selected)
   if (result.status === 'committed') {
     await context.commitPositions(Object.fromEntries(selected.map((id) => [id, null])))
   }
@@ -301,56 +340,32 @@ export async function commitPreparedDefinition(
 async function prepareAndCommitMultipleDeletes(
   context: CanvasActionContext,
   selected: readonly string[],
-  impact: DeleteImpact,
 ): Promise<CanvasActionResult> {
   let text = context.pair.definition.text
   const pending = new Set(selected)
+  const deletionContract: AuthoringContract = {
+    ...context.contract,
+    semantic_rules: context.contract.semantic_rules.filter((rule) => !isReferenceRule(rule)),
+  }
   while (pending.size > 0) {
     let removed = false
-    let blockedReferences: readonly MutationReferenceLike[] = []
     for (const nodeId of pending) {
-      const patched = patchWorkflowDocument(text, { type: 'delete-node', nodeId }, context.contract)
+      const patched = patchWorkflowDocument(text, { type: 'delete-node', nodeId }, deletionContract)
       if (patched.ok) {
         text = patched.text
         pending.delete(nodeId)
         removed = true
         break
       }
-      if (patched.code === 'mutation_requires_resolution') {
-        blockedReferences = patched.references
-        if (patched.references.every((reference) => pending.has(reference.nodeId))) continue
-      }
       context.announce(patched.message)
       return { status: 'rejected', code: patched.code, message: patched.message }
     }
     if (removed) continue
-    const message = 'Resolve references between the selected nodes before deleting them together.'
+    const message = 'The selected nodes could not be deleted as one transaction.'
     context.announce(message)
-    return {
-      status: 'resolution_required',
-      code: 'resolution_required',
-      message,
-      impact: {
-        ...impact,
-        references: [
-          ...impact.references,
-          ...blockedReferences.map((reference) => ({
-            nodeId: reference.nodeId,
-            fieldPath: reference.fieldPath.map(String),
-            value: reference.value,
-            referencedId: selected.find((id) => reference.value.includes(id)) ?? '',
-          })),
-        ],
-      },
-    }
+    return { status: 'rejected', code: 'mutation_node_missing', message }
   }
   return commitPreparedDefinition(context, text)
-}
-
-interface MutationReferenceLike {
-  readonly nodeId: string
-  readonly fieldPath: readonly (string | number)[]
-  readonly value: string
 }
 
 export function graphContractFields(contract: AuthoringContract): GraphContractFields | null {
@@ -449,11 +464,18 @@ function referenceRules(contract: AuthoringContract, node: ProjectedNode): Seman
       rule.applicability.profiles.includes(contract.profile) &&
       rule.applicability.documents.includes('definition') &&
       (!rule.applicability.node_kinds || rule.applicability.node_kinds.includes(node.kind)) &&
-      (typeof rule.parameters.pattern === 'string' || rule.parameters.syntax === '$ID.output(.path)*'),
+      isReferenceRule(rule),
   )
 }
 
-function findReferenceIds(value: string, rule: SemanticRuleDescriptor): string[] {
+function isReferenceRule(rule: SemanticRuleDescriptor): boolean {
+  return typeof rule.parameters.pattern === 'string' || rule.parameters.syntax === '$ID.output(.path)*'
+}
+
+function findReferenceMatches(
+  value: string,
+  rule: SemanticRuleDescriptor,
+): { readonly referencedId: string; readonly start: number; readonly end: number }[] {
   const pattern = rule.parameters.pattern
   const capture = typeof rule.parameters.node_id_capture_group === 'number' ? rule.parameters.node_id_capture_group : 1
   let expression: RegExp
@@ -465,21 +487,25 @@ function findReferenceIds(value: string, rule: SemanticRuleDescriptor): string[]
   } catch {
     return []
   }
-  return [...value.matchAll(expression)].flatMap((match) => (match[capture] ? [match[capture]!] : []))
+  return [...value.matchAll(expression)].flatMap((match) => {
+    const referencedId = match[capture]
+    const start = match.index
+    return referencedId && start !== undefined ? [{ referencedId, start, end: start + match[0].length }] : []
+  })
 }
 
-function projectedValue(node: ProjectedNode, path: readonly string[]): unknown {
-  const [first, ...rest] = path
-  let current: unknown = first === node.kind ? node.value : first ? node.options[first] : undefined
-  for (const segment of rest) current = isRecord(current) ? current[segment] : undefined
-  return current
-}
-
-function stringValues(value: unknown): string[] {
-  if (typeof value === 'string') return [value]
-  if (Array.isArray(value)) return value.flatMap(stringValues)
-  if (isRecord(value)) return Object.values(value).flatMap(stringValues)
+function stringLeaves(
+  value: unknown,
+  path: readonly (string | number)[],
+): { readonly path: readonly (string | number)[]; readonly value: string }[] {
+  if (typeof value === 'string') return [{ path, value }]
+  if (Array.isArray(value)) return value.flatMap((child, index) => stringLeaves(child, [...path, index]))
+  if (isRecord(value)) return Object.entries(value).flatMap(([key, child]) => stringLeaves(child, [...path, key]))
   return []
+}
+
+function yamlPointer(path: readonly (string | number)[]): string {
+  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`
 }
 
 function nodeRelativePath(fieldPath: string): string[] | null {

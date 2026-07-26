@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { executeCommand, listCommands, setDocumentSaveHandler } from '$src/lib/commands/registry'
+  import {
+    executeCommand,
+    listCommands,
+    setCanvasCommandHandlers,
+    setDocumentSaveHandler,
+  } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
@@ -41,6 +46,16 @@
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
+  import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
+  import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
+  import type { NodeKindDescriptor } from '$src/lib/contract/types'
+  import type { CanvasActionContext, DeleteImpact } from '$src/features/canvas/canvas-actions'
+  import { createCanvasAuthoringCoordinator } from '$src/features/canvas/canvas-authoring-coordinator'
+  import {
+    $canvasPositions as canvasPositionsStore,
+    $canvasSelection as canvasSelectionStore,
+  } from '$src/stores/canvas'
+  import { historyStore, recordTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
   import ActivityRail from './ActivityRail.svelte'
@@ -82,11 +97,16 @@
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
   let exportBlockingIssues = $state<readonly string[]>([])
-  let canvasProjection = $state<WorkflowProjection | null>(null)
+  let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
+  let addNodeRequest = $state<{
+    request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
+    opener: HTMLElement | undefined
+  } | null>(null)
+  let deleteRequest = $state<{ impact: DeleteImpact; opener: HTMLElement | undefined } | null>(null)
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
@@ -133,6 +153,7 @@
       }),
     onWorkspaceChanged: refreshWorkspace,
   })
+  const canvasAuthoring = createCanvasAuthoringCoordinator({ getContext: canvasAuthoringContext })
   const actions = createWorkspaceActions({
     native,
     contracts: availableContracts,
@@ -203,6 +224,95 @@
 
   function surfaceCanvasPersistenceError(error: unknown): void {
     workspaceError = error instanceof Error ? error.message : 'The canvas layout could not be saved.'
+  }
+
+  function canvasAuthoringContext(): CanvasActionContext | { readonly unavailable: string } {
+    if (canvasTransitionLocked) return { unavailable: 'Canvas authoring is unavailable during a document transition.' }
+    if (canvasStale) return { unavailable: 'Canvas authoring is unavailable while the YAML projection is stale.' }
+    if ($documentWorkspaceState.missingChange) {
+      return { unavailable: 'Canvas authoring is unavailable while a backing YAML file is missing.' }
+    }
+    const session = documentSessionStore.get()
+    const projection = canvasProjection
+    if (!session.pair || !session.revision || !projection || !session.analysis?.structurallyValid) {
+      return { unavailable: 'Canvas authoring requires a current valid YAML projection.' }
+    }
+    const contract = contracts.find(
+      (candidate) =>
+        candidate.contract_digest === session.revision?.contractDigest && candidate.profile === projection.profile,
+    )
+    if (!contract) return { unavailable: 'The active workflow authoring contract is unavailable.' }
+    const entry = workspace.get().entries.find((candidate) => candidate.id === session.pair?.workflowId)
+    if (entry?.readOnly === true) return { unavailable: 'This workflow is read-only.' }
+    const layout = activeLayoutStore.get()
+    if (!layout) return { unavailable: 'Canvas layout is unavailable.' }
+
+    return {
+      pair: session.pair,
+      projection,
+      contract,
+      positions: canvasPositionsStore.get(),
+      commit: (pair, transaction) => {
+        historyStore.set(recordTransaction(historyStore.get(), transaction))
+        documentWorkspace.changed(pair)
+      },
+      commitPositions: async (updates) => {
+        const active = activeLayoutStore.get()
+        if (!active) return
+        const nodePositions = { ...active.nodePositions }
+        for (const [id, position] of Object.entries(updates)) {
+          if (position) nodePositions[id] = { ...position }
+          else delete nodePositions[id]
+        }
+        await persistCanvasLayout({ ...active, nodePositions, updatedAt: new Date().toISOString() })
+      },
+      // The invoking surface owns the single live announcement. GraphCanvas uses
+      // its named polite region; dialogs and commands surface their returned result.
+      announce: () => undefined,
+    }
+  }
+
+  function requestCanvasAdd(request: {
+    readonly afterNodeId?: string
+    readonly viewportCenter: { readonly x: number; readonly y: number }
+  }): void {
+    const current = canvasAuthoringContext()
+    if ('unavailable' in current) {
+      workspaceError = current.unavailable
+      return
+    }
+    addNodeRequest = {
+      request,
+      opener: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    }
+  }
+
+  async function chooseCanvasNode(descriptor: NodeKindDescriptor): Promise<void> {
+    const request = addNodeRequest?.request
+    if (!request) return
+    const result = await canvasAuthoring.add(descriptor, request)
+    addNodeRequest = null
+    if (result.status !== 'committed') workspaceError = result.message
+  }
+
+  function requestCanvasDelete(nodeIds: readonly string[]): void {
+    const preview = canvasAuthoring.previewDelete(nodeIds)
+    if (preview.status === 'rejected') {
+      workspaceError = preview.message
+      return
+    }
+    deleteRequest = {
+      impact: preview.impact,
+      opener: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    }
+  }
+
+  async function confirmCanvasDelete(): Promise<void> {
+    const nodeIds = deleteRequest?.impact.nodeIds
+    if (!nodeIds) return
+    const result = await canvasAuthoring.delete(nodeIds)
+    if (result.status === 'committed') deleteRequest = null
+    else workspaceError = result.message
   }
 
   function withCanvasLayoutBarrier<T>(transition: () => Promise<T>): Promise<T> {
@@ -415,7 +525,26 @@
   })
 
   onMount(() => {
-    let dispose: (() => void) | undefined
+    const unbindCanvas = setCanvasCommandHandlers({
+      addNode: () => {
+        if (graphCanvas) graphCanvas.requestAdd()
+        else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
+      },
+      copySelection: () => {
+        const result = canvasAuthoring.copy(canvasSelectionStore.get())
+        if (result.status === 'rejected') workspaceError = result.message
+      },
+      deleteSelection: () => requestCanvasDelete(canvasSelectionStore.get()),
+      duplicateSelection: async () => {
+        const result = await canvasAuthoring.duplicate(canvasSelectionStore.get())
+        if (result.status !== 'committed') workspaceError = result.message
+      },
+      pasteSelection: async () => {
+        const result = await canvasAuthoring.paste()
+        if (result.status !== 'committed') workspaceError = result.message
+      },
+    })
+    let dispose: (() => void) | undefined = unbindCanvas
     let disposed = false
     void (async () => {
       const currentWindow = '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null
@@ -427,7 +556,11 @@
           unlistenClose()
           return
         }
-        dispose = unlistenClose
+        const disposeCanvas = dispose
+        dispose = () => {
+          unlistenClose()
+          disposeCanvas?.()
+        }
       }
       await contractReadiness
       if (disposed) return
@@ -587,6 +720,11 @@
               ?.readOnly === true}
             onPersistLayout={persistCanvasLayout}
             onPersistenceError={surfaceCanvasPersistenceError}
+            onConnect={(source, target) => canvasAuthoring.connect(source, target)}
+            onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}
+            onRequestAdd={requestCanvasAdd}
+            onDuplicate={(nodeIds) => canvasAuthoring.duplicate(nodeIds)}
+            onRequestDelete={requestCanvasDelete}
           />
         {/if}
       </section>
@@ -749,6 +887,27 @@
         exportConfirmation?.resolve(true)
         exportConfirmation = null
       }}
+    />
+  {/if}
+  {#if addNodeRequest && canvasProjection}
+    <AddNodePicker
+      descriptors={contracts.find(
+        (contract) =>
+          contract.contract_digest === $documentSessionStore.revision?.contractDigest &&
+          contract.profile === canvasProjection?.profile,
+      )?.node_kinds ?? []}
+      profile={canvasProjection.profile}
+      opener={addNodeRequest.opener}
+      onChoose={chooseCanvasNode}
+      onClose={() => (addNodeRequest = null)}
+    />
+  {/if}
+  {#if deleteRequest}
+    <DeleteImpactDialog
+      impact={deleteRequest.impact}
+      opener={deleteRequest.opener}
+      onCancel={() => (deleteRequest = null)}
+      onConfirm={confirmCanvasDelete}
     />
   {/if}
 </main>

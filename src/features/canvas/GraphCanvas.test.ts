@@ -346,4 +346,46 @@ describe('GraphCanvas', () => {
     expect(onDuplicate).toHaveBeenCalledWith(['review'])
     expect(onRequestDelete).toHaveBeenCalledWith(['review'])
   })
+
+  it('never disconnects incident edges while node deletion awaits resolution or confirmation', async () => {
+    const onRequestDelete = vi.fn(async () => ({ status: 'resolution_required' as const }))
+    const onDisconnect = vi.fn(async () => ({ status: 'committed' as const }))
+    const { container } = render(GraphCanvas, { projection, layout, onRequestDelete, onDisconnect })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowbeforedelete', {
+        bubbles: true,
+        detail: {
+          nodes: [{ id: 'review' }],
+          edges: [{ id: 'dependency:collect->review', source: 'collect', target: 'review' }],
+        },
+      }),
+    )
+
+    expect(onRequestDelete).toHaveBeenCalledWith(['review'])
+    expect(onDisconnect).not.toHaveBeenCalled()
+  })
+
+  it('disconnects only an edge-only delete gesture', async () => {
+    const onRequestDelete = vi.fn()
+    const onDisconnect = vi.fn(async () => ({ status: 'committed' as const }))
+    const { container } = render(GraphCanvas, { projection, layout, onRequestDelete, onDisconnect })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowbeforedelete', {
+        bubbles: true,
+        detail: {
+          nodes: [],
+          edges: [{ id: 'dependency:collect->review', source: 'collect', target: 'review' }],
+        },
+      }),
+    )
+
+    expect(onRequestDelete).not.toHaveBeenCalled()
+    expect(onDisconnect).toHaveBeenCalledWith('collect', 'review')
+  })
 })

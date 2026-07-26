@@ -1,6 +1,8 @@
 import type { AuthoringContract, SemanticRuleDescriptor, WorkflowProfile } from '$src/lib/contract/types'
+import { compileContractValidators } from '$src/lib/validation/schema-validator'
 import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
 import type { CanvasPosition } from './types'
+import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
 import {
   commitPreparedDefinition,
   graphContractFields,
@@ -99,6 +101,26 @@ export async function pasteSelection(
     return next
   })
 
+  const descriptorDisallowed = firstDescriptorDisallowedField(copiedNodes, context.contract, fields.nodesPath)
+  if (descriptorDisallowed) {
+    const message = `Field ${descriptorDisallowed} is not allowed by the active ${context.contract.profile} profile.`
+    context.announce(message)
+    return { status: 'rejected', code: 'profile_disallowed', message }
+  }
+  const candidateDefinition = structuredClone(context.projection.definition) as Record<string, unknown>
+  setPath(candidateDefinition, fields.nodesPath, [...destinationNodes, ...copiedNodes])
+  let schemaValid = false
+  try {
+    schemaValid = compileContractValidators(context.contract).definition(candidateDefinition)
+  } catch {
+    schemaValid = false
+  }
+  if (!schemaValid) {
+    const message = `The copied selection is not allowed by the active ${context.contract.profile} contract.`
+    context.announce(message)
+    return { status: 'rejected', code: 'profile_disallowed', message }
+  }
+
   let preparedText = context.pair.definition.text
   let afterNodeId = destinationNodes.at(-1) ? String(valueAtPath(destinationNodes.at(-1), fields.idPath)) : undefined
   for (const node of copiedNodes) {
@@ -138,6 +160,70 @@ function firstDisallowedField(
     for (const field of Object.keys(node)) if (!allowed.has(field)) return field
   }
   return null
+}
+
+function firstDescriptorDisallowedField(
+  nodes: readonly Readonly<Record<string, unknown>>[],
+  contract: AuthoringContract,
+  nodesPath: readonly string[],
+): string | null {
+  for (const node of nodes) {
+    const kind = contract.node_kinds.find((descriptor) => {
+      const path = relativePath(descriptor.field_path, nodesPath)
+      return path.length > 0 && valueAtPath(node, path) !== undefined
+    })
+    if (kind && !descriptorApplies(kind, contract.profile, kind.id)) return kind.field_path
+    const fieldsByPath = new Map<string, (typeof contract.node_kinds)[number]['fields'][number][]>()
+    for (const descriptor of contract.node_kinds.flatMap(({ fields }) => fields)) {
+      fieldsByPath.set(descriptor.field_path, [...(fieldsByPath.get(descriptor.field_path) ?? []), descriptor])
+    }
+    for (const [fieldPath, descriptors] of fieldsByPath) {
+      const path = descriptorRelativePath(fieldPath, nodesPath)
+      if (!path || !hasDescriptorValue(node, path)) continue
+      if (!descriptors.some((descriptor) => descriptorApplies(descriptor, contract.profile, kind?.id))) {
+        return fieldPath
+      }
+    }
+  }
+  return null
+}
+
+function descriptorRelativePath(path: string, nodesPath: readonly string[]): readonly (string | '*')[] | null {
+  const tokens = path
+    .replaceAll('[*]', '[]')
+    .split('.')
+    .filter(Boolean)
+    .flatMap((token) => (token.endsWith('[]') ? [token.slice(0, -2), '*'] : [token]))
+  if (!nodesPath.every((segment, index) => tokens[index] === segment)) return null
+  const relative = tokens.slice(nodesPath.length)
+  return relative[0] === '*' ? relative.slice(1) : relative
+}
+
+function hasDescriptorValue(value: unknown, path: readonly (string | '*')[]): boolean {
+  if (path.length === 0) return value !== undefined
+  const [segment, ...rest] = path
+  if (segment === '*') return Array.isArray(value) && value.some((child) => hasDescriptorValue(child, rest))
+  return isRecord(value) && hasDescriptorValue(value[segment!], rest)
+}
+
+function descriptorApplies(
+  descriptor: {
+    readonly status: string
+    readonly applicability: {
+      readonly profiles: readonly WorkflowProfile[]
+      readonly documents: readonly string[]
+      readonly node_kinds?: readonly string[]
+    }
+  },
+  profile: WorkflowProfile,
+  kind: string | undefined,
+): boolean {
+  return (
+    descriptor.status === 'supported' &&
+    descriptor.applicability.profiles.includes(profile) &&
+    descriptor.applicability.documents.includes('definition') &&
+    (!descriptor.applicability.node_kinds || (kind !== undefined && descriptor.applicability.node_kinds.includes(kind)))
+  )
 }
 
 function collisionFreeCopyId(sourceId: string, occupied: ReadonlySet<string>): string {
@@ -240,21 +326,37 @@ function copiedPositions(
   destination: Readonly<Record<string, CanvasPosition>>,
 ): Record<string, CanvasPosition> {
   const result: Record<string, CanvasPosition> = {}
-  const occupied = new Set(Object.values(destination).map(positionKey))
-  for (const sourceId of clipboard.selectedIds) {
+  const occupied = Object.values(destination)
+  const rawSources = clipboard.selectedIds.flatMap((sourceId, index) => {
     const copiedId = idMap.get(sourceId)
-    if (!copiedId) continue
-    const source = clipboard.positions[sourceId] ?? { x: 0, y: 0 }
-    let position = { x: source.x + 48, y: source.y + 48 }
-    while (occupied.has(positionKey(position))) position = { x: position.x + 48, y: position.y + 48 }
-    occupied.add(positionKey(position))
-    result[copiedId] = position
+    return copiedId
+      ? [{ copiedId, source: clipboard.positions[sourceId] ?? { x: 0, y: index * (CANVAS_NODE_HEIGHT + 48) } }]
+      : []
+  })
+  const sources: { copiedId: string; source: CanvasPosition }[] = []
+  for (const candidate of rawSources) {
+    let source = { ...candidate.source }
+    while (sources.some((placed) => rectanglesIntersect(source, placed.source))) {
+      source = { ...source, y: source.y + CANVAS_NODE_HEIGHT + 48 }
+    }
+    sources.push({ copiedId: candidate.copiedId, source })
+  }
+  let offset = { x: CANVAS_NODE_WIDTH + 48, y: 0 }
+  while (
+    sources.some(({ source }) =>
+      occupied.some((position) => rectanglesIntersect({ x: source.x + offset.x, y: source.y + offset.y }, position)),
+    )
+  ) {
+    offset = { ...offset, y: offset.y + CANVAS_NODE_HEIGHT + 48 }
+  }
+  for (const { copiedId, source } of sources) {
+    result[copiedId] = { x: source.x + offset.x, y: source.y + offset.y }
   }
   return result
 }
 
-function positionKey(position: CanvasPosition): string {
-  return `${position.x}\0${position.y}`
+function rectanglesIntersect(left: CanvasPosition, right: CanvasPosition): boolean {
+  return Math.abs(left.x - right.x) < CANVAS_NODE_WIDTH && Math.abs(left.y - right.y) < CANVAS_NODE_HEIGHT
 }
 
 function nodeRelativePath(fieldPath: string): string[] | null {

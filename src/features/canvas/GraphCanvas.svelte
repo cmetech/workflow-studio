@@ -49,7 +49,7 @@
       readonly viewportCenter: { readonly x: number; readonly y: number }
     }) => void | Promise<void>
     onDuplicate?: (nodeIds: readonly string[]) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
-    onRequestDelete?: (nodeIds: readonly string[]) => void | Promise<void>
+    onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
   }
 
   let {
@@ -149,22 +149,49 @@
   ): Promise<void> {
     if (!canAuthor() || !operation) return
     const result = await operation()
+    if (!result) {
+      authoringFeedback = 'The canvas action did not return a result.'
+      return
+    }
     authoringFeedback = result.status === 'committed' ? '' : (result.message ?? 'The canvas action was rejected.')
   }
 
-  function requestAdd(afterNodeId?: string): void {
+  export function requestAdd(afterNodeId?: string): void {
     if (!canAuthor() || !onRequestAdd) return
     void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenter() })
   }
 
   function requestDuplicate(): void {
     if (selection.length === 0) return
-    void handleAuthoringResult(() => onDuplicate?.(selection) ?? { status: 'committed' })
+    void handleAuthoringResult(
+      onDuplicate
+        ? () => onDuplicate(selection)
+        : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Duplicate is unavailable.' }),
+    )
   }
 
   function requestDelete(): void {
     if (!canAuthor() || selection.length === 0) return
     void onRequestDelete?.(selection)
+  }
+
+  async function beforeDelete(
+    nodes: readonly { readonly id: string }[],
+    edges: readonly { readonly source: string; readonly target: string }[],
+  ): Promise<boolean> {
+    if (!canAuthor()) return false
+    if (nodes.length > 0) {
+      await onRequestDelete?.(nodes.map(({ id }) => id))
+      return false
+    }
+    for (const edge of edges) {
+      await handleAuthoringResult(
+        onDisconnect
+          ? () => onDisconnect(edge.source, edge.target)
+          : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Disconnect is unavailable.' }),
+      )
+    }
+    return false
   }
 
   function layoutWithPositions(): LayoutRecordV1 {
@@ -201,16 +228,34 @@
     const stop = (event: Event) => handleDragStop((event as CustomEvent<CanvasDragDetail>).detail)
     const connect = (event: Event) => {
       const detail = (event as CustomEvent<{ source: string; target: string }>).detail
-      void handleAuthoringResult(() => onConnect?.(detail.source, detail.target) ?? { status: 'committed' })
+      void handleAuthoringResult(
+        onConnect
+          ? () => onConnect(detail.source, detail.target)
+          : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Connect is unavailable.' }),
+      )
     }
     const disconnect = (event: Event) => {
       const detail = (event as CustomEvent<{ source: string; target: string }>).detail
-      void handleAuthoringResult(() => onDisconnect?.(detail.source, detail.target) ?? { status: 'committed' })
+      void handleAuthoringResult(
+        onDisconnect
+          ? () => onDisconnect(detail.source, detail.target)
+          : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Disconnect is unavailable.' }),
+      )
+    }
+    const beforeDeleteEvent = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          nodes: readonly { id: string }[]
+          edges: readonly { source: string; target: string }[]
+        }>
+      ).detail
+      void beforeDelete(detail.nodes, detail.edges)
     }
     root.addEventListener('workflowdragmove', drag)
     root.addEventListener('workflowdragstop', stop)
     root.addEventListener('workflowconnect', connect)
     root.addEventListener('workflowdisconnect', disconnect)
+    root.addEventListener('workflowbeforedelete', beforeDeleteEvent)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
       selection = [...ids]
     })
@@ -219,6 +264,7 @@
       root.removeEventListener('workflowdragstop', stop)
       root.removeEventListener('workflowconnect', connect)
       root.removeEventListener('workflowdisconnect', disconnect)
+      root.removeEventListener('workflowbeforedelete', beforeDeleteEvent)
       unsubscribeSelection()
     }
   })
@@ -303,15 +349,15 @@
     }}
     onselectionchange={({ nodes }) => selectionChanged(nodes.map(({ id }) => id))}
     onconnect={({ source, target }) => {
-      if (source && target) void handleAuthoringResult(() => onConnect?.(source, target) ?? { status: 'committed' })
-    }}
-    onbeforedelete={async ({ nodes, edges }) => {
-      if (nodes.length > 0) requestDelete()
-      for (const edge of edges) {
-        await handleAuthoringResult(() => onDisconnect?.(edge.source, edge.target) ?? { status: 'committed' })
+      if (source && target) {
+        void handleAuthoringResult(
+          onConnect
+            ? () => onConnect(source, target)
+            : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Connect is unavailable.' }),
+        )
       }
-      return false
     }}
+    onbeforedelete={({ nodes, edges }) => beforeDelete(nodes, edges)}
     onmoveend={(_event, viewport) => viewportChanged(viewport)}
   >
     <Background variant={BackgroundVariant.Dots} gap={20} size={1} />

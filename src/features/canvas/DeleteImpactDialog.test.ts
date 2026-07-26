@@ -6,8 +6,28 @@ import DeleteImpactDialog from './DeleteImpactDialog.svelte'
 
 const referencedImpact: DeleteImpact = {
   nodeIds: ['middle'],
-  dependencies: [{ nodeId: 'leaf', fieldPath: ['depends_on'], dependencyId: 'middle' }],
-  references: [{ nodeId: 'leaf', fieldPath: ['prompt'], value: 'Use $middle.output', referencedId: 'middle' }],
+  dependencies: [
+    {
+      key: 'dependency:/nodes/2/depends_on/0',
+      nodeId: 'leaf',
+      fieldPath: ['depends_on'],
+      yamlPath: ['nodes', 2, 'depends_on', 0],
+      dependencyId: 'middle',
+    },
+  ],
+  references: [
+    {
+      key: 'reference:/nodes/2/prompt:4-18',
+      nodeId: 'leaf',
+      fieldPath: ['prompt'],
+      yamlPath: ['nodes', 2, 'prompt'],
+      value: 'Use $middle.output',
+      referencedId: 'middle',
+      occurrence: 0,
+      start: 4,
+      end: 18,
+    },
+  ],
 }
 
 describe('DeleteImpactDialog', () => {
@@ -64,5 +84,38 @@ describe('DeleteImpactDialog', () => {
     expect(onCancel).toHaveBeenCalledOnce()
     expect(opener).toHaveFocus()
     opener.remove()
+  })
+
+  it('renders repeated references at the same nested field without duplicate-key crashes', () => {
+    const repeated = referencedImpact.references[0]!
+    const impact: DeleteImpact = {
+      ...referencedImpact,
+      references: [
+        {
+          ...repeated,
+          key: 'reference:/nodes/2/settings/messages/0:0-14',
+          fieldPath: ['settings', 'messages', 0],
+          yamlPath: ['nodes', 2, 'settings', 'messages', 0],
+          value: '$middle.output then $middle.output',
+          occurrence: 0,
+          start: 0,
+          end: 14,
+        },
+        {
+          ...repeated,
+          key: 'reference:/nodes/2/settings/messages/0:20-34',
+          fieldPath: ['settings', 'messages', 0],
+          yamlPath: ['nodes', 2, 'settings', 'messages', 0],
+          value: '$middle.output then $middle.output',
+          occurrence: 1,
+          start: 20,
+          end: 34,
+        },
+      ],
+    }
+
+    expect(() => render(DeleteImpactDialog, { impact })).not.toThrow()
+    expect(screen.getAllByText('leaf · settings.messages.0')).toHaveLength(2)
+    expect(screen.getAllByText('$middle.output then $middle.output')).toHaveLength(2)
   })
 })
