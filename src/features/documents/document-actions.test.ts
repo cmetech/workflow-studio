@@ -50,6 +50,8 @@ function analysis(current: WorkflowPairText, issues: DocumentAnalysis['issues'] 
   return {
     workflowId: current.workflowId,
     pairGeneration: current.generation,
+    definitionPath: current.definition.path,
+    companionPath: current.companion?.path ?? null,
     definitionRevision: current.definition.revision,
     companionRevision: current.companion?.revision ?? null,
     contractDigest: digest,

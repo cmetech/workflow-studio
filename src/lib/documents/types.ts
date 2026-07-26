@@ -41,6 +41,8 @@ export interface WorkflowPairText {
 export interface DocumentRevision {
   workflowId: string
   pairGeneration: number
+  definitionPath: string
+  companionPath: string | null
   definitionRevision: number
   companionRevision: number | null
   contractDigest: ContractDigest

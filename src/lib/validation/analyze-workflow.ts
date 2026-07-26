@@ -13,6 +13,8 @@ export async function analyzeWorkflowPair(
   const identity = {
     workflowId: request.workflowId,
     pairGeneration: request.pairGeneration,
+    definitionPath: request.definition.path,
+    companionPath: request.companion?.path ?? null,
     definitionRevision: request.definition.revision,
     companionRevision: request.companion?.revision ?? null,
     contractDigest: request.contractDigest,

@@ -51,6 +51,8 @@ export interface AnalyzeResponseIdentity {
   requestId: string
   workflowId: string
   pairGeneration: number
+  definitionPath: string
+  companionPath: string | null
   definitionRevision: number
   companionRevision: number | null
   profile: WorkflowProfile
@@ -80,6 +82,8 @@ export function analysisIdentity(request: AnalyzeDocumentRequest): AnalyzeRespon
     requestId: request.requestId,
     workflowId: request.workflowId,
     pairGeneration: request.pairGeneration,
+    definitionPath: request.definition.path,
+    companionPath: request.companion?.path ?? null,
     definitionRevision: request.definition.revision,
     companionRevision: request.companion?.revision ?? null,
     profile: request.profile,

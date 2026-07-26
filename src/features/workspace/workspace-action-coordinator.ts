@@ -4,6 +4,22 @@ import type { WorkspaceReadResult } from '$src/lib/native/types'
 import type { WorkflowPairEntry, WorkspaceEntry } from '$src/lib/workspace/types'
 import type { WorkspaceIntent } from '$src/stores/shell'
 
+export interface WorkspaceOutcomePathResult {
+  readonly path?: string
+  readonly relativePath?: string
+  readonly status?: string
+  readonly message?: string
+}
+
+export function formatWorkspaceOutcomeResults(results: readonly WorkspaceOutcomePathResult[]): string {
+  return results
+    .map(
+      ({ path, relativePath, status, message }) =>
+        `${path ?? relativePath ?? 'unknown path'}: ${status ?? 'failed'}${message ? ` — ${message}` : ''}`,
+    )
+    .join('\n')
+}
+
 export interface CoordinatedWorkspaceActions {
   duplicateWorkflow(input: { definitionPath: string; companionPath: string | null }): Promise<unknown>
   renameWorkflow(input: {
@@ -24,6 +40,7 @@ export interface CoordinatedWorkspaceActions {
     confirmCollision: (paths: readonly string[]) => Promise<boolean>
   }): Promise<unknown>
   trashWorkflow(input: {
+    workflowId: string
     definitionPath: string
     definitionHash: string
     companionPath: string | null
@@ -50,6 +67,7 @@ export interface WorkspaceActionCoordinatorDependencies {
     revision: DocumentRevision | null
   }
   confirmExportCollision(paths: readonly string[]): Promise<boolean>
+  presentOutcome?(action: WorkspaceIntent['kind'], outcome: unknown): void
 }
 
 export class WorkspaceActionCoordinatorError extends Error {
@@ -73,36 +91,44 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
       case 'workflow.open':
         await dependencies.open(entry)
         break
-      case 'workflow.duplicate':
-        await dependencies.actions.duplicateWorkflow(entry)
+      case 'workflow.duplicate': {
+        const outcome = await dependencies.actions.duplicateWorkflow(entry)
+        dependencies.presentOutcome?.(intent.kind, outcome)
         await dependencies.refresh()
         break
+      }
       case 'workflow.rename': {
         const workspaceId = dependencies.getWorkspaceId()
         const destinationDefinition = await dependencies.promptRename(entry)
         if (!workspaceId || !destinationDefinition) return
-        await dependencies.actions.renameWorkflow({
+        const outcome = await dependencies.actions.renameWorkflow({
           workspaceId,
           definitionPath: entry.definitionPath,
           destinationDefinition,
         })
+        dependencies.presentOutcome?.(intent.kind, outcome)
         await dependencies.refresh()
         break
       }
       case 'workflow.create-companion': {
         const companion = await dependencies.promptCompanion(entry)
         if (!companion) return
-        await dependencies.actions.createCompanion({ definitionPath: entry.definitionPath, ...companion })
+        const outcome = await dependencies.actions.createCompanion({
+          definitionPath: entry.definitionPath,
+          ...companion,
+        })
+        dependencies.presentOutcome?.(intent.kind, outcome)
         await dependencies.refresh()
         break
       }
       case 'workflow.remove-companion': {
         if (!entry.companionPath || !(await dependencies.confirm('remove-companion', [entry.companionPath]))) return
         const companion = await dependencies.read(entry.companionPath)
-        await dependencies.actions.removeCompanion({
+        const outcome = await dependencies.actions.removeCompanion({
           companionPath: entry.companionPath,
           expectedHash: companion.sha256,
         })
+        dependencies.presentOutcome?.(intent.kind, outcome)
         await dependencies.refresh()
         break
       }
@@ -125,12 +151,13 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
             'The opened document does not match the exact workflow selected for export.',
           )
         }
-        await dependencies.actions.exportWorkflow({
+        const outcome = await dependencies.actions.exportWorkflow({
           pair: document.pair,
           analysis: document.analysis,
           activeRevision: document.revision,
           confirmCollision: dependencies.confirmExportCollision,
         })
+        dependencies.presentOutcome?.(intent.kind, outcome)
         break
       }
       case 'workflow.trash': {
@@ -140,12 +167,14 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
           dependencies.read(entry.definitionPath),
           entry.companionPath ? dependencies.read(entry.companionPath) : Promise.resolve(null),
         ])
-        await dependencies.actions.trashWorkflow({
+        const outcome = await dependencies.actions.trashWorkflow({
+          workflowId: entry.id,
           definitionPath: entry.definitionPath,
           definitionHash: definition.sha256,
           companionPath: entry.companionPath,
           companionHash: companion?.sha256 ?? null,
         })
+        dependencies.presentOutcome?.(intent.kind, outcome)
         await dependencies.refresh()
         break
       }

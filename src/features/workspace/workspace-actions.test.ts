@@ -105,6 +105,8 @@ function validAnalysis(): DocumentAnalysis {
   return {
     workflowId: 'flow',
     pairGeneration: 0,
+    definitionPath: 'flow.yaml',
+    companionPath: null,
     definitionRevision: 0,
     companionRevision: null,
     contractDigest: digest,
@@ -179,19 +181,32 @@ function createNative(): WorkspaceActionsNative {
 describe('workspace actions', () => {
   let native: WorkspaceActionsNative
   let activate = vi.fn<(entry: WorkflowPairEntry) => Promise<void>>()
-  let openDraft = vi.fn<(pair: WorkflowPairText) => void>()
-  let closeDocument = vi.fn<() => void>()
-  let renameDocument = vi.fn<(from: string, to: string) => void>()
-  let renameLayout = vi.fn<(workspaceId: string, from: string, to: string) => Promise<void>>()
+  let openDraft = vi.fn<(pair: WorkflowPairText, contract: AuthoringContract | null) => Promise<void>>()
+  let closeDocument = vi.fn<(workflowId: string) => Promise<void>>()
+  let currentDocument = vi.fn<() => WorkflowPairText | null>()
+  let flushRecovery = vi.fn<(pair: WorkflowPairText) => Promise<void>>()
+  let closeWorkspace = vi.fn<() => Promise<void>>()
+  let renameDocument =
+    vi.fn<(workspaceId: string, from: string, to: string, companionMoved: boolean) => Promise<void>>()
+  let companionCreated = vi.fn<(definitionPath: string, companionPath: string) => Promise<void>>()
+  let companionRemoved = vi.fn<(companionPath: string) => Promise<void>>()
   let recoverDraft = vi.fn<(pair: WorkflowPairText) => Promise<void>>()
 
   beforeEach(() => {
     native = createNative()
     activate = vi.fn<(entry: WorkflowPairEntry) => Promise<void>>(async () => undefined)
-    openDraft = vi.fn<(pair: WorkflowPairText) => void>()
-    closeDocument = vi.fn<() => void>()
-    renameDocument = vi.fn<(from: string, to: string) => void>()
-    renameLayout = vi.fn<(workspaceId: string, from: string, to: string) => Promise<void>>(async () => undefined)
+    openDraft = vi.fn<(pair: WorkflowPairText, contract: AuthoringContract | null) => Promise<void>>(
+      async () => undefined,
+    )
+    closeDocument = vi.fn<(workflowId: string) => Promise<void>>(async () => undefined)
+    currentDocument = vi.fn<() => WorkflowPairText | null>(() => null)
+    flushRecovery = vi.fn<(pair: WorkflowPairText) => Promise<void>>(async () => undefined)
+    closeWorkspace = vi.fn<() => Promise<void>>(async () => undefined)
+    renameDocument = vi.fn<(workspaceId: string, from: string, to: string, companionMoved: boolean) => Promise<void>>(
+      async () => undefined,
+    )
+    companionCreated = vi.fn<(definitionPath: string, companionPath: string) => Promise<void>>(async () => undefined)
+    companionRemoved = vi.fn<(companionPath: string) => Promise<void>>(async () => undefined)
     recoverDraft = vi.fn<(pair: WorkflowPairText) => Promise<void>>(async () => undefined)
   })
 
@@ -203,8 +218,12 @@ describe('workspace actions', () => {
       activate,
       openDraft,
       closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
       renameDocument,
-      renameLayout,
+      companionCreated,
+      companionRemoved,
       recoverDraft,
       now: () => '2026-07-25T12:00:00.000Z',
     })
@@ -214,10 +233,17 @@ describe('workspace actions', () => {
     const api = actions()
     await expect(api.openWorkspace()).resolves.toMatchObject({ rootPath: '/selected' })
     expect(native.workspaceSetRoot).toHaveBeenCalledWith('/selected')
+    expect(closeWorkspace).toHaveBeenCalledBefore(vi.mocked(native.workspaceSetRoot))
 
     vi.mocked(native.chooseWorkspaceFolder).mockResolvedValueOnce(null)
     await expect(api.openWorkspace()).resolves.toBeNull()
     expect(native.workspaceSetRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts a root switch when the active lifecycle cannot flush and close', async () => {
+    closeWorkspace.mockRejectedValueOnce(new Error('recovery flush failed'))
+    await expect(actions().openWorkspace('/other')).rejects.toThrow('recovery flush failed')
+    expect(native.workspaceSetRoot).not.toHaveBeenCalled()
   })
 
   it('serializes root changes so the latest open request wins after an older native call resolves', async () => {
@@ -332,17 +358,40 @@ describe('workspace actions', () => {
   })
 
   it('renames both canonical files and migrates document and layout identities after native success', async () => {
-    await actions().renameWorkflow({
+    const outcome = await actions().renameWorkflow({
       workspaceId: 'workspace',
       definitionPath: 'flow.yaml',
       destinationDefinition: 'archive/renamed.yaml',
     })
+    expect(outcome.status).toBe('completed')
     expect(native.workspaceRenamePair).toHaveBeenCalledWith({
       sourceDefinition: 'flow.yaml',
       destinationDefinition: 'archive/renamed.yaml',
     })
-    expect(renameDocument).toHaveBeenCalledWith('flow.yaml', 'archive/renamed.yaml')
-    expect(renameLayout).toHaveBeenCalledWith('workspace', 'flow.yaml', 'archive/renamed.yaml')
+    expect(renameDocument).toHaveBeenCalledWith('workspace', 'flow.yaml', 'archive/renamed.yaml', true)
+  })
+
+  it('returns a structured partial rename outcome when post-native lifecycle migration fails', async () => {
+    renameDocument.mockRejectedValueOnce(new Error('layout flush failed'))
+
+    const outcome = await actions().renameWorkflow({
+      workspaceId: 'workspace',
+      definitionPath: 'flow.yaml',
+      destinationDefinition: 'renamed.yaml',
+    })
+
+    expect(outcome).toMatchObject({
+      status: 'partial',
+      paths: ['renamed.yaml', 'renamed.hermes.yaml'],
+      results: [
+        expect.objectContaining({
+          relativePath: 'renamed.yaml',
+          status: 'partial',
+          errorCode: 'document_lifecycle_migration_failed',
+          message: 'layout flush failed',
+        }),
+      ],
+    })
   })
 
   it('creates only contract-supported companion metadata and previews/removes exactly that file', async () => {
@@ -355,6 +404,7 @@ describe('workspace actions', () => {
       expect.objectContaining({ relativePath: 'legacy.hermes.yaml', text: expect.stringContaining('runtime: local') }),
     )
     expect(vi.mocked(native.workspaceWrite).mock.calls[0]?.[0].text).not.toContain('secret')
+    expect(companionCreated).toHaveBeenCalledWith('legacy.yaml', 'legacy.hermes.yaml')
 
     const preview = actions().previewRemoveCompanion({
       definitionPath: 'flow.yaml',
@@ -370,26 +420,53 @@ describe('workspace actions', () => {
     expect(native.workspaceTrashPaths).toHaveBeenCalledWith([
       { relativePath: 'flow.hermes.yaml', expectedCurrentHash: 'f'.repeat(64) },
     ])
+    expect(companionRemoved).toHaveBeenCalledWith('flow.hermes.yaml')
   })
 
   it('names and trashes the exact pair, closing only after every path succeeds', async () => {
+    currentDocument.mockReturnValue({
+      workflowId: 'workspace:flow.yaml',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'workspace:flow.yaml:definition',
+        kind: 'definition',
+        path: 'flow.yaml',
+        text: 'dirty',
+        revision: 1,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: {
+        id: 'workspace:flow.yaml:companion',
+        kind: 'companion',
+        path: 'flow.hermes.yaml',
+        text: 'dirty',
+        revision: 1,
+        savedRevision: 0,
+        diskHash: 'b'.repeat(64),
+      },
+    })
     const api = actions()
     expect(api.previewTrashWorkflow({ definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' })).toEqual({
       paths: ['flow.yaml', 'flow.hermes.yaml'],
     })
     await api.trashWorkflow({
+      workflowId: 'workspace:flow.yaml',
       definitionPath: 'flow.yaml',
       definitionHash: 'a'.repeat(64),
       companionPath: 'flow.hermes.yaml',
       companionHash: 'b'.repeat(64),
     })
-    expect(closeDocument).toHaveBeenCalledTimes(1)
+    expect(flushRecovery).toHaveBeenCalledTimes(1)
+    expect(closeDocument).toHaveBeenCalledWith('workspace:flow.yaml')
 
     vi.mocked(native.workspaceTrashPaths).mockResolvedValueOnce({
       results: [{ relativePath: 'flow.yaml', status: 'failed', errorCode: 'conflict' }],
     })
     await expect(
       api.trashWorkflow({
+        workflowId: 'workspace:flow.yaml',
         definitionPath: 'flow.yaml',
         definitionHash: 'a'.repeat(64),
         companionPath: null,
@@ -397,6 +474,36 @@ describe('workspace actions', () => {
       }),
     ).rejects.toMatchObject({ code: 'workspace_trash_partial' })
     expect(closeDocument).toHaveBeenCalledTimes(1)
+    expect(flushRecovery).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not flush or close dirty workflow A when trashing workflow B', async () => {
+    currentDocument.mockReturnValue({
+      workflowId: 'workspace:a.yaml',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'workspace:a.yaml:definition',
+        kind: 'definition',
+        path: 'a.yaml',
+        text: 'dirty',
+        revision: 1,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: null,
+    })
+
+    await actions().trashWorkflow({
+      workflowId: 'workspace:b.yaml',
+      definitionPath: 'flow.yaml',
+      definitionHash: 'a'.repeat(64),
+      companionPath: null,
+      companionHash: null,
+    })
+
+    expect(flushRecovery).not.toHaveBeenCalled()
+    expect(closeDocument).not.toHaveBeenCalled()
   })
 
   it('keeps invalid imports as recovery-backed unsaved drafts and copies valid imports exactly', async () => {
@@ -411,8 +518,12 @@ describe('workspace actions', () => {
       activate,
       openDraft,
       closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
       renameDocument,
-      renameLayout,
+      companionCreated,
+      companionRemoved,
       recoverDraft,
       now: () => '2026-07-25T12:00:00.000Z',
     })
@@ -420,6 +531,7 @@ describe('workspace actions', () => {
     await expect(api.importWorkflow({ profile: 'hermes-legacy' })).resolves.toMatchObject({ status: 'draft' })
     expect(openDraft).toHaveBeenCalledWith(
       expect.objectContaining({ definition: expect.objectContaining({ path: 'import.yaml' }) }),
+      contract,
     )
     expect(recoverDraft).toHaveBeenCalledTimes(1)
     expect(native.workspaceWrite).not.toHaveBeenCalled()
@@ -447,8 +559,12 @@ describe('workspace actions', () => {
       activate,
       openDraft,
       closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
       renameDocument,
-      renameLayout,
+      companionCreated,
+      companionRemoved,
       recoverDraft,
     })
 
@@ -625,8 +741,12 @@ describe('workspace actions', () => {
       activate,
       openDraft,
       closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
       renameDocument,
-      renameLayout,
+      companionCreated,
+      companionRemoved,
       recoverDraft,
     })
 
@@ -675,6 +795,7 @@ describe('workspace actions', () => {
     const api = actions()
     await expect(
       api.trashWorkflow({
+        workflowId: 'workspace:flow.yaml',
         definitionPath: 'flow.yaml',
         definitionHash: 'a'.repeat(64),
         companionPath: 'flow.hermes.yaml',
@@ -691,6 +812,7 @@ describe('workspace actions', () => {
     })
     await expect(
       api.trashWorkflow({
+        workflowId: 'workspace:flow.yaml',
         definitionPath: 'flow.yaml',
         definitionHash: 'a'.repeat(64),
         companionPath: null,

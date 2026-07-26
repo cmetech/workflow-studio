@@ -149,6 +149,8 @@ export class DocumentClient {
       isAnalysisCurrent(this.analysisState.revision, {
         workflowId: response.workflowId,
         pairGeneration: response.pairGeneration,
+        definitionPath: response.definitionPath,
+        companionPath: response.companionPath,
         definitionRevision: response.definitionRevision,
         companionRevision: response.companionRevision,
         contractDigest: response.contractDigest,

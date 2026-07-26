@@ -34,6 +34,10 @@ export interface WorkspaceActionPathResult {
   readonly message?: string
 }
 
+export type WorkspaceRenameActionResult = WorkspaceRenameResult & {
+  readonly status: 'completed' | 'partial'
+}
+
 export interface StartupPath {
   readonly kind: 'directory' | 'yaml'
   readonly path: string
@@ -73,10 +77,14 @@ export interface WorkspaceActionsDependencies {
     contract: AuthoringContract
   }) => Promise<DocumentAnalysis>
   readonly activate: (entry: WorkflowPairEntry) => Promise<void>
-  readonly openDraft: (pair: WorkflowPairText) => void
-  readonly closeDocument: () => void
-  readonly renameDocument: (from: string, to: string) => void
-  readonly renameLayout: (workspaceId: string, from: string, to: string) => Promise<void>
+  readonly openDraft: (pair: WorkflowPairText, contract: AuthoringContract | null) => Promise<void>
+  readonly currentDocument: () => WorkflowPairText | null
+  readonly flushRecovery: (pair: WorkflowPairText) => Promise<void>
+  readonly closeWorkspace: () => Promise<void>
+  readonly closeDocument: (workflowId: string) => Promise<void>
+  readonly renameDocument: (workspaceId: string, from: string, to: string, companionMoved: boolean) => Promise<void>
+  readonly companionCreated: (definitionPath: string, companionPath: string) => Promise<void>
+  readonly companionRemoved: (companionPath: string) => Promise<void>
   readonly recoverDraft: (pair: WorkflowPairText) => Promise<void>
   readonly now?: () => string
 }
@@ -119,6 +127,8 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   ): Promise<WorkspaceRootInfo | null> {
     let result: WorkspaceRootInfo | null = null
     const operation = rootQueue.then(async () => {
+      if (generation !== rootGeneration) return
+      await dependencies.closeWorkspace()
       if (generation !== rootGeneration) return
       const selected = await dependencies.native.workspaceSetRoot(rootPath)
       if (generation !== rootGeneration) return
@@ -208,7 +218,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     if (companionText !== null) {
       writes.push({ path: companionPathFor(relativePath), text: companionText })
     }
-    const outcome = await writeExactPair(writes)
+    const outcome = await writeExactPair(writes, activeContract)
     return { path: relativePath, text, ...outcome }
   }
 
@@ -232,17 +242,35 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     workspaceId: string
     definitionPath: string
     destinationDefinition: string
-  }): Promise<WorkspaceRenameResult> {
+  }): Promise<WorkspaceRenameActionResult> {
     const result = await dependencies.native.workspaceRenamePair({
       sourceDefinition: input.definitionPath,
       destinationDefinition: input.destinationDefinition,
     })
-    dependencies.renameDocument(input.definitionPath, input.destinationDefinition)
-    const sourceCompanion = companionPathFor(input.definitionPath)
     const destinationCompanion = companionPathFor(input.destinationDefinition)
-    if (result.paths.includes(destinationCompanion)) dependencies.renameDocument(sourceCompanion, destinationCompanion)
-    await dependencies.renameLayout(input.workspaceId, input.definitionPath, input.destinationDefinition)
-    return result
+    try {
+      await dependencies.renameDocument(
+        input.workspaceId,
+        input.definitionPath,
+        input.destinationDefinition,
+        result.paths.includes(destinationCompanion),
+      )
+      return { ...result, status: 'completed' }
+    } catch (error: unknown) {
+      return {
+        ...result,
+        status: 'partial',
+        results: [
+          ...result.results,
+          {
+            relativePath: input.destinationDefinition,
+            status: 'partial',
+            errorCode: 'document_lifecycle_migration_failed',
+            message: error instanceof Error ? error.message : 'The editor lifecycle migration failed.',
+          },
+        ],
+      }
+    }
   }
 
   async function createCompanion(input: {
@@ -266,6 +294,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     }
     const path = companionPathFor(input.definitionPath)
     await dependencies.native.workspaceWrite({ relativePath: path, text, expectedCurrentHash: null })
+    await dependencies.companionCreated(input.definitionPath, path)
     return path
   }
 
@@ -285,6 +314,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   async function removeCompanion(input: { companionPath: string; expectedHash: string }): Promise<void> {
     const result = await trashExact([{ relativePath: input.companionPath, expectedCurrentHash: input.expectedHash }])
     requireTrashSuccess(result, [input.companionPath])
+    await dependencies.companionRemoved(input.companionPath)
   }
 
   function previewTrashWorkflow(input: { definitionPath: string; companionPath: string | null }) {
@@ -292,6 +322,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 
   async function trashWorkflow(input: {
+    workflowId: string
     definitionPath: string
     definitionHash: string
     companionPath: string | null
@@ -310,12 +341,20 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     if (input.companionPath && input.companionHash) {
       requests.push({ relativePath: input.companionPath, expectedCurrentHash: input.companionHash })
     }
+    const activePair = dependencies.currentDocument()
+    const closesActivePair =
+      activePair?.workflowId === input.workflowId &&
+      activePair.definition.path === input.definitionPath &&
+      (activePair.companion?.path ?? null) === input.companionPath
     const result = await trashExact(requests)
     requireTrashSuccess(
       result,
       requests.map(({ relativePath }) => relativePath),
     )
-    dependencies.closeDocument()
+    if (closesActivePair && activePair) {
+      await dependencies.flushRecovery(activePair)
+      await dependencies.closeDocument(input.workflowId)
+    }
   }
 
   async function importWorkflow(input: { profile: WorkflowProfile }) {
@@ -338,17 +377,20 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     const name = fileName(definition.path)
     if (!analysis.structurallyValid) {
       const pair = unsavedPair(name, definition.text, companion?.text ?? null)
-      dependencies.openDraft(pair)
+      await dependencies.openDraft(pair, activeContract)
       await dependencies.recoverDraft(pair)
       return { status: 'draft' as const, pair, issues: analysis.issues }
     }
     const files = await dependencies.native.workspaceScan()
     const destination = collisionSafeImportPath(name, new Set(files.map(({ relativePath }) => relativePath)))
     const companionDestination = companion ? companionPathFor(destination) : null
-    const outcome = await writeExactPair([
-      { path: destination, text: definition.text },
-      ...(companion && companionDestination ? [{ path: companionDestination, text: companion.text }] : []),
-    ])
+    const outcome = await writeExactPair(
+      [
+        { path: destination, text: definition.text },
+        ...(companion && companionDestination ? [{ path: companionDestination, text: companion.text }] : []),
+      ],
+      activeContract,
+    )
     return {
       status: outcome.status === 'completed' ? ('imported' as const) : ('partial' as const),
       definitionPath: destination,
@@ -419,7 +461,10 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     await selectRoot(rootPath, generation, relativePath)
   }
 
-  async function writeExactPair(writes: readonly { path: string; text: string }[]) {
+  async function writeExactPair(
+    writes: readonly { path: string; text: string }[],
+    recoveryContract: AuthoringContract | null = null,
+  ) {
     const results: WorkspaceActionPathResult[] = []
     for (const [index, write] of writes.entries()) {
       try {
@@ -445,7 +490,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
           })
         }
         const recovery = unsavedPair(writes[0]!.path, writes[0]!.text, writes[1]?.text ?? null)
-        dependencies.openDraft(recovery)
+        await dependencies.openDraft(recovery, recoveryContract)
         await dependencies.recoverDraft(recovery)
         return { status: 'partial' as const, results, recoveryRetained: true as const }
       }

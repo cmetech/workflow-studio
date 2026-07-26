@@ -1,16 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import type { WorkspaceEntry } from '$src/lib/workspace/types'
 
   interface Props {
     entries: readonly WorkspaceEntry[]
-    onOpen?: (entry: WorkspaceEntry) => void
+    onOpen?: (entry: WorkspaceEntry) => void | Promise<void>
     onClose?: () => void
+    opener?: HTMLElement | undefined
   }
 
-  let { entries, onOpen, onClose }: Props = $props()
+  let { entries, onOpen, onClose, opener }: Props = $props()
+  let retainedOpener: HTMLElement | undefined
   let query = $state('')
   let activeIndex = $state(0)
+  let overlay: HTMLElement
   let searchInput: HTMLInputElement
   const results = $derived(
     entries
@@ -26,15 +29,26 @@
     return id.replace(/[^a-zA-Z0-9_-]/g, '-')
   }
 
-  function open(index: number): void {
+  function restoreOpener(): void {
+    if (retainedOpener?.isConnected) retainedOpener.focus()
+  }
+
+  function close(): void {
+    onClose?.()
+    restoreOpener()
+  }
+
+  async function open(index: number): Promise<void> {
     const entry = results[index]
-    if (entry) onOpen?.(entry)
+    if (!entry) return
+    await onOpen?.(entry)
+    restoreOpener()
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.preventDefault()
-      onClose?.()
+      close()
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
       activeIndex = Math.min(activeIndex + 1, results.length - 1)
@@ -43,14 +57,41 @@
       activeIndex = Math.max(activeIndex - 1, 0)
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      open(activeIndex)
+      void open(activeIndex)
     }
   }
 
-  onMount(() => searchInput.focus())
+  function trapFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return
+    const focusable = [...overlay.querySelectorAll<HTMLElement>('input, button:not(:disabled)')]
+    const first = focusable[0]
+    const last = focusable.at(-1)
+    if (!first || !last) return
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  onMount(() => {
+    retainedOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined)
+    searchInput.focus()
+  })
+  onDestroy(restoreOpener)
 </script>
 
-<section class="quick-open" aria-label="Quick Open">
+<div
+  bind:this={overlay}
+  class="quick-open"
+  role="dialog"
+  tabindex="-1"
+  aria-modal="true"
+  aria-label="Quick Open"
+  onkeydown={trapFocus}
+>
   <input
     bind:this={searchInput}
     role="combobox"
@@ -72,13 +113,13 @@
         role="option"
         aria-selected={index === activeIndex}
         onmouseenter={() => (activeIndex = index)}
-        onclick={() => open(index)}
+        onclick={() => void open(index)}
       >
         <strong>{entry.name}</strong><span>{entry.relativePath}</span>
       </button>
     {/each}
   </div>
-</section>
+</div>
 
 <style>
   .quick-open {

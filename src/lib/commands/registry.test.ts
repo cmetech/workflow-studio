@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   CommandDisabledError,
   createCommandRegistry,
   executeCommand,
+  setDocumentSaveHandler,
   listCommands,
   type CommandRegistry,
 } from './registry'
@@ -41,6 +42,7 @@ describe('command registry', () => {
     expect(listCommands().map(({ id }) => id)).toEqual([
       'workspace.open-folder',
       'workspace.quick-open',
+      'document.save',
       'problems.focus',
       'workbench.command-palette',
       'view.activity.examples',
@@ -202,6 +204,19 @@ describe('command registry', () => {
     for (const id of ids) {
       await executeCommand(id, context)
       expect(workspaceIntent.get()).toMatchObject({ kind: id, targetEntryId: 'workspace:ops/flow.yaml' })
+    }
+  })
+
+  it('routes the Mod+S document command to the active lifecycle handler', async () => {
+    const save = vi.fn(async () => undefined)
+    const unbind = setDocumentSaveHandler(save)
+    try {
+      const command = listCommands().find(({ id }) => id === 'document.save')
+      expect(command?.defaultBindings).toEqual(['Mod+S'])
+      await executeCommand('document.save', { ...globalContext, canMutate: true })
+      expect(save).toHaveBeenCalledOnce()
+    } finally {
+      unbind()
     }
   })
 })

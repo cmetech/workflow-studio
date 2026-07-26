@@ -38,6 +38,14 @@ export class CommandNotFoundError extends Error {
 }
 
 const commandSurfaces: readonly CommandContext['surface'][] = ['global', 'canvas', 'yaml', 'form']
+let documentSaveHandler: (() => void | Promise<void>) | null = null
+
+export function setDocumentSaveHandler(handler: () => void | Promise<void>): () => void {
+  documentSaveHandler = handler
+  return () => {
+    if (documentSaveHandler === handler) documentSaveHandler = null
+  }
+}
 
 const commandContexts: readonly CommandContext[] = commandSurfaces.flatMap((surface) =>
   [false, true].flatMap((canMutate) => [false, true].map((hasSelection) => ({ surface, canMutate, hasSelection }))),
@@ -191,6 +199,14 @@ function workflowCommand(
 }
 
 const initialCommands: readonly AppCommand[] = [
+  {
+    id: 'document.save',
+    label: 'Save Workflow Pair',
+    category: 'File',
+    defaultBindings: ['Mod+S'],
+    enabled: (context) => context.canMutate,
+    run: () => documentSaveHandler?.(),
+  },
   {
     id: 'problems.focus',
     label: 'Focus Selected Problem',

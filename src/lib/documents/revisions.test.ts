@@ -115,6 +115,8 @@ describe('document revisions', () => {
     expect(isAnalysisCurrent({ ...current, definitionRevision: 1 }, candidate)).toBe(false)
     expect(isAnalysisCurrent({ ...current, companionRevision: 1 }, candidate)).toBe(false)
     expect(isAnalysisCurrent({ ...current, contractDigest: `sha256:${'b'.repeat(64)}` }, candidate)).toBe(false)
+    expect(isAnalysisCurrent(current, { ...candidate, definitionPath: 'renamed.yaml' })).toBe(false)
+    expect(isAnalysisCurrent(current, { ...candidate, companionPath: 'renamed.hermes.yaml' })).toBe(false)
   })
 
   it('never lets out-of-order responses regress the active analysis', () => {

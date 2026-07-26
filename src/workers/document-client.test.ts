@@ -55,6 +55,8 @@ function successFor(request: AnalyzeDocumentRequest): AnalyzeDocumentResponse {
   const analysis: DocumentAnalysis = {
     workflowId: request.workflowId,
     pairGeneration: request.pairGeneration,
+    definitionPath: request.definition.path,
+    companionPath: request.companion?.path ?? null,
     definitionRevision: request.definition.revision,
     companionRevision: request.companion?.revision ?? null,
     contractDigest: request.contractDigest,
@@ -68,6 +70,8 @@ function successFor(request: AnalyzeDocumentRequest): AnalyzeDocumentResponse {
     requestId: request.requestId,
     workflowId: request.workflowId,
     pairGeneration: request.pairGeneration,
+    definitionPath: request.definition.path,
+    companionPath: request.companion?.path ?? null,
     definitionRevision: request.definition.revision,
     companionRevision: request.companion?.revision ?? null,
     profile: request.profile,
@@ -173,6 +177,30 @@ describe('DocumentClient', () => {
     expect(analyzeRequests(worker)).toHaveLength(2)
     client.dispose()
   })
+
+  it('rejects a response for old paths after an identity-preserving rename', () => {
+    const worker = new FakeWorker()
+    const accepted: DocumentAnalysis[] = []
+    const client = new DocumentClient(worker, { onAnalysis: (analysis) => accepted.push(analysis) })
+    const initial = pair()
+
+    client.schedule(initial, contract, 'open')
+    const oldRequest = analyzeRequests(worker)[0]!
+    client.schedule(
+      {
+        ...initial,
+        definition: { ...initial.definition, path: 'renamed.yaml' },
+        companion: { ...initial.companion!, path: 'renamed.hermes.yaml' },
+      },
+      contract,
+      'open',
+    )
+
+    const newestRequest = analyzeRequests(worker)[1]!
+    worker.emit({ ...successFor(oldRequest), requestId: newestRequest.requestId })
+    expect(accepted).toEqual([])
+    client.dispose()
+  })
 })
 
 describe('document worker protocol', () => {
@@ -196,6 +224,8 @@ describe('document worker protocol', () => {
         requestId: 'request-1',
         workflowId: 'flow',
         pairGeneration: 0,
+        definitionPath: 'flow.yaml',
+        companionPath: null,
         definitionRevision: 0,
         companionRevision: null,
         profile: 'archon-2026-07',

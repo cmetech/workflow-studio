@@ -80,6 +80,8 @@ export function createDocumentRevision(pair: WorkflowPairText, contractDigest: C
   return {
     workflowId: pair.workflowId,
     pairGeneration: pair.generation,
+    definitionPath: pair.definition.path,
+    companionPath: pair.companion?.path ?? null,
     definitionRevision: pair.definition.revision,
     companionRevision: pair.companion?.revision ?? null,
     contractDigest,
@@ -90,6 +92,8 @@ export function isAnalysisCurrent(revision: DocumentRevision, analysis: Document
   return (
     revision.workflowId === analysis.workflowId &&
     revision.pairGeneration === analysis.pairGeneration &&
+    revision.definitionPath === analysis.definitionPath &&
+    revision.companionPath === analysis.companionPath &&
     revision.definitionRevision === analysis.definitionRevision &&
     revision.companionRevision === analysis.companionRevision &&
     revision.contractDigest === analysis.contractDigest

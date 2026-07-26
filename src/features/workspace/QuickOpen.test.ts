@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
+import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkspaceEntry } from '$src/lib/workspace/types'
 import QuickOpen from './QuickOpen.svelte'
@@ -36,6 +37,63 @@ const entries: readonly WorkspaceEntry[] = [
 ]
 
 describe('QuickOpen', () => {
+  it('keeps forward and reverse Tab focus within the overlay', async () => {
+    render(QuickOpen, { entries })
+    await tick()
+    const search = screen.getByRole('combobox', { name: 'Quick Open workflows' })
+    const lastResult = screen.getAllByRole('option').at(-1)!
+
+    expect(search).toHaveFocus()
+    lastResult.focus()
+    await fireEvent.keyDown(lastResult, { key: 'Tab' })
+    expect(search).toHaveFocus()
+    await fireEvent.keyDown(search, { key: 'Tab', shiftKey: true })
+    expect(lastResult).toHaveFocus()
+  })
+
+  it('captures and restores the focused opener when Escape closes the overlay', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onClose = vi.fn()
+    render(QuickOpen, { entries, onClose })
+    await tick()
+
+    await fireEvent.keyDown(screen.getByRole('combobox', { name: 'Quick Open workflows' }), { key: 'Escape' })
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
+
+  it('restores an explicit opener after a workflow is opened successfully', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onOpen = vi.fn().mockResolvedValue(undefined)
+    render(QuickOpen, { entries, onOpen, opener })
+    await tick()
+
+    await fireEvent.keyDown(screen.getByRole('combobox', { name: 'Quick Open workflows' }), { key: 'Enter' })
+
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ definitionPath: 'flows/Release.yaml' }))
+    await vi.waitFor(() => expect(opener).toHaveFocus())
+    opener.remove()
+  })
+
+  it('restores the retained opener when the overlay unmounts', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const view = render(QuickOpen, { entries, opener })
+    await tick()
+
+    view.unmount()
+
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
+
   it('filters path metadata without a content reader and opens the selected result from the keyboard', async () => {
     const onOpen = vi.fn()
     render(QuickOpen, { entries, onOpen })

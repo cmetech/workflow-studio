@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
-import { createWorkspaceActionCoordinator, type CoordinatedWorkspaceActions } from './workspace-action-coordinator'
+import {
+  createWorkspaceActionCoordinator,
+  formatWorkspaceOutcomeResults,
+  type CoordinatedWorkspaceActions,
+} from './workspace-action-coordinator'
 
 const entry: WorkflowPairEntry = {
   kind: 'workflow',
@@ -28,6 +32,8 @@ describe('workspace action coordinator', () => {
     const revision = {
       workflowId: entry.id,
       pairGeneration: 0,
+      definitionPath: 'flow.yaml',
+      companionPath: 'flow.hermes.yaml',
       definitionRevision: 0,
       companionRevision: 0,
       contractDigest: `sha256:${'1'.repeat(64)}` as const,
@@ -168,6 +174,8 @@ describe('workspace action coordinator', () => {
         revision: {
           workflowId: priorPair.workflowId,
           pairGeneration: 0,
+          definitionPath: priorPair.definition.path,
+          companionPath: null,
           definitionRevision: 0,
           companionRevision: null,
           contractDigest: `sha256:${'1'.repeat(64)}`,
@@ -208,5 +216,42 @@ describe('workspace action coordinator', () => {
 
     await expect(coordinate({ kind: 'workflow.export', revision: 1, targetEntryId: entry.id })).rejects.toBe(openError)
     expect(exportWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('surfaces structured partial outcomes to the UI presenter', async () => {
+    const partial = { status: 'partial', results: [{ path: 'flow-copy.yaml', status: 'failed' }] }
+    const presentOutcome = vi.fn()
+    const coordinate = createWorkspaceActionCoordinator({
+      actions: {
+        duplicateWorkflow: vi.fn(async () => partial),
+        renameWorkflow: vi.fn(),
+        createCompanion: vi.fn(),
+        removeCompanion: vi.fn(),
+        exportWorkflow: vi.fn(),
+        trashWorkflow: vi.fn(),
+      },
+      getEntry: () => entry,
+      getWorkspaceId: () => 'workspace',
+      read: vi.fn(),
+      open: vi.fn(),
+      refresh: vi.fn(),
+      promptRename: vi.fn(),
+      promptCompanion: vi.fn(),
+      confirm: vi.fn(),
+      currentDocument: () => ({ pair: null, analysis: null, revision: null }),
+      confirmExportCollision: vi.fn(),
+      presentOutcome,
+    })
+
+    await coordinate({ kind: 'workflow.duplicate', revision: 1, targetEntryId: entry.id })
+    expect(presentOutcome).toHaveBeenCalledWith('workflow.duplicate', partial)
+  })
+
+  it('formats native relative paths in partial rename feedback', () => {
+    expect(
+      formatWorkspaceOutcomeResults([
+        { relativePath: 'archive/renamed.yaml', status: 'partial', message: 'layout flush failed' },
+      ]),
+    ).toBe('archive/renamed.yaml: partial — layout flush failed')
   })
 })

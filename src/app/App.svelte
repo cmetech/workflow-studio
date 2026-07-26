@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
-  import { executeCommand, listCommands } from '$src/lib/commands/registry'
+  import { executeCommand, listCommands, setDocumentSaveHandler } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import type { AuthoringContract } from '$src/lib/contract/types'
-  import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
   import { activeEditorMode } from '$src/stores/shell'
   import { activeActivity, workspaceIntent } from '$src/stores/shell'
@@ -15,24 +14,29 @@
   import { getNativeBridge } from '$src/lib/native/bridge'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
-  import { createLayoutStore } from '$src/lib/layout/layout-store'
+  import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
-  import { openWorkflowPair } from '$src/features/documents/document-actions'
+  import { $documentSession as documentSessionStore, openDocumentSession } from '$src/stores/documents'
+  import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
+  import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
+  import { DocumentClient } from '$src/workers/document-client'
+  import type { DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
   import {
-    $documentSession as documentSessionStore,
-    openDocumentSession,
-    closeDocumentSession,
-    receiveDocumentAnalysis,
-    renameOpenDocumentPath,
-  } from '$src/stores/documents'
-  import { createRecoveryDraft, createRecoveryStore } from '$src/lib/recovery/recovery-store'
-  import { createWorkspaceActionCoordinator } from '$src/features/workspace/workspace-action-coordinator'
+    $documentWorkspace as documentWorkspaceState,
+    DocumentWorkspaceController,
+  } from '$src/features/documents/document-workspace-controller'
+  import {
+    createWorkspaceActionCoordinator,
+    formatWorkspaceOutcomeResults,
+  } from '$src/features/workspace/workspace-action-coordinator'
   import Explorer from '$src/features/workspace/Explorer.svelte'
   import OpenWorkspace from '$src/features/workspace/OpenWorkspace.svelte'
   import QuickOpen from '$src/features/workspace/QuickOpen.svelte'
   import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
   import NewWorkflowDialog from '$src/features/workspace/NewWorkflowDialog.svelte'
   import ImportExportDialog from '$src/features/workspace/ImportExportDialog.svelte'
+  import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
+  import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
 
@@ -47,6 +51,7 @@
   const native = getNativeBridge()
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
+  const recoveryDrafts = new RecoveryDraftController(recoveryStore)
   const draftDigest = `sha256:${'0'.repeat(64)}` as const
   const availableContracts: AuthoringContract[] = []
   let contracts = $state<readonly AuthoringContract[]>([])
@@ -60,6 +65,7 @@
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
   let quickOpenVisible = $state(false)
+  let quickOpenOpener = $state<HTMLElement | undefined>()
   let contextEntryId = $state<string | null>(null)
   let contextOpener = $state<HTMLElement | undefined>()
   let contextProfile = $state<'hermes-legacy' | 'archon-2026-07' | null>(null)
@@ -67,36 +73,71 @@
   let newDialogVisible = $state(false)
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
+  let exportBlockingIssues = $state<readonly string[]>([])
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
     opener: HTMLElement | undefined
   } | null>(null)
   let handledIntent = 0
+  const documentWorkspace = new DocumentWorkspaceController({
+    read: (path) => native.workspaceRead(path),
+    write: (request) => native.workspaceWrite(request),
+    trash: (requests) => native.workspaceTrashPaths(requests),
+    createAnalysisClient: (onAnalysis, onError) => {
+      if (typeof Worker === 'undefined') {
+        return {
+          schedule: () => onError('Document analysis worker is unavailable.'),
+          dispose: () => undefined,
+        }
+      }
+      const worker = new Worker(new URL('../workers/document-worker.ts', import.meta.url), { type: 'module' })
+      const client = new DocumentClient(worker, { onAnalysis, onError: (error) => onError(error.message) })
+      return {
+        schedule: (pair, contract, reason) => client.schedule(pair, contract, reason),
+        dispose: () => {
+          client.dispose()
+          worker.terminate()
+        },
+      }
+    },
+    watch: watchWorkspaceChanges,
+    recovery: recoveryStore,
+    recoveryDrafts,
+    layout: layoutStore,
+    createLayoutPersistence: () =>
+      new LayoutPersistenceController(async (layout) => {
+        const pair = documentSessionStore.get().pair
+        await layoutStore.saveLayout(
+          layout,
+          pair?.definition.diskHash
+            ? {
+                definition: pair.definition.diskHash,
+                companion: pair.companion?.diskHash ?? null,
+              }
+            : undefined,
+        )
+      }),
+  })
   const actions = createWorkspaceActions({
     native,
     contracts: availableContracts,
-    analyze: ({ definitionText, companionText, contract }) =>
-      analyzeWorkflowPair(
-        {
-          type: 'analyze',
-          requestId: crypto.randomUUID(),
-          workflowId: 'candidate',
-          pairGeneration: 0,
-          definition: { path: 'candidate.yaml', text: definitionText, revision: 0 },
-          companion:
-            companionText === null ? null : { path: 'candidate.hermes.yaml', text: companionText, revision: 0 },
-          profile: contract.profile,
-          contractDigest: contract.contract_digest,
-          reason: 'explicit-validate',
-        },
-        contract,
-      ),
+    analyze: analyzeCandidateInWorker,
     activate: openEntry,
-    openDraft: (pair) => openDocumentSession(pair, draftDigest),
-    closeDocument: closeDocumentSession,
-    renameDocument: renameOpenDocumentPath,
-    renameLayout: (workspaceId, from, to) => layoutStore.renameWorkflowPath(workspaceId, from, to),
+    openDraft: async (pair, contract) => {
+      const workspaceId = $workspace.id
+      if (workspaceId) await documentWorkspace.openDraft(workspaceId, pair, contract)
+      else openDocumentSession(pair, draftDigest)
+    },
+    currentDocument: () => documentSessionStore.get().pair,
+    flushRecovery: (pair) => documentWorkspace.flushRecovery(pair),
+    closeWorkspace: () => documentWorkspace.closeWorkspace(),
+    closeDocument: (workflowId) => documentWorkspace.close(workflowId),
+    renameDocument: (workspaceId, from, to, companionMoved) =>
+      documentWorkspace.renameActivePair(workspaceId, from, to, companionMoved),
+    companionCreated: (definitionPath, companionPath) =>
+      documentWorkspace.companionCreated(definitionPath, companionPath),
+    companionRemoved: (companionPath) => documentWorkspace.companionRemoved(companionPath),
     recoverDraft: async (pair) => {
       await recoveryStore.save(createRecoveryDraft(pair, new Date().toISOString()))
     },
@@ -146,45 +187,63 @@
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
     await contractReadiness
     const contract = await activeContractFor(entry)
-    if (!contract) {
-      throw new WorkspaceActionError(
-        'contract_unavailable',
-        `No validated bundled contract is available for ${entry.definitionPath}.`,
-        [entry.definitionPath, ...(entry.companionPath ? [entry.companionPath] : [])],
+    selectWorkspaceEntry(entry.id)
+    const workspaceId = $workspace.id
+    if (workspaceId) await documentWorkspace.activate(workspaceId, entry, contract ?? null)
+  }
+
+  function analyzeCandidateInWorker(input: {
+    definitionText: string
+    companionText: string | null
+    contract: AuthoringContract
+  }): Promise<DocumentAnalysis> {
+    if (typeof Worker === 'undefined') {
+      return Promise.reject(
+        new WorkspaceActionError('analysis_unavailable', 'Document analysis worker is unavailable.'),
       )
     }
-    selectWorkspaceEntry(entry.id)
-    let scheduledAnalysis: Promise<void> = Promise.resolve()
-    await openWorkflowPair({
-      workflowId: entry.id,
-      definitionPath: entry.definitionPath,
-      companionPath: entry.companionPath,
-      contractDigest: contract.contract_digest,
-      native,
-      scheduleAnalysis: (pair) => {
-        scheduledAnalysis = analyzeWorkflowPair(
-          {
-            type: 'analyze',
-            requestId: crypto.randomUUID(),
-            workflowId: pair.workflowId,
-            pairGeneration: pair.generation,
-            definition: {
-              path: pair.definition.path,
-              text: pair.definition.text,
-              revision: pair.definition.revision,
-            },
-            companion: pair.companion
-              ? { path: pair.companion.path, text: pair.companion.text, revision: pair.companion.revision }
-              : null,
-            profile: contract.profile,
-            contractDigest: contract.contract_digest,
-            reason: 'open',
-          },
-          contract,
-        ).then(receiveDocumentAnalysis)
+    const pair: WorkflowPairText = {
+      workflowId: 'candidate',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'candidate:definition',
+        kind: 'definition',
+        path: 'candidate.yaml',
+        text: input.definitionText,
+        revision: 0,
+        savedRevision: 0,
+        diskHash: null,
       },
+      companion:
+        input.companionText === null
+          ? null
+          : {
+              id: 'candidate:companion',
+              kind: 'companion',
+              path: 'candidate.hermes.yaml',
+              text: input.companionText,
+              revision: 0,
+              savedRevision: 0,
+              diskHash: null,
+            },
+    }
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('../workers/document-worker.ts', import.meta.url), { type: 'module' })
+      const client = new DocumentClient(worker, {
+        onAnalysis: (analysis) => {
+          client.dispose()
+          worker.terminate()
+          resolve(analysis)
+        },
+        onError: (error) => {
+          client.dispose()
+          worker.terminate()
+          reject(new WorkspaceActionError(error.code, error.message))
+        },
+      })
+      client.schedule(pair, input.contract, 'explicit-validate')
     })
-    await scheduledAnalysis
   }
 
   function confirmExact(action: 'remove-companion' | 'trash', paths: readonly string[]): Promise<boolean> {
@@ -200,7 +259,21 @@
 
   function runWorkspaceOperation(operation: Promise<unknown>): void {
     void operation.catch((error: unknown) => {
-      workspaceError = error instanceof Error ? error.message : 'The workspace action failed.'
+      const pathResults =
+        error && typeof error === 'object' && 'pathResults' in error && Array.isArray(error.pathResults)
+          ? (error.pathResults as readonly { relativePath?: string; status?: string; message?: string }[])
+          : []
+      workspaceError =
+        pathResults.length > 0
+          ? pathResults
+              .map(
+                ({ relativePath, status, message }) =>
+                  `${relativePath ?? 'unknown path'}: ${status ?? 'failed'}${message ? ` — ${message}` : ''}`,
+              )
+              .join('\n')
+          : error instanceof Error
+            ? error.message
+            : 'The workspace action failed.'
     })
   }
 
@@ -232,6 +305,23 @@
     confirm: confirmExact,
     currentDocument: () => documentSessionStore.get(),
     confirmExportCollision,
+    presentOutcome: (action, outcome) => {
+      if (!outcome || typeof outcome !== 'object' || !('status' in outcome)) return
+      const status = (outcome as { status?: unknown }).status
+      if (status !== 'partial' && status !== 'blocked') return
+      const result = outcome as {
+        status: string
+        reason?: string
+        issues?: readonly { message: string }[]
+        results?: readonly { path?: string; relativePath?: string; status?: string; message?: string }[]
+      }
+      workspaceError = result.results
+        ? formatWorkspaceOutcomeResults(result.results)
+        : `${action ?? 'Workspace action'} ${result.status}${result.reason ? `: ${result.reason}` : ''}.`
+      if (action === 'workflow.export' && status === 'blocked') {
+        exportBlockingIssues = result.issues?.map(({ message }) => message) ?? [workspaceError]
+      }
+    },
   })
 
   $effect(() => {
@@ -239,8 +329,10 @@
     if (intent.revision === 0 || intent.revision === handledIntent) return
     handledIntent = intent.revision
     if (intent.kind === 'open-folder') runWorkspaceOperation(openWorkspace())
-    else if (intent.kind === 'quick-open') quickOpenVisible = true
-    else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
+    else if (intent.kind === 'quick-open') {
+      quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+      quickOpenVisible = true
+    } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
   })
 
   onMount(() => {
@@ -249,17 +341,49 @@
     void (async () => {
       await contractReadiness
       if (disposed) return
+      await documentWorkspace.start()
+      if (disposed) return
+      const unbindSave = setDocumentSaveHandler(async () => {
+        await documentWorkspace.save()
+      })
+      const keydown = (event: KeyboardEvent) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+          event.preventDefault()
+          runWorkspaceOperation(
+            runCommand('document.save', {
+              surface: 'global',
+              canMutate: Boolean(documentSessionStore.get().pair),
+              hasSelection: false,
+            }),
+          )
+        }
+      }
+      window.addEventListener('keydown', keydown)
+      dispose = () => {
+        unbindSave()
+        window.removeEventListener('keydown', keydown)
+      }
       await refreshRecent()
+      if (disposed) return
       try {
         await actions.handleStartupPaths()
       } catch (error: unknown) {
         workspaceError = error instanceof Error ? error.message : 'The startup workflow could not be opened.'
       }
       if (disposed || !('__TAURI_INTERNALS__' in window)) return
-      dispose = await getCurrentWindow().onDragDropEvent((event) => {
+      const disposeDragDrop = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type !== 'drop') return
         for (const path of event.payload.paths) runWorkspaceOperation(actions.handleExternalPath(path))
       })
+      if (disposed) {
+        disposeDragDrop()
+        return
+      }
+      const disposeLifecycle = dispose
+      dispose = () => {
+        disposeDragDrop()
+        disposeLifecycle?.()
+      }
     })()
     return () => {
       disposed = true
@@ -269,6 +393,7 @@
 
   onDestroy(() => {
     exportConfirmation?.resolve(false)
+    void documentWorkspace.dispose()
   })
 </script>
 
@@ -359,6 +484,35 @@
           />
         {/if}
       </section>
+      {#if $documentSessionStore.pair}
+        <ProblemsPanel
+          issues={$documentSessionStore.analysis?.issues ?? []}
+          paths={{
+            definition: $documentSessionStore.pair.definition.path,
+            companion: $documentSessionStore.pair.companion?.path ?? null,
+          }}
+        />
+        {#if $documentWorkspaceState.analysisError}
+          <p class="document-outcome" role="alert">{$documentWorkspaceState.analysisError}</p>
+        {/if}
+        {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
+          <p class="document-outcome" role="alert">
+            Save blocked: {$documentWorkspaceState.saveOutcome.reason}.
+            {$documentWorkspaceState.saveOutcome.issues.map(({ message }) => message).join(' ')}
+          </p>
+        {:else if $documentWorkspaceState.saveOutcome?.status === 'partial'}
+          <p class="document-outcome" role="alert">
+            Save partially completed.
+            {[
+              $documentWorkspaceState.saveOutcome.results.definition,
+              $documentWorkspaceState.saveOutcome.results.companion,
+            ]
+              .filter((result) => result?.status === 'failed')
+              .map((result) => `${result?.path}: ${result?.message ?? result?.errorCode ?? 'failed'}`)
+              .join(' ')}
+          </p>
+        {/if}
+      {/if}
     </section>
     <aside class="panel inspector-panel" aria-label="Inspector"></aside>
   </div>
@@ -367,12 +521,39 @@
   {#if quickOpenVisible}
     <QuickOpen
       entries={$workspace.entries}
+      opener={quickOpenOpener}
       onOpen={(entry) => {
         quickOpenVisible = false
         if (entry.kind === 'workflow') runWorkspaceOperation(openEntry(entry))
       }}
       onClose={() => (quickOpenVisible = false)}
     />
+  {/if}
+  {#if $documentWorkspaceState.conflict}
+    <ExternalChangeDialog
+      files={[
+        {
+          relativePath: $documentWorkspaceState.conflict.disk.relativePath,
+          modifiedAt: $documentWorkspaceState.conflict.disk.modifiedAt,
+        },
+      ]}
+      diffViewed={$documentWorkspaceState.conflict.diffViewed}
+      onChoice={(choice) => documentWorkspace.resolveConflict(choice)}
+    />
+  {/if}
+  {#if $documentWorkspaceState.recoveryOffers[0]}
+    <div class="recovery-offer" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="recovery-title">
+      <h2 id="recovery-title">Recover unsaved workflow?</h2>
+      <p>{$documentWorkspaceState.recoveryOffers[0].definition.path}</p>
+      <button type="button" onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}
+        >Recover</button
+      >
+      <button
+        type="button"
+        onclick={() => void documentWorkspace.discardRecovery($documentWorkspaceState.recoveryOffers[0]!.workflowId)}
+        >Discard</button
+      >
+    </div>
   {/if}
   {#if contextEntryId}
     <div class="context-layer">
@@ -396,9 +577,13 @@
       opener={newDialogOpener}
       onCancel={() => (newDialogVisible = false)}
       onCreate={async (input) => {
-        await actions.createWorkflow(input)
+        const outcome = await actions.createWorkflow(input)
         await refreshWorkspace()
-        newDialogVisible = false
+        if (outcome.status === 'completed') newDialogVisible = false
+        else
+          workspaceError = outcome.results
+            .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
+            .join('\n')
       }}
     />
   {/if}
@@ -408,10 +593,22 @@
       opener={importDialogOpener}
       onCancel={() => (importDialogVisible = false)}
       onConfirm={async () => {
-        await actions.importWorkflow({ profile: contracts[0]!.profile })
+        const outcome = await actions.importWorkflow({ profile: contracts[0]!.profile })
         await refreshWorkspace()
-        importDialogVisible = false
+        if (outcome.status !== 'partial') importDialogVisible = false
+        else
+          workspaceError = outcome.results
+            .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
+            .join('\n')
       }}
+    />
+  {/if}
+  {#if exportBlockingIssues.length > 0}
+    <ImportExportDialog
+      mode="export"
+      blockingIssues={exportBlockingIssues}
+      opener={contextOpener}
+      onCancel={() => (exportBlockingIssues = [])}
     />
   {/if}
   {#if exportConfirmation}

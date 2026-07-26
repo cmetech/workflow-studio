@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
+import { $documentSession, closeDocumentSession } from '$src/stores/documents'
+import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import App from './App.svelte'
 
 describe('App', () => {
@@ -11,6 +13,8 @@ describe('App', () => {
     showActivity('explorer')
     showEditorMode('visual')
     clearWorkspace()
+    closeDocumentSession()
+    $documentWorkspace.set({ conflict: null, recoveryOffers: [], saveOutcome: null, analysisError: null })
     document.documentElement.removeAttribute('data-brand')
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.removeAttribute('style')
@@ -33,6 +37,43 @@ describe('App', () => {
 
     expect(await screen.findByText(/no validated production authoring contract is bundled/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'New Workflow' })).toBeDisabled()
+  })
+
+  it('opens existing YAML without a production contract and reports analysis as blocking', async () => {
+    loadWorkspaceEntries('browser-workspace', 'Workspace', [
+      { relativePath: 'examples/hello.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    render(App)
+    await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
+
+    expect(await screen.findByText(/workflow analysis is unavailable/i)).toBeVisible()
+    expect(screen.getByText(/1 blocking/i)).toBeVisible()
+  })
+
+  it('renders a structured blocked save outcome for the active document', async () => {
+    loadWorkspaceEntries('browser-workspace', 'Workspace', [
+      { relativePath: 'examples/hello.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    render(App)
+    await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
+    await screen.findByText(/workflow analysis is unavailable/i)
+    const activePair = $documentSession.get().pair
+    expect(activePair).not.toBeNull()
+
+    $documentWorkspace.set({
+      conflict: null,
+      recoveryOffers: [],
+      analysisError: null,
+      saveOutcome: {
+        status: 'blocked',
+        pair: activePair!,
+        issues: [],
+        reason: 'analysis_missing_or_stale',
+      },
+    })
+    await tick()
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: analysis_missing_or_stale')
   })
 
   it('keeps the Explorer header and import affordance visible for an opened empty workspace', () => {
