@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.superpowers/
+coverage/
+dist/
+node_modules/
+playwright-report/
+src-tauri/target/
+target/
+test-results/
+*.log
+
