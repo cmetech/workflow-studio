@@ -1,0 +1,9 @@
+name: Minimal workflow
+description: A deliberately small valid DAG fixture.
+nodes:
+  - id: prepare
+    command: Prepare input
+  - id: finish
+    depends_on:
+      - prepare
+    prompt: Summarize $prepare.output

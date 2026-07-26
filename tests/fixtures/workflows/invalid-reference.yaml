@@ -1,0 +1,5 @@
+name: Invalid reference workflow
+description: A deliberately small missing-reference fixture.
+nodes:
+  - id: only
+    prompt: Read $missing.output

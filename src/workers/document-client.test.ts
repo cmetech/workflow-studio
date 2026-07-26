@@ -252,7 +252,7 @@ describe('document worker protocol', () => {
         companionRevision: 4,
         contractDigest,
         structurallyValid: false,
-        issues: [{ code: 'analysis_not_implemented', blocking: true }],
+        issues: [{ code: 'dag_rule_missing', blocking: true }],
       },
     })
   })

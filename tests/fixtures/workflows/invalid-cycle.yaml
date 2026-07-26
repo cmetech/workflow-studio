@@ -1,0 +1,11 @@
+name: Cyclic workflow
+description: A deliberately small dependency-cycle fixture.
+nodes:
+  - id: first
+    depends_on:
+      - second
+    command: First
+  - id: second
+    depends_on:
+      - first
+    prompt: Second
