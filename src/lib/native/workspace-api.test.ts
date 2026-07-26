@@ -62,13 +62,31 @@ describe('browser workspace bridge', () => {
     })
     expect(written.sha256).not.toBe(before.sha256)
 
-    await bridge.workspaceRenamePair({
+    const renamed = await bridge.workspaceRenamePair({
       sourceDefinition: 'examples/hello.yaml',
       destinationDefinition: 'examples/renamed.yaml',
     })
+    expect(renamed.results).toEqual([
+      expect.objectContaining({
+        relativePath: 'examples/hello.yaml',
+        destinationPath: 'examples/renamed.yaml',
+        status: 'moved',
+      }),
+      expect.objectContaining({
+        relativePath: 'examples/hello.hermes.yaml',
+        destinationPath: 'examples/renamed.hermes.yaml',
+        status: 'moved',
+      }),
+    ])
     expect((await bridge.workspaceScan()).map((entry) => entry.relativePath)).toContain('examples/renamed.hermes.yaml')
 
-    await bridge.workspaceTrashPaths(['examples/renamed.hermes.yaml'])
+    const trashed = await bridge.workspaceTrashPaths(['examples/renamed.hermes.yaml'])
+    expect(trashed.results).toEqual([
+      {
+        relativePath: 'examples/renamed.hermes.yaml',
+        status: 'trashed',
+      },
+    ])
     expect((await bridge.workspaceScan()).map((entry) => entry.relativePath)).not.toContain(
       'examples/renamed.hermes.yaml',
     )
@@ -80,6 +98,13 @@ describe('Tauri workspace bridge', () => {
     invoke.mockRejectedValueOnce({
       code: 'external_revision_conflict',
       message: 'The file changed on disk.',
+      pathResults: [
+        {
+          relativePath: 'flow.yaml',
+          status: 'failed',
+          errorCode: 'external_revision_conflict',
+        },
+      ],
     })
 
     await expect(
@@ -92,6 +117,7 @@ describe('Tauri workspace bridge', () => {
       name: 'NativeError',
       code: 'external_revision_conflict',
       message: 'The file changed on disk.',
+      pathResults: [expect.objectContaining({ relativePath: 'flow.yaml', status: 'failed' })],
     })
     expect(invoke).toHaveBeenCalledWith('workspace_write', {
       relativePath: 'flow.yaml',

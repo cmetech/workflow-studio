@@ -4617,6 +4617,7 @@ name = "workflow-studio"
 version = "0.1.0"
 dependencies = [
  "notify",
+ "same-file",
  "serde",
  "sha2",
  "tauri",

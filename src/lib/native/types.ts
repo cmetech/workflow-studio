@@ -8,11 +8,13 @@ export interface HostInfo {
 
 export class NativeError extends Error {
   readonly code: string
+  readonly pathResults: readonly PathOperationResult[]
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, pathResults: readonly PathOperationResult[] = []) {
     super(message)
     this.name = 'NativeError'
     this.code = code
+    this.pathResults = pathResults
   }
 }
 
@@ -50,10 +52,19 @@ export interface WorkspaceRenameRequest {
 
 export interface WorkspaceRenameResult {
   readonly paths: readonly string[]
+  readonly results: readonly PathOperationResult[]
 }
 
 export interface WorkspaceTrashResult {
-  readonly paths: readonly string[]
+  readonly results: readonly PathOperationResult[]
+}
+
+export interface PathOperationResult {
+  readonly relativePath: string
+  readonly destinationPath?: string
+  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'failed'
+  readonly errorCode?: string
+  readonly message?: string
 }
 
 export interface WorkspaceChangedEvent {

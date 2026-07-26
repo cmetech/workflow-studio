@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import {
   NativeError,
+  type PathOperationResult,
   type HostInfo,
   type WorkspaceNativeBridge,
   type WorkspaceChangedEvent,
@@ -30,9 +31,23 @@ function mapNativeError(error: unknown): NativeError {
     'message' in error &&
     typeof error.message === 'string'
   ) {
-    return new NativeError(error.code, error.message)
+    return new NativeError(error.code, error.message, readPathResults(error))
   }
   return new NativeError('native_command_failed', 'The native workspace command failed.')
+}
+
+function readPathResults(error: object): readonly PathOperationResult[] {
+  if (!('pathResults' in error) || !Array.isArray(error.pathResults)) return []
+  return error.pathResults.filter((value): value is PathOperationResult => {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      'relativePath' in value &&
+      typeof value.relativePath === 'string' &&
+      'status' in value &&
+      typeof value.status === 'string'
+    )
+  })
 }
 
 export const tauriBridge: WorkspaceNativeBridge = {

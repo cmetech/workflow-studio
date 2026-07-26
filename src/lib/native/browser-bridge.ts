@@ -77,17 +77,29 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       files.delete(sourceDefinition)
       files.set(destinationDefinition, source)
       const paths = [destinationDefinition]
+      const results = [
+        {
+          relativePath: sourceDefinition,
+          destinationPath: destinationDefinition,
+          status: 'moved' as const,
+        },
+      ]
       const companion = files.get(sourceCompanion)
       if (companion) {
         files.delete(sourceCompanion)
         files.set(destinationCompanion, companion)
         paths.push(destinationCompanion)
+        results.push({
+          relativePath: sourceCompanion,
+          destinationPath: destinationCompanion,
+          status: 'moved',
+        })
       }
       await emit({
         paths: [sourceDefinition, destinationDefinition, sourceCompanion, destinationCompanion],
         kind: 'rename',
       })
-      return { paths }
+      return { paths, results }
     },
     workspaceTrashPaths: async (relativePaths) => {
       if (relativePaths.length < 1 || relativePaths.length > 2) {
@@ -104,7 +116,12 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       }
       relativePaths.forEach((relativePath) => files.delete(relativePath))
       await emit({ paths: [...relativePaths], kind: 'remove' })
-      return { paths: [...relativePaths] }
+      return {
+        results: relativePaths.map((relativePath) => ({
+          relativePath,
+          status: 'trashed' as const,
+        })),
+      }
     },
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)
