@@ -182,6 +182,7 @@ describe('Tauri workspace bridge', () => {
       .mockResolvedValueOnce('/chosen')
       .mockResolvedValueOnce({ path: '/outside/flow.yaml', text: 'name: flow\n' })
       .mockResolvedValueOnce({ paths: ['/export/flow.yaml'] })
+      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce([
         { kind: 'yaml', path: '/outside/flow.yaml', rootPath: '/outside', relativePath: 'flow.yaml' },
       ])
@@ -195,6 +196,7 @@ describe('Tauri workspace bridge', () => {
       overwrite: false,
       files: [{ fileName: 'flow.yaml', text: 'name: flow\n' }],
     })
+    await tauriBridge.revokeExportGrant('/export')
     await tauriBridge.startupPaths()
     await tauriBridge.recentWorkspacesLoad()
     await tauriBridge.recentWorkspacesSave('[]')
@@ -206,9 +208,10 @@ describe('Tauri workspace bridge', () => {
       overwrite: false,
       files: [{ fileName: 'flow.yaml', text: 'name: flow\n' }],
     })
-    expect(invoke).toHaveBeenNthCalledWith(4, 'startup_paths', undefined)
-    expect(invoke).toHaveBeenNthCalledWith(5, 'recent_workspaces_load', undefined)
-    expect(invoke).toHaveBeenNthCalledWith(6, 'recent_workspaces_save', { content: '[]' })
+    expect(invoke).toHaveBeenNthCalledWith(4, 'external_revoke_export_grant', { directoryPath: '/export' })
+    expect(invoke).toHaveBeenNthCalledWith(5, 'startup_paths', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(6, 'recent_workspaces_load', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(7, 'recent_workspaces_save', { content: '[]' })
   })
 
   it('never infers behavior by parsing native error strings', async () => {

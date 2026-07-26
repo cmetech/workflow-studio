@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import type { AppCommand, CommandContext } from '$src/lib/commands/types'
 
   interface Props {
@@ -21,6 +21,7 @@
   ] as const
   const defaultContext: CommandContext = { surface: 'global', canMutate: true, hasSelection: true }
   let { commands, context = defaultContext, onRun, onClose, opener }: Props = $props()
+  let retainedOpener: HTMLElement | undefined
   const visibleCommands = $derived(
     workflowCommandOrder.flatMap((id) => {
       const command = commands.find((candidate) => candidate.id === id)
@@ -51,7 +52,12 @@
 
   function close(): void {
     onClose?.()
-    void tick().then(() => opener?.focus())
+    void tick().then(() => retainedOpener?.focus())
+  }
+
+  async function run(id: string): Promise<void> {
+    await onRun?.(id)
+    retainedOpener?.focus()
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -76,12 +82,15 @@
   }
 
   onMount(() => {
+    retainedOpener = opener
     const first = enabledIndexes()[0]
     if (first !== undefined) {
       focusedIndex = first
       menu.querySelector<HTMLButtonElement>(`[data-workflow-menu-index="${first}"]`)?.focus()
     }
   })
+
+  onDestroy(() => retainedOpener?.focus())
 </script>
 
 <div
@@ -99,7 +108,7 @@
       data-workflow-menu-index={index}
       tabindex={index === focusedIndex ? 0 : -1}
       disabled={!command.enabled(context)}
-      onclick={() => void onRun?.(command.id)}
+      onclick={() => void run(command.id)}
       onfocus={() => (focusedIndex = index)}>{command.label}</button
     >
   {/each}

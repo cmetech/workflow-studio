@@ -184,7 +184,8 @@ function workflowCommand(
     enabled: (context) =>
       context.hasSelection &&
       (!options.mutating || context.canMutate) &&
-      (id !== 'workflow.create-companion' || context.contractAvailable !== false),
+      (id !== 'workflow.create-companion' || (context.contractAvailable !== false && context.hasCompanion !== true)) &&
+      (id !== 'workflow.remove-companion' || context.hasCompanion !== false),
     run: (context) => requestWorkflowAction(id, context.targetEntryId ?? null),
   }
 }

@@ -127,4 +127,86 @@ describe('workspace action coordinator', () => {
     await coordinate({ kind: 'workflow.duplicate', revision: 1, targetEntryId: 'missing' })
     expect(duplicateWorkflow).not.toHaveBeenCalled()
   })
+
+  it('rejects export when awaited open did not replace a previously active document with the target pair', async () => {
+    const exportWorkflow = vi.fn(async () => undefined)
+    const priorPair = {
+      workflowId: 'workspace:prior.yaml',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'prior',
+        kind: 'definition' as const,
+        path: 'prior.yaml',
+        text: 'name: Prior\n',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: null,
+    }
+    const coordinate = createWorkspaceActionCoordinator({
+      actions: {
+        duplicateWorkflow: vi.fn(),
+        renameWorkflow: vi.fn(),
+        createCompanion: vi.fn(),
+        removeCompanion: vi.fn(),
+        exportWorkflow,
+        trashWorkflow: vi.fn(),
+      },
+      getEntry: () => entry,
+      getWorkspaceId: () => 'workspace',
+      read: vi.fn(),
+      open: vi.fn(async () => undefined),
+      refresh: vi.fn(),
+      promptRename: vi.fn(),
+      promptCompanion: vi.fn(),
+      confirm: vi.fn(),
+      currentDocument: () => ({
+        pair: priorPair,
+        analysis: null,
+        revision: {
+          workflowId: priorPair.workflowId,
+          pairGeneration: 0,
+          definitionRevision: 0,
+          companionRevision: null,
+          contractDigest: `sha256:${'1'.repeat(64)}`,
+        },
+      }),
+      confirmExportCollision: vi.fn(),
+    })
+
+    await expect(coordinate({ kind: 'workflow.export', revision: 1, targetEntryId: entry.id })).rejects.toMatchObject({
+      code: 'workspace_document_identity_mismatch',
+    })
+    expect(exportWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('propagates explicit contract-unavailable open failure and never exports the prior document', async () => {
+    const exportWorkflow = vi.fn(async () => undefined)
+    const openError = Object.assign(new Error('No contract'), { code: 'contract_unavailable' })
+    const coordinate = createWorkspaceActionCoordinator({
+      actions: {
+        duplicateWorkflow: vi.fn(),
+        renameWorkflow: vi.fn(),
+        createCompanion: vi.fn(),
+        removeCompanion: vi.fn(),
+        exportWorkflow,
+        trashWorkflow: vi.fn(),
+      },
+      getEntry: () => entry,
+      getWorkspaceId: () => 'workspace',
+      read: vi.fn(),
+      open: vi.fn(async () => Promise.reject(openError)),
+      refresh: vi.fn(),
+      promptRename: vi.fn(),
+      promptCompanion: vi.fn(),
+      confirm: vi.fn(),
+      currentDocument: () => ({ pair: null, analysis: null, revision: null }),
+      confirmExportCollision: vi.fn(),
+    })
+
+    await expect(coordinate({ kind: 'workflow.export', revision: 1, targetEntryId: entry.id })).rejects.toBe(openError)
+    expect(exportWorkflow).not.toHaveBeenCalled()
+  })
 })

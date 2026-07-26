@@ -8,6 +8,8 @@ export interface CommandContext {
   hasSelection: boolean
   targetEntryId?: string | null
   contractAvailable?: boolean
+  workflowProfile?: 'hermes-legacy' | 'archon-2026-07' | null
+  hasCompanion?: boolean
 }
 
 export interface AppCommand {

@@ -83,6 +83,7 @@ export const tauriBridge: WorkspaceNativeBridge = {
       overwrite,
       files: files.map((file) => ({ ...file })),
     }),
+  revokeExportGrant: (directoryPath) => invokeTyped<void>('external_revoke_export_grant', { directoryPath }),
   recentWorkspacesLoad: () => invokeTyped<string>('recent_workspaces_load'),
   recentWorkspacesSave: (content) => invokeTyped<void>('recent_workspaces_save', { content }),
   pathAvailable: (path) => invokeTyped<boolean>('recent_workspace_available', { path }),

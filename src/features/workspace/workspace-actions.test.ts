@@ -168,6 +168,7 @@ function createNative(): WorkspaceActionsNative {
     externalExportYamlPair: vi.fn(async ({ files }: { files: readonly ExportYamlFile[] }) => ({
       paths: files.map(({ fileName }) => `/exports/${fileName}`),
     })),
+    revokeExportGrant: vi.fn(async () => undefined),
     recentWorkspacesLoad: vi.fn(async () => ''),
     recentWorkspacesSave: vi.fn(async () => undefined),
     pathAvailable: vi.fn(async () => true),
@@ -177,7 +178,7 @@ function createNative(): WorkspaceActionsNative {
 
 describe('workspace actions', () => {
   let native: WorkspaceActionsNative
-  let activate = vi.fn<(entry: WorkflowPairEntry) => void>()
+  let activate = vi.fn<(entry: WorkflowPairEntry) => Promise<void>>()
   let openDraft = vi.fn<(pair: WorkflowPairText) => void>()
   let closeDocument = vi.fn<() => void>()
   let renameDocument = vi.fn<(from: string, to: string) => void>()
@@ -186,7 +187,7 @@ describe('workspace actions', () => {
 
   beforeEach(() => {
     native = createNative()
-    activate = vi.fn<(entry: WorkflowPairEntry) => void>()
+    activate = vi.fn<(entry: WorkflowPairEntry) => Promise<void>>(async () => undefined)
     openDraft = vi.fn<(pair: WorkflowPairText) => void>()
     closeDocument = vi.fn<() => void>()
     renameDocument = vi.fn<(from: string, to: string) => void>()
@@ -237,6 +238,48 @@ describe('workspace actions', () => {
     expect(workspace.get()).toMatchObject({ id: 'fast', displayName: 'fast' })
     expect(native.recentWorkspacesSave).toHaveBeenCalledTimes(1)
     expect(vi.mocked(native.recentWorkspacesSave).mock.calls[0]?.[0]).toContain('/fast')
+  })
+
+  it('awaits activation inside the root queue so a newer root cannot replace native scope mid-open', async () => {
+    let releaseActivation: (() => void) | undefined
+    let activationReleased = false
+    activate.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseActivation = () => {
+            activationReleased = true
+            resolve()
+          }
+        }),
+    )
+    vi.mocked(native.workspaceSetRoot).mockImplementation(async (rootPath) => {
+      if (rootPath === '/new') expect(activationReleased).toBe(true)
+      return { workspaceId: rootPath.slice(1), rootPath }
+    })
+    const api = actions()
+    const old = api.handleExternalPath('/old/flow.yaml', {
+      kind: 'yaml',
+      path: '/old/flow.yaml',
+      rootPath: '/old',
+      relativePath: 'flow.yaml',
+    })
+    await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(1))
+    const newer = api.handleExternalPath('/new/legacy.yaml', {
+      kind: 'yaml',
+      path: '/new/legacy.yaml',
+      rootPath: '/new',
+      relativePath: 'legacy.yaml',
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(native.workspaceSetRoot).not.toHaveBeenCalledWith('/new')
+    releaseActivation?.()
+    await Promise.all([old, newer])
+
+    expect(vi.mocked(native.workspaceSetRoot).mock.calls.map(([root]) => root)).toEqual(['/old', '/new'])
+    expect(activate).toHaveBeenLastCalledWith(expect.objectContaining({ definitionPath: 'legacy.yaml' }))
+    expect(workspace.get()).toMatchObject({ id: 'new', displayName: 'new' })
   })
 
   it('requires all contract-driven first-write values and creates valid YAML only once complete', async () => {
@@ -477,6 +520,70 @@ describe('workspace actions', () => {
         { fileName: 'flow.hermes.yaml', text: 'companion' },
       ],
     })
+  })
+
+  it('revokes the pending native export grant when collision confirmation is cancelled', async () => {
+    const pair: WorkflowPairText = {
+      workflowId: 'flow',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'flow:def',
+        kind: 'definition',
+        path: 'flow.yaml',
+        text: 'definition',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: null,
+    }
+    vi.mocked(native.externalExportYamlPair).mockRejectedValueOnce(
+      Object.assign(new Error('exists'), { code: 'destination_exists' }),
+    )
+
+    await expect(
+      actions().exportWorkflow({
+        pair,
+        analysis: validAnalysis(),
+        activeRevision: validAnalysis(),
+        confirmCollision: async () => false,
+      }),
+    ).resolves.toMatchObject({ status: 'cancelled' })
+    expect(native.revokeExportGrant).toHaveBeenCalledWith('/exports')
+    expect(native.externalExportYamlPair).toHaveBeenCalledTimes(1)
+  })
+
+  it('revokes the pending native export grant when confirmation UI aborts with an error', async () => {
+    const pair: WorkflowPairText = {
+      workflowId: 'flow',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'flow:def',
+        kind: 'definition',
+        path: 'flow.yaml',
+        text: 'definition',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: null,
+    }
+    const aborted = new Error('confirmation UI unmounted')
+    vi.mocked(native.externalExportYamlPair).mockRejectedValueOnce(
+      Object.assign(new Error('exists'), { code: 'destination_exists' }),
+    )
+
+    await expect(
+      actions().exportWorkflow({
+        pair,
+        analysis: validAnalysis(),
+        activeRevision: validAnalysis(),
+        confirmCollision: async () => Promise.reject(aborted),
+      }),
+    ).rejects.toBe(aborted)
+    expect(native.revokeExportGrant).toHaveBeenCalledWith('/exports')
   })
 
   it('accepts startup folders and YAML files through the same root and selection flow and rejects other arguments', async () => {

@@ -49,4 +49,38 @@ describe('WorkflowContextMenu', () => {
     expect(opener).toHaveFocus()
     opener.remove()
   })
+
+  it('restores the retained opener after a successful context action', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onRun = vi.fn(async () => undefined)
+    render(WorkflowContextMenu, {
+      commands: [command('workflow.duplicate', 'Duplicate Pair')],
+      opener,
+      onRun,
+    })
+    await tick()
+
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate Pair' }))
+    expect(onRun).toHaveBeenCalledWith('workflow.duplicate')
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
+
+  it('restores the retained opener when the parent unmounts the menu', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const view = render(WorkflowContextMenu, {
+      commands: [command('workflow.open', 'Open')],
+      opener,
+    })
+    await tick()
+    expect(screen.getByRole('menuitem', { name: 'Open' })).toHaveFocus()
+
+    view.unmount()
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
 })

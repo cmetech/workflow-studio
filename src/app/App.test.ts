@@ -3,12 +3,14 @@ import { tick } from 'svelte'
 import { afterEach, describe, expect, it } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { showActivity, showEditorMode } from '$src/stores/shell'
+import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import App from './App.svelte'
 
 describe('App', () => {
   afterEach(() => {
     showActivity('explorer')
     showEditorMode('visual')
+    clearWorkspace()
     document.documentElement.removeAttribute('data-brand')
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.removeAttribute('style')
@@ -31,6 +33,36 @@ describe('App', () => {
 
     expect(await screen.findByText(/no validated production authoring contract is bundled/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'New Workflow' })).toBeDisabled()
+  })
+
+  it('keeps the Explorer header and import affordance visible for an opened empty workspace', () => {
+    loadWorkspaceEntries('empty', 'Empty', [])
+    render(App)
+
+    expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
+      screen.getByRole('heading', { name: 'Explorer' }),
+    )
+    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled()
+    expect(screen.queryAllByRole('treeitem')).toHaveLength(0)
+  })
+
+  it('passes the selected read-only workflow context into context-menu enablement', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      {
+        relativePath: 'readonly.yaml',
+        kind: 'file',
+        size: 1,
+        modifiedAt: '0',
+        symlink: 'none',
+        readOnly: true,
+      },
+    ])
+    render(App)
+
+    await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /readonly.yaml, legacy workflow, read only/i }))
+    expect(screen.getByRole('menuitem', { name: 'Open' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Duplicate Pair' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Create Companion' })).toBeDisabled()
   })
 
   it('renders the approved five-region workbench and updates the active activity accessibly', async () => {

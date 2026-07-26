@@ -42,4 +42,20 @@ describe('ImportExportDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(2)
     opener.remove()
   })
+
+  it.each([
+    ['import', 'Import YAML Pair'],
+    ['export', 'Export YAML Pair'],
+  ] as const)('restores the retained opener after successful %s confirmation', async (mode, label) => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onConfirm = vi.fn(async () => undefined)
+    render(ImportExportDialog, { mode, onConfirm, opener })
+
+    await fireEvent.click(screen.getByRole('button', { name: label }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
 })

@@ -52,6 +52,16 @@ export interface WorkspaceActionCoordinatorDependencies {
   confirmExportCollision(paths: readonly string[]): Promise<boolean>
 }
 
+export class WorkspaceActionCoordinatorError extends Error {
+  constructor(
+    readonly code: 'workspace_document_identity_mismatch',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'WorkspaceActionCoordinatorError'
+  }
+}
+
 export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCoordinatorDependencies) {
   return async (intent: WorkspaceIntent): Promise<void> => {
     if (!intent.kind?.startsWith('workflow.') || !intent.targetEntryId) return
@@ -99,7 +109,22 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
       case 'workflow.export': {
         await dependencies.open(entry)
         const document = dependencies.currentDocument()
-        if (!document.pair || !document.revision) return
+        if (!document.pair || !document.revision) {
+          throw new WorkspaceActionCoordinatorError(
+            'workspace_document_identity_mismatch',
+            'Opening the selected workflow did not produce an exportable document session.',
+          )
+        }
+        if (
+          document.pair.workflowId !== entry.id ||
+          document.pair.definition.path !== entry.definitionPath ||
+          (document.pair.companion?.path ?? null) !== entry.companionPath
+        ) {
+          throw new WorkspaceActionCoordinatorError(
+            'workspace_document_identity_mismatch',
+            'The opened document does not match the exact workflow selected for export.',
+          )
+        }
         await dependencies.actions.exportWorkflow({
           pair: document.pair,
           analysis: document.analysis,

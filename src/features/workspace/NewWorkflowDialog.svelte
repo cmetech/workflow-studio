@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { requiredFirstNodeFields, type NewWorkflowInput } from './workspace-actions'
 
@@ -11,6 +11,7 @@
   }
 
   let { contracts, onCreate, onCancel, opener }: Props = $props()
+  let retainedOpener: HTMLElement | undefined
   let dialog = $state<HTMLDivElement>()
   let nameInput = $state<HTMLInputElement>()
   function initialContract(): AuthoringContract | undefined {
@@ -46,14 +47,15 @@
     firstNodeValues = {}
   }
 
-  function submit(): void {
+  async function submit(): Promise<void> {
     if (!complete || !descriptor) return
-    void onCreate?.({ name, description, profile, firstNodeId, firstNodeKind: descriptor.id, firstNodeValues })
+    await onCreate?.({ name, description, profile, firstNodeId, firstNodeKind: descriptor.id, firstNodeValues })
+    retainedOpener?.focus()
   }
 
   function cancel(): void {
     onCancel?.()
-    opener?.focus()
+    retainedOpener?.focus()
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -78,7 +80,11 @@
     }
   }
 
-  onMount(() => nameInput?.focus())
+  onMount(() => {
+    retainedOpener = opener
+    nameInput?.focus()
+  })
+  onDestroy(() => retainedOpener?.focus())
 </script>
 
 <div
@@ -125,7 +131,7 @@
     {/each}
     <footer>
       <button type="button" class="secondary" onclick={cancel}>Cancel</button>
-      <button type="button" disabled={!complete} onclick={submit}>Create Workflow</button>
+      <button type="button" disabled={!complete} onclick={() => void submit()}>Create Workflow</button>
     </footer>
   </div>
 </div>

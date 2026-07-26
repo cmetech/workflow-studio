@@ -151,6 +151,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     externalExportYamlPair: async () => {
       throw new NativeError('dialog_permission_required', 'Select an export folder in the native desktop app.')
     },
+    revokeExportGrant: async () => undefined,
     recentWorkspacesLoad: async () => recentWorkspaces,
     recentWorkspacesSave: async (content) => {
       recentWorkspaces = content

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
 
   interface Props {
     mode: 'import' | 'export'
@@ -12,6 +12,7 @@
   }
 
   let { mode, blockingIssues = [], paths = [], collision = false, onConfirm, onCancel, opener }: Props = $props()
+  let retainedOpener: HTMLElement | undefined
   let dialog = $state<HTMLDivElement>()
   let cancelButton = $state<HTMLButtonElement>()
   const buttonLabel = $derived(
@@ -20,7 +21,12 @@
 
   function cancel(): void {
     onCancel?.()
-    opener?.focus()
+    retainedOpener?.focus()
+  }
+
+  async function confirm(): Promise<void> {
+    await onConfirm?.()
+    retainedOpener?.focus()
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -43,7 +49,11 @@
     }
   }
 
-  onMount(() => cancelButton?.focus())
+  onMount(() => {
+    retainedOpener = opener
+    cancelButton?.focus()
+  })
+  onDestroy(() => retainedOpener?.focus())
 </script>
 
 <div
@@ -81,7 +91,7 @@
       {/if}
       <footer>
         <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Cancel</button>
-        <button type="button" onclick={() => void onConfirm?.()}>{buttonLabel}</button>
+        <button type="button" onclick={() => void confirm()}>{buttonLabel}</button>
       </footer>
     {/if}
   </div>

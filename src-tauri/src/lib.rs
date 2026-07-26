@@ -26,6 +26,7 @@ pub fn run() {
             workspace::dialogs::dialog_choose_export_directory,
             workspace::dialogs::external_read_yaml,
             workspace::dialogs::external_export_yaml_pair,
+            workspace::dialogs::external_revoke_export_grant,
             startup::startup_paths,
             startup::recent_workspaces_load,
             startup::recent_workspaces_save,

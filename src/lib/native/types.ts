@@ -107,6 +107,7 @@ export interface WorkspaceNativeBridge extends LayoutNativeBridge {
     readonly overwrite: boolean
     readonly files: readonly { readonly fileName: string; readonly text: string }[]
   }): Promise<{ readonly paths: readonly string[]; readonly results: readonly PathOperationResult[] }>
+  revokeExportGrant(directoryPath: string): Promise<void>
   recentWorkspacesLoad(): Promise<string>
   recentWorkspacesSave(content: string): Promise<void>
   pathAvailable(path: string): Promise<boolean>

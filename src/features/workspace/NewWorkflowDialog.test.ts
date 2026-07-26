@@ -67,4 +67,21 @@ describe('NewWorkflowDialog', () => {
     expect(opener).toHaveFocus()
     opener.remove()
   })
+
+  it('restores the retained opener after successful creation closes the modal', async () => {
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const onCreate = vi.fn(async () => undefined)
+    render(NewWorkflowDialog, { contracts: [contract], onCreate, opener })
+    await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Review' } })
+    await fireEvent.input(screen.getByLabelText('Description'), { target: { value: 'Review changes' } })
+    await fireEvent.input(screen.getByLabelText('First node ID'), { target: { value: 'review' } })
+    await fireEvent.input(screen.getByLabelText('Prompt text'), { target: { value: 'Inspect' } })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create Workflow' }))
+    expect(onCreate).toHaveBeenCalledTimes(1)
+    expect(opener).toHaveFocus()
+    opener.remove()
+  })
 })

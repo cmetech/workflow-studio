@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { executeCommand, listCommands } from '$src/lib/commands/registry'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
@@ -16,7 +16,7 @@
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore } from '$src/lib/layout/layout-store'
-  import { createWorkspaceActions } from '$src/features/workspace/workspace-actions'
+  import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
   import { openWorkflowPair } from '$src/features/documents/document-actions'
   import {
     $documentSession as documentSessionStore,
@@ -51,10 +51,18 @@
   const availableContracts: AuthoringContract[] = []
   let contracts = $state<readonly AuthoringContract[]>([])
   let contractsLoaded = $state(false)
+  const contractReadiness = loadBundledAuthoringContracts().then((loaded) => {
+    availableContracts.splice(0, availableContracts.length, ...loaded)
+    contracts = loaded
+    contractsLoaded = true
+    return loaded
+  })
   let recent = $state<readonly RecentWorkspace[]>([])
+  let workspaceError = $state<string | null>(null)
   let quickOpenVisible = $state(false)
   let contextEntryId = $state<string | null>(null)
   let contextOpener = $state<HTMLElement | undefined>()
+  let contextProfile = $state<'hermes-legacy' | 'archon-2026-07' | null>(null)
   let newDialogOpener = $state<HTMLElement | undefined>()
   let newDialogVisible = $state(false)
   let importDialogOpener = $state<HTMLElement | undefined>()
@@ -62,6 +70,7 @@
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
+    opener: HTMLElement | undefined
   } | null>(null)
   let handledIntent = 0
   const actions = createWorkspaceActions({
@@ -83,7 +92,7 @@
         },
         contract,
       ),
-    activate: (entry) => void openEntry(entry),
+    activate: openEntry,
     openDraft: (pair) => openDocumentSession(pair, draftDigest),
     closeDocument: closeDocumentSession,
     renameDocument: renameOpenDocumentPath,
@@ -99,8 +108,8 @@
     { id: 'yaml', label: 'YAML' },
   ]
 
-  function runCommand(id: string, context: CommandContext = globalContext): void {
-    void executeCommand(id, context)
+  function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
+    return executeCommand(id, context)
   }
 
   async function refreshRecent(): Promise<void> {
@@ -119,6 +128,7 @@
   }
 
   async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
+    if (contracts.length === 0) return undefined
     if (!entry.companionPath) return contracts.find(({ profile }) => profile === 'hermes-legacy')
     const companion = await native.workspaceRead(entry.companionPath)
     const parsed = parseWorkflowYaml(companion.text, {
@@ -134,8 +144,15 @@
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
+    await contractReadiness
     const contract = await activeContractFor(entry)
-    if (!contract) return
+    if (!contract) {
+      throw new WorkspaceActionError(
+        'contract_unavailable',
+        `No validated bundled contract is available for ${entry.definitionPath}.`,
+        [entry.definitionPath, ...(entry.companionPath ? [entry.companionPath] : [])],
+      )
+    }
     selectWorkspaceEntry(entry.id)
     let scheduledAnalysis: Promise<void> = Promise.resolve()
     await openWorkflowPair({
@@ -177,8 +194,27 @@
 
   function confirmExportCollision(paths: readonly string[]): Promise<boolean> {
     return new Promise((resolve) => {
-      exportConfirmation = { paths, resolve }
+      exportConfirmation = { paths, resolve, opener: contextOpener }
     })
+  }
+
+  function runWorkspaceOperation(operation: Promise<unknown>): void {
+    void operation.catch((error: unknown) => {
+      workspaceError = error instanceof Error ? error.message : 'The workspace action failed.'
+    })
+  }
+
+  function contextFor(entryId: string): CommandContext {
+    const entry = $workspace.entries.find((candidate) => candidate.id === entryId)
+    return {
+      surface: 'global',
+      canMutate: entry?.readOnly === false,
+      hasSelection: Boolean(entry),
+      targetEntryId: entryId,
+      contractAvailable: contextProfile !== null && contracts.some(({ profile }) => profile === contextProfile),
+      workflowProfile: contextProfile,
+      hasCompanion: entry?.kind === 'workflow' && entry.companionPath !== null,
+    }
   }
 
   const coordinateWorkspaceAction = createWorkspaceActionCoordinator({
@@ -202,28 +238,37 @@
     const intent = $workspaceIntent
     if (intent.revision === 0 || intent.revision === handledIntent) return
     handledIntent = intent.revision
-    if (intent.kind === 'open-folder') void openWorkspace()
+    if (intent.kind === 'open-folder') runWorkspaceOperation(openWorkspace())
     else if (intent.kind === 'quick-open') quickOpenVisible = true
-    else if (intent.kind?.startsWith('workflow.')) void coordinateWorkspaceAction(intent)
+    else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
   })
 
   onMount(() => {
-    void loadBundledAuthoringContracts().then((loaded) => {
-      availableContracts.splice(0, availableContracts.length, ...loaded)
-      contracts = loaded
-      contractsLoaded = true
-    })
-    void refreshRecent()
-    void actions.handleStartupPaths()
-    if (!('__TAURI_INTERNALS__' in window)) return
     let dispose: (() => void) | undefined
-    void getCurrentWindow()
-      .onDragDropEvent((event) => {
+    let disposed = false
+    void (async () => {
+      await contractReadiness
+      if (disposed) return
+      await refreshRecent()
+      try {
+        await actions.handleStartupPaths()
+      } catch (error: unknown) {
+        workspaceError = error instanceof Error ? error.message : 'The startup workflow could not be opened.'
+      }
+      if (disposed || !('__TAURI_INTERNALS__' in window)) return
+      dispose = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type !== 'drop') return
-        for (const path of event.payload.paths) void actions.handleExternalPath(path)
+        for (const path of event.payload.paths) runWorkspaceOperation(actions.handleExternalPath(path))
       })
-      .then((unlisten) => (dispose = unlisten))
-    return () => dispose?.()
+    })()
+    return () => {
+      disposed = true
+      dispose?.()
+    }
+  })
+
+  onDestroy(() => {
+    exportConfirmation?.resolve(false)
   })
 </script>
 
@@ -258,17 +303,28 @@
       No validated production authoring contract is bundled. Contract-dependent creation and import are disabled.
     </p>
   {/if}
+  {#if workspaceError}
+    <p class="workspace-error" role="alert">{workspaceError}</p>
+  {/if}
 
   <div class="workbench">
     <ActivityRail />
     <aside class="panel left-panel" aria-label="Workspace panel">
-      {#if $activeActivity === 'explorer' && $workspace.tree.length > 0}
+      {#if $activeActivity === 'explorer' && $workspace.id !== null}
         <Explorer
           contractAvailable={contracts.length > 0}
-          onOpen={(entry) => entry.kind === 'workflow' && void openEntry(entry)}
+          onOpen={(entry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry))}
           onContext={(entry) => {
             contextEntryId = entry.id
             contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+            contextProfile = entry.state === 'legacy' ? 'hermes-legacy' : null
+            if (entry.kind === 'workflow' && entry.companionPath) {
+              void contractReadiness
+                .then(() => activeContractFor(entry))
+                .then((contract) => {
+                  if (contextEntryId === entry.id) contextProfile = contract?.profile ?? null
+                })
+            }
           }}
           onNew={(opener) => {
             newDialogOpener = opener
@@ -296,7 +352,11 @@
       </div>
       <section class="editor-region" aria-label="Workflow editor">
         {#if $workspace.id === null}
-          <OpenWorkspace {recent} onOpen={openWorkspace} onDropPath={(path) => actions.handleExternalPath(path)} />
+          <OpenWorkspace
+            {recent}
+            onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
+            onDropPath={(path) => runWorkspaceOperation(actions.handleExternalPath(path))}
+          />
         {/if}
       </section>
     </section>
@@ -309,7 +369,7 @@
       entries={$workspace.entries}
       onOpen={(entry) => {
         quickOpenVisible = false
-        if (entry.kind === 'workflow') void openEntry(entry)
+        if (entry.kind === 'workflow') runWorkspaceOperation(openEntry(entry))
       }}
       onClose={() => (quickOpenVisible = false)}
     />
@@ -319,17 +379,12 @@
       <WorkflowContextMenu
         commands={listCommands()}
         opener={contextOpener}
-        onRun={(id) => {
-          const targetEntryId = contextEntryId
-          const entry = $workspace.entries.find(({ id }) => id === targetEntryId)
+        context={contextFor(contextEntryId)}
+        onRun={async (id) => {
+          const targetEntryId = contextEntryId!
+          const context = contextFor(targetEntryId)
           contextEntryId = null
-          runCommand(id, {
-            surface: 'global',
-            canMutate: entry?.readOnly === false,
-            hasSelection: Boolean(entry),
-            targetEntryId,
-            contractAvailable: contracts.length > 0,
-          })
+          await runCommand(id, context)
         }}
         onClose={() => (contextEntryId = null)}
       />
@@ -364,6 +419,7 @@
       mode="export"
       paths={exportConfirmation.paths}
       collision={true}
+      opener={exportConfirmation.opener}
       onCancel={() => {
         exportConfirmation?.resolve(false)
         exportConfirmation = null
@@ -391,7 +447,8 @@
     background: var(--color-background);
   }
 
-  .contract-unavailable {
+  .contract-unavailable,
+  .workspace-error {
     position: fixed;
     z-index: 45;
     right: 1rem;
@@ -402,6 +459,10 @@
     border: 1px solid var(--color-warning);
     color: var(--color-text);
     background: var(--color-surface);
+  }
+
+  .workspace-error {
+    border-color: var(--color-danger);
   }
 
   .titlebar {

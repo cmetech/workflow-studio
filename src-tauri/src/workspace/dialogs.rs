@@ -117,6 +117,14 @@ pub fn external_export_yaml_pair(
     export_granted_yaml_pair(Path::new(&directory_path), overwrite, &files, &grants)
 }
 
+#[tauri::command]
+pub fn external_revoke_export_grant(
+    directory_path: String,
+    grants: State<'_, DialogGrantState>,
+) -> WorkspaceResult<()> {
+    revoke_export_grant(Path::new(&directory_path), &grants)
+}
+
 fn chosen_directory(app: &AppHandle) -> WorkspaceResult<Option<String>> {
     let Some(selected) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
@@ -306,6 +314,21 @@ fn grant_export_directory(path: &Path, grants: &DialogGrantState) -> WorkspaceRe
             },
         );
     Ok(())
+}
+
+fn revoke_export_grant(directory: &Path, grants: &DialogGrantState) -> WorkspaceResult<()> {
+    grants
+        .exports
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .remove(directory)
+        .map(|_| ())
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "dialog_permission_required",
+                "No exact pending export permission exists for this folder.",
+            )
+        })
 }
 
 fn export_granted_yaml_pair(
@@ -652,8 +675,8 @@ mod tests {
 
     use super::{
         export_granted_yaml_pair, export_granted_yaml_pair_with_commit_hook,
-        grant_export_directory, grant_import_pair, read_granted_yaml, DialogGrantState,
-        ExportYamlFile,
+        grant_export_directory, grant_import_pair, read_granted_yaml, revoke_export_grant,
+        DialogGrantState, ExportYamlFile,
     };
 
     #[test]
@@ -788,6 +811,33 @@ mod tests {
         );
         assert_eq!(
             export_granted_yaml_pair(&canonical, true, &first, &grants)
+                .unwrap_err()
+                .code,
+            "dialog_permission_required"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_collision_revokes_the_pending_exact_export_grant() {
+        let root = tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        fs::write(root.path().join("flow.yaml"), "old: true\n").unwrap();
+        let grants = DialogGrantState::default();
+        grant_export_directory(&canonical, &grants).unwrap();
+        let pair = [ExportYamlFile {
+            file_name: "flow.yaml".into(),
+            text: "name: flow\n".into(),
+        }];
+
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, false, &pair, &grants)
+                .unwrap_err()
+                .code,
+            "destination_exists"
+        );
+        revoke_export_grant(&canonical, &grants).unwrap();
+        assert_eq!(
+            export_granted_yaml_pair(&canonical, true, &pair, &grants)
                 .unwrap_err()
                 .code,
             "dialog_permission_required"

@@ -57,6 +57,7 @@ export interface WorkspaceActionsNative {
     readonly overwrite: boolean
     readonly files: readonly ExportYamlFile[]
   }): Promise<{ readonly paths: readonly string[]; readonly results?: readonly unknown[] }>
+  revokeExportGrant(directoryPath: string): Promise<void>
   recentWorkspacesLoad(): Promise<string>
   recentWorkspacesSave(content: string): Promise<void>
   pathAvailable(path: string): Promise<boolean>
@@ -71,7 +72,7 @@ export interface WorkspaceActionsDependencies {
     companionText: string | null
     contract: AuthoringContract
   }) => Promise<DocumentAnalysis>
-  readonly activate: (entry: WorkflowPairEntry) => void
+  readonly activate: (entry: WorkflowPairEntry) => Promise<void>
   readonly openDraft: (pair: WorkflowPairText) => void
   readonly closeDocument: () => void
   readonly renameDocument: (from: string, to: string) => void
@@ -111,7 +112,11 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   let rootGeneration = 0
   let rootQueue: Promise<void> = Promise.resolve()
 
-  async function selectRoot(rootPath: string, generation: number): Promise<WorkspaceRootInfo | null> {
+  async function selectRoot(
+    rootPath: string,
+    generation: number,
+    relativePath?: string,
+  ): Promise<WorkspaceRootInfo | null> {
     let result: WorkspaceRootInfo | null = null
     const operation = rootQueue.then(async () => {
       if (generation !== rootGeneration) return
@@ -120,6 +125,26 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       const files = await dependencies.native.workspaceScan()
       if (generation !== rootGeneration) return
       loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files)
+      if (relativePath) {
+        const entries = pairWorkflowFiles(selected.workspaceId, files)
+        const target = entries.find(
+          (candidate): candidate is WorkflowPairEntry =>
+            candidate.kind === 'workflow' &&
+            (candidate.definitionPath === relativePath || candidate.companionPath === relativePath),
+        )
+        if (target) {
+          if (generation !== rootGeneration) return
+          selectWorkspaceEntry(target.id)
+          await dependencies.activate(target)
+          if (generation !== rootGeneration) return
+        } else {
+          const orphan = entries.find(
+            (candidate) => candidate.kind === 'orphan-companion' && candidate.companionPath === relativePath,
+          )
+          if (orphan) selectWorkspaceEntry(orphan.id)
+        }
+      }
+      if (generation !== rootGeneration) return
       await recentWorkspaces.record(selected.rootPath, now())
       if (generation === rootGeneration) result = selected
     })
@@ -360,7 +385,17 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     } catch (error: unknown) {
       if (!hasCode(error, 'destination_exists')) throw error
       const paths = files.map(({ fileName }) => joinPath(directoryPath, fileName))
-      if (!(await input.confirmCollision(paths))) return { status: 'cancelled' as const }
+      let confirmed: boolean
+      try {
+        confirmed = await input.confirmCollision(paths)
+      } catch (confirmationError: unknown) {
+        await dependencies.native.revokeExportGrant(directoryPath)
+        throw confirmationError
+      }
+      if (!confirmed) {
+        await dependencies.native.revokeExportGrant(directoryPath)
+        return { status: 'cancelled' as const }
+      }
       const result = await dependencies.native.externalExportYamlPair({ directoryPath, overwrite: true, files })
       return { status: 'exported' as const, paths: result.paths, results: result.results ?? [] }
     }
@@ -381,23 +416,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     const generation = ++rootGeneration
     const rootPath = classified?.rootPath ?? parentPath(path)
     const relativePath = classified?.relativePath ?? fileName(path)
-    const selected = await selectRoot(rootPath, generation)
-    if (selected === null || generation !== rootGeneration) return
-    const entries = pairWorkflowFiles(selected.workspaceId, await dependencies.native.workspaceScan())
-    const target = entries.find(
-      (candidate): candidate is WorkflowPairEntry =>
-        candidate.kind === 'workflow' &&
-        (candidate.definitionPath === relativePath || candidate.companionPath === relativePath),
-    )
-    if (target) {
-      selectWorkspaceEntry(target.id)
-      dependencies.activate(target)
-      return
-    }
-    const orphan = entries.find(
-      (candidate) => candidate.kind === 'orphan-companion' && candidate.companionPath === relativePath,
-    )
-    if (orphan) selectWorkspaceEntry(orphan.id)
+    await selectRoot(rootPath, generation, relativePath)
   }
 
   async function writeExactPair(writes: readonly { path: string; text: string }[]) {
