@@ -136,6 +136,54 @@ describe('EditorModes', () => {
     expect(companion.state.doc.toString()).toBe(pair.companion!.text)
   })
 
+  it('keeps a hidden definition visual undo isolated from companion history without feedback', async () => {
+    showYamlDocument('companion')
+    const onTextChange = vi.fn()
+    const companionText = 'language_compatibility: archon-2026-07\n'
+    const { component, rerender } = render(EditorModes, {
+      pair,
+      revision,
+      analysis: null,
+      projection: null,
+      mode: 'yaml',
+      syncOrigins: { definition: 'user', companion: 'user' },
+      onTextChange,
+    })
+    const definition = component.getView('definition')
+    const companion = component.getView('companion')
+    definition.dispatch({ changes: { from: 6, to: 10, insert: 'Release' } })
+    companion.dispatch({ changes: { from: 24, to: 37, insert: 'archon-2026-07' } })
+    onTextChange.mockClear()
+
+    await rerender({
+      pair: {
+        ...pair,
+        definition: { ...pair.definition, text: 'name: Deploy\n', revision: 2 },
+        companion: { ...pair.companion!, text: companionText, revision: 1 },
+      },
+      revision: { ...revision, definitionRevision: 2, companionRevision: 1 },
+      analysis: null,
+      projection: null,
+      mode: 'yaml',
+      syncOrigins: { definition: 'visual', companion: 'user' },
+      onTextChange,
+    })
+    await tick()
+
+    expect(onTextChange).not.toHaveBeenCalled()
+    expect(undo(definition)).toBe(true)
+    expect(definition.state.doc.toString()).toBe('name: Release\n')
+    expect(companion.state.doc.toString()).toBe(companionText)
+    expect(onTextChange).toHaveBeenCalledOnce()
+    expect(onTextChange).toHaveBeenLastCalledWith('definition', 'name: Release\n')
+
+    expect(undo(companion)).toBe(true)
+    expect(companion.state.doc.toString()).toBe(pair.companion!.text)
+    expect(definition.state.doc.toString()).toBe('name: Release\n')
+    expect(onTextChange).toHaveBeenCalledTimes(2)
+    expect(onTextChange).toHaveBeenLastCalledWith('companion', pair.companion!.text)
+  })
+
   it('keeps definition and companion text, revisions, and histories independent', async () => {
     const onTextChange = vi.fn()
     const { component } = render(EditorModes, {

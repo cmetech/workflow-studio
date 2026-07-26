@@ -1,5 +1,5 @@
 import { render } from '@testing-library/svelte'
-import { insertNewlineAndIndent, undo } from '@codemirror/commands'
+import { insertNewlineAndIndent, redo, undo } from '@codemirror/commands'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { DocumentAnalysis, DocumentRevision } from '$src/lib/documents/types'
@@ -51,7 +51,7 @@ describe('YamlEditor', () => {
 
   afterEach(() => clearCanvasState())
 
-  it('maps visual changes through user history without echoing or producing hybrid YAML', async () => {
+  it('records an overlapping visual edit as its own exact undo step without echoing the initial dispatch', async () => {
     const onTextChange = vi.fn()
     const { component, rerender } = render(YamlEditor, {
       document: 'definition',
@@ -70,8 +70,8 @@ describe('YamlEditor', () => {
 
     await rerender({
       document: 'definition',
-      text: 'name: Release\ndescription: Visual\n',
-      revision: { ...revision, definitionRevision: 1 },
+      text: 'name: Deploy\n',
+      revision: { ...revision, definitionRevision: 2 },
       analysis: null,
       nodes: [],
       syncOrigin: 'visual',
@@ -80,10 +80,64 @@ describe('YamlEditor', () => {
     await tick()
 
     expect(component.getView()).toBe(view)
-    expect(view.state.doc.toString()).toBe('name: Release\ndescription: Visual\n')
+    expect(view.state.doc.toString()).toBe('name: Deploy\n')
     expect(onTextChange).toHaveBeenCalledOnce()
     expect(undo(view)).toBe(true)
-    expect(view.state.doc.toString()).toBe('name: Flow\ndescription: Visual\n')
+    expect(view.state.doc.toString()).toBe('name: Release\n')
+    expect(onTextChange).toHaveBeenLastCalledWith('name: Release\n')
+    expect(onTextChange).toHaveBeenCalledTimes(2)
+    expect(undo(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe('name: Flow\n')
+    expect(onTextChange).toHaveBeenLastCalledWith('name: Flow\n')
+    expect(onTextChange).toHaveBeenCalledTimes(3)
+    expect(redo(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe('name: Release\n')
+    expect(onTextChange).toHaveBeenLastCalledWith('name: Release\n')
+    expect(redo(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe('name: Deploy\n')
+    expect(onTextChange).toHaveBeenLastCalledWith('name: Deploy\n')
+    expect(onTextChange).toHaveBeenCalledTimes(5)
+  })
+
+  it('records a multi-span form edit as one exact undo step while the editor is hidden', async () => {
+    const onTextChange = vi.fn()
+    const original = 'name: Flow\ndescription: Draft\nnodes:\n  - id: collect\n    command: old\n'
+    const user = 'name: Release\ndescription: Draft\nnodes:\n  - id: collect\n    command: old\n'
+    const form = 'name: Deploy\ndescription: Ready\nnodes:\n  - id: collect\n    command: new\n'
+    const { component, rerender } = render(YamlEditor, {
+      document: 'definition',
+      text: original,
+      revision,
+      analysis: null,
+      nodes: [],
+      active: false,
+      syncOrigin: 'user',
+      onTextChange,
+    })
+    const view = component.getView()
+    view.dispatch({ changes: { from: 6, to: 10, insert: 'Release' } })
+    expect(view.state.doc.toString()).toBe(user)
+
+    await rerender({
+      document: 'definition',
+      text: form,
+      revision: { ...revision, definitionRevision: 2 },
+      analysis: null,
+      nodes: [],
+      active: false,
+      syncOrigin: 'form',
+      onTextChange,
+    })
+    await tick()
+
+    expect(view.state.doc.toString()).toBe(form)
+    expect(onTextChange).toHaveBeenCalledTimes(1)
+    expect(undo(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe(user)
+    expect(onTextChange).toHaveBeenLastCalledWith(user)
+    expect(undo(view)).toBe(true)
+    expect(view.state.doc.toString()).toBe(original)
+    expect(onTextChange).toHaveBeenLastCalledWith(original)
   })
 
   it('resets only this tab history for disk, recovery, and unknown whole-document replacements', async () => {

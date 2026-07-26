@@ -1,15 +1,20 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
+import { undo } from '@codemirror/commands'
+import { EditorView } from '@codemirror/view'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
+import { editDocumentText } from '$src/lib/documents/revisions'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import {
   $documentSession,
+  $documentSyncOrigins,
   $problemFocus,
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
+  updateDocumentSession,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
@@ -421,6 +426,73 @@ describe('App', () => {
     expect(screen.getByRole('tab', { name: 'Definition YAML' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('textbox', { name: 'Definition YAML' })).toHaveFocus()
     expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false })
+  })
+
+  it('publishes each unified visual undo once through the authoritative document boundary', async () => {
+    const digest = `sha256:${'1'.repeat(64)}` as const
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      digest,
+    )
+    showEditorMode('yaml')
+    render(App)
+    await tick()
+    const view = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'Definition YAML' }))!
+    view.dispatch({ changes: { from: 6, to: 10, insert: 'Release' } })
+    const release = $documentSession.get().pair!
+    expect(release.definition.text).toBe('name: Release\n')
+
+    const deploy = editDocumentText(release, 'definition', 'name: Deploy\n')
+    updateDocumentSession(deploy, digest, 'visual')
+    await tick()
+    expect(view.state.doc.toString()).toBe('name: Deploy\n')
+    expect($documentSession.get().pair).toBe(deploy)
+
+    const published: Array<{ text: string; revision: number }> = []
+    const analyzed: number[] = []
+    let observedPair = $documentSession.get().pair
+    let observedAnalysis = $documentSession.get().analysis
+    const unsubscribe = $documentSession.subscribe((session) => {
+      if (session.pair && session.pair !== observedPair) {
+        published.push({ text: session.pair.definition.text, revision: session.pair.definition.revision })
+        observedPair = session.pair
+      }
+      if (session.analysis !== observedAnalysis) {
+        if (session.analysis) analyzed.push(session.analysis.definitionRevision)
+        observedAnalysis = session.analysis
+      }
+    })
+
+    expect(undo(view)).toBe(true)
+    expect(published).toEqual([{ text: 'name: Release\n', revision: 3 }])
+    expect(analyzed).toEqual([3])
+    expect($documentSession.get().pair?.definition).toMatchObject({ text: 'name: Release\n', revision: 3 })
+    expect($documentSyncOrigins.get().definition).toEqual({ revision: 3, origin: 'user' })
+
+    published.length = 0
+    analyzed.length = 0
+    expect(undo(view)).toBe(true)
+    expect(published).toEqual([{ text: 'name: Flow\n', revision: 4 }])
+    expect(analyzed).toEqual([4])
+    expect($documentSession.get().pair?.definition).toMatchObject({ text: 'name: Flow\n', revision: 4 })
+    unsubscribe()
   })
 
   it('applies the selected light theme across the shell chrome', () => {

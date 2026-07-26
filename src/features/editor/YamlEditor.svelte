@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
+  import { isolateHistory } from '@codemirror/commands'
   import { setDiagnostics } from '@codemirror/lint'
   import { Compartment, EditorState, Transaction } from '@codemirror/state'
   import { EditorView, type ViewUpdate } from '@codemirror/view'
@@ -139,7 +140,7 @@
       if (external.kind === 'mapped') {
         view.dispatch({
           changes: external.change,
-          annotations: [externalEditorUpdate.of(true), Transaction.addToHistory.of(false)],
+          annotations: [externalEditorUpdate.of(true), Transaction.addToHistory.of(true), isolateHistory.of('full')],
         })
       } else {
         resettingExternalState = true
