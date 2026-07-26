@@ -1,11 +1,12 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { parse, parseDocument } from 'yaml'
+import { parse } from 'yaml'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import aliases from '../../../tests/fixtures/yaml/patch-golden/aliases.yaml?raw'
 import ambiguousNodesAlias from '../../../tests/fixtures/yaml/patch-golden/ambiguous-nodes-alias.yaml?raw'
 import richDefinition from '../../../tests/fixtures/yaml/patch-golden/rich-definition.txt?raw'
 import { patchWorkflowDocument } from './patch-document'
+import { parseWorkflowYaml } from './parse-document'
 
 function field(path: string): FieldDescriptor {
   return {
@@ -221,17 +222,72 @@ describe('source-preserving YAML patches', () => {
     if (!result.ok) return
     const aliasStart = aliases.indexOf('*defaults', aliases.indexOf('inherited:'))
     expectExactPrefixAndSuffix(aliases, result.text, aliasStart, aliasStart + '*defaults'.length)
-    expect(result.text).toContain('    <<: *defaults\n')
     expect(result.text).toContain('    timeout: 45\n')
-    expect(result.text).toContain('defaults: &defaults\n  timeout: 30\n')
+    expect(result.text).not.toContain('<<:')
+    expect(result.text).toContain('defaults: &defaults\n  timeout: 30\n  nested:\n    enabled: true\n    label: keep\n')
     expect(result.text).toContain('  unchanged: *defaults\n')
-    expect(parseDocument(result.text, { merge: true }).toJS().metadata.inherited.timeout).toBe(45)
+    expect(expectProductionValue(result.text)).toMatchObject({
+      metadata: { inherited: { timeout: 45, nested: { enabled: true, label: 'keep' } } },
+    })
+  })
+
+  it('materializes an alias mapping before applying a nested set under production YAML semantics', () => {
+    const result = patchWorkflowDocument(
+      aliases,
+      {
+        type: 'set-field',
+        document: 'definition',
+        path: ['metadata', 'inherited', 'nested', 'enabled'],
+        value: false,
+      },
+      mutationContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    expect(expectProductionValue(result.text)).toMatchObject({
+      metadata: { inherited: { timeout: 30, nested: { enabled: false, label: 'keep' } } },
+    })
+    expect(result.text).not.toContain('<<:')
+    expect(result.text).toContain('defaults: &defaults\n  timeout: 30\n  nested:\n    enabled: true\n    label: keep\n')
+    expect(result.text).toContain('  unchanged: *defaults\n')
+  })
+
+  it('materializes an alias mapping before applying a nested delete under production YAML semantics', () => {
+    const result = patchWorkflowDocument(
+      aliases,
+      {
+        type: 'delete-field',
+        document: 'definition',
+        path: ['metadata', 'inherited', 'nested', 'enabled'],
+      },
+      mutationContract,
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    expect(expectProductionValue(result.text)).toMatchObject({
+      metadata: { inherited: { timeout: 30, nested: { label: 'keep' } } },
+    })
+    expect(result.text).not.toContain('<<:')
+    expect(result.text).toContain('defaults: &defaults\n  timeout: 30\n  nested:\n    enabled: true\n    label: keep\n')
+    expect(result.text).toContain('  unchanged: *defaults\n')
   })
 
   it('refuses graph mutations when the node sequence is alias-derived and ambiguous', () => {
     const result = patchWorkflowDocument(
       ambiguousNodesAlias,
       { type: 'rename-node', from: 'prepare', to: 'setup' },
+      mutationContract,
+    )
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: 'mutation_ambiguous_alias' }))
+  })
+
+  it('continues refusing generic field edits that cross a graph-shaping alias', () => {
+    const result = patchWorkflowDocument(
+      ambiguousNodesAlias,
+      { type: 'set-field', document: 'definition', path: ['nodes', 0, 'command'], value: 'changed' },
       mutationContract,
     )
 
@@ -297,3 +353,13 @@ describe('source-preserving YAML patches', () => {
     )
   })
 })
+
+function expectProductionValue(source: string): Record<string, unknown> {
+  const parsed = parseWorkflowYaml(source, {
+    document: 'definition',
+    maxBytes: mutationContract.limits.max_document_bytes,
+  })
+  expect(parsed.issues).toEqual([])
+  expect(parsed.parsed).not.toBeNull()
+  return (parsed.parsed?.document.toJS({ maxAliasCount: 1_000 }) ?? {}) as Record<string, unknown>
+}

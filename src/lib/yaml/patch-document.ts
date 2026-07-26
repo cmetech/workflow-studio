@@ -1,4 +1,14 @@
-import { isAlias, isMap, isScalar, isSeq, stringify, type Document, type Scalar, YAMLMap, type YAMLSeq } from 'yaml'
+import {
+  isAlias,
+  isMap,
+  isScalar,
+  isSeq,
+  stringify,
+  type Document,
+  type Scalar,
+  type YAMLMap,
+  type YAMLSeq,
+} from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { DocumentKind } from '$src/lib/documents/types'
 import { parseWorkflowYaml } from './parse-document'
@@ -63,8 +73,13 @@ export function patchWorkflowDocument(
   if (mutation.type === 'set-field' || mutation.type === 'delete-field') {
     const aliasCrossing = aliasCrossingPath(document, mutation.path)
     if (aliasCrossing) {
-      if (mutation.type !== 'set-field' || aliasCrossing.relativePath.length === 0) return ambiguousAlias()
-      return patchAliasMappingOverride(source, document, aliasCrossing, mutation.value, contract, documentKind)
+      if (
+        aliasCrossing.relativePath.length === 0 ||
+        (documentKind === 'definition' && graphMutationPath(mutation.path, contract))
+      ) {
+        return ambiguousAlias()
+      }
+      return patchMaterializedAliasMapping(source, document, aliasCrossing, mutation, contract, documentKind)
     }
     if (!document.hasIn(mutation.path)) {
       if (mutation.type === 'set-field') {
@@ -556,28 +571,58 @@ function aliasCrossingPath(document: Document.Parsed, path: readonly (string | n
   return null
 }
 
-function patchAliasMappingOverride(
+function patchMaterializedAliasMapping(
   source: string,
   document: Document.Parsed,
   crossing: AliasCrossing,
-  value: unknown,
+  mutation: Extract<WorkflowMutation, { type: 'set-field' | 'delete-field' }>,
   contract: AuthoringContract,
   documentKind: DocumentKind,
 ): PatchWorkflowDocumentResult {
   const working = document.clone() as Document.Parsed
   const alias = working.getIn(crossing.aliasPath, true)
   if (!isAlias(alias) || !isMap(alias.resolve(working))) return ambiguousAlias()
-
-  const override = new YAMLMap(working.schema)
-  override.add(working.createPair('<<', alias))
-  override.setIn(crossing.relativePath, value)
-  working.setIn(crossing.aliasPath, override)
+  // Production YAML 1.2 does not enable merge keys. Resolve through the same
+  // Document API used by normal parsing, then write an independent local map.
+  let resolvedValue: unknown
+  try {
+    resolvedValue = valueAtPath(working.toJS({ maxAliasCount: 1_000 }), crossing.aliasPath)
+  } catch {
+    return ambiguousAlias()
+  }
+  if (!isRecord(resolvedValue)) return ambiguousAlias()
+  const localMapping = working.createNode(resolvedValue)
+  if (!isMap(localMapping)) return ambiguousAlias()
+  if (mutation.type === 'set-field') {
+    localMapping.setIn(crossing.relativePath, mutation.value)
+  } else {
+    if (!localMapping.hasIn(crossing.relativePath)) {
+      return { ok: false, code: 'mutation_path_missing', message: 'The requested YAML path does not exist.' }
+    }
+    localMapping.deleteIn(crossing.relativePath)
+  }
+  working.setIn(crossing.aliasPath, localMapping)
   const edits = clonedPathEdits(source, document, working, [crossing.aliasPath], contract, documentKind)
   const edit = edits?.[0]
   if (!edit) return ambiguousAlias()
   const indentation = `${source.slice(lineStart(source, edit.start), edit.start).match(/^\s*/)?.[0] ?? ''}  `
   const replacement = reindentCollection(edit.text, indentation)
   return verifiedPatch(applySourceEdits(source, [{ ...edit, text: `\n${replacement}` }]), contract, documentKind)
+}
+
+function graphMutationPath(path: readonly (string | number)[], contract: AuthoringContract): boolean {
+  const fields = graphFields(contract)
+  return fields !== null && fields.nodesPath.every((segment, index) => path[index] === segment)
+}
+
+function valueAtPath(value: unknown, path: readonly (string | number)[]): unknown {
+  let current = value
+  for (const segment of path) {
+    if (Array.isArray(current) && typeof segment === 'number') current = current[segment]
+    else if (isRecord(current) && typeof segment === 'string') current = current[segment]
+    else return undefined
+  }
+  return current
 }
 
 function reindentCollection(value: string, indentation: string): string {
