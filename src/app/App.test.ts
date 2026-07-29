@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { editDocumentText } from '$src/lib/documents/revisions'
 import { showActivity, showEditorMode } from '$src/stores/shell'
+import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import {
   $documentSession,
@@ -19,7 +20,15 @@ import {
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
+import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
+import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
 import App from './App.svelte'
+
+async function cachedArchonFixture(): Promise<Uint8Array> {
+  const payload: Record<string, unknown> = { ...(JSON.parse(archonFixtureText) as Record<string, unknown>), normalizer_version: 2 }
+  payload.contract_digest = `sha256:${await sha256Hex(canonicalizeContractPayload(payload))}`
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
 
 describe('App', () => {
   beforeAll(() => {
@@ -47,6 +56,7 @@ describe('App', () => {
   })
 
   afterEach(() => {
+    setNativeBridgeForTest(undefined)
     showActivity('explorer')
     showEditorMode('visual')
     clearWorkspace()
@@ -82,6 +92,71 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: 'Workflow contracts' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Import Contract File' })).toBeEnabled()
+  })
+
+  it('keeps an imported contract available when Settings is left and reopened', async () => {
+    setNativeBridgeForTest({
+      chooseContractFile: async () => '/selected/archon.json',
+      contractReadFile: cachedArchonFixture,
+    })
+    render(App)
+    showActivity('settings')
+    await fireEvent.click(await screen.findByRole('button', { name: 'Import Contract File' }))
+    expect(await screen.findByText('Cached')).toBeVisible()
+
+    showActivity('explorer')
+    await tick()
+    showActivity('settings')
+
+    expect(await screen.findByText('Cached')).toBeVisible()
+  })
+
+  it('resolves a selected cached contract when a matching paired workflow opens after Settings activation', async () => {
+    class ContractAcknowledgingWorker {
+      private listeners = new Set<(event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void>()
+      postMessage(message: { type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }): void {
+        if (message.type !== 'contract-register') return
+        queueMicrotask(() => {
+          for (const listener of this.listeners) listener({ data: { type: 'contract-registered', requestId: message.requestId, contractDigest: message.contractDigest, profile: message.profile } } as MessageEvent)
+        })
+      }
+      addEventListener(_type: 'message', listener: (event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void): void { this.listeners.add(listener) }
+      removeEventListener(_type: 'message', listener: (event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void): void { this.listeners.delete(listener) }
+      terminate(): void {}
+    }
+    const originalWorker = globalThis.Worker
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ContractAcknowledgingWorker })
+    const bytes = await cachedArchonFixture()
+    const digest = (JSON.parse(new TextDecoder().decode(bytes)) as { contract_digest: `sha256:${string}` }).contract_digest
+    setNativeBridgeForTest({
+      chooseContractFile: async () => '/selected/archon.json',
+      contractReadFile: async () => bytes,
+      workspaceRead: async (path) => ({
+        relativePath: path,
+        text: path.endsWith('.hermes.yaml') ? 'language_compatibility: archon-2026-07\n' : 'name: cached\nnodes: []\n',
+        sha256: 'a'.repeat(64), size: 1, modifiedAt: 'now', readOnly: false,
+      }),
+    })
+    try {
+      render(App)
+      showActivity('settings')
+      await fireEvent.click(await screen.findByRole('button', { name: 'Import Contract File' }))
+      await fireEvent.click(screen.getByRole('button', { name: `Activate ${digest}` }))
+      await waitFor(() => expect(screen.getAllByText('Active')).toHaveLength(2))
+
+      loadWorkspaceEntries('cached-workspace', 'Cached workspace', [
+        { relativePath: 'cached.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+        { relativePath: 'cached.hermes.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+      ])
+      showActivity('explorer')
+      await tick()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /cached.yaml/i }))
+
+      await waitFor(() => expect($documentSession.get().revision?.contractDigest).toBe(digest))
+    } finally {
+      if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+      else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
   })
 
   it('enables contract-dependent creation from validated bundled production contracts', async () => {

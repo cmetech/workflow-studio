@@ -133,6 +133,20 @@ afterEach(() => {
 })
 
 describe('DocumentWorkspaceController', () => {
+  it('registers a selected contract without an open pair so the next compatible document can use it', async () => {
+    const next = { ...contract, contract_digest: `sha256:${'d'.repeat(64)}` as const }
+    const { deps, client } = dependencies({ validateContractCoverage: () => [] })
+    const registerContract = vi.fn(async () => undefined)
+    Object.assign(client, { registerContract })
+    const controller = new DocumentWorkspaceController(deps)
+
+    await expect(controller.activateContract(next)).resolves.toBe(true)
+
+    expect(registerContract).toHaveBeenCalledWith(next)
+    expect(client.schedule).not.toHaveBeenCalled()
+    expect($documentSession.get().pair).toBeNull()
+  })
+
   it('keeps the current contract and YAML untouched when worker registration rejects a contract switch', async () => {
     const current = { ...contract, contract_digest: `sha256:${'b'.repeat(64)}` as const }
     const next = { ...contract, contract_digest: `sha256:${'c'.repeat(64)}` as const }

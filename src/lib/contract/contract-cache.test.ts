@@ -158,4 +158,26 @@ describe('contract cache activation', () => {
       provenance: { kind: 'cli', identifier: '/Applications/Hermes' },
     })
   })
+
+  it('hydrates a cached contract into the durable registry and restores its active profile selection', async () => {
+    const importedBytes = await signedFixture({ normalizer_version: 2 })
+    let persisted: readonly import('./contract-cache').ContractCacheStoredEntry[] = []
+    const writer = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { persisted = entries } },
+      activate: async () => true,
+    })
+    const imported = await writer.importBytes(importedBytes, { kind: 'cli', identifier: '/Applications/Hermes' })
+    await writer.activateContract(imported.digest, 'archon-2026-07')
+    const restarted = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => persisted, contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
+
+    await restarted.hydrate()
+
+    expect(restarted.listAuthoringContracts()).toContainEqual(expect.objectContaining({ contract_digest: imported.digest }))
+    expect(restarted.activeContract('archon-2026-07')).toMatchObject({ contract_digest: imported.digest })
+  })
 })

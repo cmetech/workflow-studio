@@ -25,6 +25,7 @@ export interface ContractCacheStoredEntry {
   readonly readerVersion: number
   readonly source: ContractSource
   readonly content: string
+  readonly active: boolean
 }
 
 export interface ContractCacheNative {
@@ -43,6 +44,16 @@ export type ContractActivationResult =
   | { readonly ok: true; readonly contract: AuthoringContract }
   | { readonly ok: false; readonly code: 'contract_not_found' | 'contract_profile_mismatch' | 'contract_reader_unsupported' | 'contract_activation_failed' }
 
+export interface ContractCache {
+  hydrate(): Promise<void>
+  importBytes(bytes: Uint8Array, source: ContractSource, options?: { readonly cacheUnsupported?: boolean }): Promise<ContractCacheEntry>
+  listCachedContracts(): readonly ContractCacheEntry[]
+  listAuthoringContracts(): readonly AuthoringContract[]
+  activeContract(profile: WorkflowProfile): AuthoringContract | undefined
+  activateContract(digest: `sha256:${string}`, profile: WorkflowProfile): Promise<ContractActivationResult>
+  removeContract(digest: `sha256:${string}`): Promise<void>
+}
+
 export class ContractCacheError extends Error {
   constructor(
     readonly code: 'contract_digest_mismatch' | 'contract_shape_invalid' | 'contract_reader_unsupported',
@@ -59,10 +70,10 @@ interface CachedContract {
   readonly canActivate: boolean
 }
 
-export function createContractCache(options: ContractCacheOptions) {
+export function createContractCache(options: ContractCacheOptions): ContractCache {
   const bundled = new Map(options.bundled.map((contract) => [contract.contract_digest, contract]))
   const cached = new Map<string, CachedContract>()
-  const activeByProfile = new Map<WorkflowProfile, string>()
+  const activeByProfile = new Map<WorkflowProfile, `sha256:${string}`>()
   const coverage = options.widgetCoverage ?? validateContractFormCoverage
 
   for (const contract of options.bundled) activeByProfile.set(contract.profile, contract.contract_digest)
@@ -90,6 +101,24 @@ export function createContractCache(options: ContractCacheOptions) {
     for (const stored of await options.native.contractCacheLoad()) {
       await acceptStored(stored, true)
     }
+    for (const value of cached.values()) {
+      if (!value.entry.active || !value.contract || !value.canActivate) continue
+      try {
+        if (await options.activate(value.contract)) activeByProfile.set(value.contract.profile, value.entry.digest)
+      } catch {
+        // Keep unavailable cached contracts inspectable; the bundled contract remains active.
+      }
+    }
+  }
+
+  function listAuthoringContracts(): readonly AuthoringContract[] {
+    return [...bundled.values(), ...[...cached.values()].flatMap((value) => value.contract ? [value.contract] : [])]
+      .sort((left, right) => left.profile.localeCompare(right.profile) || left.contract_digest.localeCompare(right.contract_digest))
+  }
+
+  function activeContract(profile: WorkflowProfile): AuthoringContract | undefined {
+    const digest = activeByProfile.get(profile)
+    return digest ? bundled.get(digest) ?? cached.get(digest)?.contract ?? undefined : undefined
   }
 
   async function importBytes(
@@ -121,6 +150,7 @@ export function createContractCache(options: ContractCacheOptions) {
       return { ok: false, code: 'contract_activation_failed' }
     }
     activeByProfile.set(profile, digest)
+    await persist()
     return { ok: true, contract: candidate }
   }
 
@@ -160,10 +190,12 @@ export function createContractCache(options: ContractCacheOptions) {
   }
 
   async function persist(): Promise<void> {
-    await options.native.contractCacheWrite([...cached.values()].map(({ entry }) => entry))
+    await options.native.contractCacheWrite(
+      [...cached.values()].map(({ entry }) => ({ ...entry, active: activeByProfile.get(entry.profile) === entry.digest })),
+    )
   }
 
-  return { hydrate, importBytes, listCachedContracts, activateContract, removeContract }
+  return { hydrate, importBytes, listCachedContracts, listAuthoringContracts, activeContract, activateContract, removeContract }
 }
 
 function publicEntry(contract: AuthoringContract, status: ContractCacheSource, active: boolean, canActivate: boolean): ContractCacheEntry {
@@ -203,6 +235,7 @@ async function storedFromBytes(bytes: Uint8Array, source: ContractSource): Promi
     readerVersion: payload.contract_reader_version,
     source,
     content,
+    active: false,
   }
 }
 

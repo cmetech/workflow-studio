@@ -4,15 +4,20 @@
   interface Props {
     entries: readonly ContractCacheEntry[]
     onImportFile: () => void | Promise<void>
-    onRefreshCli: () => void | Promise<void>
+    onRefreshCli: (profile: ContractCacheEntry['profile']) => void | Promise<void>
     onActivate: (digest: string) => void | Promise<void>
     onRemove: (digest: string) => void | Promise<void>
   }
 
   let { entries, onImportFile, onRefreshCli, onActivate, onRemove }: Props = $props()
+  let refreshProfile = $state<ContractCacheEntry['profile']>('archon-2026-07')
 
   function profileLabel(profile: ContractCacheEntry['profile']): string {
     return profile === 'archon-2026-07' ? 'Archon 2026-07' : 'Hermes legacy'
+  }
+  function sourceLabel(entry: ContractCacheEntry): string {
+    const prefix = entry.provenance.kind === 'user' ? 'Selected file' : entry.provenance.kind === 'cli' ? 'Hermes CLI' : 'Bundled'
+    return `${prefix}: ${entry.provenance.identifier}`
   }
 </script>
 
@@ -22,7 +27,13 @@
     <p>Contracts are local, verified authoring references. Refresh never contacts a network service.</p>
     <div class="actions">
       <button type="button" onclick={() => void onImportFile()}>Import Contract File</button>
-      <button type="button" onclick={() => void onRefreshCli()}>Refresh From Hermes CLI</button>
+      <label>CLI profile
+        <select aria-label="CLI profile" bind:value={refreshProfile}>
+          <option value="archon-2026-07">Archon 2026-07</option>
+          <option value="hermes-legacy">Hermes legacy</option>
+        </select>
+      </label>
+      <button type="button" onclick={() => void onRefreshCli(refreshProfile)}>Refresh From Hermes CLI</button>
     </div>
   </header>
 
@@ -39,7 +50,7 @@
           <div><dt>Normalizer</dt><dd>{entry.normalizerVersion}</dd></div>
           <div><dt>Reader</dt><dd>Reader {entry.readerVersion}</dd></div>
           <div><dt>Digest</dt><dd><code>{entry.digest}</code></dd></div>
-          <div><dt>Source</dt><dd>{entry.provenance.identifier}</dd></div>
+          <div><dt>Source</dt><dd>{sourceLabel(entry)}</dd></div>
         </dl>
         <div class="entry-actions">
           <button type="button" aria-label={`Activate ${entry.digest}`} disabled={!entry.canActivate || entry.active} onclick={() => void onActivate(entry.digest)}>Activate</button>

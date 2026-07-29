@@ -9,6 +9,15 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+};
+
 use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -77,6 +86,8 @@ pub struct ContractCacheStoredEntry {
     pub reader_version: u32,
     pub source: serde_json::Value,
     pub content: String,
+    #[serde(default)]
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -88,6 +99,8 @@ struct ContractCacheIndexEntry {
     normalizer_version: u32,
     reader_version: u32,
     source: serde_json::Value,
+    #[serde(default)]
+    active: bool,
 }
 
 impl From<&ContractCacheStoredEntry> for ContractCacheIndexEntry {
@@ -99,6 +112,7 @@ impl From<&ContractCacheStoredEntry> for ContractCacheIndexEntry {
             normalizer_version: entry.normalizer_version,
             reader_version: entry.reader_version,
             source: entry.source.clone(),
+            active: entry.active,
         }
     }
 }
@@ -193,6 +207,7 @@ fn cache_load_at(app_data: &Path) -> ContractResult<Vec<ContractCacheStoredEntry
             reader_version: index_entry.reader_version,
             source: index_entry.source,
             content: read_bounded_utf8(&path, "contract_cache_read_failed")?,
+            active: index_entry.active,
         });
     }
     Ok(entries)
@@ -551,7 +566,16 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
             format!("Could not start the selected Hermes executable: {error}"),
         )
     })?;
+    #[cfg(unix)]
     let process_id = child.id();
+    #[cfg(windows)]
+    let process_job = match assign_windows_process_job(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            return Err(error);
+        }
+    };
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
@@ -568,14 +592,26 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < CLI_TIMEOUT => thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
-                terminate_process_tree(&mut child, process_id);
+                terminate_process_tree(
+                    &mut child,
+                    #[cfg(unix)]
+                    process_id,
+                    #[cfg(windows)]
+                    &process_job,
+                );
                 return Err(contract_error(
                     "contract_cli_timeout",
                     "Hermes schema output exceeded the 10-second timeout.",
                 ));
             }
             Err(error) => {
-                terminate_process_tree(&mut child, process_id);
+                terminate_process_tree(
+                    &mut child,
+                    #[cfg(unix)]
+                    process_id,
+                    #[cfg(windows)]
+                    &process_job,
+                );
                 return Err(contract_error(
                     "contract_cli_wait_failed",
                     format!("Could not wait for Hermes: {error}"),
@@ -585,7 +621,13 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     };
     let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
     let stdout = stdout_receiver.recv_timeout(remaining).map_err(|_| {
-        terminate_process_tree(&mut child, process_id);
+        terminate_process_tree(
+            &mut child,
+            #[cfg(unix)]
+            process_id,
+            #[cfg(windows)]
+            &process_job,
+        );
         contract_error(
             "contract_cli_timeout",
             "Hermes schema output exceeded the 10-second timeout.",
@@ -593,7 +635,13 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     })??;
     let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
     let stderr = stderr_receiver.recv_timeout(remaining).map_err(|_| {
-        terminate_process_tree(&mut child, process_id);
+        terminate_process_tree(
+            &mut child,
+            #[cfg(unix)]
+            process_id,
+            #[cfg(windows)]
+            &process_job,
+        );
         contract_error(
             "contract_cli_timeout",
             "Hermes schema output exceeded the 10-second timeout.",
@@ -626,28 +674,55 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     Ok(stdout)
 }
 
-fn terminate_process_tree(child: &mut std::process::Child, process_id: u32) {
+fn terminate_process_tree(
+    child: &mut std::process::Child,
+    #[cfg(unix)] process_id: u32,
+    #[cfg(windows)] process_job: &WindowsProcessJob,
+) {
     #[cfg(unix)]
     unsafe {
         libc::kill(-(process_id as i32), libc::SIGKILL);
     }
     #[cfg(windows)]
-    {
-        let taskkill = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .map(|root| root.join("System32").join("taskkill.exe"));
-        if let Some(taskkill) = taskkill {
-            let process_id = process_id.to_string();
-            let _ = Command::new(taskkill)
-                .args(["/PID", process_id.as_str(), "/T", "/F"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+    unsafe {
+        let _ = TerminateJobObject(process_job.0, 1);
     }
     let _ = child.kill();
-    let _ = child.wait();
+}
+
+#[cfg(windows)]
+struct WindowsProcessJob(HANDLE);
+
+#[cfg(windows)]
+impl Drop for WindowsProcessJob {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn assign_windows_process_job(child: &std::process::Child) -> ContractResult<WindowsProcessJob> {
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        return Err(contract_error(
+            "contract_cli_spawn_failed",
+            format!(
+                "Could not create a Hermes process job: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    let job = WindowsProcessJob(job);
+    if unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) } == 0 {
+        return Err(contract_error(
+            "contract_cli_spawn_failed",
+            format!(
+                "Could not assign Hermes to a process job: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    Ok(job)
 }
 
 fn read_stream_bounded(mut stream: impl Read) -> ContractResult<Vec<u8>> {
@@ -1009,12 +1084,16 @@ mod tests {
     ) {
         let app_data = tempfile::tempdir().unwrap();
         let first = cached_entry('a', "first");
-        let second = cached_entry('b', "second");
+        let second = ContractCacheStoredEntry {
+            active: true,
+            ..cached_entry('b', "second")
+        };
         cache_write_at(app_data.path(), vec![first.clone(), second.clone()]).unwrap();
         cache_write_at(app_data.path(), vec![second.clone()]).unwrap();
 
         let index = fs::read_to_string(app_data.path().join("contracts-v1/index.json")).unwrap();
         assert!(!index.contains("second"));
+        assert!(index.contains("\"active\": true"));
         assert!(!app_data
             .path()
             .join(format!("contracts-v1/{}.json", "a".repeat(64)))
@@ -1031,6 +1110,7 @@ mod tests {
             reader_version: 1,
             source: serde_json::json!({"kind":"user", "identifier":"/selected.json"}),
             content: content.into(),
+            active: false,
         }
     }
 }

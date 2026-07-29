@@ -189,12 +189,15 @@ export class DocumentWorkspaceController {
     if ((this.dependencies.validateContractCoverage ?? validateContractFormCoverage)(contract).length > 0) return false
     const active = $documentSession.get()
     const pair = active.pair
-    if (!pair) return false
     try {
       if (!this.analysisClient.registerContract) return false
       await this.analysisClient.registerContract(contract)
     } catch {
       return false
+    }
+    if (!pair) {
+      this.activeContract = contract
+      return true
     }
     const current = $documentSession.get()
     if (current.pair !== pair || this.publicationSuppressed()) return false

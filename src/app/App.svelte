@@ -10,6 +10,7 @@
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+  import { createContractCache, type ContractCache } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import type { AuthoringContract } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
@@ -91,9 +92,19 @@
   const availableContracts: AuthoringContract[] = []
   let contracts = $state<readonly AuthoringContract[]>([])
   let contractsLoaded = $state(false)
-  const contractReadiness = loadBundledAuthoringContracts().then((loaded) => {
-    availableContracts.splice(0, availableContracts.length, ...loaded)
-    contracts = loaded
+  let appContractCache = $state.raw<ContractCache | null>(null)
+  function synchronizeContractRegistry(next: readonly AuthoringContract[]): void {
+    availableContracts.splice(0, availableContracts.length, ...next)
+    contracts = next
+  }
+  const contractReadiness = loadBundledAuthoringContracts().then(async (loaded) => {
+    appContractCache = createContractCache({
+      bundled: loaded,
+      native,
+      activate: (contract) => documentWorkspace.activateContract(contract),
+    })
+    await appContractCache.hydrate()
+    synchronizeContractRegistry(appContractCache.listAuthoringContracts())
     contractsLoaded = true
     return loaded
   })
@@ -513,7 +524,9 @@
 
   async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
     if (contracts.length === 0) return undefined
-    if (!entry.companionPath) return contracts.find(({ profile }) => profile === 'hermes-legacy')
+    if (!entry.companionPath) {
+      return appContractCache?.activeContract('hermes-legacy') ?? contracts.find(({ profile }) => profile === 'hermes-legacy')
+    }
     const companion = await native.workspaceRead(entry.companionPath)
     const parsed = parseWorkflowYaml(companion.text, {
       document: 'companion',
@@ -524,7 +537,7 @@
       value && typeof value === 'object' && 'language_compatibility' in value
         ? value.language_compatibility
         : 'hermes-legacy'
-    return contracts.find((contract) => contract.profile === profile)
+    return appContractCache?.activeContract(profile) ?? contracts.find((contract) => contract.profile === profile)
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
@@ -883,12 +896,12 @@
           }}
         />
       {:else if $activeActivity === 'settings'}
-        {#if contractsLoaded}
+        {#if contractsLoaded && appContractCache}
           <ContractSettingsHost
-            bundled={contracts}
+            cache={appContractCache}
             {native}
-            activateContract={(contract) => documentWorkspace.activateContract(contract)}
             confirmUnsupported={() => Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+            onContractsChanged={synchronizeContractRegistry}
           />
         {:else}
           <p>Loading bundled contracts…</p>
