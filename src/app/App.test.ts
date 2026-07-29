@@ -77,12 +77,36 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
 }
 
 describe('App', () => {
-  it('mounts the offline documentation activity from the active contract', async () => {
+  it('mounts the offline documentation activity with an explicit unavailable state before a contract is active', async () => {
     showActivity('documentation')
     render(App)
 
-    expect(screen.getByRole('region', { name: 'Offline documentation' })).toBeVisible()
-    expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toBeVisible()
+    expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
+  })
+
+  it('does not fall back to another profile documentation index for a projection-less session', () => {
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:stale.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'stale:definition',
+          kind: 'definition',
+          path: 'stale.yaml',
+          text: 'name: Stale\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      `sha256:${'f'.repeat(64)}`,
+    )
+    showActivity('documentation')
+    render(App)
+
+    expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
   })
 
   beforeAll(() => {

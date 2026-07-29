@@ -257,4 +257,21 @@ describe('Inspector', () => {
     expect(screen.getByLabelText('When documentation')).toBeVisible()
     expect(screen.queryByLabelText('Node ID documentation')).not.toBeInTheDocument()
   })
+
+  it('selects the focused materialized field topic for the Docs tab', async () => {
+    const onDocumentationTopic = vi.fn()
+    render(Inspector, {
+      fields: [
+        { ...fields[0]!, id: 'prompt.node.id@/nodes/0/id' },
+        { ...fields[1]!, id: 'prompt.node.when@/nodes/0/when' },
+      ],
+      values: { 'prompt.node.when@/nodes/0/when': 'ready' },
+      selectionLabel: 'review',
+      onDocumentationTopic,
+    })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Execution' }))
+    await fireEvent.focusIn(screen.getByRole('textbox', { name: 'When' }))
+
+    expect(onDocumentationTopic).toHaveBeenCalledWith('field:prompt.node.when')
+  })
 })

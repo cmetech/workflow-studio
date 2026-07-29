@@ -85,6 +85,21 @@ describe('buildDocumentationIndex', () => {
     }
   })
 
+  it('derives complete node topics from each bundled contract descriptor and schema', async () => {
+    for (const activeContract of await loadBundledAuthoringContracts()) {
+      const index = buildDocumentationIndex(activeContract)
+      for (const node of activeContract.node_kinds) {
+        const topic = index.byId.get(`node:${node.id}`)
+        expect(topic).toEqual(expect.objectContaining({ kind: 'node', status: node.status, examples: node.examples }))
+        expect(topic?.body).toContain('Purpose:')
+        expect(topic?.body).toContain('Type:')
+        expect(topic?.body).toContain('Required:')
+        expect(topic?.body).toContain('Default:')
+        expect(topic?.body).toContain(`Profile: \`${activeContract.profile}\``)
+      }
+    }
+  })
+
   it('validates every bundled definition guide fence through the production contract and DAG analyzer', async () => {
     const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
     for (const [path, guide] of Object.entries(guideSources)) {

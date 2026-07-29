@@ -126,4 +126,16 @@ describe('DocumentationView', () => {
     render(DocumentationView, { index, topicId: 'guide:dag' })
     expect(screen.getByRole('heading', { name: 'DAG dependencies' })).toBeVisible()
   })
+
+  it('acknowledges a requested topic so later user navigation is not reset', async () => {
+    const onTopicConsumed = vi.fn()
+    const { rerender } = render(DocumentationView, { index, topicId: 'guide:dag', onTopicConsumed })
+    expect(onTopicConsumed).toHaveBeenCalledWith('guide:dag')
+    await rerender({ index, topicId: undefined, onTopicConsumed })
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+    await fireEvent.input(search, { target: { value: 'Prompt' } })
+    await fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+  })
 })

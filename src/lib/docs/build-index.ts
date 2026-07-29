@@ -76,16 +76,47 @@ export function searchDocumentation(
 }
 
 function nodeTopic(contract: AuthoringContract, node: NodeKindDescriptor): DocumentationTopic {
+  const field = collectContractFields(contract).find(
+    (candidate) => candidate.fieldPath === node.field_path && candidate.nodeKinds?.includes(node.id),
+  )
+  const compatibility = field?.compatibilityCode
+    ? contract.compatibility_codes[field.compatibilityCode]
+    : compatibilityFor(contract, node.field_path)
+  const migration = compatibility?.migration ? `\n\nMigration: ${compatibility.migration}` : ''
   return {
     id: `node:${node.id}`,
     kind: 'node',
     title: node.label,
     description: node.description,
-    body: [`Purpose: ${node.description}`, `Profile: \`${contract.profile}\``, `Status: ${node.status}`].join('\n\n'),
+    body:
+      [
+        `Purpose: ${node.description}`,
+        `Type: \`${typeof field?.schema.type === 'string' ? field.schema.type : 'contract-defined'}\``,
+        `Required: ${field ? (field.required ? 'yes' : 'no') : 'not supplied'}`,
+        `Default: ${field?.hasDefault ? `\`${formatValue(field.defaultValue)}\`` : 'none'}`,
+        `Profile: \`${contract.profile}\``,
+        `Status: ${node.status}`,
+        node.applicability.node_kinds?.length
+          ? `Applicable node kinds: ${node.applicability.node_kinds.map((id) => `\`${id}\``).join(', ')}`
+          : '',
+        field?.unit ? `Unit: \`${field.unit}\`` : '',
+        field?.compatibilityCode ? `Compatibility code: \`${field.compatibilityCode}\`` : '',
+        field && Object.keys(field.constraints).length > 0 ? `Constraints: \`${JSON.stringify(field.constraints)}\`` : '',
+        compatibility ? `Compatibility: ${compatibility.description}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n') + migration,
     examples: node.examples,
     status: node.status,
     profile: contract.profile,
     fieldPaths: [node.field_path],
+    ...(field?.unit ? { unit: field.unit } : {}),
+    ...(field?.compatibilityCode ? { compatibilityCode: field.compatibilityCode } : {}),
+    ...(field ? { constraints: { ...field.constraints }, required: field.required } : {}),
+    ...(field?.hasDefault ? { defaultValue: field.defaultValue } : {}),
+    relatedTopicIds: contract.documentation.topics
+      .filter((topic) => topic.field_paths.includes(node.field_path))
+      .map((topic) => `contract:${topic.id}`),
   }
 }
 

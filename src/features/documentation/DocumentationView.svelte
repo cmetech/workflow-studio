@@ -6,10 +6,11 @@
   interface Props {
     index: DocumentationIndex
     topicId?: string | undefined
+    onTopicConsumed?: ((id: string) => void) | undefined
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
-  let { index, topicId, onOpenExternal }: Props = $props()
+  let { index, topicId, onTopicConsumed, onOpenExternal }: Props = $props()
   let query = $state('')
   let kind = $state<DocumentationTopicKind | 'all'>('all')
   let highlighted = $state(0)
@@ -29,7 +30,10 @@
 
   $effect(() => {
     const topic = topicId ? index.byId.get(topicId) : undefined
-    if (topic && selected?.id !== topic.id) select(topic)
+    if (topic && selected?.id !== topic.id) {
+      select(topic)
+      onTopicConsumed?.(topic.id)
+    }
   })
 
   function searchKeydown(event: KeyboardEvent): void {

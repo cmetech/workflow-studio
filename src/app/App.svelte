@@ -289,12 +289,12 @@
   })
   const inspectorBindingIdentity = $derived(formBindingIdentity(inspectorNodes[0]?.id ?? 'workflow'))
   const inspectorDisabledReason = $derived(inspectorMutationDisabledReason())
-  const documentationIndex = $derived.by<DocumentationIndex>(() => {
-    const contract = inspectorContract ?? contracts[0]
-    return contract
-      ? buildDocumentationIndex(contract, bundledGuides)
-      : { topics: [], byId: new Map(), searchText: new Map(), tokenIndex: new Map() }
-  })
+  const documentationContract = $derived(
+    contracts.find((candidate) => candidate.contract_digest === $documentSessionStore.revision?.contractDigest),
+  )
+  const documentationIndex = $derived.by<DocumentationIndex | null>(() =>
+    documentationContract ? buildDocumentationIndex(documentationContract, bundledGuides) : null,
+  )
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
@@ -936,11 +936,18 @@
           <p>Loading bundled contracts…</p>
         {/if}
       {:else if $activeActivity === 'documentation'}
-        <DocumentationView
-          index={documentationIndex}
-          topicId={documentationTopicId}
-          onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
-        />
+        {#if documentationIndex}
+          <DocumentationView
+            index={documentationIndex}
+            topicId={documentationTopicId}
+            onTopicConsumed={(id) => {
+              if (documentationTopicId === id) documentationTopicId = undefined
+            }}
+            onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
+          />
+        {:else}
+          <p class="documentation-unavailable" role="status">Documentation is unavailable for the active contract.</p>
+        {/if}
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
@@ -1089,8 +1096,9 @@
         bindingIdentity={inspectorBindingIdentity}
         issues={$documentSessionStore.analysis?.issues ?? []}
         disabledReason={inspectorDisabledReason}
-        {documentationIndex}
+        documentationIndex={documentationIndex ?? undefined}
         {documentationTopicId}
+        onDocumentationTopic={(id) => (documentationTopicId = id)}
         onCommit={commitInspectorField}
       />
     </aside>

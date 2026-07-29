@@ -16,6 +16,7 @@
     disabledReason?: string | undefined
     documentationIndex?: DocumentationIndex | undefined
     documentationTopicId?: string | undefined
+    onDocumentationTopic?: ((id: string) => void) | undefined
     onCommit?: ((commit: FormFieldCommit) => void | Promise<void>) | undefined
   }
 
@@ -30,6 +31,7 @@
     disabledReason,
     documentationIndex,
     documentationTopicId,
+    onDocumentationTopic,
     onCommit,
   }: Props = $props()
 
@@ -76,6 +78,10 @@
 
   function resetDraft(field: FormField): void {
     resetVersions = { ...resetVersions, [field.id]: (resetVersions[field.id] ?? 0) + 1 }
+  }
+
+  function selectDocumentationField(field: FormField): void {
+    onDocumentationTopic?.(`field:${field.id.split('@/')[0]}`)
   }
 
   function sameValue(left: unknown, right: unknown): boolean {
@@ -134,7 +140,11 @@
         {@const resolution = resolveWidget(field)}
         {#if resolution.ok}
           {@const Widget = resolution.definition.component}
-          <div class="field" class:deferred={field.status !== 'supported'}>
+          <div
+            class="field"
+            class:deferred={field.status !== 'supported'}
+            onfocusin={() => selectDocumentationField(field)}
+          >
             {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
               <Widget
                 {field}
@@ -157,7 +167,11 @@
     {:else}
       {#each visibleFields as field (field.id)}
         {@const resolution = resolveWidget(field)}
-        <div class="field" class:deferred={field.status !== 'supported'}>
+        <div
+          class="field"
+          class:deferred={field.status !== 'supported'}
+          onfocusin={() => selectDocumentationField(field)}
+        >
           <div class="field-meta">
             {#if field.status !== 'supported'}<span class="badge">{field.status}</span>{/if}
             {#if !Object.hasOwn(values, field.id) && field.hasDefault}<span class="badge"
