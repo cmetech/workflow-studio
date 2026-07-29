@@ -94,7 +94,7 @@ Observed launch facts:
 
 The active cmux host reported both Screen Recording and Accessibility access. The fixture was opened in the native Tauri window and observed directly while Web Inspector recorded the populated canvas. Trace screenshots show the Explorer entry, workflow inspector, and rendered `node-000`/`node-001` cards rather than an empty or synthetic page.
 
-The following native pointer sequences were visibly responsive, with no perceptible stall or dropped final state:
+The following native pointer sequences reached their visible final states:
 
 - zoom input delivered over 0.473 s;
 - pan drag delivered over 0.566 s;
@@ -103,11 +103,13 @@ The following native pointer sequences were visibly responsive, with no percepti
 
 The two-node drag persisted both selected positions by the identical delta `(122.9811007301559, -71.4761952965659)`: `node-000` moved from `(319.5533147005183, 255.31321535294766)` to `(442.53441543067424, 183.83702005638176)`, and `node-001` moved from `(320, 0)` to `(442.9811007308559, -71.47619529656589)`. `node-002` remained `(640, 0)`. The stored layout retained visual mode, the exact definition hash, and 250 node positions.
 
-### Web Inspector trace
+### Idle Web Inspector trace
 
-The exported Web Inspector recording was kept outside the repository as `workflow-studio-task9-timeline.json` (189 MiB; SHA-256 `b9362bbfdbe0ec80e3cdaffe99c95ae36c2063fd35eee25cdb6089a7860d32dd`). It spans 30.719 s and contains 5,089 records. The interaction window begins at trace time 194.0 s, after recorder startup.
+The exported Web Inspector recording was kept outside the repository as `workflow-studio-task9-timeline.json` (189 MiB; SHA-256 `b9362bbfdbe0ec80e3cdaffe99c95ae36c2063fd35eee25cdb6089a7860d32dd`). It spans 30.719 s and contains 5,089 records. All 1,662 embedded screenshots are byte-identical. The trace modification time also predates the persisted multi-node drag. It is therefore an idle populated-canvas trace, not evidence of the interaction sequence.
 
-| Observation in interaction window | Result |
+The stable portion after trace time 194.0 s produced these idle measurements:
+
+| Idle observation | Result |
 | --- | ---: |
 | JavaScript events | 42 |
 | JavaScript events above 50 ms | 0 |
@@ -115,11 +117,33 @@ The exported Web Inspector recording was kept outside the repository as `workflo
 | rendering-frame intervals | 1,491 |
 | rendering-frame intervals above 50 ms | 0 |
 | maximum rendering-frame interval | 21.174 ms |
-| layout/rendering records | 1,494 |
-| layout/rendering records above 50 ms | 0 |
-| maximum layout/rendering record | 18.831 ms |
+| layout records | 1,494 |
+| layout records above 50 ms | 0 |
+| maximum layout record | 18.831 ms |
 | maximum sampled CPU usage | 32.5% |
 
-One 437.628 ms rendering-frame interval begins exactly at recording start, before the interaction window, and contains no JavaScript task. It is the recorder/startup idle gap, not an interaction long task; it is reported here rather than silently discarded. No JavaScript long task above 50 ms occurred anywhere in the recording.
+One 437.628 ms rendering-frame interval begins exactly at recording start and contains no JavaScript task. No JavaScript task above 50 ms occurred anywhere in the idle trace. These results corroborate stable idle rendering only.
 
-The deterministic tests remain the automated authority for the pointer-frame invariants, while this native pass supplies the separately required perceptual and Web Inspector evidence. Captures and the large raw trace remain external temporary evidence and are not committed to the application repository.
+### Native interaction runtime probe
+
+Because this WebKit exposes Event Timing but not the `longtask` performance-entry type, a temporary diagnostic build continuously recorded `requestAnimationFrame` gaps, delay of a 10 ms timer, and Event Timing entries while native events were delivered. The instrumentation was removed after capture and is not part of the committed application. The external evidence files are:
+
+- `workflow-studio-task9-runtime-probe-final.log` — 343,979 bytes; SHA-256 `9ecae87e1951b125af202326830f2a69532c91a3de225881365862914eca6dfe`;
+- `workflow-studio-task9-actions-final.log` — 204 bytes; SHA-256 `fe370ab8b2572483cac781cd8c38ac53f65119ec78291522a576572a7e87ac3d`; and
+- `final-native-multidrag-state.png` — SHA-256 `464c7e44c082837a6632d126f9765f219480eced5dfbf42885fda13864c8d8e0`.
+
+After startup, the populated canvas was stable from probe time 6.0 s through 14.0 s: no new frame gap or timer delay above 50 ms appeared, and the four Event Timing entries were all at or below 48 ms. The native action window ran from approximately 14.0 s through 21.9 s and delivered a pan, two Command-modified selection clicks, a drag gesture, zoom input, and a final pan. Delivery time was 0.348 s for the first pan, 0.352 s for the drag gesture, 0.322 s for zoom, and 0.355 s for the final pan.
+
+The timed interaction window recorded the long-duration observations required by the plan:
+
+| Interaction-window observation above 50 ms | Count | Maximum |
+| --- | ---: | ---: |
+| animation-frame gaps | 8 | 346 ms |
+| 10 ms timer delays | 7 | 190 ms |
+| Event Timing entries | 17 of 39 entries | 296 ms |
+
+Event Timing reports related pointer, mouse, and click entries separately, so the 17 entries do not represent 17 distinct gestures. The run also emitted two `ResizeObserver loop completed with undelivered notifications` warnings. The final interaction state remained a populated 250-node canvas and persisted a viewport change from `{x: -110, y: -40, zoom: 1}` to `{x: -82.86661624889064, y: 97.41390746726194, zoom: 0.8753913296942639}`. The probe's attempted paired selection did not persist a node move, so the earlier directly observed paired-drag coordinates above remain the authority for multi-node drag behavior.
+
+This result satisfies the plan's requirement to record any interaction long task rather than hiding it. It does not support a claim that native interaction remained below 50 ms in the development build.
+
+The deterministic tests remain the automated authority for pointer-frame invariants, while the native observations supply the separately required functional and timing evidence. Captures, diagnostic logs, and the large raw trace remain external temporary evidence and are not committed to the application repository.
