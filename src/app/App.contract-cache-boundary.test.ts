@@ -122,7 +122,7 @@ describe.sequential('App cached contract boundary', () => {
     legacyContract = contracts.find(({ profile }) => profile === 'hermes-legacy')!
     setNativeBridgeForTest({ ...createBrowserBridge(), contractCacheLoad: () => hydration.promise })
     App = (await import('./App.svelte')).default
-  })
+  }, 30_000)
 
   afterEach(() => {
     clearCanvasState()

@@ -649,7 +649,8 @@
       canMutate: entry?.readOnly === false,
       hasSelection: Boolean(entry),
       targetEntryId: entryId,
-      contractAvailable: contextProfile !== null && contracts.some(({ profile }) => profile === contextProfile),
+      contractAvailable:
+        contractsLoaded && contextProfile !== null && activeContractForProfile(contextProfile) !== undefined,
       workflowProfile: contextProfile,
       hasCompanion: entry?.kind === 'workflow' && entry.companionPath !== null,
     }
@@ -663,8 +664,9 @@
     open: openEntry,
     refresh: refreshWorkspace,
     promptRename: async (entry) => window.prompt('Rename workflow definition to:', entry.definitionPath),
-    promptCompanion: async () => {
-      const contract = contracts[0]
+    promptCompanion: async (entry) => {
+      if (!contractsLoaded || entry.state !== 'legacy') return null
+      const contract = activeContractForProfile('hermes-legacy')
       return contract ? { profile: contract.profile, metadata: {} } : null
     },
     confirm: confirmExact,

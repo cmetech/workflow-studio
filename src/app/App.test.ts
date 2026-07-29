@@ -298,7 +298,7 @@ describe('App', () => {
   })
 
   it('blocks companion creation before reading or writing YAML when the App cache has no active selection', async () => {
-    contractResolverTestState.missingActiveProfile = 'archon-2026-07'
+    contractResolverTestState.missingActiveProfile = 'hermes-legacy'
     const workspaceRead = vi.fn(async (path: string) => ({
       relativePath: path,
       text: 'name: Existing\ndescription: Existing workflow\nnodes:\n  - id: first\n    command: echo\n',
@@ -324,11 +324,10 @@ describe('App', () => {
     })
 
     await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /existing.yaml/i }))
-    await fireEvent.click(screen.getByRole('menuitem', { name: 'Create Companion' }))
+    const createCompanion = screen.getByRole('menuitem', { name: 'Create Companion' })
+    expect(createCompanion).toBeDisabled()
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'The active archon-2026-07 authoring contract is unavailable.',
-    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(workspaceRead).not.toHaveBeenCalled()
     expect(workspaceWrite).not.toHaveBeenCalled()
   })
