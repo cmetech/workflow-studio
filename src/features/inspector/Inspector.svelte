@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { ValidationIssue } from '$src/lib/documents/types'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
+  import type { DocumentationIndex } from '$src/lib/docs/types'
   import { resolveWidget } from '$src/lib/forms/widget-registry'
+  import ContextDocs from '$src/features/documentation/ContextDocs.svelte'
 
   interface Props {
     fields: readonly FormField[]
@@ -12,6 +14,7 @@
     bindingIdentity?: string | undefined
     issues?: readonly ValidationIssue[] | undefined
     disabledReason?: string | undefined
+    documentationIndex?: DocumentationIndex | undefined
     onCommit?: ((commit: FormFieldCommit) => void | Promise<void>) | undefined
   }
 
@@ -24,6 +27,7 @@
     bindingIdentity = selectionLabel,
     issues = [],
     disabledReason,
+    documentationIndex,
     onCommit,
   }: Props = $props()
 
@@ -142,11 +146,7 @@
       <div class="docs">
         {#if fields.length === 0}<p>Select a node to view contract documentation.</p>{/if}
         {#each fields as field (field.id)}
-          <article>
-            <h3>{field.label}</h3>
-            <p>{field.description}</p>
-            {#if field.examples.length > 0}<pre>{JSON.stringify(field.examples[0], null, 2)}</pre>{/if}
-          </article>
+          <ContextDocs {field} index={documentationIndex} />
         {/each}
       </div>
     {:else if visibleFields.length === 0}
@@ -277,15 +277,15 @@
     border: 1px solid var(--color-warning);
     color: var(--color-warning);
   }
-  .docs article {
+  .docs :global(article) {
     padding-bottom: 0.75rem;
     border-bottom: 1px solid var(--color-border);
   }
-  .docs h3 {
+  .docs :global(h3) {
     font-size: 0.8rem;
   }
-  .docs p,
-  .docs pre {
+  .docs :global(p),
+  .docs :global(pre) {
     white-space: pre-wrap;
     font-size: 0.7rem;
   }
