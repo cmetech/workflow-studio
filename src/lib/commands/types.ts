@@ -18,5 +18,6 @@ export interface AppCommand {
   category: string
   defaultBindings: readonly string[]
   enabled(context: CommandContext): boolean
+  disabledReason?(context: CommandContext): string | undefined
   run(context: CommandContext): void | Promise<void>
 }

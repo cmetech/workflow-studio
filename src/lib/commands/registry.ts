@@ -1,5 +1,6 @@
 import {
   openCommandPalette,
+  openKeyboardShortcuts,
   openFolder,
   openQuickOpen,
   requestWorkflowAction,
@@ -39,13 +40,27 @@ export class CommandNotFoundError extends Error {
 
 const commandSurfaces: readonly CommandContext['surface'][] = ['global', 'canvas', 'yaml', 'form']
 let documentSaveHandler: (() => void | Promise<void>) | null = null
+let documentUndoHandler: (() => void | Promise<void>) | null = null
+let documentRedoHandler: (() => void | Promise<void>) | null = null
 
 export interface CanvasCommandHandlers {
   readonly addNode: () => void | Promise<void>
+  readonly addAfterSelection: () => void | Promise<void>
+  readonly selectAll: () => void | Promise<void>
   readonly copySelection: () => void | Promise<void>
   readonly deleteSelection: () => void | Promise<void>
   readonly duplicateSelection: () => void | Promise<void>
   readonly pasteSelection: () => void | Promise<void>
+  readonly arrange: () => void | Promise<void>
+  readonly zoomIn: () => void | Promise<void>
+  readonly zoomOut: () => void | Promise<void>
+  readonly actualSize: () => void | Promise<void>
+  readonly fitGraph: () => void | Promise<void>
+  readonly fitSelection: () => void | Promise<void>
+  readonly nudge: (larger: boolean, direction: 'up' | 'down' | 'left' | 'right') => void | Promise<void>
+  readonly openInspector: () => void | Promise<void>
+  readonly cancel: () => void | Promise<void>
+  readonly createEdge: () => void | Promise<void>
 }
 
 let canvasCommandHandlers: CanvasCommandHandlers | null = null
@@ -54,6 +69,18 @@ export function setDocumentSaveHandler(handler: () => void | Promise<void>): () 
   documentSaveHandler = handler
   return () => {
     if (documentSaveHandler === handler) documentSaveHandler = null
+  }
+}
+
+export function setDocumentHistoryHandlers(handlers: {
+  readonly undo: () => void | Promise<void>
+  readonly redo: () => void | Promise<void>
+}): () => void {
+  documentUndoHandler = handlers.undo
+  documentRedoHandler = handlers.redo
+  return () => {
+    if (documentUndoHandler === handlers.undo) documentUndoHandler = null
+    if (documentRedoHandler === handlers.redo) documentRedoHandler = null
   }
 }
 
@@ -218,27 +245,106 @@ function workflowCommand(
 function canvasCommand(
   action: keyof CanvasCommandHandlers,
   label: string,
-  options: { readonly selection?: boolean; readonly mutating?: boolean } = {},
+  options: { readonly selection?: boolean; readonly mutating?: boolean; readonly binding?: string } = {},
 ): AppCommand {
   return {
     id: `canvas.${action.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`,
     label,
     category: 'Canvas',
-    defaultBindings: [],
+    defaultBindings: options.binding ? [options.binding] : [],
     enabled: (context) =>
       context.surface === 'canvas' &&
       (!options.selection || context.hasSelection) &&
       (!options.mutating || context.canMutate),
-    run: () => canvasCommandHandlers?.[action](),
+    run: () => (canvasCommandHandlers?.[action] as (() => void | Promise<void>) | undefined)?.(),
   }
 }
 
 const initialCommands: readonly AppCommand[] = [
-  canvasCommand('addNode', 'Add Node', { mutating: true }),
-  canvasCommand('copySelection', 'Copy Selection', { selection: true }),
-  canvasCommand('deleteSelection', 'Delete Selection', { selection: true, mutating: true }),
-  canvasCommand('duplicateSelection', 'Duplicate Selection', { selection: true, mutating: true }),
-  canvasCommand('pasteSelection', 'Paste Selection', { mutating: true }),
+  canvasCommand('addNode', 'Add Node', { mutating: true, binding: 'N' }),
+  canvasCommand('addAfterSelection', 'Add Node After Selection', {
+    selection: true,
+    mutating: true,
+    binding: 'Shift+N',
+  }),
+  canvasCommand('selectAll', 'Select Canvas Nodes', { binding: 'Mod+A' }),
+  canvasCommand('copySelection', 'Copy Selection', { selection: true, binding: 'Mod+C' }),
+  canvasCommand('deleteSelection', 'Delete Selection', { selection: true, mutating: true, binding: 'Delete' }),
+  canvasCommand('duplicateSelection', 'Duplicate Selection', { selection: true, mutating: true, binding: 'Mod+D' }),
+  canvasCommand('pasteSelection', 'Paste Selection', { mutating: true, binding: 'Mod+V' }),
+  canvasCommand('arrange', 'Arrange Graph', { mutating: true }),
+  canvasCommand('zoomIn', 'Zoom In', { binding: '+' }),
+  canvasCommand('zoomOut', 'Zoom Out', { binding: '-' }),
+  canvasCommand('actualSize', 'Actual Size', { binding: '0' }),
+  canvasCommand('fitGraph', 'Fit Graph', { binding: 'F' }),
+  canvasCommand('fitSelection', 'Fit Selection', { selection: true, binding: 'Shift+F' }),
+  canvasCommand('openInspector', 'Open Inspector', { selection: true, binding: 'Enter' }),
+  canvasCommand('cancel', 'Cancel or Clear Selection', { binding: 'Escape' }),
+  canvasCommand('createEdge', 'Create Edge', { selection: true, mutating: true, binding: 'E' }),
+  {
+    id: 'canvas.nudge-up',
+    label: 'Nudge Up',
+    category: 'Canvas',
+    defaultBindings: ['ArrowUp'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(false, 'up'),
+  },
+  {
+    id: 'canvas.nudge-down',
+    label: 'Nudge Down',
+    category: 'Canvas',
+    defaultBindings: ['ArrowDown'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(false, 'down'),
+  },
+  {
+    id: 'canvas.nudge-left',
+    label: 'Nudge Left',
+    category: 'Canvas',
+    defaultBindings: ['ArrowLeft'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(false, 'left'),
+  },
+  {
+    id: 'canvas.nudge-right',
+    label: 'Nudge Right',
+    category: 'Canvas',
+    defaultBindings: ['ArrowRight'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(false, 'right'),
+  },
+  {
+    id: 'canvas.nudge-up-large',
+    label: 'Nudge Up (Large)',
+    category: 'Canvas',
+    defaultBindings: ['Shift+ArrowUp'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(true, 'up'),
+  },
+  {
+    id: 'canvas.nudge-down-large',
+    label: 'Nudge Down (Large)',
+    category: 'Canvas',
+    defaultBindings: ['Shift+ArrowDown'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(true, 'down'),
+  },
+  {
+    id: 'canvas.nudge-left-large',
+    label: 'Nudge Left (Large)',
+    category: 'Canvas',
+    defaultBindings: ['Shift+ArrowLeft'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(true, 'left'),
+  },
+  {
+    id: 'canvas.nudge-right-large',
+    label: 'Nudge Right (Large)',
+    category: 'Canvas',
+    defaultBindings: ['Shift+ArrowRight'],
+    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    run: () => canvasCommandHandlers?.nudge(true, 'right'),
+  },
   {
     id: 'document.save',
     label: 'Save Workflow Pair',
@@ -246,6 +352,46 @@ const initialCommands: readonly AppCommand[] = [
     defaultBindings: ['Mod+S'],
     enabled: (context) => context.canMutate,
     run: () => documentSaveHandler?.(),
+  },
+  {
+    id: 'document.undo',
+    label: 'Undo',
+    category: 'Edit',
+    defaultBindings: ['Mod+Z'],
+    enabled: (context) => context.canMutate,
+    run: () => documentUndoHandler?.(),
+  },
+  {
+    id: 'document.redo',
+    label: 'Redo',
+    category: 'Edit',
+    defaultBindings: ['Mod+Shift+Z', 'Ctrl+Y'],
+    enabled: (context) => context.canMutate,
+    run: () => documentRedoHandler?.(),
+  },
+  {
+    id: 'document.find',
+    label: 'Find',
+    category: 'Edit',
+    defaultBindings: ['Mod+F'],
+    enabled: () => true,
+    run: () => undefined,
+  },
+  {
+    id: 'workflow.validate',
+    label: 'Validate Workflow',
+    category: 'Workflow',
+    defaultBindings: [],
+    enabled: (context) => context.hasSelection,
+    run: () => undefined,
+  },
+  {
+    id: 'workbench.keyboard-shortcuts',
+    label: 'Keyboard Shortcuts',
+    category: 'Help',
+    defaultBindings: [],
+    enabled: () => true,
+    run: openKeyboardShortcuts,
   },
   {
     id: 'problems.focus',
@@ -307,3 +453,4 @@ export const registerCommand = applicationCommands.registerCommand
 export const listCommands = applicationCommands.listCommands
 export const listBindingConflicts = applicationCommands.listBindingConflicts
 export const executeCommand = applicationCommands.executeCommand
+export const commandRegistry = applicationCommands

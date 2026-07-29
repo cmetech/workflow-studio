@@ -175,7 +175,7 @@
   })
 </script>
 
-<div class="yaml-editor" bind:this={host} data-document={documentKind}></div>
+<div class="yaml-editor" bind:this={host} data-document={documentKind} data-command-surface="yaml"></div>
 
 <style>
   .yaml-editor {

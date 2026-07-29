@@ -2,11 +2,15 @@
   import { onDestroy, onMount, tick } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import {
+    commandRegistry,
     executeCommand,
     listCommands,
     setCanvasCommandHandlers,
+    setDocumentHistoryHandlers,
     setDocumentSaveHandler,
   } from '$src/lib/commands/registry'
+  import { dispatchKeybinding } from '$src/lib/commands/keybindings'
+  import { NodeChordController, type NodeChordKind, type NodeChordState } from '$src/lib/commands/node-chords'
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
@@ -22,7 +26,17 @@
   import { applyWorkflowMutation } from '$src/lib/documents/transactions'
   import type { WorkflowMutation } from '$src/lib/yaml/mutations'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
-  import { activeActivity, activeEditorMode, showActivity, showEditorMode, workspaceIntent } from '$src/stores/shell'
+  import {
+    activeActivity,
+    activeEditorMode,
+    commandPaletteOpen,
+    keyboardShortcutsOpen,
+    showActivity,
+    showEditorMode,
+    workspaceIntent,
+    closeCommandPalette,
+    closeKeyboardShortcuts,
+  } from '$src/stores/shell'
   import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
   import { getNativeBridge } from '$src/lib/native/bridge'
@@ -60,6 +74,8 @@
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
+  import CommandPalette from '$src/features/commands/CommandPalette.svelte'
+  import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
   import Inspector from '$src/features/inspector/Inspector.svelte'
   import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
@@ -74,7 +90,7 @@
     $canvasSelection as canvasSelectionStore,
     activateCanvasWorkflowIdentity,
   } from '$src/stores/canvas'
-  import { historyStore, recordTransaction } from '$src/stores/history'
+  import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
@@ -148,6 +164,7 @@
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
   let exportBlockingIssues = $state<readonly string[]>([])
+  let nodeChordState = $state.raw<NodeChordState>({ pending: false, choices: [], afterSelection: false })
   let inspectorDocumentationTopicId = $state<string | undefined>()
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
   let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
@@ -214,6 +231,10 @@
     onWorkspaceChanged: refreshWorkspace,
   })
   const canvasAuthoring = createCanvasAuthoringCoordinator({ getContext: canvasAuthoringContext })
+  const nodeChords = new NodeChordController({
+    onStateChange: (state) => (nodeChordState = state),
+    onChoose: (kind, afterSelection) => chooseCanvasChord(kind, afterSelection),
+  })
   const actions = createWorkspaceActions({
     native,
     contracts: availableContracts,
@@ -332,6 +353,51 @@
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
+  }
+
+  function keyboardContext(target: EventTarget | null): CommandContext {
+    const element = target instanceof Element ? target : null
+    const surface: CommandContext['surface'] = element?.closest('.graph-canvas')
+      ? 'canvas'
+      : element?.closest('.yaml-editor')
+        ? 'yaml'
+        : element?.closest('input, textarea, select, [contenteditable="true"]')
+          ? 'form'
+          : 'global'
+    const canvasContext = surface === 'canvas' ? canvasAuthoringContext() : null
+    return {
+      surface,
+      canMutate:
+        surface === 'canvas'
+          ? Boolean(canvasContext && !('unavailable' in canvasContext))
+          : Boolean(documentSessionStore.get().pair),
+      hasSelection:
+        surface === 'canvas' ? canvasSelectionStore.get().length > 0 : Boolean(documentSessionStore.get().pair),
+    }
+  }
+
+  async function undoDocument(): Promise<void> {
+    const pair = documentSessionStore.get().pair
+    if (!pair) return
+    const result = undoTransaction(historyStore.get(), pair)
+    if (!result.ok) {
+      workspaceError = result.message
+      return
+    }
+    historyStore.set(result.history)
+    documentWorkspace.changed(result.pair, 'visual')
+  }
+
+  async function redoDocument(): Promise<void> {
+    const pair = documentSessionStore.get().pair
+    if (!pair) return
+    const result = redoTransaction(historyStore.get(), pair)
+    if (!result.ok) {
+      workspaceError = result.message
+      return
+    }
+    historyStore.set(result.history)
+    documentWorkspace.changed(result.pair, 'visual')
   }
 
   async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
@@ -536,6 +602,22 @@
     if (!request) return
     const result = await canvasAuthoring.add(descriptor, request)
     addNodeRequest = null
+    if (result.status !== 'committed') workspaceError = result.message
+  }
+
+  async function chooseCanvasChord(kind: NodeChordKind, afterSelection: boolean): Promise<void> {
+    const contract = inspectorContract
+    if (!contract) return
+    const descriptor = contract.node_kinds.find((candidate) => candidate.id === kind)
+    if (!descriptor) {
+      workspaceError = `The active contract does not support ${kind} nodes.`
+      return
+    }
+    const selected = canvasSelectionStore.get()
+    const result = await canvasAuthoring.add(descriptor, {
+      ...(afterSelection && selected.length === 1 ? { afterNodeId: selected[0] } : {}),
+      viewportCenter: { x: 0, y: 0 },
+    })
     if (result.status !== 'committed') workspaceError = result.message
   }
 
@@ -830,6 +912,16 @@
         if (graphCanvas) graphCanvas.requestAdd()
         else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
       },
+      addAfterSelection: () => {
+        const selected = canvasSelectionStore.get()
+        if (graphCanvas && selected.length === 1) graphCanvas.requestAdd(selected[0])
+        else
+          requestCanvasAdd({
+            ...(selected.length === 1 ? { afterNodeId: selected[0] } : {}),
+            viewportCenter: { x: 0, y: 0 },
+          })
+      },
+      selectAll: () => graphCanvas?.selectAll(),
       copySelection: () => {
         const result = canvasAuthoring.copy(canvasSelectionStore.get())
         if (result.status === 'rejected') workspaceError = result.message
@@ -843,6 +935,16 @@
         const result = await canvasAuthoring.paste()
         if (result.status !== 'committed') workspaceError = result.message
       },
+      arrange: () => graphCanvas?.arrange(),
+      zoomIn: () => graphCanvas?.zoomIn(),
+      zoomOut: () => graphCanvas?.zoomOut(),
+      actualSize: () => graphCanvas?.actualSize(),
+      fitGraph: () => graphCanvas?.fitGraph(),
+      fitSelection: () => graphCanvas?.fitSelection(),
+      nudge: (larger, direction) => graphCanvas?.nudge(larger, direction),
+      openInspector: () => graphCanvas?.openInspector(),
+      cancel: () => graphCanvas?.cancel(),
+      createEdge: () => graphCanvas?.requestEdge(),
     })
     let dispose: (() => void) | undefined = unbindCanvas
     let disposed = false
@@ -870,23 +972,43 @@
       const unbindSave = setDocumentSaveHandler(async () => {
         await documentWorkspace.save()
       })
+      const unbindHistory = setDocumentHistoryHandlers({ undo: undoDocument, redo: redoDocument })
       const keydown = (event: KeyboardEvent) => {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-          event.preventDefault()
-          runWorkspaceOperation(
-            runCommand('document.save', {
-              surface: 'global',
-              canMutate: Boolean(documentSessionStore.get().pair),
-              hasSelection: false,
-            }),
-          )
+        const context = keyboardContext(event.target)
+        if (
+          context.surface === 'canvas' &&
+          (nodeChordState.pending || (!event.shiftKey && event.key.toLowerCase() === 'n'))
+        ) {
+          const result = nodeChords.handleKey(event)
+          if (result.status !== 'unhandled') {
+            event.preventDefault()
+            return
+          }
         }
+        const escape = [
+          ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
+          ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
+          ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
+          ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
+          ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
+        ]
+        void dispatchKeybinding(event, { registry: commandRegistry, context, escape })
+          .then((result) => {
+            if (result.status === 'disabled') workspaceError = result.reason
+          })
+          .catch((error: unknown) => {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          })
       }
+      const blur = () => nodeChords.cancel('focus-loss')
       window.addEventListener('keydown', keydown)
+      window.addEventListener('blur', blur)
       const disposeClose = dispose
       dispose = () => {
         unbindSave()
+        unbindHistory()
         window.removeEventListener('keydown', keydown)
+        window.removeEventListener('blur', blur)
         disposeClose?.()
       }
       await refreshRecent()
@@ -1307,6 +1429,28 @@
       onClose={() => (addNodeRequest = null)}
     />
   {/if}
+  {#if nodeChordState.pending}
+    <div class="node-chord-overlay" role="status" aria-live="polite">
+      Add node: {#each nodeChordState.choices as choice, index (choice)}<kbd>{choice}</kbd>{index <
+        nodeChordState.choices.length - 1
+          ? ' '
+          : ''}{/each}
+      <span>Choose kind within 1.5 seconds{nodeChordState.afterSelection ? ' after selection' : ''}.</span>
+    </div>
+  {/if}
+  {#if $commandPaletteOpen}
+    <CommandPalette
+      registry={commandRegistry}
+      context={keyboardContext(document.activeElement)}
+      onClose={closeCommandPalette}
+    />
+  {/if}
+  {#if $keyboardShortcutsOpen}
+    <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <button type="button" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
+      <KeyboardShortcuts registry={commandRegistry} />
+    </div>
+  {/if}
   {#if deleteRequest}
     <DeleteImpactDialog
       impact={deleteRequest.impact}
@@ -1330,6 +1474,48 @@
     overflow: hidden;
     color: var(--color-text);
     background: var(--color-background);
+  }
+  .node-chord-overlay {
+    position: fixed;
+    z-index: 72;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--color-focus);
+    border-radius: 0.4rem;
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 0.5rem 1.5rem var(--color-shadow);
+  }
+  .node-chord-overlay kbd {
+    padding: 0.1rem 0.28rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.2rem;
+    font-family: ui-monospace, monospace;
+  }
+  .node-chord-overlay span {
+    color: var(--color-text-muted);
+    font-size: 0.78rem;
+  }
+  .shortcuts-dialog {
+    position: fixed;
+    z-index: 71;
+    inset: 10vh 15vw;
+    overflow: auto;
+    border: 1px solid var(--color-edge);
+    border-radius: 0.6rem;
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 1rem 3rem var(--color-shadow);
+  }
+  .shortcuts-dialog > button {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.6rem;
   }
 
   .contract-unavailable,

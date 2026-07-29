@@ -11,6 +11,11 @@ export const activeEditorMode = $activeEditorMode
 export const $activeYamlDocument = atom<DocumentKind>('definition')
 export const activeYamlDocument = $activeYamlDocument
 
+export const $commandPaletteOpen = atom(false)
+export const commandPaletteOpen = $commandPaletteOpen
+export const $keyboardShortcutsOpen = atom(false)
+export const keyboardShortcutsOpen = $keyboardShortcutsOpen
+
 export type WorkspaceIntentKind = 'open-folder' | 'quick-open' | `workflow.${string}`
 export interface WorkspaceIntent {
   readonly kind: WorkspaceIntentKind | null
@@ -51,5 +56,15 @@ function requestWorkspaceIntent(kind: WorkspaceIntentKind, targetEntryId: string
 }
 
 export function openCommandPalette(): void {
-  // Command-palette presentation belongs to the command feature once it is introduced.
+  $commandPaletteOpen.set(true)
+}
+
+export function closeCommandPalette(): void {
+  $commandPaletteOpen.set(false)
+}
+export function openKeyboardShortcuts(): void {
+  $keyboardShortcutsOpen.set(true)
+}
+export function closeKeyboardShortcuts(): void {
+  $keyboardShortcutsOpen.set(false)
 }

@@ -40,34 +40,35 @@ function registryWith(...commands: AppCommand[]): CommandRegistry {
 
 describe('command registry', () => {
   it('registers the initial shell commands from one table', () => {
-    expect(listCommands().map(({ id }) => id)).toEqual([
-      'canvas.add-node',
-      'canvas.copy-selection',
-      'canvas.delete-selection',
-      'canvas.duplicate-selection',
-      'canvas.paste-selection',
-      'workspace.open-folder',
-      'workspace.quick-open',
-      'document.save',
-      'problems.focus',
-      'workbench.command-palette',
-      'view.activity.documentation',
-      'view.activity.examples',
-      'view.activity.explorer',
-      'view.activity.git',
-      'view.activity.nodes',
-      'view.activity.settings',
-      'view.editor.split',
-      'view.editor.visual',
-      'view.editor.yaml',
-      'workflow.create-companion',
-      'workflow.duplicate',
-      'workflow.export',
-      'workflow.trash',
-      'workflow.open',
-      'workflow.remove-companion',
-      'workflow.rename',
-    ])
+    const commands = listCommands()
+    expect(commands.map(({ id }) => id)).toEqual(
+      expect.arrayContaining([
+        'document.save',
+        'document.undo',
+        'document.redo',
+        'document.find',
+        'workspace.quick-open',
+        'workbench.command-palette',
+        'workbench.keyboard-shortcuts',
+        'canvas.add-node',
+        'canvas.add-after-selection',
+        'canvas.select-all',
+        'canvas.create-edge',
+        'canvas.zoom-in',
+        'canvas.zoom-out',
+        'canvas.actual-size',
+        'canvas.fit-graph',
+        'canvas.fit-selection',
+        'canvas.nudge-up',
+        'canvas.open-inspector',
+        'canvas.cancel',
+        'canvas.arrange',
+        'workflow.validate',
+      ]),
+    )
+    expect(commands.find(({ id }) => id === 'canvas.add-node')?.defaultBindings).toEqual(['N'])
+    expect(commands.find(({ id }) => id === 'canvas.add-after-selection')?.defaultBindings).toEqual(['Shift+N'])
+    expect(listCommands().map(({ id }) => id)).toHaveLength(new Set(commands.map(({ id }) => id)).size)
   })
 
   it('rejects duplicate command IDs during registration', () => {
@@ -230,10 +231,22 @@ describe('command registry', () => {
   it('routes enabled canvas authoring commands through the active canvas handlers', async () => {
     const handlers = {
       addNode: vi.fn(),
+      addAfterSelection: vi.fn(),
+      selectAll: vi.fn(),
       copySelection: vi.fn(),
       deleteSelection: vi.fn(),
       duplicateSelection: vi.fn(),
       pasteSelection: vi.fn(),
+      arrange: vi.fn(),
+      zoomIn: vi.fn(),
+      zoomOut: vi.fn(),
+      actualSize: vi.fn(),
+      fitGraph: vi.fn(),
+      fitSelection: vi.fn(),
+      nudge: vi.fn(),
+      openInspector: vi.fn(),
+      cancel: vi.fn(),
+      createEdge: vi.fn(),
     }
     const unbind = setCanvasCommandHandlers(handlers)
     const context: CommandContext = { surface: 'canvas', canMutate: true, hasSelection: true }

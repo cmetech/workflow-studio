@@ -9,7 +9,7 @@
     SvelteFlow,
     type Viewport,
   } from '@xyflow/svelte'
-  import { Copy, Map, Network, Plus, Trash2 } from 'lucide-svelte'
+  import { Copy, Link, Map, Network, Plus, Trash2 } from 'lucide-svelte'
   import '@xyflow/svelte/dist/style.css'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { ValidationIssue } from '$src/lib/documents/types'
@@ -79,6 +79,8 @@
   let minimapVisible = $state(false)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
   let authoringFeedback = $state('')
+  let edgeSourceId = $state<string | null>(null)
+  let edgeTargetIndex = $state(0)
   let root: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: LayoutRecordV1 | null = null
@@ -112,13 +114,137 @@
     schedulePersist(layoutWithPositions())
   }
 
-  function arrange(): void {
+  export function arrange(): void {
     if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
     flowNodes = projected.nodes
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
     schedulePersist(layoutWithPositions())
+  }
+
+  function nodeIds(): readonly string[] {
+    return projection.nodes.map(({ id }) => id)
+  }
+
+  function validEdgeTargets(sourceId: string): readonly string[] {
+    const existing = projection.edges.map(({ source, target }) => `${source}\0${target}`)
+    const downstream: Record<string, string[]> = {}
+    for (const edge of projection.edges) (downstream[edge.source] ??= []).push(edge.target)
+    const reachesSource = (candidate: string, visited: readonly string[] = []): boolean => {
+      if (candidate === sourceId) return true
+      if (visited.includes(candidate)) return false
+      return (downstream[candidate] ?? []).some((next) => reachesSource(next, [...visited, candidate]))
+    }
+    return nodeIds().filter(
+      (target) => target !== sourceId && !existing.includes(`${sourceId}\0${target}`) && !reachesSource(target),
+    )
+  }
+
+  export function requestEdge(): void {
+    const sourceId = selection.length === 1 ? selection[0] : null
+    if (!canAuthor() || !sourceId) {
+      authoringFeedback = 'Select one node before creating a dependency edge.'
+      return
+    }
+    edgeSourceId = sourceId
+    edgeTargetIndex = 0
+    const targets = validEdgeTargets(sourceId)
+    authoringFeedback = targets.length
+      ? 'Choose a valid dependency target.'
+      : 'No valid dependency targets are available.'
+    root?.focus()
+  }
+
+  function cancelEdge(): boolean {
+    if (!edgeSourceId) return false
+    edgeSourceId = null
+    edgeTargetIndex = 0
+    authoringFeedback = 'Edge creation cancelled.'
+    return true
+  }
+
+  async function commitEdgeTarget(targetId: string | undefined): Promise<void> {
+    const sourceId = edgeSourceId
+    if (!sourceId || !targetId || !validEdgeTargets(sourceId).includes(targetId)) {
+      authoringFeedback = 'That target would create an invalid dependency edge.'
+      return
+    }
+    await handleAuthoringResult(
+      onConnect
+        ? () => onConnect(sourceId, targetId)
+        : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Connect is unavailable.' }),
+    )
+    edgeSourceId = null
+    edgeTargetIndex = 0
+  }
+
+  function handleEdgeKeydown(event: KeyboardEvent): void {
+    if (!edgeSourceId) return
+    const targets = validEdgeTargets(edgeSourceId)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      cancelEdge()
+      return
+    }
+    if (!targets.length) return
+    if (event.key === 'Tab' || event.key.startsWith('Arrow')) {
+      event.preventDefault()
+      edgeTargetIndex =
+        (edgeTargetIndex +
+          (event.shiftKey || event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1) +
+          targets.length) %
+        targets.length
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      void commitEdgeTarget(targets[edgeTargetIndex])
+    }
+  }
+
+  export function cancel(): void {
+    if (cancelEdge()) return
+    selectionChanged([])
+  }
+
+  export function selectAll(): void {
+    if (!transitionLocked) selectionChanged(nodeIds())
+  }
+
+  export function nudge(larger: boolean, direction: 'up' | 'down' | 'left' | 'right'): void {
+    if (!canAuthor() || selection.length === 0) return
+    const amount = larger ? 20 : 5
+    const delta =
+      direction === 'up'
+        ? { x: 0, y: -amount }
+        : direction === 'down'
+          ? { x: 0, y: amount }
+          : direction === 'left'
+            ? { x: -amount, y: 0 }
+            : { x: amount, y: 0 }
+    for (const id of selection) {
+      const position = canvasPositionsStore.get()[id]
+      if (position) moveCanvasPosition(id, { x: position.x + delta.x, y: position.y + delta.y })
+    }
+    schedulePersist(layoutWithPositions())
+  }
+
+  export function zoomIn(): void {
+    flowViewport = { ...flowViewport, zoom: Math.min(4, flowViewport.zoom * 1.2) }
+  }
+  export function zoomOut(): void {
+    flowViewport = { ...flowViewport, zoom: Math.max(0.1, flowViewport.zoom / 1.2) }
+  }
+  export function actualSize(): void {
+    flowViewport = { ...flowViewport, zoom: 1 }
+  }
+  export function fitGraph(): void {
+    flowViewport = { ...flowViewport, x: 0, y: 0, zoom: 1 }
+  }
+  export function fitSelection(): void {
+    fitGraph()
+  }
+  export function openInspector(): void {
+    authoringFeedback = 'Inspector opened for the selected node.'
   }
 
   function viewportChanged(viewport: Viewport): void {
@@ -224,6 +350,7 @@
   }
 
   onMount(() => {
+    root.tabIndex = 0
     const drag = (event: Event) => handleDrag((event as CustomEvent<CanvasDragDetail>).detail)
     const stop = (event: Event) => handleDragStop((event as CustomEvent<CanvasDragDetail>).detail)
     const connect = (event: Event) => {
@@ -256,6 +383,7 @@
     root.addEventListener('workflowconnect', connect)
     root.addEventListener('workflowdisconnect', disconnect)
     root.addEventListener('workflowbeforedelete', beforeDeleteEvent)
+    root.addEventListener('keydown', handleEdgeKeydown)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
       selection = [...ids]
     })
@@ -265,6 +393,7 @@
       root.removeEventListener('workflowconnect', connect)
       root.removeEventListener('workflowdisconnect', disconnect)
       root.removeEventListener('workflowbeforedelete', beforeDeleteEvent)
+      root.removeEventListener('keydown', handleEdgeKeydown)
       unsubscribeSelection()
     }
   })
@@ -285,6 +414,15 @@
     <button type="button" aria-label="Add node" disabled={!canAuthor()} onclick={() => requestAdd()}>
       <Plus size={15} aria-hidden="true" />
       Add
+    </button>
+    <button
+      type="button"
+      aria-label="Create dependency edge"
+      disabled={!canAuthor() || selection.length !== 1}
+      onclick={requestEdge}
+    >
+      <Link size={15} aria-hidden="true" />
+      Edge
     </button>
     <button
       type="button"
@@ -378,6 +516,24 @@
       Last valid graph shown read-only while current YAML has structural errors.
     </div>
   {/if}
+  {#if edgeSourceId}
+    <div class="edge-picker" role="status" aria-live="polite">
+      <strong>Create edge from {edgeSourceId}</strong>
+      <p>Use Tab or arrows to choose a valid target, Enter to connect, Escape to cancel.</p>
+      <div role="listbox" aria-label="Valid edge targets">
+        {#each validEdgeTargets(edgeSourceId) as target, index (target)}
+          <button
+            type="button"
+            role="option"
+            aria-selected={index === edgeTargetIndex}
+            onclick={() => void commitEdgeTarget(target)}>{target}</button
+          >
+        {:else}
+          <p>No valid targets; existing dependencies and cycles are blocked.</p>
+        {/each}
+      </div>
+    </div>
+  {/if}
   <p class="sr-only" role="status" aria-label="Canvas authoring feedback" aria-live="polite">
     {authoringFeedback}
   </p>
@@ -447,6 +603,30 @@
     color: var(--color-text);
     background: color-mix(in srgb, var(--color-surface) 94%, transparent);
     font-size: 0.72rem;
+  }
+
+  .edge-picker {
+    position: absolute;
+    z-index: 7;
+    top: 3.3rem;
+    right: 0.625rem;
+    max-width: 20rem;
+    padding: 0.65rem;
+    border: 1px solid var(--color-focus);
+    border-radius: 0.45rem;
+    background: var(--color-surface);
+  }
+  .edge-picker p {
+    margin: 0.3rem 0;
+    font-size: 0.75rem;
+  }
+  .edge-picker [role='option'] {
+    display: block;
+    width: 100%;
+    text-align: left;
+  }
+  .edge-picker [aria-selected='true'] {
+    background: var(--color-node-selected);
   }
 
   .sr-only {
