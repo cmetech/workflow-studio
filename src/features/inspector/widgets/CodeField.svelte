@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
+  import FieldDiagnostics from './FieldDiagnostics.svelte'
   let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
   let draft = $derived(value === undefined ? '' : String(value))
+  const invalid = $derived(issues.length > 0)
 </script>
 
 <div class="field-control">
@@ -14,9 +16,9 @@
     bind:value={draft}
     {disabled}
     aria-required={field.required}
-    aria-invalid={issues.length > 0}
-    aria-describedby={`${field.id}-description`}></textarea>
-  <p id={`${field.id}-description`}>{field.description}</p>
+    aria-invalid={invalid}
+    aria-describedby={`${field.id}-description${invalid ? ` ${field.id}-issue` : ''}`}></textarea>
+  <FieldDiagnostics {field} {issues} />
   <button type="button" {disabled} onclick={() => void onCommit?.({ field, value: draft })}>Apply {field.label}</button>
 </div>
 
@@ -28,11 +30,6 @@
     width: 100%;
     min-height: 5rem;
     font-family: ui-monospace, monospace;
-  }
-  p {
-    margin: 0.25rem 0;
-    color: var(--color-text-muted);
-    font-size: 0.68rem;
   }
   span {
     color: var(--color-danger);

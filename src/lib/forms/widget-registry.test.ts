@@ -210,6 +210,18 @@ describe('schema-driven widget registry', () => {
     })
   })
 
+  it('fails closed when a structured schema publishes a validation keyword the local editor does not implement', () => {
+    const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
+
+    expect(
+      resolveWidget({
+        ...field,
+        widget: 'object',
+        schema: { type: 'object', unevaluatedProperties: false },
+      }),
+    ).toEqual(expect.objectContaining({ ok: false, code: 'contract_reader_unsupported_widget' }))
+  })
+
   it('accepts each supported production union only when all of its branches are recursively editable', async () => {
     const productionContract = (await loadBundledAuthoringContracts()).find(
       ({ profile }) => profile === 'archon-2026-07',

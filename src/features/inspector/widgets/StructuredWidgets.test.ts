@@ -4,7 +4,9 @@ import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contrac
 import type { FormField } from '$src/lib/forms/types'
 import { fieldsForNode } from '$src/lib/forms/widget-registry'
 import ArrayField from './ArrayField.svelte'
+import JsonSchemaField from './JsonSchemaField.svelte'
 import MapField from './MapField.svelte'
+import NumberField from './NumberField.svelte'
 import ObjectField from './ObjectField.svelte'
 
 function field(overrides: Partial<FormField>): FormField {
@@ -196,5 +198,102 @@ describe('recursive structured inspector controls', () => {
 
     render(MapField, { field: updatedInput, value: {}, present: true })
     expect(screen.getByRole('button', { name: 'Add Updatedinput entry' })).toBeEnabled()
+  })
+
+  it('round-trips every published production json-schema example across the full JSON value domain', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const jsonFields = productionContract.node_kinds
+      .flatMap(({ id }) => fieldsForNode(productionContract, id))
+      .filter(
+        (candidate, index, fields) =>
+          candidate.widget === 'json-schema' && fields.findIndex(({ id }) => id === candidate.id) === index,
+      )
+    expect(jsonFields.length).toBeGreaterThan(0)
+
+    for (const jsonField of jsonFields) {
+      const onCommit = vi.fn()
+      const example = structuredClone(jsonField.examples[0])
+      const rendered = render(JsonSchemaField, { field: jsonField, value: example, present: true, onCommit })
+      await fireEvent.click(rendered.getByRole('button', { name: `Apply ${jsonField.label}` }))
+      expect(onCommit, jsonField.fieldPath).toHaveBeenCalledWith({ field: jsonField, value: example })
+      rendered.unmount()
+    }
+  })
+
+  it('enforces the production loop conditional requirement and selected gate-message branch constraints locally', async () => {
+    const onCommit = vi.fn()
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const loop = fieldsForNode(productionContract, 'loop').find(({ fieldPath }) => fieldPath === 'nodes[].loop')!
+
+    const first = render(ObjectField, {
+      field: loop,
+      value: { max_iterations: 3, prompt: 'Try again.', until: 'done', interactive: true },
+      present: true,
+      onCommit,
+    })
+    await fireEvent.click(first.getByRole('button', { name: 'Apply Loop' }))
+    expect(first.getByRole('alert')).toHaveTextContent(/loop requires gate message/i)
+    expect(onCommit).not.toHaveBeenCalled()
+    first.unmount()
+
+    const second = render(ObjectField, {
+      field: loop,
+      value: { max_iterations: 3, prompt: 'Try again.', until: 'done', interactive: true, gate_message: 0 },
+      present: true,
+      onCommit,
+    })
+    await fireEvent.click(second.getByRole('button', { name: 'Apply Loop' }))
+    expect(second.getByRole('alert')).toHaveTextContent(/gate message uses a disallowed value/i)
+    expect(onCommit).not.toHaveBeenCalled()
+    second.unmount()
+  })
+
+  it('rejects the production exclusive-minimum timeout before committing and accepts a positive value', async () => {
+    const onCommit = vi.fn()
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const timeout = fieldsForNode(productionContract, 'bash').find(({ fieldPath }) => fieldPath === 'nodes[].timeout')!
+    render(NumberField, { field: timeout, value: 0, present: true, onCommit })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Timeout' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/timeout must be greater than 0/i)
+    expect(onCommit).not.toHaveBeenCalled()
+
+    await fireEvent.input(screen.getByRole('spinbutton', { name: 'Timeout' }), { target: { value: '1' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Timeout' }))
+    expect(onCommit).toHaveBeenCalledWith({ field: timeout, value: 1 })
+  })
+
+  it('preserves authoritative structured issues alongside local draft validation errors', async () => {
+    const constrained = field({
+      id: 'constrained',
+      label: 'Constrained',
+      widget: 'array',
+      schema: { type: 'array', minItems: 2, items: { type: 'string' } },
+    })
+    render(ArrayField, {
+      field: constrained,
+      value: ['one'],
+      present: true,
+      issues: [
+        {
+          code: 'authoritative',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Authoritative array issue.',
+          document: 'definition',
+        },
+      ],
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Constrained' }))
+    expect(screen.getByText(/authoritative array issue/i)).toBeVisible()
+    expect(screen.getByText(/constrained must have at least 2 items/i)).toBeVisible()
   })
 })

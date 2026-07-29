@@ -450,6 +450,12 @@ function numberSchema(field: FormField): boolean {
 }
 
 function objectSchema(field: FormField): boolean {
+  const union = Array.isArray(field.schema.oneOf)
+    ? field.schema.oneOf
+    : Array.isArray(field.schema.anyOf)
+      ? field.schema.anyOf
+      : null
+  if (union && union.some((branch) => schemaType(record(branch) ?? {}) === undefined)) return false
   const objectLike =
     schemaType(field.schema) === 'object' ||
     schemaType(field.schema) === undefined ||
@@ -460,7 +466,7 @@ function objectSchema(field: FormField): boolean {
 }
 
 function jsonValueSchema(field: FormField): boolean {
-  return Object.keys(field.schema).length > 0
+  return canEditStructuredSchema(field.schema)
 }
 
 function normalizeSection(section: string): string {

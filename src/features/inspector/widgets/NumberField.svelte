@@ -1,7 +1,17 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
+  import { validateSchemaValue } from '$src/lib/forms/structured-draft'
+  import FieldDiagnostics from './FieldDiagnostics.svelte'
   let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
   let draft = $derived(value === undefined ? '' : String(value))
+  let localErrors = $state<readonly string[]>([])
+  const invalid = $derived(issues.length > 0 || localErrors.length > 0)
+
+  function apply(): void {
+    const number = Number(draft)
+    localErrors = validateSchemaValue(number, field.schema, field.label)
+    if (localErrors.length === 0) void onCommit?.({ field, value: number })
+  }
 </script>
 
 <div class="field-control">
@@ -17,14 +27,12 @@
       min={field.constraints.minimum}
       max={field.constraints.maximum}
       aria-required={field.required}
-      aria-invalid={issues.length > 0}
-      aria-describedby={`${field.id}-description`}
+      aria-invalid={invalid}
+      aria-describedby={`${field.id}-description${invalid ? ` ${field.id}-issue` : ''}`}
     />{#if field.unit}<span class="unit">{field.unit}</span>{/if}
   </div>
-  <p id={`${field.id}-description`}>{field.description}</p>
-  <button type="button" {disabled} onclick={() => void onCommit?.({ field, value: Number(draft) })}
-    >Apply {field.label}</button
-  >
+  <FieldDiagnostics {field} {issues} {localErrors} />
+  <button type="button" {disabled} onclick={apply}>Apply {field.label}</button>
 </div>
 
 <style>
@@ -39,11 +47,6 @@
   input {
     min-width: 0;
     flex: 1;
-  }
-  p {
-    margin: 0.25rem 0;
-    color: var(--color-text-muted);
-    font-size: 0.68rem;
   }
   label span {
     color: var(--color-danger);

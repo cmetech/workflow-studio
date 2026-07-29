@@ -16,10 +16,12 @@
     draft: StructuredDraft
     label: string
     disabled?: boolean
+    invalid?: boolean
+    describedBy?: string
     onChange: (draft: StructuredDraft) => void
   }
 
-  let { draft, label, disabled = false, onChange }: Props = $props()
+  let { draft, label, disabled = false, invalid = false, describedBy = '', onChange }: Props = $props()
   const scalarType = $derived(
     Array.isArray(draft.schema.type) ? draft.schema.type.find((value) => value !== 'null') : draft.schema.type,
   )
@@ -46,6 +48,8 @@
   <label
     >{label} type<select
       {disabled}
+      aria-invalid={invalid}
+      aria-describedby={describedBy}
       value={String(draft.activeIndex)}
       onchange={(event) => onChange(selectStructuredUnionBranch(draft, Number(event.currentTarget.value)))}
       >{#each draft.branches as branch, index (index)}<option value={String(index)}
@@ -57,6 +61,8 @@
     draft={draft.value}
     label={`${label} value`}
     {disabled}
+    {invalid}
+    {describedBy}
     onChange={(value) => onChange({ ...draft, value })}
   />
 {:else if draft.kind === 'scalar'}
@@ -64,6 +70,8 @@
     <label
       >{label}<select
         {disabled}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
         value={String(scalarOptions.findIndex((candidate) => Object.is(candidate, draft.value)))}
         onchange={(event) => onChange({ ...draft, value: scalarOptions[Number(event.currentTarget.value)] })}
         >{#each scalarOptions as option, index (index)}<option value={String(index)}>{String(option)}</option
@@ -77,6 +85,8 @@
       ><input
         type="checkbox"
         {disabled}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
         checked={draft.value === true}
         onchange={(event) => onChange({ ...draft, value: event.currentTarget.checked })}
       />{label}</label
@@ -86,6 +96,8 @@
       >{label}<input
         type="number"
         {disabled}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
         value={typeof draft.value === 'number' && Number.isFinite(draft.value) ? String(draft.value) : ''}
         min={typeof draft.schema.minimum === 'number' ? draft.schema.minimum : undefined}
         max={typeof draft.schema.maximum === 'number' ? draft.schema.maximum : undefined}
@@ -98,6 +110,8 @@
       >{label}<input
         type="text"
         {disabled}
+        aria-invalid={invalid}
+        aria-describedby={describedBy}
         value={typeof draft.value === 'string' ? draft.value : ''}
         oninput={(event) => onChange({ ...draft, value: event.currentTarget.value })}
       /></label
@@ -112,6 +126,8 @@
           draft={item}
           label={`${label} item ${index + 1}`}
           {disabled}
+          {invalid}
+          {describedBy}
           onChange={(next) => replaceArrayItem(index, next)}
         />
         <button
@@ -142,6 +158,8 @@
             >{label} key {index + 1}<input
               type="text"
               {disabled}
+              aria-invalid={invalid}
+              aria-describedby={describedBy}
               value={entry.key}
               oninput={(event) => replaceObjectEntry(index, { ...entry, key: event.currentTarget.value })}
             /></label
@@ -151,6 +169,8 @@
           draft={entry.value}
           label={fieldLabel(entry)}
           {disabled}
+          {invalid}
+          {describedBy}
           onChange={(value) => replaceObjectEntry(index, { ...entry, value })}
         />
         {#if entry.dynamic || !entry.required}<button

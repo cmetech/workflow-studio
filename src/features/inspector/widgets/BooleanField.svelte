@@ -1,28 +1,28 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
-  let { field, value, disabled = false, onCommit }: WidgetProps = $props()
+  import FieldDiagnostics from './FieldDiagnostics.svelte'
+  let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
+  const invalid = $derived(issues.length > 0)
 </script>
 
 <div class="field-control">
   <label
     ><input
+      id={field.id}
       type="checkbox"
       checked={value === true}
       {disabled}
-      aria-describedby={`${field.id}-description`}
+      aria-required={field.required}
+      aria-invalid={invalid}
+      aria-describedby={`${field.id}-description${invalid ? ` ${field.id}-issue` : ''}`}
       onchange={(event) => void onCommit?.({ field, value: event.currentTarget.checked })}
     />
     {field.label}{#if field.required}<span> required</span>{/if}</label
   >
-  <p id={`${field.id}-description`}>{field.description}</p>
+  <FieldDiagnostics {field} {issues} />
 </div>
 
 <style>
-  p {
-    margin: 0.25rem 0;
-    color: var(--color-text-muted);
-    font-size: 0.68rem;
-  }
   span {
     color: var(--color-danger);
   }

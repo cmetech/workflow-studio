@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
+  import FieldDiagnostics from './FieldDiagnostics.svelte'
 
   let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
   let draft = $derived(value === undefined ? '' : String(value))
@@ -27,8 +28,7 @@
       }
     }}
   />
-  <p id={descriptionId} class="help">{field.description}</p>
-  {#if invalid}<p id={issueId} class="issue">{issues.map(({ message }) => message).join(' ')}</p>{/if}
+  <FieldDiagnostics {field} {issues} />
   <div class="field-actions">
     <button type="button" {disabled} onclick={() => void onCommit?.({ field, value: draft })}
       >Apply {field.label}</button
@@ -45,15 +45,8 @@
   input {
     width: 100%;
   }
-  .required,
-  .issue {
+  .required {
     color: var(--color-danger);
-  }
-  .help,
-  .issue {
-    margin: 0.25rem 0;
-    color: var(--color-text-muted);
-    font-size: 0.68rem;
   }
   .field-actions {
     display: flex;
