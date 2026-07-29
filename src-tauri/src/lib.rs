@@ -50,6 +50,8 @@ pub fn run() {
             git::git_status,
             git::git_diff_pair,
             git::git_history_pair,
+            git::git_retain_history_authorization,
+            git::git_revoke_history_authorization,
             git::git_show_pair,
         ])
         .run(tauri::generate_context!())

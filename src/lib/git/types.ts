@@ -29,6 +29,11 @@ export interface GitCommitSummary {
   readonly subject: string
 }
 
+export interface GitHistoryResult {
+  readonly commits: readonly GitCommitSummary[]
+  readonly authorizationToken: string
+}
+
 export interface GitPairSnapshot {
   readonly oid: string
   readonly definition: string | null
@@ -46,6 +51,7 @@ export interface GitInspection {
   readonly status: GitStatus
   readonly diff: GitDiff
   readonly history: readonly GitCommitSummary[]
+  readonly historyAuthorizationToken?: string | null
 }
 
 export const emptyGitInspection: GitInspection = Object.freeze({
@@ -54,4 +60,5 @@ export const emptyGitInspection: GitInspection = Object.freeze({
   status: Object.freeze({ entries: Object.freeze([]) }),
   diff: Object.freeze({ working: '', index: '' }),
   history: Object.freeze([]),
+  historyAuthorizationToken: null,
 })

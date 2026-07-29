@@ -37,6 +37,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) enum ReadOperation<'a> {
     RepositoryRoot,
     GitDirectory,
+    GitCommonDirectory,
     Branch,
     ShortHead,
     Status,
@@ -354,6 +355,9 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
         ReadOperation::GitDirectory => strings(&["rev-parse", "--absolute-git-dir"]),
+        ReadOperation::GitCommonDirectory => {
+            strings(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        }
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
         ReadOperation::Status => {

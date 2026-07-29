@@ -176,7 +176,7 @@ pub fn workspace_set_root(
     let scope = WorkspaceScope::new(Path::new(&root_path))?;
     let root = scope.verify()?;
     let git_metadata = crate::git::detect_repository_metadata(root).ok().flatten();
-    let watcher = watcher::start(root, git_metadata.as_deref(), app)?;
+    let watcher = watcher::start(root, git_metadata.as_ref(), app)?;
     let root_path = root
         .to_str()
         .ok_or_else(|| {

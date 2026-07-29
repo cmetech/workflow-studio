@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::paths;
 use super::{WorkspaceError, WorkspaceResult};
+use crate::git::GitRepositoryMetadata;
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -37,7 +38,7 @@ impl Drop for WorkspaceWatcher {
 
 pub fn start(
     root: &Path,
-    git_metadata: Option<&Path>,
+    git_metadata: Option<&GitRepositoryMetadata>,
     app: AppHandle,
 ) -> WorkspaceResult<WorkspaceWatcher> {
     start_with_optional_git_sink(root, git_metadata, move |event| {
@@ -82,7 +83,7 @@ pub(super) fn start_with_sink(
 #[cfg(test)]
 pub(super) fn start_with_git_metadata_sink(
     root: &Path,
-    git_metadata: &Path,
+    git_metadata: &GitRepositoryMetadata,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
     start_with_optional_git_sink(root, Some(git_metadata), sink)
@@ -90,7 +91,7 @@ pub(super) fn start_with_git_metadata_sink(
 
 fn start_with_optional_git_sink(
     root: &Path,
-    git_metadata: Option<&Path>,
+    git_metadata: Option<&GitRepositoryMetadata>,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
     start_with_optional_git_sink_and_registration(
@@ -104,7 +105,7 @@ fn start_with_optional_git_sink(
 #[cfg(test)]
 pub(super) fn start_with_git_metadata_sink_and_registration(
     root: &Path,
-    git_metadata: &Path,
+    git_metadata: &GitRepositoryMetadata,
     registration: impl FnMut(&mut RecommendedWatcher, &Path, RecursiveMode) -> notify::Result<()>,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
@@ -113,15 +114,16 @@ pub(super) fn start_with_git_metadata_sink_and_registration(
 
 fn start_with_optional_git_sink_and_registration(
     root: &Path,
-    git_metadata: Option<&Path>,
+    git_metadata: Option<&GitRepositoryMetadata>,
     mut registration: impl FnMut(&mut RecommendedWatcher, &Path, RecursiveMode) -> notify::Result<()>,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
     let root = paths::canonical_root(root)?;
     let callback_root = root.clone();
-    let git_metadata = git_metadata
-        .and_then(|path| paths::canonical_root(path).ok())
-        .filter(|path| !path.starts_with(&root));
+    let git_metadata = git_metadata.map(|metadata| WatchedGitMetadata {
+        worktree_dir: paths::canonical_root(&metadata.worktree_dir).ok(),
+        common_dir: paths::canonical_root(&metadata.common_dir).ok(),
+    });
     let callback_git_metadata = git_metadata.clone();
     let (sender, receiver) = mpsc::channel::<Event>();
     let mut watcher = notify::recommended_watcher(move |result| {
@@ -131,14 +133,23 @@ fn start_with_optional_git_sink_and_registration(
     })
     .map_err(watch_error)?;
     registration(&mut watcher, &root, RecursiveMode::Recursive).map_err(watch_error)?;
-    if let Some(path) = &git_metadata {
-        // Parent-repository observation is optional. Watching the metadata root
-        // non-recursively covers HEAD, index, and packed-refs replacements; refs
-        // is the only metadata subtree that needs recursive observation.
-        let _ = registration(&mut watcher, path, RecursiveMode::NonRecursive);
-        let refs = path.join("refs");
-        if refs.is_dir() {
-            let _ = registration(&mut watcher, &refs, RecursiveMode::Recursive);
+    if let Some(metadata) = &git_metadata {
+        // Git observation is optional. Watch only per-worktree HEAD/index and
+        // common packed refs/refs, and do not duplicate the primary root watch.
+        let mut registered = BTreeSet::new();
+        for path in [metadata.worktree_dir.as_ref(), metadata.common_dir.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if !path.starts_with(&root) && registered.insert(path.clone()) {
+                let _ = registration(&mut watcher, path, RecursiveMode::NonRecursive);
+            }
+        }
+        if let Some(common_dir) = &metadata.common_dir {
+            let refs = common_dir.join("refs");
+            if refs.is_dir() && !refs.starts_with(&root) && registered.insert(refs.clone()) {
+                let _ = registration(&mut watcher, &refs, RecursiveMode::Recursive);
+            }
         }
     }
 
@@ -147,7 +158,7 @@ fn start_with_optional_git_sink_and_registration(
             let mut pending = BTreeMap::new();
             collect_event(
                 &callback_root,
-                callback_git_metadata.as_deref(),
+                callback_git_metadata.as_ref(),
                 first,
                 &mut pending,
             );
@@ -155,7 +166,7 @@ fn start_with_optional_git_sink_and_registration(
                 match receiver.recv_timeout(DEBOUNCE) {
                     Ok(event) => collect_event(
                         &callback_root,
-                        callback_git_metadata.as_deref(),
+                        callback_git_metadata.as_ref(),
                         event,
                         &mut pending,
                     ),
@@ -183,17 +194,22 @@ fn start_with_optional_git_sink_and_registration(
 
 fn collect_event(
     root: &Path,
-    git_metadata: Option<&Path>,
+    git_metadata: Option<&WatchedGitMetadata>,
     event: Event,
     pending: &mut BTreeMap<String, &'static str>,
 ) {
     let hint = event_hint(&event.kind);
     for path in event.paths {
-        let relative = paths::normalize_relative(root, &path).or_else(|| {
-            git_metadata
-                .and_then(|metadata| git_metadata_relative(metadata, &path))
-                .map(|relative| format!("@git/{relative}"))
-        });
+        let relative = git_metadata
+            .and_then(|metadata| git_metadata_relative(metadata, &path))
+            .map(|relative| format!("@git/{relative}"))
+            .or_else(|| {
+                if git_metadata.is_some_and(|metadata| metadata.contains(&path)) {
+                    None
+                } else {
+                    paths::normalize_relative(root, &path)
+                }
+            });
         if let Some(relative) = relative {
             pending
                 .entry(relative)
@@ -203,16 +219,44 @@ fn collect_event(
     }
 }
 
-fn git_metadata_relative(metadata: &Path, path: &Path) -> Option<String> {
-    let relative = paths::normalize_relative(metadata, path)?;
-    if matches!(relative.as_str(), "HEAD" | "index" | "packed-refs")
-        || relative == "refs"
-        || relative.starts_with("refs/")
-    {
-        Some(relative)
-    } else {
-        None
+#[derive(Clone)]
+struct WatchedGitMetadata {
+    worktree_dir: Option<std::path::PathBuf>,
+    common_dir: Option<std::path::PathBuf>,
+}
+
+impl WatchedGitMetadata {
+    fn contains(&self, path: &Path) -> bool {
+        self.worktree_dir
+            .as_deref()
+            .is_some_and(|directory| path.starts_with(directory))
+            || self
+                .common_dir
+                .as_deref()
+                .is_some_and(|directory| path.starts_with(directory))
     }
+}
+
+fn git_metadata_relative(metadata: &WatchedGitMetadata, path: &Path) -> Option<String> {
+    if let Some(relative) = metadata
+        .worktree_dir
+        .as_deref()
+        .and_then(|directory| paths::normalize_relative(directory, path))
+    {
+        if matches!(relative.as_str(), "HEAD" | "index") {
+            return Some(format!("worktree/{relative}"));
+        }
+    }
+    if let Some(relative) = metadata
+        .common_dir
+        .as_deref()
+        .and_then(|directory| paths::normalize_relative(directory, path))
+    {
+        if relative == "packed-refs" || relative == "refs" || relative.starts_with("refs/") {
+            return Some(format!("common/{relative}"));
+        }
+    }
+    None
 }
 
 fn merge_hint(current: &'static str, next: &'static str) -> &'static str {

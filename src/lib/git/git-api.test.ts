@@ -10,15 +10,20 @@ function nativeFixture(): GitNativeBridge {
       entries: [{ path: 'flows/a b.yaml', index: '.', worktree: 'M', untracked: false }],
     })),
     gitDiffPair: vi.fn(async () => ({ working: 'working diff', index: 'index diff' })),
-    gitHistoryPair: vi.fn(async () => [
-      {
-        oid: '0123456789abcdef',
-        shortOid: '0123456789ab',
-        authorName: 'Ada',
-        authoredAt: '2026-07-29T10:00:00Z',
-        subject: 'pair update',
-      },
-    ]),
+    gitHistoryPair: vi.fn(async () => ({
+      authorizationToken: 'history-token',
+      commits: [
+        {
+          oid: '0123456789abcdef',
+          shortOid: '0123456789ab',
+          authorName: 'Ada',
+          authoredAt: '2026-07-29T10:00:00Z',
+          subject: 'pair update',
+        },
+      ],
+    })),
+    gitRetainHistoryAuthorization: vi.fn(async () => undefined),
+    gitRevokeHistoryAuthorization: vi.fn(async () => undefined),
     gitShowPair: vi.fn(async () => ({
       oid: '0123456789abcdef',
       definition: 'name: historical\n',
@@ -76,12 +81,18 @@ describe('Git inspection API', () => {
   it('loads a historical pair using the selected validated commit OID', async () => {
     const native = nativeFixture()
 
-    const snapshot = await loadGitCommit(native, '/repo', '0123456789abcdef', {
+    const snapshot = await loadGitCommit(native, '/repo', '0123456789abcdef', 'history-token', {
       definitionPath: 'flows/a b.yaml',
       companionPath: null,
     })
 
     expect(snapshot.definition).toBe('name: historical\n')
-    expect(native.gitShowPair).toHaveBeenCalledWith('/repo', '0123456789abcdef', 'flows/a b.yaml', null)
+    expect(native.gitShowPair).toHaveBeenCalledWith(
+      '/repo',
+      '0123456789abcdef',
+      'history-token',
+      'flows/a b.yaml',
+      null,
+    )
   })
 })

@@ -39,21 +39,59 @@ export function createGitInspectionController(native: GitNativeBridge) {
     const request = ++generation
     previewGeneration += 1
     setGitLoading()
+    let inspection: GitInspection | undefined
     try {
-      const inspection = await load()
-      if (request === generation) setGitInspection(inspection)
+      inspection = await load()
     } catch (error: unknown) {
       if (request === generation) {
         setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
       }
+      return
+    }
+    const token = inspection.historyAuthorizationToken ?? null
+    if (request !== generation) {
+      await revoke(token)
+      return
+    }
+    if (token) {
+      try {
+        await native.gitRetainHistoryAuthorization(token)
+      } catch (error: unknown) {
+        await revoke(token)
+        if (request === generation) {
+          setGitError(error instanceof Error ? error.message : 'Local Git history authorization failed.')
+        }
+        return
+      }
+    }
+    if (request !== generation) {
+      await revoke(token)
+      return
+    }
+    const previousToken = $gitState.get().inspection.historyAuthorizationToken ?? null
+    setGitInspection(inspection)
+    if (previousToken !== token) {
+      await revoke(previousToken)
+    }
+  }
+
+  async function revoke(token: string | null): Promise<void> {
+    if (!token) return
+    try {
+      await native.gitRevokeHistoryAuthorization(token)
+    } catch {
+      // Revocation is best-effort here; native state is also bounded and cleared
+      // whenever the workspace capability changes.
     }
   }
 
   return {
     reset(): void {
+      const token = $gitState.get().inspection.historyAuthorizationToken ?? null
       generation += 1
       previewGeneration += 1
       resetGitState()
+      void revoke(token)
     },
     refreshRepository(): Promise<void> {
       return publish(() => inspectGitRepository(native))
@@ -66,15 +104,18 @@ export function createGitInspectionController(native: GitNativeBridge) {
       const root = state.repository?.root
       if (!root) return Promise.reject(new Error('Open a workflow in a Git repository first.'))
       if (!samePair(state.pair, pair)) return Promise.reject(new Error('The selected workflow pair changed.'))
+      const authorizationToken = state.historyAuthorizationToken
+      if (!authorizationToken) return Promise.reject(new Error('Reload workflow history before previewing a commit.'))
       const request = ++previewGeneration
       const inspectionGeneration = generation
-      const snapshot = await loadGitCommit(native, root, oid, pair)
+      const snapshot = await loadGitCommit(native, root, oid, authorizationToken, pair)
       const current = $gitState.get().inspection
       if (
         request !== previewGeneration ||
         inspectionGeneration !== generation ||
         snapshot.oid !== oid ||
         current.repository?.root !== root ||
+        current.historyAuthorizationToken !== authorizationToken ||
         !samePair(current.pair, pair)
       ) {
         return null
@@ -114,5 +155,6 @@ function freezeInspection(inspection: GitInspection): GitInspection {
     }),
     diff: Object.freeze({ ...inspection.diff }),
     history: Object.freeze(inspection.history.map((commit) => Object.freeze({ ...commit }))),
+    historyAuthorizationToken: inspection.historyAuthorizationToken ?? null,
   })
 }

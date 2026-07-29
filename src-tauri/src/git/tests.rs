@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -7,8 +8,9 @@ use tempfile::tempdir;
 use super::parse::{parse_history, parse_status};
 use super::runner::{build_read_command, ReadOperation};
 use super::{
-    authorize_repository_root, detect_repository, diff_pair, history_pair, show_pair, status,
-    AuthorizedGitContext, GitState, HistoryAuthorization, HISTORY_AUTHORIZATION_LIMIT,
+    authorize_repository_root, detect_repository, diff_pair, history_pair, show_from_authorization,
+    show_pair, status, AuthorizedGitContext, GitState, HistoricalPaths, HistoryAuthorization,
+    HISTORY_AUTHORIZATION_LIMIT,
 };
 
 fn git(root: &Path, arguments: &[&str]) {
@@ -28,6 +30,22 @@ fn git(root: &Path, arguments: &[&str]) {
 fn commit_all(root: &Path, message: &str) {
     git(root, &["add", "--all"]);
     git(root, &["commit", "-m", message]);
+}
+
+fn authorization(
+    context: &AuthorizedGitContext,
+    definition_path: impl Into<String>,
+    by_oid: HashMap<String, HistoricalPaths>,
+) -> HistoryAuthorization {
+    HistoryAuthorization {
+        workspace_root: context.workspace_root.clone(),
+        workspace_identity: context.workspace_identity.clone(),
+        repository_root: context.repository_root.clone(),
+        repository_identity: context.repository_identity.clone(),
+        definition_path: definition_path.into(),
+        companion_path: None,
+        by_oid,
+    }
 }
 
 #[test]
@@ -264,70 +282,62 @@ fn bound_context_rejects_workspace_and_repository_replacement_races() {
 
 #[test]
 fn stale_native_history_authorization_cannot_publish_after_context_clear() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
     let generation = state.begin_history();
     state.clear();
     let error = state
-        .publish_history(
+        .issue_history(
             generation,
-            HistoryAuthorization {
-                workspace_root: "/workspace".into(),
-                repository_root: "/repo".into(),
-                definition_path: "flow.yaml".to_owned(),
-                companion_path: None,
-                by_oid: Default::default(),
-            },
+            authorization(&context, "flow.yaml", Default::default()),
         )
         .unwrap_err();
     assert_eq!(error.code, "git_context_changed");
-    assert!(state.history.lock().unwrap().is_empty());
+    let history = state.history.lock().unwrap();
+    assert!(history.pending.is_empty());
+    assert!(history.retained.is_empty());
 }
 
 #[test]
 fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visible_pair() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
-    let workspace = Path::new("/workspace");
-    let repository = Path::new("/repo");
 
     let visible_generation = state.begin_history();
-    state
-        .publish_history(
+    let visible_token = state
+        .issue_history(
             visible_generation,
-            HistoryAuthorization {
-                workspace_root: workspace.into(),
-                repository_root: repository.into(),
-                definition_path: "visible.yaml".to_owned(),
-                companion_path: None,
-                by_oid: Default::default(),
-            },
+            authorization(&context, "visible.yaml", Default::default()),
         )
         .unwrap();
+    state.retain_history(&visible_token).unwrap();
 
     // The renderer has already selected the visible pair, but an obsolete request
     // only reaches the native command after that newer request has completed.
     let obsolete_generation = state.begin_history();
-    state
-        .publish_history(
+    let obsolete_token = state
+        .issue_history(
             obsolete_generation,
-            HistoryAuthorization {
-                workspace_root: workspace.into(),
-                repository_root: repository.into(),
-                definition_path: "obsolete.yaml".to_owned(),
-                companion_path: None,
-                by_oid: Default::default(),
-            },
+            authorization(&context, "obsolete.yaml", Default::default()),
         )
         .unwrap();
+    state.revoke_history(&obsolete_token).unwrap();
 
     assert!(state
-        .authorized_history(workspace, repository, "visible.yaml", None)
-        .is_ok());
-    assert!(state
-        .authorized_history(workspace, repository, "obsolete.yaml", None)
+        .authorized_history(&visible_token, &context, "visible.yaml", None)
         .is_ok());
     assert_eq!(
         state
-            .authorized_history(workspace, repository, "visible.yaml", Some("obsolete.yaml"))
+            .authorized_history(
+                &visible_token,
+                &context,
+                "visible.yaml",
+                Some("obsolete.yaml")
+            )
             .err()
             .unwrap()
             .code,
@@ -337,7 +347,7 @@ fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visi
     state.clear();
     assert_eq!(
         state
-            .authorized_history(workspace, repository, "visible.yaml", None)
+            .authorized_history(&visible_token, &context, "visible.yaml", None)
             .err()
             .unwrap()
             .code,
@@ -347,40 +357,151 @@ fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visi
 
 #[test]
 fn native_history_authorization_cache_evicts_oldest_pairs_at_its_bound() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
-    let workspace = Path::new("/workspace");
-    let repository = Path::new("/repo");
+    let mut tokens = Vec::new();
 
     for index in 0..=HISTORY_AUTHORIZATION_LIMIT {
-        state
-            .publish_history(
+        let token = state
+            .issue_history(
                 state.begin_history(),
-                HistoryAuthorization {
-                    workspace_root: workspace.into(),
-                    repository_root: repository.into(),
-                    definition_path: format!("flow-{index}.yaml"),
-                    companion_path: None,
-                    by_oid: Default::default(),
-                },
+                authorization(&context, format!("flow-{index}.yaml"), Default::default()),
             )
             .unwrap();
+        state.retain_history(&token).unwrap();
+        tokens.push(token);
     }
 
     assert_eq!(
-        state.history.lock().unwrap().len(),
+        state.history.lock().unwrap().retained.len(),
         HISTORY_AUTHORIZATION_LIMIT
     );
     assert!(state
-        .authorized_history(workspace, repository, "flow-0.yaml", None)
+        .authorized_history(&tokens[0], &context, "flow-0.yaml", None)
         .is_err());
     assert!(state
         .authorized_history(
-            workspace,
-            repository,
+            tokens.last().unwrap(),
+            &context,
             &format!("flow-{HISTORY_AUTHORIZATION_LIMIT}.yaml"),
             None,
         )
         .is_ok());
+}
+
+#[test]
+fn renderer_retained_same_pair_token_survives_late_obsolete_publication_and_pressure() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    git(root.path(), &["config", "user.name", "Workflow Test"]);
+    git(
+        root.path(),
+        &["config", "user.email", "workflow@example.test"],
+    );
+    fs::write(root.path().join("flow.yaml"), "name: A\n").unwrap();
+    commit_all(root.path(), "version A");
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
+    let (_, old_authorization) = context.history_pair_authorized("flow.yaml", None).unwrap();
+
+    fs::write(root.path().join("flow.yaml"), "name: B\n").unwrap();
+    commit_all(root.path(), "version B");
+    let (new_commits, new_authorization) =
+        context.history_pair_authorized("flow.yaml", None).unwrap();
+    let new_oid = new_commits
+        .iter()
+        .find(|commit| commit.subject == "version B")
+        .unwrap()
+        .oid
+        .clone();
+    let state = GitState::default();
+
+    let generation = state.begin_history();
+    let winning_token = state.issue_history(generation, new_authorization).unwrap();
+    assert_eq!(winning_token.len(), 64);
+    assert!(winning_token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    state.retain_history(&winning_token).unwrap();
+
+    for index in 0..=HISTORY_AUTHORIZATION_LIMIT {
+        let token = state
+            .issue_history(
+                generation,
+                authorization(
+                    &context,
+                    format!("obsolete-{index}.yaml"),
+                    Default::default(),
+                ),
+            )
+            .unwrap();
+        state.revoke_history(&token).unwrap();
+    }
+    // The pre-mutation A request completes only after B won renderer publication.
+    let old_token = state.issue_history(generation, old_authorization).unwrap();
+    assert_ne!(old_token, winning_token);
+    state.revoke_history(&old_token).unwrap();
+
+    let authorization = state
+        .authorized_history(&winning_token, &context, "flow.yaml", None)
+        .unwrap();
+    assert!(authorization.by_oid.contains_key(&new_oid));
+    let snapshot =
+        show_from_authorization(&context, &authorization, &new_oid, "flow.yaml", None).unwrap();
+    assert_eq!(snapshot.definition.as_deref(), Some("name: B\n"));
+    assert_eq!(
+        show_from_authorization(&context, &authorization, "ffffffff", "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+    assert_eq!(
+        state
+            .authorized_history(&winning_token, &context, "other.yaml", None,)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+    assert_eq!(
+        state
+            .authorized_history(&old_token, &context, "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[test]
+fn retained_token_rejects_a_replacement_at_the_same_workspace_and_repository_paths() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let original_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+    let state = GitState::default();
+    let token = state
+        .issue_history(
+            state.begin_history(),
+            authorization(&original_context, "flow.yaml", Default::default()),
+        )
+        .unwrap();
+    state.retain_history(&token).unwrap();
+
+    fs::rename(&root, parent.path().join("parked-repo")).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let replacement_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+
+    assert_eq!(
+        state
+            .authorized_history(&token, &replacement_context, "flow.yaml", None)
+            .err()
+            .expect("a token must not cross stable directory identities")
+            .code,
+        "git_pair_not_authorized"
+    );
 }
 
 #[test]

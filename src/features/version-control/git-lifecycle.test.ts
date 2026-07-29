@@ -14,7 +14,9 @@ function nativeFixture(): GitNativeBridge {
     gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
     gitStatus: vi.fn(async () => ({ entries: [] })),
     gitDiffPair: vi.fn(async () => ({ working: '', index: '' })),
-    gitHistoryPair: vi.fn(async () => []),
+    gitHistoryPair: vi.fn(async () => ({ commits: [], authorizationToken: 'default-token' })),
+    gitRetainHistoryAuthorization: vi.fn(async () => undefined),
+    gitRevokeHistoryAuthorization: vi.fn(async () => undefined),
     gitShowPair: vi.fn(),
   }
 }
@@ -54,6 +56,57 @@ describe('Git inspection lifecycle', () => {
     await controller.refreshPair({ definitionPath: 'b.yaml', companionPath: null })
     pending.resolve({ oid: 'aaaaaaaa', definition: 'name: stale\n', companion: null })
     expect(await preview).toBeNull()
+  })
+
+  it('retains only the same-pair renderer winner when older history and eviction pressure resolve later', async () => {
+    const native = nativeFixture()
+    const pending = new Map<
+      string,
+      ReturnType<typeof deferred<{ commits: readonly never[]; authorizationToken: string }>>
+    >()
+    vi.mocked(native.gitHistoryPair).mockImplementation(async (_root, definitionPath) => {
+      const result = deferred<{ commits: readonly never[]; authorizationToken: string }>()
+      pending.set(definitionPath, result)
+      return result.promise
+    })
+    vi.mocked(native.gitShowPair).mockResolvedValue({
+      oid: 'bbbbbbbb',
+      definition: 'name: B\n',
+      companion: null,
+    })
+    const controller = createGitInspectionController(native)
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+
+    const oldSamePair = controller.refreshPair(pair)
+    await vi.waitFor(() => expect(pending.has('flow.yaml')).toBe(true))
+    const oldFlow = pending.get('flow.yaml')!
+    const obsolete = Array.from({ length: 17 }, (_, index) => {
+      const obsoletePair = { definitionPath: `obsolete-${index}.yaml`, companionPath: null }
+      return controller.refreshPair(obsoletePair)
+    })
+    await vi.waitFor(() => expect(pending.size).toBe(18))
+    const winningRefresh = controller.refreshPair(pair)
+    await vi.waitFor(() => expect(vi.mocked(native.gitHistoryPair).mock.calls).toHaveLength(19))
+    const winningFlow = pending.get('flow.yaml')!
+    expect(winningFlow).not.toBe(oldFlow)
+
+    winningFlow.resolve({ commits: [], authorizationToken: 'token-b' })
+    await winningRefresh
+    for (let index = 0; index < obsolete.length; index += 1) {
+      pending.get(`obsolete-${index}.yaml`)!.resolve({ commits: [], authorizationToken: `obsolete-${index}` })
+    }
+    oldFlow.resolve({ commits: [], authorizationToken: 'token-a' })
+    await Promise.all([oldSamePair, ...obsolete])
+
+    const snapshot = await controller.loadCommit('bbbbbbbb', pair)
+    expect(snapshot?.definition).toBe('name: B\n')
+    expect(native.gitRetainHistoryAuthorization).toHaveBeenCalledTimes(1)
+    expect(native.gitRetainHistoryAuthorization).toHaveBeenCalledWith('token-b')
+    expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith('token-a')
+    for (let index = 0; index < obsolete.length; index += 1) {
+      expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith(`obsolete-${index}`)
+    }
+    expect(native.gitShowPair).toHaveBeenCalledWith('/repo', 'bbbbbbbb', 'token-b', 'flow.yaml', null)
   })
 
   it('resets without a workspace, refreshes repository-only without a pair, and refreshes the pair when open', async () => {

@@ -879,9 +879,14 @@ fn nested_workspace_watcher_emits_parent_repository_metadata_changes_without_pol
     fs::create_dir(root.path().join("selected")).unwrap();
     fs::write(root.path().join("selected/flow.yaml"), "name: one\n").unwrap();
     let (sender, receiver) = mpsc::channel();
+    let git_directory = root.path().join(".git");
+    let metadata = crate::git::GitRepositoryMetadata {
+        worktree_dir: git_directory.clone(),
+        common_dir: git_directory,
+    };
     let watcher = super::watcher::start_with_git_metadata_sink(
         &root.path().join("selected"),
-        &root.path().join(".git"),
+        &metadata,
         move |event| sender.send(event).unwrap(),
     )
     .unwrap();
@@ -928,12 +933,15 @@ fn missing_external_git_metadata_does_not_block_primary_workspace_events() {
     let root = tempdir().unwrap();
     let missing_metadata = root.path().join("missing-parent-git-metadata");
     let (sender, receiver) = mpsc::channel();
-    let watcher = super::watcher::start_with_git_metadata_sink(
-        root.path(),
-        &missing_metadata,
-        move |event| sender.send(event).unwrap(),
-    )
-    .expect("optional metadata canonicalization must not block the workspace watcher");
+    let metadata = crate::git::GitRepositoryMetadata {
+        worktree_dir: missing_metadata.clone(),
+        common_dir: missing_metadata,
+    };
+    let watcher =
+        super::watcher::start_with_git_metadata_sink(root.path(), &metadata, move |event| {
+            sender.send(event).unwrap()
+        })
+        .expect("optional metadata canonicalization must not block the workspace watcher");
 
     fs::write(root.path().join("flow.yaml"), "name: primary\n").unwrap();
     let event = receiver
@@ -956,9 +964,13 @@ fn rejected_external_git_watch_registration_does_not_block_primary_workspace_eve
     fs::create_dir(&metadata).unwrap();
     let canonical_metadata = metadata.canonicalize().unwrap();
     let (sender, receiver) = mpsc::channel();
+    let metadata_paths = crate::git::GitRepositoryMetadata {
+        worktree_dir: metadata.clone(),
+        common_dir: metadata,
+    };
     let watcher = super::watcher::start_with_git_metadata_sink_and_registration(
         &root,
-        &metadata,
+        &metadata_paths,
         move |native, path, mode| {
             if path.starts_with(&canonical_metadata) {
                 Err(notify::Error::generic(
@@ -977,6 +989,89 @@ fn rejected_external_git_watch_registration_does_not_block_primary_workspace_eve
         .recv_timeout(Duration::from_secs(5))
         .expect("primary workspace event");
     assert!(event.paths.iter().any(|path| path == "flow.yaml"));
+    drop(watcher);
+}
+
+#[test]
+fn linked_worktree_common_ref_only_commit_emits_git_change() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let repository = tempdir().unwrap();
+    git_fixture(repository.path(), &["init", "-b", "main"]);
+    git_fixture(repository.path(), &["config", "user.name", "Workflow Test"]);
+    git_fixture(
+        repository.path(),
+        &["config", "user.email", "workflow@example.test"],
+    );
+    fs::write(repository.path().join("flow.yaml"), "name: initial\n").unwrap();
+    git_fixture(repository.path(), &["add", "flow.yaml"]);
+    git_fixture(repository.path(), &["commit", "-m", "initial"]);
+
+    let linked = repository.path().join("linked worktree");
+    git_fixture(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "linked-topic",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let metadata = crate::git::detect_repository_metadata(&linked)
+        .unwrap()
+        .unwrap();
+    assert_ne!(metadata.worktree_dir, metadata.common_dir);
+    let head_before = fs::read(metadata.worktree_dir.join("HEAD")).unwrap();
+    let index_before = fs::read(metadata.worktree_dir.join("index")).unwrap();
+
+    let (sender, receiver) = mpsc::channel();
+    let watcher = super::watcher::start_with_git_metadata_sink(&linked, &metadata, move |event| {
+        sender.send(event).unwrap()
+    })
+    .unwrap();
+
+    git_fixture(
+        &linked,
+        &["commit", "--allow-empty", "-m", "external ref only"],
+    );
+    assert_eq!(
+        fs::read(metadata.worktree_dir.join("HEAD")).unwrap(),
+        head_before
+    );
+    assert_eq!(
+        fs::read(metadata.worktree_dir.join("index")).unwrap(),
+        index_before
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut git_paths = Vec::new();
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Ok(event) = receiver.recv_timeout(remaining) else {
+            break;
+        };
+        git_paths.extend(
+            event
+                .paths
+                .into_iter()
+                .filter(|path| path.starts_with("@git/")),
+        );
+        if git_paths
+            .iter()
+            .any(|path| path.contains("common/refs/heads/linked-topic"))
+        {
+            break;
+        }
+    }
+
+    assert!(
+        git_paths
+            .iter()
+            .any(|path| path.contains("common/refs/heads/linked-topic")),
+        "events: {git_paths:?}"
+    );
     drop(watcher);
 }
 

@@ -32,7 +32,8 @@ export async function inspectGitPair(native: GitNativeBridge, pair: GitPairPaths
       ),
     },
     diff,
-    history,
+    history: history.commits,
+    historyAuthorizationToken: history.authorizationToken,
   }
 }
 
@@ -40,7 +41,8 @@ export function loadGitCommit(
   native: GitNativeBridge,
   root: string,
   oid: string,
+  authorizationToken: string,
   pair: GitPairPaths,
 ): Promise<GitPairSnapshot> {
-  return native.gitShowPair(root, oid, pair.definitionPath, pair.companionPath)
+  return native.gitShowPair(root, oid, authorizationToken, pair.definitionPath, pair.companionPath)
 }

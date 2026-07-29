@@ -207,6 +207,10 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     gitHistoryPair: async () => {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
     },
+    gitRetainHistoryAuthorization: async () => {
+      throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitRevokeHistoryAuthorization: async () => undefined,
     gitShowPair: async () => {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
     },

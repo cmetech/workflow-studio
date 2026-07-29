@@ -2,7 +2,7 @@ import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob, RecoveryWriteRequest } from '../recovery/types'
 import type { ContractCacheLoadResult, ContractCacheStoredEntry } from '../contract/contract-cache'
 import type { WorkflowProfile } from '../contract/types'
-import type { GitCommitSummary, GitDiff, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
+import type { GitDiff, GitHistoryResult, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
 
 export interface HostInfo {
   appVersion: string
@@ -100,12 +100,16 @@ export interface GitNativeBridge extends NativeBridge {
   gitDetect(): Promise<GitRepository | null>
   gitStatus(root: string): Promise<GitStatus>
   gitDiffPair(root: string, definitionPath: string, companionPath: string | null): Promise<GitDiff>
-  gitHistoryPair(
+  gitHistoryPair(root: string, definitionPath: string, companionPath: string | null): Promise<GitHistoryResult>
+  gitRetainHistoryAuthorization(authorizationToken: string): Promise<void>
+  gitRevokeHistoryAuthorization(authorizationToken: string): Promise<void>
+  gitShowPair(
     root: string,
+    oid: string,
+    authorizationToken: string,
     definitionPath: string,
     companionPath: string | null,
-  ): Promise<readonly GitCommitSummary[]>
-  gitShowPair(root: string, oid: string, definitionPath: string, companionPath: string | null): Promise<GitPairSnapshot>
+  ): Promise<GitPairSnapshot>
 }
 
 export interface ContractNativeBridge extends NativeBridge {

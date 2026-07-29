@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
 import type { ContractCacheLoadResult } from '../contract/contract-cache'
-import type { GitCommitSummary, GitDiff, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
+import type { GitDiff, GitHistoryResult, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
 import {
   NativeError,
   type PathOperationResult,
@@ -121,9 +121,19 @@ export const tauriBridge: WorkspaceNativeBridge = {
   gitDiffPair: (root, definitionPath, companionPath) =>
     invokeTyped<GitDiff>('git_diff_pair', { root, definitionPath, companionPath }),
   gitHistoryPair: (root, definitionPath, companionPath) =>
-    invokeTyped<readonly GitCommitSummary[]>('git_history_pair', { root, definitionPath, companionPath }),
-  gitShowPair: (root, oid, definitionPath, companionPath) =>
-    invokeTyped<GitPairSnapshot>('git_show_pair', { root, oid, definitionPath, companionPath }),
+    invokeTyped<GitHistoryResult>('git_history_pair', { root, definitionPath, companionPath }),
+  gitRetainHistoryAuthorization: (authorizationToken) =>
+    invokeTyped<void>('git_retain_history_authorization', { authorizationToken }),
+  gitRevokeHistoryAuthorization: (authorizationToken) =>
+    invokeTyped<void>('git_revoke_history_authorization', { authorizationToken }),
+  gitShowPair: (root, oid, authorizationToken, definitionPath, companionPath) =>
+    invokeTyped<GitPairSnapshot>('git_show_pair', {
+      root,
+      oid,
+      authorizationToken,
+      definitionPath,
+      companionPath,
+    }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

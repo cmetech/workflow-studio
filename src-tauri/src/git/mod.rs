@@ -4,7 +4,7 @@ mod runner;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use same_file::Handle;
 use serde::Serialize;
@@ -36,6 +36,12 @@ pub struct GitRepository {
     pub root: String,
     pub branch: Option<String>,
     pub detached_head: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitRepositoryMetadata {
+    pub(crate) worktree_dir: PathBuf,
+    pub(crate) common_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -73,6 +79,13 @@ pub struct GitCommitSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHistoryResult {
+    pub commits: Vec<GitCommitSummary>,
+    pub authorization_token: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct GitPairSnapshot {
     pub oid: String,
     pub definition: Option<String>,
@@ -80,8 +93,14 @@ pub struct GitPairSnapshot {
 }
 
 #[derive(Default)]
+struct HistoryAuthorizationState {
+    pending: VecDeque<TokenAuthorization>,
+    retained: VecDeque<TokenAuthorization>,
+}
+
+#[derive(Default)]
 pub struct GitState {
-    history: Mutex<VecDeque<HistoryAuthorization>>,
+    history: Mutex<HistoryAuthorizationState>,
     generation: AtomicU64,
 }
 
@@ -91,7 +110,8 @@ impl GitState {
     pub(crate) fn clear(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut history) = self.history.lock() {
-            history.clear();
+            history.pending.clear();
+            history.retained.clear();
         }
     }
 
@@ -99,11 +119,11 @@ impl GitState {
         self.generation.load(Ordering::SeqCst)
     }
 
-    fn publish_history(
+    fn issue_history(
         &self,
         generation: u64,
         authorization: HistoryAuthorization,
-    ) -> GitResult<()> {
+    ) -> GitResult<String> {
         let mut history = self.history.lock().map_err(|_| state_error())?;
         if self.generation.load(Ordering::SeqCst) != generation {
             return Err(GitError::new(
@@ -111,42 +131,101 @@ impl GitState {
                 "The selected Git context changed before history finished loading.",
             ));
         }
+        let token = loop {
+            let candidate = history_token()?;
+            if !history
+                .pending
+                .iter()
+                .chain(history.retained.iter())
+                .any(|entry| entry.token == candidate)
+            {
+                break candidate;
+            }
+        };
+        history.pending.push_back(TokenAuthorization {
+            token: token.clone(),
+            generation,
+            authorization,
+        });
+        while history.pending.len() > HISTORY_AUTHORIZATION_LIMIT {
+            history.pending.pop_front();
+        }
+        Ok(token)
+    }
+
+    fn retain_history(&self, token: &str) -> GitResult<()> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
         if let Some(position) = history
+            .retained
             .iter()
-            .position(|existing| existing.same_pair_as(&authorization))
+            .position(|entry| entry.token == token)
         {
-            history.remove(position);
+            let entry = history
+                .retained
+                .remove(position)
+                .expect("retained token exists");
+            history.retained.push_back(entry);
+            return Ok(());
         }
-        history.push_back(authorization);
-        while history.len() > HISTORY_AUTHORIZATION_LIMIT {
-            history.pop_front();
+        let position = history
+            .pending
+            .iter()
+            .position(|entry| entry.token == token)
+            .ok_or_else(pair_not_authorized)?;
+        let entry = history
+            .pending
+            .remove(position)
+            .expect("pending token exists");
+        if entry.generation != self.generation.load(Ordering::SeqCst) {
+            return Err(GitError::new(
+                "git_context_changed",
+                "The selected Git context changed before history was retained.",
+            ));
         }
+        history.retained.push_back(entry);
+        while history.retained.len() > HISTORY_AUTHORIZATION_LIMIT {
+            history.retained.pop_front();
+        }
+        Ok(())
+    }
+
+    fn revoke_history(&self, token: &str) -> GitResult<()> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
+        history.pending.retain(|entry| entry.token != token);
+        history.retained.retain(|entry| entry.token != token);
         Ok(())
     }
 
     fn authorized_history(
         &self,
-        workspace_root: &Path,
-        repository_root: &Path,
+        token: &str,
+        context: &AuthorizedGitContext,
         definition_path: &str,
         companion_path: Option<&str>,
     ) -> GitResult<HistoryAuthorization> {
         self.history
             .lock()
             .map_err(|_| state_error())?
+            .retained
             .iter()
             .rev()
-            .find(|authorization| {
-                authorization.matches_pair(
-                    workspace_root,
-                    repository_root,
-                    definition_path,
-                    companion_path,
-                )
+            .find(|entry| {
+                entry.token == token
+                    && entry.generation == self.generation.load(Ordering::SeqCst)
+                    && entry
+                        .authorization
+                        .matches_context(context, definition_path, companion_path)
             })
-            .cloned()
+            .map(|entry| entry.authorization.clone())
             .ok_or_else(pair_not_authorized)
     }
+}
+
+#[derive(Clone)]
+struct TokenAuthorization {
+    token: String,
+    generation: u64,
+    authorization: HistoryAuthorization,
 }
 
 #[derive(Clone)]
@@ -158,41 +237,35 @@ struct HistoricalPaths {
 #[derive(Clone)]
 struct HistoryAuthorization {
     workspace_root: PathBuf,
+    workspace_identity: Arc<Handle>,
     repository_root: PathBuf,
+    repository_identity: Arc<Handle>,
     definition_path: String,
     companion_path: Option<String>,
     by_oid: HashMap<String, HistoricalPaths>,
 }
 
 impl HistoryAuthorization {
-    fn matches_pair(
+    fn matches_context(
         &self,
-        workspace_root: &Path,
-        repository_root: &Path,
+        context: &AuthorizedGitContext,
         definition_path: &str,
         companion_path: Option<&str>,
     ) -> bool {
-        self.workspace_root == workspace_root
-            && self.repository_root == repository_root
+        self.workspace_root == context.workspace_root
+            && self.workspace_identity.as_ref() == context.workspace_identity.as_ref()
+            && self.repository_root == context.repository_root
+            && self.repository_identity.as_ref() == context.repository_identity.as_ref()
             && self.definition_path == definition_path
             && self.companion_path.as_deref() == companion_path
-    }
-
-    fn same_pair_as(&self, other: &Self) -> bool {
-        self.matches_pair(
-            &other.workspace_root,
-            &other.repository_root,
-            &other.definition_path,
-            other.companion_path.as_deref(),
-        )
     }
 }
 
 pub(crate) struct AuthorizedGitContext {
     workspace_root: PathBuf,
-    workspace_identity: Handle,
+    workspace_identity: Arc<Handle>,
     repository_root: PathBuf,
-    repository_identity: Handle,
+    repository_identity: Arc<Handle>,
     workspace_prefix: String,
     #[cfg(test)]
     history: Mutex<Option<HistoryAuthorization>>,
@@ -240,18 +313,18 @@ impl AuthorizedGitContext {
             })
             .and_then(git_relative_path)?;
         Ok(Self {
-            workspace_identity: Handle::from_path(&workspace_root).map_err(|_| {
+            workspace_identity: Arc::new(Handle::from_path(&workspace_root).map_err(|_| {
                 GitError::new(
                     "git_workspace_changed",
                     "The selected workspace is no longer available.",
                 )
-            })?,
-            repository_identity: Handle::from_path(&repository_root).map_err(|_| {
+            })?),
+            repository_identity: Arc::new(Handle::from_path(&repository_root).map_err(|_| {
                 GitError::new(
                     "git_repository_changed",
                     "The Git repository is no longer available.",
                 )
-            })?,
+            })?),
             workspace_root,
             repository_root,
             workspace_prefix,
@@ -264,7 +337,7 @@ impl AuthorizedGitContext {
         let repository = self.repository_root.canonicalize().ok();
         let repository_identity = Handle::from_path(&self.repository_root).ok();
         if repository.as_deref() != Some(self.repository_root.as_path())
-            || repository_identity.as_ref() != Some(&self.repository_identity)
+            || repository_identity.as_ref() != Some(self.repository_identity.as_ref())
         {
             return Err(GitError::new(
                 "git_repository_changed",
@@ -274,7 +347,7 @@ impl AuthorizedGitContext {
         let workspace = self.workspace_root.canonicalize().ok();
         let workspace_identity = Handle::from_path(&self.workspace_root).ok();
         if workspace.as_deref() != Some(self.workspace_root.as_path())
-            || workspace_identity.as_ref() != Some(&self.workspace_identity)
+            || workspace_identity.as_ref() != Some(self.workspace_identity.as_ref())
         {
             return Err(GitError::new(
                 "git_workspace_changed",
@@ -351,7 +424,9 @@ impl AuthorizedGitContext {
             commits,
             HistoryAuthorization {
                 workspace_root: self.workspace_root.clone(),
+                workspace_identity: self.workspace_identity.clone(),
                 repository_root: self.repository_root.clone(),
+                repository_identity: self.repository_identity.clone(),
                 definition_path: definition_path.to_owned(),
                 companion_path: companion_path.map(str::to_owned),
                 by_oid,
@@ -672,6 +747,18 @@ fn state_error() -> GitError {
     )
 }
 
+fn history_token() -> GitResult<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| state_error())?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(token)
+}
+
 fn git_relative_path(path: &Path) -> GitResult<String> {
     path.components()
         .map(|component| match component {
@@ -811,19 +898,30 @@ pub(crate) fn authorize_repository_root(
     Ok(AuthorizedGitContext::bind(workspace_root, requested_root)?.repository_root)
 }
 
-pub(crate) fn detect_repository_metadata(workspace_root: &Path) -> GitResult<Option<PathBuf>> {
+pub(crate) fn detect_repository_metadata(
+    workspace_root: &Path,
+) -> GitResult<Option<GitRepositoryMetadata>> {
     if detect_repository(workspace_root)?.is_none() {
         return Ok(None);
     }
-    let output = run_read(workspace_root, ReadOperation::GitDirectory)?;
-    ensure_success("git_detect_failed", &output)?;
-    let path = PathBuf::from(output_text(&output.stdout)?.trim());
-    path.canonicalize().map(Some).map_err(|_| {
-        GitError::new(
-            "git_repository_unavailable",
-            "Git metadata is no longer available.",
-        )
-    })
+    let worktree_output = run_read(workspace_root, ReadOperation::GitDirectory)?;
+    ensure_success("git_detect_failed", &worktree_output)?;
+    let common_output = run_read(workspace_root, ReadOperation::GitCommonDirectory)?;
+    ensure_success("git_detect_failed", &common_output)?;
+    let canonical = |bytes: &[u8]| {
+        PathBuf::from(output_text(bytes)?.trim())
+            .canonicalize()
+            .map_err(|_| {
+                GitError::new(
+                    "git_repository_unavailable",
+                    "Git metadata is no longer available.",
+                )
+            })
+    };
+    Ok(Some(GitRepositoryMetadata {
+        worktree_dir: canonical(&worktree_output.stdout)?,
+        common_dir: canonical(&common_output.stdout)?,
+    }))
 }
 
 #[tauri::command]
@@ -868,21 +966,41 @@ pub fn git_history_pair(
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
     git_state: State<'_, GitState>,
-) -> GitResult<Vec<GitCommitSummary>> {
+) -> GitResult<GitHistoryResult> {
     let history_generation = git_state.begin_history();
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
     let (commits, authorization) =
         context.history_pair_authorized(&definition_path, companion_path.as_deref())?;
     verify_workspace_binding(&state, &binding)?;
-    git_state.publish_history(history_generation, authorization)?;
-    Ok(commits)
+    let authorization_token = git_state.issue_history(history_generation, authorization)?;
+    Ok(GitHistoryResult {
+        commits,
+        authorization_token,
+    })
+}
+
+#[tauri::command]
+pub fn git_retain_history_authorization(
+    authorization_token: String,
+    git_state: State<'_, GitState>,
+) -> GitResult<()> {
+    git_state.retain_history(&authorization_token)
+}
+
+#[tauri::command]
+pub fn git_revoke_history_authorization(
+    authorization_token: String,
+    git_state: State<'_, GitState>,
+) -> GitResult<()> {
+    git_state.revoke_history(&authorization_token)
 }
 
 #[tauri::command]
 pub fn git_show_pair(
     root: String,
     oid: String,
+    authorization_token: String,
     definition_path: String,
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
@@ -891,8 +1009,8 @@ pub fn git_show_pair(
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
     let authorization = git_state.authorized_history(
-        &context.workspace_root,
-        &context.repository_root,
+        &authorization_token,
+        &context,
         &definition_path,
         companion_path.as_deref(),
     )?;
