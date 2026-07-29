@@ -29,6 +29,7 @@ describe('CommandPalette', () => {
       props: { registry, context: { surface: 'canvas', canMutate: true, hasSelection: false }, onClose: close },
     })
     const input = screen.getByRole('combobox', { name: 'Search commands' })
+    expect(screen.getByRole('heading', { name: 'Canvas' })).toBeVisible()
     await fireEvent.input(input, { target: { value: 'delete' } })
     expect(screen.getByText('Select a node first.')).toBeVisible()
     await fireEvent.input(input, { target: { value: 'add' } })

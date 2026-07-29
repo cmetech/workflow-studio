@@ -50,6 +50,7 @@
     }) => void | Promise<void>
     onDuplicate?: (nodeIds: readonly string[]) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
     onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
+    onOpenInspector?: () => void
   }
 
   let {
@@ -67,6 +68,7 @@
     onRequestAdd,
     onDuplicate,
     onRequestDelete,
+    onOpenInspector,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -238,13 +240,33 @@
     flowViewport = { ...flowViewport, zoom: 1 }
   }
   export function fitGraph(): void {
-    flowViewport = { ...flowViewport, x: 0, y: 0, zoom: 1 }
+    fitNodes(flowNodes.map(({ id }) => id))
   }
   export function fitSelection(): void {
-    fitGraph()
+    fitNodes(selection)
   }
   export function openInspector(): void {
-    authoringFeedback = 'Inspector opened for the selected node.'
+    onOpenInspector?.()
+  }
+
+  function fitNodes(ids: readonly string[]): void {
+    const nodes = flowNodes.filter((node) => ids.includes(node.id))
+    if (!nodes.length) return
+    const left = Math.min(...nodes.map(({ position }) => position.x))
+    const top = Math.min(...nodes.map(({ position }) => position.y))
+    const right = Math.max(...nodes.map(({ position }) => position.x + 180))
+    const bottom = Math.max(...nodes.map(({ position }) => position.y + 90))
+    const width = Math.max(1, right - left)
+    const height = Math.max(1, bottom - top)
+    const zoom = Math.max(
+      0.1,
+      Math.min(4, Math.min(root.clientWidth / (width + 48), root.clientHeight / (height + 48))),
+    )
+    flowViewport = {
+      x: (root.clientWidth - width * zoom) / 2 - left * zoom,
+      y: (root.clientHeight - height * zoom) / 2 - top * zoom,
+      zoom,
+    }
   }
 
   function viewportChanged(viewport: Viewport): void {

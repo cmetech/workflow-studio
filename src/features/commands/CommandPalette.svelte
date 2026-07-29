@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import type { CommandRegistry } from '$src/lib/commands/registry'
-  import { displayKeybinding } from '$src/lib/commands/keybindings'
+  import { displayKeybindings } from '$src/lib/commands/keybindings'
   import type { CommandContext } from '$src/lib/commands/types'
 
   interface Props {
@@ -19,6 +19,7 @@
     registry.listCommands().filter((command) => fuzzy(query, `${command.label} ${command.category}`)),
   )
   const active = $derived(commands[activeIndex])
+  const categories = $derived([...new Set(commands.map((command) => command.category))])
 
   function fuzzy(needle: string, haystack: string): boolean {
     const letters = needle.toLowerCase().replace(/\s+/g, '')
@@ -93,22 +94,27 @@
       placeholder="Type a command"
     />
     <div id="palette-results" role="listbox" aria-label="Commands">
-      {#each commands as command, index (command.id)}
-        <button
-          type="button"
-          role="option"
-          aria-selected={index === activeIndex}
-          aria-disabled={!enabled(index)}
-          disabled={!enabled(index)}
-          onclick={() => {
-            activeIndex = index
-            void execute()
-          }}
-        >
-          <span><strong>{command.label}</strong><small>{command.category}</small></span>
-          <span class="binding">{command.defaultBindings.map((binding) => displayKeybinding(binding)).join('  ')}</span>
-          {#if reason(index)}<em>{reason(index)}</em>{/if}
-        </button>
+      {#each categories as category (category)}
+        <h2>{category}</h2>
+        {#each commands as command, index (command.id)}
+          {#if command.category === category}
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === activeIndex}
+              aria-disabled={!enabled(index)}
+              disabled={!enabled(index)}
+              onclick={() => {
+                activeIndex = index
+                void execute()
+              }}
+            >
+              <span><strong>{command.label}</strong></span>
+              <span class="binding">{displayKeybindings(command.defaultBindings).join('  ')}</span>
+              {#if reason(index)}<em>{reason(index)}</em>{/if}
+            </button>
+          {/if}
+        {/each}
       {:else}
         <p role="status">No commands match “{query}”.</p>
       {/each}
@@ -156,6 +162,12 @@
     background: transparent;
     text-align: left;
   }
+  h2 {
+    margin: 0.75rem 0.55rem 0.2rem;
+    color: var(--color-text-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+  }
   [role='option'][aria-selected='true'] {
     background: var(--color-node-selected);
   }
@@ -167,7 +179,6 @@
     gap: 0.5rem;
     align-items: baseline;
   }
-  small,
   em {
     color: var(--color-text-muted);
     font-size: 0.75rem;

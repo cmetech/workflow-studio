@@ -215,6 +215,20 @@ describe('command registry', () => {
     }
   })
 
+  it('keeps workflow pair commands out of canvas contexts so Mod+D has one deterministic owner', async () => {
+    const canvasContext: CommandContext = { surface: 'canvas', canMutate: true, hasSelection: true }
+    expect(
+      listCommands()
+        .find(({ id }) => id === 'workflow.duplicate')
+        ?.enabled(canvasContext),
+    ).toBe(false)
+    expect(
+      listCommands()
+        .find(({ id }) => id === 'canvas.duplicate-selection')
+        ?.enabled(canvasContext),
+    ).toBe(true)
+  })
+
   it('routes the Mod+S document command to the active lifecycle handler', async () => {
     const save = vi.fn(async () => undefined)
     const unbind = setDocumentSaveHandler(save)

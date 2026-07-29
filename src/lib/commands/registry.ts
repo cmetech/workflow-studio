@@ -42,6 +42,8 @@ const commandSurfaces: readonly CommandContext['surface'][] = ['global', 'canvas
 let documentSaveHandler: (() => void | Promise<void>) | null = null
 let documentUndoHandler: (() => void | Promise<void>) | null = null
 let documentRedoHandler: (() => void | Promise<void>) | null = null
+let documentFindHandler: (() => void | Promise<void>) | null = null
+let workflowValidateHandler: (() => void | Promise<void>) | null = null
 
 export interface CanvasCommandHandlers {
   readonly addNode: () => void | Promise<void>
@@ -81,6 +83,18 @@ export function setDocumentHistoryHandlers(handlers: {
   return () => {
     if (documentUndoHandler === handlers.undo) documentUndoHandler = null
     if (documentRedoHandler === handlers.redo) documentRedoHandler = null
+  }
+}
+
+export function setDocumentCommandHandlers(handlers: {
+  readonly find: () => void | Promise<void>
+  readonly validate: () => void | Promise<void>
+}): () => void {
+  documentFindHandler = handlers.find
+  workflowValidateHandler = handlers.validate
+  return () => {
+    if (documentFindHandler === handlers.find) documentFindHandler = null
+    if (workflowValidateHandler === handlers.validate) workflowValidateHandler = null
   }
 }
 
@@ -234,6 +248,9 @@ function workflowCommand(
     category: 'Workflow',
     defaultBindings: options.binding ? [options.binding] : [],
     enabled: (context) =>
+      context.surface === 'global' &&
+      context.targetEntryId !== null &&
+      context.targetEntryId !== undefined &&
       context.hasSelection &&
       (!options.mutating || context.canMutate) &&
       (id !== 'workflow.create-companion' || (context.contractAvailable !== false && context.hasCompanion !== true)) &&
@@ -269,7 +286,10 @@ const initialCommands: readonly AppCommand[] = [
   }),
   canvasCommand('selectAll', 'Select Canvas Nodes', { binding: 'Mod+A' }),
   canvasCommand('copySelection', 'Copy Selection', { selection: true, binding: 'Mod+C' }),
-  canvasCommand('deleteSelection', 'Delete Selection', { selection: true, mutating: true, binding: 'Delete' }),
+  {
+    ...canvasCommand('deleteSelection', 'Delete Selection', { selection: true, mutating: true, binding: 'Delete' }),
+    defaultBindings: ['Delete', 'Backspace'],
+  },
   canvasCommand('duplicateSelection', 'Duplicate Selection', { selection: true, mutating: true, binding: 'Mod+D' }),
   canvasCommand('pasteSelection', 'Paste Selection', { mutating: true, binding: 'Mod+V' }),
   canvasCommand('arrange', 'Arrange Graph', { mutating: true }),
@@ -375,15 +395,15 @@ const initialCommands: readonly AppCommand[] = [
     category: 'Edit',
     defaultBindings: ['Mod+F'],
     enabled: () => true,
-    run: () => undefined,
+    run: () => documentFindHandler?.(),
   },
   {
     id: 'workflow.validate',
     label: 'Validate Workflow',
     category: 'Workflow',
     defaultBindings: [],
-    enabled: (context) => context.hasSelection,
-    run: () => undefined,
+    enabled: (context) => context.canMutate,
+    run: () => workflowValidateHandler?.(),
   },
   {
     id: 'workbench.keyboard-shortcuts',

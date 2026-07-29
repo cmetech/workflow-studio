@@ -14,6 +14,31 @@ describe('keybindings', () => {
     expect(normalizeKeybinding('Mod + Shift + P', 'mac')).toBe('meta+shift+p')
     expect(normalizeKeybinding('Mod + Shift + P', 'windows')).toBe('ctrl+shift+p')
     expect(normalizeKeybinding('Shift + Mod + P', 'linux')).toBe('ctrl+shift+p')
+    expect(normalizeKeybinding('+', 'mac')).toBe('+')
+  })
+
+  it('dispatches plus from either keyboard representation and supports both delete keys', async () => {
+    const run = vi.fn()
+    const registry = createCommandRegistry()
+    registry.registerCommand({
+      id: 'canvas.zoom',
+      label: 'Zoom In',
+      category: 'Canvas',
+      defaultBindings: ['+'],
+      enabled: () => true,
+      run,
+    })
+    registry.registerCommand({
+      id: 'canvas.delete',
+      label: 'Delete',
+      category: 'Canvas',
+      defaultBindings: ['Delete', 'Backspace'],
+      enabled: () => true,
+      run,
+    })
+    await dispatchKeybinding(keyboard('=', { shiftKey: true }), { registry, context: canvas, platform: 'windows' })
+    await dispatchKeybinding(keyboard('Backspace'), { registry, context: canvas, platform: 'windows' })
+    expect(run).toHaveBeenCalledTimes(2)
   })
 
   it('dispatches one enabled matching command and reports disabled reasons deterministically', async () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { CommandRegistry } from '$src/lib/commands/registry'
-  import { displayKeybinding, type KeybindingPlatform } from '$src/lib/commands/keybindings'
+  import { displayKeybindings, type KeybindingPlatform } from '$src/lib/commands/keybindings'
 
   interface Props {
     registry: CommandRegistry
@@ -24,9 +24,7 @@
   <div role="list">
     {#each commands as command (command.id)}
       <div role="listitem">
-        <span>{command.label}</span><kbd
-          >{command.defaultBindings.map((binding) => displayKeybinding(binding, platform)).join(' / ')}</kbd
-        >
+        <span>{command.label}</span><kbd>{displayKeybindings(command.defaultBindings, platform).join(' / ')}</kbd>
       </div>
     {:else}<p role="status">No keyboard shortcuts match “{query}”.</p>
     {/each}

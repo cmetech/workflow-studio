@@ -29,6 +29,7 @@ export function normalizeKeybinding(
   binding: string,
   platform: KeybindingPlatform = currentKeybindingPlatform(),
 ): string {
+  if (binding.trim() === '+') return '+'
   const parts = binding
     .split('+')
     .map((part) => part.trim().toLowerCase())
@@ -57,13 +58,13 @@ export function bindingForKeyboardEvent(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
   platform: KeybindingPlatform = currentKeybindingPlatform(),
 ): string {
-  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key.toLowerCase()
+  const key = event.key === '=' && event.shiftKey ? '+' : event.key.toLowerCase()
   const modifiers = [
     platform === 'mac' ? event.metaKey && 'meta' : event.ctrlKey && 'ctrl',
     event.ctrlKey && platform === 'mac' && 'ctrl',
     event.metaKey && platform !== 'mac' && 'meta',
     event.altKey && 'alt',
-    event.shiftKey && 'shift',
+    event.shiftKey && key !== '+' && 'shift',
   ].filter(Boolean)
   return [...modifiers, key].join('+')
 }
@@ -163,4 +164,13 @@ export function displayKeybinding(binding: string, platform: KeybindingPlatform 
     .replace('alt+', '⌥')
     .replace('shift+', '⇧')
     .toUpperCase()
+}
+
+export function displayKeybindings(
+  bindings: readonly string[],
+  platform: KeybindingPlatform = currentKeybindingPlatform(),
+): readonly string[] {
+  return bindings
+    .filter((binding) => !(platform === 'mac' && normalizeKeybinding(binding, platform) === 'ctrl+y'))
+    .map((binding) => displayKeybinding(binding, platform))
 }

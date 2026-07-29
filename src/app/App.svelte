@@ -6,6 +6,7 @@
     executeCommand,
     listCommands,
     setCanvasCommandHandlers,
+    setDocumentCommandHandlers,
     setDocumentHistoryHandlers,
     setDocumentSaveHandler,
   } from '$src/lib/commands/registry'
@@ -365,14 +366,13 @@
           ? 'form'
           : 'global'
     const canvasContext = surface === 'canvas' ? canvasAuthoringContext() : null
+    const pair = documentSessionStore.get().pair
+    const activeEntry = workspace.get().entries.find((entry) => entry.id === pair?.workflowId)
+    const documentCanMutate = Boolean(pair && activeEntry?.readOnly !== true)
     return {
       surface,
-      canMutate:
-        surface === 'canvas'
-          ? Boolean(canvasContext && !('unavailable' in canvasContext))
-          : Boolean(documentSessionStore.get().pair),
-      hasSelection:
-        surface === 'canvas' ? canvasSelectionStore.get().length > 0 : Boolean(documentSessionStore.get().pair),
+      canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
+      hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,
     }
   }
 
@@ -398,6 +398,32 @@
     }
     historyStore.set(result.history)
     documentWorkspace.changed(result.pair, 'visual')
+  }
+
+  function findInCurrentSurface(): void {
+    const editor = document.querySelector<HTMLElement>('.cm-content')
+    if (editor) {
+      editor.focus()
+      return
+    }
+    void runCommand('workbench.command-palette', {
+      ...globalContext,
+      canMutate: Boolean(documentSessionStore.get().pair),
+    })
+  }
+
+  function validateCurrentWorkflow(): void {
+    const pair = documentSessionStore.get().pair
+    if (!pair) return
+    documentWorkspace.changed(pair, 'user')
+    workspaceError = 'Validation scheduled for the current workflow.'
+  }
+
+  function focusInspector(): void {
+    const target = document.querySelector<HTMLElement>(
+      '.inspector-panel button, .inspector-panel input, .inspector-panel [tabindex]',
+    )
+    target?.focus()
   }
 
   async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
@@ -973,6 +999,10 @@
         await documentWorkspace.save()
       })
       const unbindHistory = setDocumentHistoryHandlers({ undo: undoDocument, redo: redoDocument })
+      const unbindDocumentCommands = setDocumentCommandHandlers({
+        find: findInCurrentSurface,
+        validate: validateCurrentWorkflow,
+      })
       const keydown = (event: KeyboardEvent) => {
         const context = keyboardContext(event.target)
         if (
@@ -1001,14 +1031,23 @@
           })
       }
       const blur = () => nodeChords.cancel('focus-loss')
+      const focusin = (event: FocusEvent) => {
+        const target = event.target
+        if (nodeChordState.pending && target instanceof Element && !target.closest('.graph-canvas')) {
+          nodeChords.cancel('focus-loss')
+        }
+      }
       window.addEventListener('keydown', keydown)
       window.addEventListener('blur', blur)
+      window.addEventListener('focusin', focusin)
       const disposeClose = dispose
       dispose = () => {
         unbindSave()
         unbindHistory()
+        unbindDocumentCommands()
         window.removeEventListener('keydown', keydown)
         window.removeEventListener('blur', blur)
+        window.removeEventListener('focusin', focusin)
         disposeClose?.()
       }
       await refreshRecent()
@@ -1195,6 +1234,7 @@
                   onRequestAdd={requestCanvasAdd}
                   onDuplicate={(nodeIds) => canvasAuthoring.duplicate(nodeIds)}
                   onRequestDelete={requestCanvasDelete}
+                  onOpenInspector={focusInspector}
                 />
               </div>
             {/if}
