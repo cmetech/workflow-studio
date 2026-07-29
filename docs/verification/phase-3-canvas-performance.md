@@ -140,7 +140,7 @@ The timed interaction window recorded the long-duration observations required by
 | --- | ---: | ---: |
 | animation-frame gaps | 8 | 346 ms |
 | 10 ms timer delays | 7 | 190 ms |
-| Event Timing entries | 17 of 39 entries | 296 ms |
+| Event Timing entries | 17 of 35 new entries | 296 ms |
 
 Event Timing reports related pointer, mouse, and click entries separately, so the 17 entries do not represent 17 distinct gestures. The run also emitted two `ResizeObserver loop completed with undelivered notifications` warnings. The final interaction state remained a populated 250-node canvas and persisted a viewport change from `{x: -110, y: -40, zoom: 1}` to `{x: -82.86661624889064, y: 97.41390746726194, zoom: 0.8753913296942639}`. The probe's attempted paired selection did not persist a node move, so the earlier directly observed paired-drag coordinates above remain the authority for multi-node drag behavior.
 
