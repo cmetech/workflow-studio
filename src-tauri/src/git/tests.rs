@@ -286,11 +286,12 @@ fn stale_native_history_authorization_cannot_publish_after_context_clear() {
     git(root.path(), &["init", "-b", "main"]);
     let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
-    let generation = state.begin_history();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let request = state.begin_history(controller_epoch, 1).unwrap();
     state.clear();
     let error = state
         .issue_history(
-            generation,
+            request,
             authorization(&context, "flow.yaml", Default::default()),
         )
         .unwrap_err();
@@ -307,25 +308,28 @@ fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visi
     let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
 
-    let visible_generation = state.begin_history();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let obsolete_request = state.begin_history(controller_epoch, 1).unwrap();
+    let visible_request = state.begin_history(controller_epoch, 2).unwrap();
     let visible_token = state
         .issue_history(
-            visible_generation,
+            visible_request,
             authorization(&context, "visible.yaml", Default::default()),
         )
         .unwrap();
-    state.retain_history(&visible_token).unwrap();
+    state
+        .retain_history(controller_epoch, 2, &visible_token)
+        .unwrap();
 
     // The renderer has already selected the visible pair, but an obsolete request
     // only reaches the native command after that newer request has completed.
-    let obsolete_generation = state.begin_history();
-    let obsolete_token = state
+    let obsolete_error = state
         .issue_history(
-            obsolete_generation,
+            obsolete_request,
             authorization(&context, "obsolete.yaml", Default::default()),
         )
-        .unwrap();
-    state.revoke_history(&obsolete_token).unwrap();
+        .unwrap_err();
+    assert_eq!(obsolete_error.code, "git_context_changed");
 
     assert!(state
         .authorized_history(&visible_token, &context, "visible.yaml", None)
@@ -356,28 +360,32 @@ fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visi
 }
 
 #[test]
-fn native_history_authorization_cache_evicts_oldest_pairs_at_its_bound() {
+fn native_history_authorization_keeps_only_the_latest_renderer_generation() {
     let root = tempdir().unwrap();
     git(root.path(), &["init", "-b", "main"]);
     let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
     let state = GitState::default();
+    let controller_epoch = state.begin_history_session().unwrap();
     let mut tokens = Vec::new();
 
     for index in 0..=HISTORY_AUTHORIZATION_LIMIT {
+        let request_generation = index as u64 + 1;
+        let request = state
+            .begin_history(controller_epoch, request_generation)
+            .unwrap();
         let token = state
             .issue_history(
-                state.begin_history(),
+                request,
                 authorization(&context, format!("flow-{index}.yaml"), Default::default()),
             )
             .unwrap();
-        state.retain_history(&token).unwrap();
+        state
+            .retain_history(controller_epoch, request_generation, &token)
+            .unwrap();
         tokens.push(token);
     }
 
-    assert_eq!(
-        state.history.lock().unwrap().retained.len(),
-        HISTORY_AUTHORIZATION_LIMIT
-    );
+    assert_eq!(state.history.lock().unwrap().retained.len(), 1);
     assert!(state
         .authorized_history(&tokens[0], &context, "flow-0.yaml", None)
         .is_err());
@@ -417,29 +425,35 @@ fn renderer_retained_same_pair_token_survives_late_obsolete_publication_and_pres
         .clone();
     let state = GitState::default();
 
-    let generation = state.begin_history();
-    let winning_token = state.issue_history(generation, new_authorization).unwrap();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let old_request = state.begin_history(controller_epoch, 1).unwrap();
+    let winning_request = state.begin_history(controller_epoch, 2).unwrap();
+    let winning_token = state
+        .issue_history(winning_request, new_authorization)
+        .unwrap();
     assert_eq!(winning_token.len(), 64);
     assert!(winning_token.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    state.retain_history(&winning_token).unwrap();
+    state
+        .retain_history(controller_epoch, 2, &winning_token)
+        .unwrap();
 
     for index in 0..=HISTORY_AUTHORIZATION_LIMIT {
-        let token = state
-            .issue_history(
-                generation,
-                authorization(
-                    &context,
-                    format!("obsolete-{index}.yaml"),
-                    Default::default(),
-                ),
-            )
-            .unwrap();
-        state.revoke_history(&token).unwrap();
+        assert_eq!(
+            state
+                .retain_history(controller_epoch, 1, &format!("obsolete-{index}"))
+                .unwrap_err()
+                .code,
+            "git_context_changed"
+        );
     }
     // The pre-mutation A request completes only after B won renderer publication.
-    let old_token = state.issue_history(generation, old_authorization).unwrap();
-    assert_ne!(old_token, winning_token);
-    state.revoke_history(&old_token).unwrap();
+    assert_eq!(
+        state
+            .issue_history(old_request, old_authorization)
+            .unwrap_err()
+            .code,
+        "git_context_changed"
+    );
 
     let authorization = state
         .authorized_history(&winning_token, &context, "flow.yaml", None)
@@ -465,11 +479,123 @@ fn renderer_retained_same_pair_token_survives_late_obsolete_publication_and_pres
     );
     assert_eq!(
         state
-            .authorized_history(&old_token, &context, "flow.yaml", None)
+            .authorized_history("obsolete", &context, "flow.yaml", None)
             .err()
             .unwrap()
             .code,
         "git_pair_not_authorized"
+    );
+}
+
+#[test]
+fn live_history_winner_survives_seventeen_late_stale_retain_completions() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
+    let state = GitState::default();
+    let controller_epoch = state.begin_history_session().unwrap();
+
+    let winning_generation = 18;
+    let mut stale_tokens = Vec::new();
+    for request_generation in 1..winning_generation {
+        let request = state
+            .begin_history(controller_epoch, request_generation)
+            .unwrap();
+        stale_tokens.push(
+            state
+                .issue_history(
+                    request,
+                    authorization(
+                        &context,
+                        format!("stale-{request_generation}.yaml"),
+                        Default::default(),
+                    ),
+                )
+                .unwrap(),
+        );
+    }
+    let winning_request = state
+        .begin_history(controller_epoch, winning_generation)
+        .unwrap();
+    let winning_token = state
+        .issue_history(
+            winning_request,
+            authorization(&context, "winner.yaml", Default::default()),
+        )
+        .unwrap();
+    state
+        .retain_history(controller_epoch, winning_generation, &winning_token)
+        .unwrap();
+
+    // These represent retain RPCs from older renderer requests that crossed
+    // their renderer-side staleness check before the live request won.
+    assert_eq!(stale_tokens.len(), HISTORY_AUTHORIZATION_LIMIT + 1);
+    for (index, token) in stale_tokens.iter().enumerate() {
+        assert_eq!(
+            state
+                .retain_history(controller_epoch, (index + 1) as u64, token)
+                .unwrap_err()
+                .code,
+            "git_context_changed"
+        );
+    }
+
+    assert!(state
+        .authorized_history(&winning_token, &context, "winner.yaml", None)
+        .is_ok());
+    let history = state.history.lock().unwrap();
+    assert_eq!(history.retained.len(), 1);
+    assert!(history.pending.is_empty());
+}
+
+#[test]
+fn old_controller_cannot_activate_or_dispose_after_a_new_controller_mounts() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
+    let state = GitState::default();
+    let old_epoch = state.begin_history_session().unwrap();
+    let old_request = state.begin_history(old_epoch, 1).unwrap();
+    let old_token = state
+        .issue_history(
+            old_request,
+            authorization(&context, "old.yaml", Default::default()),
+        )
+        .unwrap();
+
+    let new_epoch = state.begin_history_session().unwrap();
+    let new_request = state.begin_history(new_epoch, 1).unwrap();
+    let new_token = state
+        .issue_history(
+            new_request,
+            authorization(&context, "new.yaml", Default::default()),
+        )
+        .unwrap();
+    state.retain_history(new_epoch, 1, &new_token).unwrap();
+
+    assert_eq!(
+        state
+            .retain_history(old_epoch, 1, &old_token)
+            .unwrap_err()
+            .code,
+        "git_context_changed"
+    );
+    state.dispose_history_session(old_epoch).unwrap();
+    assert!(state
+        .authorized_history(&new_token, &context, "new.yaml", None)
+        .is_ok());
+}
+
+#[test]
+fn lower_server_epoch_cannot_activate_after_a_newer_session_even_if_it_completes_late() {
+    let state = GitState::default();
+
+    state.activate_history_session(2).unwrap();
+    state.dispose_history_session(2).unwrap();
+
+    assert_eq!(
+        state.activate_history_session(1).unwrap_err().code,
+        "git_context_changed"
     );
 }
 
@@ -481,13 +607,15 @@ fn retained_token_rejects_a_replacement_at_the_same_workspace_and_repository_pat
     git(&root, &["init", "-b", "main"]);
     let original_context = AuthorizedGitContext::bind(&root, &root).unwrap();
     let state = GitState::default();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let request = state.begin_history(controller_epoch, 1).unwrap();
     let token = state
         .issue_history(
-            state.begin_history(),
+            request,
             authorization(&original_context, "flow.yaml", Default::default()),
         )
         .unwrap();
-    state.retain_history(&token).unwrap();
+    state.retain_history(controller_epoch, 1, &token).unwrap();
 
     fs::rename(&root, parent.path().join("parked-repo")).unwrap();
     fs::create_dir(&root).unwrap();

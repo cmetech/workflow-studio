@@ -42,6 +42,8 @@ pub struct GitRepository {
 pub(crate) struct GitRepositoryMetadata {
     pub(crate) worktree_dir: PathBuf,
     pub(crate) common_dir: PathBuf,
+    pub(crate) worktree_identity: Arc<Handle>,
+    pub(crate) common_identity: Arc<Handle>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -94,6 +96,9 @@ pub struct GitPairSnapshot {
 
 #[derive(Default)]
 struct HistoryAuthorizationState {
+    active_controller_epoch: Option<u64>,
+    latest_controller_epoch: u64,
+    latest_request_generation: u64,
     pending: VecDeque<TokenAuthorization>,
     retained: VecDeque<TokenAuthorization>,
 }
@@ -101,33 +106,73 @@ struct HistoryAuthorizationState {
 #[derive(Default)]
 pub struct GitState {
     history: Mutex<HistoryAuthorizationState>,
-    generation: AtomicU64,
+    context_generation: AtomicU64,
+    next_controller_epoch: AtomicU64,
 }
 
 const HISTORY_AUTHORIZATION_LIMIT: usize = 16;
 
 impl GitState {
     pub(crate) fn clear(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.context_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut history) = self.history.lock() {
             history.pending.clear();
             history.retained.clear();
         }
     }
 
-    fn begin_history(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+    fn begin_history_session(&self) -> GitResult<u64> {
+        let epoch = self.next_controller_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.activate_history_session(epoch)?;
+        Ok(epoch)
+    }
+
+    fn activate_history_session(&self, epoch: u64) -> GitResult<()> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
+        if epoch <= history.latest_controller_epoch {
+            return Err(context_changed(
+                "A newer Git history controller session is already active.",
+            ));
+        }
+        history.latest_controller_epoch = epoch;
+        history.active_controller_epoch = Some(epoch);
+        history.latest_request_generation = 0;
+        history.pending.clear();
+        history.retained.clear();
+        Ok(())
+    }
+
+    fn begin_history(
+        &self,
+        controller_epoch: u64,
+        request_generation: u64,
+    ) -> GitResult<HistoryRequest> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
+        if history.active_controller_epoch != Some(controller_epoch)
+            || request_generation <= history.latest_request_generation
+        {
+            return Err(context_changed(
+                "The selected Git history request is no longer current.",
+            ));
+        }
+        history.latest_request_generation = request_generation;
+        history.pending.clear();
+        history.retained.clear();
+        Ok(HistoryRequest {
+            controller_epoch,
+            request_generation,
+            context_generation: self.context_generation.load(Ordering::SeqCst),
+        })
     }
 
     fn issue_history(
         &self,
-        generation: u64,
+        request: HistoryRequest,
         authorization: HistoryAuthorization,
     ) -> GitResult<String> {
         let mut history = self.history.lock().map_err(|_| state_error())?;
-        if self.generation.load(Ordering::SeqCst) != generation {
-            return Err(GitError::new(
-                "git_context_changed",
+        if !self.request_is_current(&history, request) {
+            return Err(context_changed(
                 "The selected Git context changed before history finished loading.",
             ));
         }
@@ -144,7 +189,7 @@ impl GitState {
         };
         history.pending.push_back(TokenAuthorization {
             token: token.clone(),
-            generation,
+            request,
             authorization,
         });
         while history.pending.len() > HISTORY_AUTHORIZATION_LIMIT {
@@ -153,13 +198,32 @@ impl GitState {
         Ok(token)
     }
 
-    fn retain_history(&self, token: &str) -> GitResult<()> {
+    fn retain_history(
+        &self,
+        controller_epoch: u64,
+        request_generation: u64,
+        token: &str,
+    ) -> GitResult<()> {
         let mut history = self.history.lock().map_err(|_| state_error())?;
-        if let Some(position) = history
-            .retained
-            .iter()
-            .position(|entry| entry.token == token)
+        if history.active_controller_epoch != Some(controller_epoch)
+            || history.latest_request_generation != request_generation
         {
+            history.pending.retain(|entry| {
+                entry.token != token
+                    || entry.request.controller_epoch != controller_epoch
+                    || entry.request.request_generation != request_generation
+            });
+            return Err(context_changed(
+                "The selected Git history request changed before authorization was retained.",
+            ));
+        }
+        if let Some(position) = history.retained.iter().position(|entry| {
+            entry.token == token
+                && entry.request.controller_epoch == controller_epoch
+                && entry.request.request_generation == request_generation
+                && entry.request.context_generation
+                    == self.context_generation.load(Ordering::SeqCst)
+        }) {
             let entry = history
                 .retained
                 .remove(position)
@@ -170,18 +234,22 @@ impl GitState {
         let position = history
             .pending
             .iter()
-            .position(|entry| entry.token == token)
+            .position(|entry| {
+                entry.token == token
+                    && entry.request.controller_epoch == controller_epoch
+                    && entry.request.request_generation == request_generation
+            })
             .ok_or_else(pair_not_authorized)?;
         let entry = history
             .pending
             .remove(position)
             .expect("pending token exists");
-        if entry.generation != self.generation.load(Ordering::SeqCst) {
-            return Err(GitError::new(
-                "git_context_changed",
+        if !self.request_is_current(&history, entry.request) {
+            return Err(context_changed(
                 "The selected Git context changed before history was retained.",
             ));
         }
+        history.retained.clear();
         history.retained.push_back(entry);
         while history.retained.len() > HISTORY_AUTHORIZATION_LIMIT {
             history.retained.pop_front();
@@ -196,6 +264,17 @@ impl GitState {
         Ok(())
     }
 
+    fn dispose_history_session(&self, controller_epoch: u64) -> GitResult<()> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
+        if history.active_controller_epoch == Some(controller_epoch) {
+            history.active_controller_epoch = None;
+            history.latest_request_generation = 0;
+            history.pending.clear();
+            history.retained.clear();
+        }
+        Ok(())
+    }
+
     fn authorized_history(
         &self,
         token: &str,
@@ -203,15 +282,14 @@ impl GitState {
         definition_path: &str,
         companion_path: Option<&str>,
     ) -> GitResult<HistoryAuthorization> {
-        self.history
-            .lock()
-            .map_err(|_| state_error())?
+        let history = self.history.lock().map_err(|_| state_error())?;
+        history
             .retained
             .iter()
             .rev()
             .find(|entry| {
                 entry.token == token
-                    && entry.generation == self.generation.load(Ordering::SeqCst)
+                    && self.request_is_current(&history, entry.request)
                     && entry
                         .authorization
                         .matches_context(context, definition_path, companion_path)
@@ -219,12 +297,29 @@ impl GitState {
             .map(|entry| entry.authorization.clone())
             .ok_or_else(pair_not_authorized)
     }
+
+    fn request_is_current(
+        &self,
+        history: &HistoryAuthorizationState,
+        request: HistoryRequest,
+    ) -> bool {
+        history.active_controller_epoch == Some(request.controller_epoch)
+            && history.latest_request_generation == request.request_generation
+            && self.context_generation.load(Ordering::SeqCst) == request.context_generation
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HistoryRequest {
+    controller_epoch: u64,
+    request_generation: u64,
+    context_generation: u64,
 }
 
 #[derive(Clone)]
 struct TokenAuthorization {
     token: String,
-    generation: u64,
+    request: HistoryRequest,
     authorization: HistoryAuthorization,
 }
 
@@ -747,6 +842,10 @@ fn state_error() -> GitError {
     )
 }
 
+fn context_changed(message: &'static str) -> GitError {
+    GitError::new("git_context_changed", message)
+}
+
 fn history_token() -> GitResult<String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| state_error())?;
@@ -918,9 +1017,29 @@ pub(crate) fn detect_repository_metadata(
                 )
             })
     };
+    let worktree_dir = canonical(&worktree_output.stdout)?;
+    let common_dir = canonical(&common_output.stdout)?;
+    let worktree_identity = Arc::new(Handle::from_path(&worktree_dir).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "Git worktree metadata is no longer available.",
+        )
+    })?);
+    let common_identity = if worktree_dir == common_dir {
+        Arc::clone(&worktree_identity)
+    } else {
+        Arc::new(Handle::from_path(&common_dir).map_err(|_| {
+            GitError::new(
+                "git_repository_unavailable",
+                "Git common metadata is no longer available.",
+            )
+        })?)
+    };
     Ok(Some(GitRepositoryMetadata {
-        worktree_dir: canonical(&worktree_output.stdout)?,
-        common_dir: canonical(&common_output.stdout)?,
+        worktree_dir,
+        common_dir,
+        worktree_identity,
+        common_identity,
     }))
 }
 
@@ -960,20 +1079,27 @@ pub fn git_diff_pair(
 }
 
 #[tauri::command]
+pub fn git_begin_history_session(git_state: State<'_, GitState>) -> GitResult<u64> {
+    git_state.begin_history_session()
+}
+
+#[tauri::command]
 pub fn git_history_pair(
     root: String,
     definition_path: String,
     companion_path: Option<String>,
+    controller_epoch: u64,
+    request_generation: u64,
     state: State<'_, crate::workspace::WorkspaceState>,
     git_state: State<'_, GitState>,
 ) -> GitResult<GitHistoryResult> {
-    let history_generation = git_state.begin_history();
+    let history_request = git_state.begin_history(controller_epoch, request_generation)?;
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
     let (commits, authorization) =
         context.history_pair_authorized(&definition_path, companion_path.as_deref())?;
     verify_workspace_binding(&state, &binding)?;
-    let authorization_token = git_state.issue_history(history_generation, authorization)?;
+    let authorization_token = git_state.issue_history(history_request, authorization)?;
     Ok(GitHistoryResult {
         commits,
         authorization_token,
@@ -983,9 +1109,11 @@ pub fn git_history_pair(
 #[tauri::command]
 pub fn git_retain_history_authorization(
     authorization_token: String,
+    controller_epoch: u64,
+    request_generation: u64,
     git_state: State<'_, GitState>,
 ) -> GitResult<()> {
-    git_state.retain_history(&authorization_token)
+    git_state.retain_history(controller_epoch, request_generation, &authorization_token)
 }
 
 #[tauri::command]
@@ -994,6 +1122,14 @@ pub fn git_revoke_history_authorization(
     git_state: State<'_, GitState>,
 ) -> GitResult<()> {
     git_state.revoke_history(&authorization_token)
+}
+
+#[tauri::command]
+pub fn git_dispose_history_session(
+    controller_epoch: u64,
+    git_state: State<'_, GitState>,
+) -> GitResult<()> {
+    git_state.dispose_history_session(controller_epoch)
 }
 
 #[tauri::command]

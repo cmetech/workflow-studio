@@ -5,6 +5,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use same_file::Handle;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -120,11 +121,6 @@ fn start_with_optional_git_sink_and_registration(
 ) -> WorkspaceResult<WorkspaceWatcher> {
     let root = paths::canonical_root(root)?;
     let callback_root = root.clone();
-    let git_metadata = git_metadata.map(|metadata| WatchedGitMetadata {
-        worktree_dir: paths::canonical_root(&metadata.worktree_dir).ok(),
-        common_dir: paths::canonical_root(&metadata.common_dir).ok(),
-    });
-    let callback_git_metadata = git_metadata.clone();
     let (sender, receiver) = mpsc::channel::<Event>();
     let mut watcher = notify::recommended_watcher(move |result| {
         if let Ok(event) = result {
@@ -133,25 +129,56 @@ fn start_with_optional_git_sink_and_registration(
     })
     .map_err(watch_error)?;
     registration(&mut watcher, &root, RecursiveMode::Recursive).map_err(watch_error)?;
-    if let Some(metadata) = &git_metadata {
+    let mut watched_git_metadata = WatchedGitMetadata::default();
+    if let Some(metadata) = git_metadata {
         // Git observation is optional. Watch only per-worktree HEAD/index and
         // common packed refs/refs, and do not duplicate the primary root watch.
         let mut registered = BTreeSet::new();
-        for path in [metadata.worktree_dir.as_ref(), metadata.common_dir.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            if !path.starts_with(&root) && registered.insert(path.clone()) {
-                let _ = registration(&mut watcher, path, RecursiveMode::NonRecursive);
+        for (path, expected, destination) in [
+            (
+                &metadata.worktree_dir,
+                Some(metadata.worktree_identity.as_ref()),
+                &mut watched_git_metadata.worktree_dir,
+            ),
+            (
+                &metadata.common_dir,
+                Some(metadata.common_identity.as_ref()),
+                &mut watched_git_metadata.common_dir,
+            ),
+        ] {
+            let Some(path) = verified_directory(path, expected) else {
+                continue;
+            };
+            let covered_by_workspace = path.starts_with(&root);
+            let already_registered = registered.contains(&path);
+            let registration_succeeded = !covered_by_workspace
+                && !already_registered
+                && registration(&mut watcher, &path, RecursiveMode::NonRecursive).is_ok();
+            if covered_by_workspace || already_registered || registration_succeeded {
+                registered.insert(path.clone());
+                *destination = Some(path);
             }
         }
-        if let Some(common_dir) = &metadata.common_dir {
+        // Revalidate the exact detected common directory again immediately
+        // before registering its recursive refs child.
+        if let Some(common_dir) = verified_directory(
+            &metadata.common_dir,
+            Some(metadata.common_identity.as_ref()),
+        )
+        .filter(|path| watched_git_metadata.common_dir.as_ref() == Some(path))
+        {
             let refs = common_dir.join("refs");
-            if refs.is_dir() && !refs.starts_with(&root) && registered.insert(refs.clone()) {
+            let refs_is_directory = refs
+                .symlink_metadata()
+                .is_ok_and(|entry| entry.is_dir() && !entry.file_type().is_symlink());
+            if refs_is_directory && !refs.starts_with(&root) && registered.insert(refs.clone()) {
                 let _ = registration(&mut watcher, &refs, RecursiveMode::Recursive);
             }
         }
     }
+    let git_metadata = Some(watched_git_metadata)
+        .filter(|metadata| metadata.worktree_dir.is_some() || metadata.common_dir.is_some());
+    let callback_git_metadata = git_metadata.clone();
 
     let worker = std::thread::spawn(move || {
         while let Ok(first) = receiver.recv() {
@@ -219,7 +246,7 @@ fn collect_event(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct WatchedGitMetadata {
     worktree_dir: Option<std::path::PathBuf>,
     common_dir: Option<std::path::PathBuf>,
@@ -235,6 +262,13 @@ impl WatchedGitMetadata {
                 .as_deref()
                 .is_some_and(|directory| path.starts_with(directory))
     }
+}
+
+fn verified_directory(path: &Path, expected: Option<&Handle>) -> Option<std::path::PathBuf> {
+    let expected = expected?;
+    let canonical = paths::canonical_root(path).ok()?;
+    let current = Handle::from_path(&canonical).ok()?;
+    (current == *expected).then_some(canonical)
 }
 
 fn git_metadata_relative(metadata: &WatchedGitMetadata, path: &Path) -> Option<String> {

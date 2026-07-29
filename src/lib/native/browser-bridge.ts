@@ -32,6 +32,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   let selectedRoot = '/browser/workspace'
   let recentWorkspaces = ''
   let cachedContracts: readonly ContractCacheStoredEntry[] = []
+  let gitHistoryEpoch = 0
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
     await Promise.all([...handlers].map((handler) => handler(event)))
@@ -198,6 +199,10 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       layoutContent = content
     },
     gitDetect: async () => null,
+    gitBeginHistorySession: async () => {
+      gitHistoryEpoch += 1
+      return gitHistoryEpoch
+    },
     gitStatus: async () => {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
     },
@@ -211,6 +216,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
     },
     gitRevokeHistoryAuthorization: async () => undefined,
+    gitDisposeHistorySession: async () => undefined,
     gitShowPair: async () => {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
     },

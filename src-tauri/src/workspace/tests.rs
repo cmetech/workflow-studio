@@ -880,9 +880,12 @@ fn nested_workspace_watcher_emits_parent_repository_metadata_changes_without_pol
     fs::write(root.path().join("selected/flow.yaml"), "name: one\n").unwrap();
     let (sender, receiver) = mpsc::channel();
     let git_directory = root.path().join(".git");
+    let git_identity = std::sync::Arc::new(same_file::Handle::from_path(&git_directory).unwrap());
     let metadata = crate::git::GitRepositoryMetadata {
         worktree_dir: git_directory.clone(),
         common_dir: git_directory,
+        worktree_identity: std::sync::Arc::clone(&git_identity),
+        common_identity: git_identity,
     };
     let watcher = super::watcher::start_with_git_metadata_sink(
         &root.path().join("selected"),
@@ -933,9 +936,12 @@ fn missing_external_git_metadata_does_not_block_primary_workspace_events() {
     let root = tempdir().unwrap();
     let missing_metadata = root.path().join("missing-parent-git-metadata");
     let (sender, receiver) = mpsc::channel();
+    let fallback_identity = std::sync::Arc::new(same_file::Handle::from_path(root.path()).unwrap());
     let metadata = crate::git::GitRepositoryMetadata {
         worktree_dir: missing_metadata.clone(),
         common_dir: missing_metadata,
+        worktree_identity: std::sync::Arc::clone(&fallback_identity),
+        common_identity: fallback_identity,
     };
     let watcher =
         super::watcher::start_with_git_metadata_sink(root.path(), &metadata, move |event| {
@@ -963,10 +969,13 @@ fn rejected_external_git_watch_registration_does_not_block_primary_workspace_eve
     fs::create_dir(&root).unwrap();
     fs::create_dir(&metadata).unwrap();
     let canonical_metadata = metadata.canonicalize().unwrap();
+    let metadata_identity = std::sync::Arc::new(same_file::Handle::from_path(&metadata).unwrap());
     let (sender, receiver) = mpsc::channel();
     let metadata_paths = crate::git::GitRepositoryMetadata {
         worktree_dir: metadata.clone(),
         common_dir: metadata,
+        worktree_identity: std::sync::Arc::clone(&metadata_identity),
+        common_identity: metadata_identity,
     };
     let watcher = super::watcher::start_with_git_metadata_sink_and_registration(
         &root,
@@ -989,6 +998,78 @@ fn rejected_external_git_watch_registration_does_not_block_primary_workspace_eve
         .recv_timeout(Duration::from_secs(5))
         .expect("primary workspace event");
     assert!(event.paths.iter().any(|path| path == "flow.yaml"));
+    drop(watcher);
+}
+
+#[test]
+fn renamed_git_metadata_is_not_reauthorized_during_watcher_registration() {
+    use notify::Watcher;
+    use std::sync::{Arc, Mutex};
+
+    let parent = tempdir().unwrap();
+    let repository = parent.path().join("repo");
+    fs::create_dir(&repository).unwrap();
+    git_fixture(&repository, &["init", "-b", "main"]);
+    fs::create_dir(repository.join("selected")).unwrap();
+    let metadata = crate::git::detect_repository_metadata(&repository.join("selected"))
+        .unwrap()
+        .unwrap();
+    let detected_path = metadata.worktree_dir.clone();
+    fs::rename(&detected_path, repository.join("parked.git")).unwrap();
+    fs::create_dir(&detected_path).unwrap();
+
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&registered);
+    let watcher = super::watcher::start_with_git_metadata_sink_and_registration(
+        &repository.join("selected"),
+        &metadata,
+        move |native, path, mode| {
+            observed.lock().unwrap().push(path.to_path_buf());
+            native.watch(path, mode)
+        },
+        |_| {},
+    )
+    .expect("metadata identity mismatch must not block the primary watcher");
+
+    assert!(!registered.lock().unwrap().contains(&detected_path));
+    drop(watcher);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_swapped_git_metadata_is_not_reauthorized_during_watcher_registration() {
+    use notify::Watcher;
+    use std::os::unix::fs::symlink;
+    use std::sync::{Arc, Mutex};
+
+    let parent = tempdir().unwrap();
+    let repository = parent.path().join("repo");
+    fs::create_dir(&repository).unwrap();
+    git_fixture(&repository, &["init", "-b", "main"]);
+    fs::create_dir(repository.join("selected")).unwrap();
+    let metadata = crate::git::detect_repository_metadata(&repository.join("selected"))
+        .unwrap()
+        .unwrap();
+    let detected_path = metadata.common_dir.clone();
+    fs::rename(&detected_path, repository.join("parked.git")).unwrap();
+    let replacement = parent.path().join("replacement.git");
+    fs::create_dir(&replacement).unwrap();
+    symlink(&replacement, &detected_path).unwrap();
+
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&registered);
+    let watcher = super::watcher::start_with_git_metadata_sink_and_registration(
+        &repository.join("selected"),
+        &metadata,
+        move |native, path, mode| {
+            observed.lock().unwrap().push(path.to_path_buf());
+            native.watch(path, mode)
+        },
+        |_| {},
+    )
+    .expect("metadata symlink swap must not block the primary watcher");
+
+    assert!(!registered.lock().unwrap().contains(&replacement));
     drop(watcher);
 }
 

@@ -14,14 +14,24 @@ export async function inspectGitRepository(native: GitNativeBridge): Promise<Git
   }
 }
 
-export async function inspectGitPair(native: GitNativeBridge, pair: GitPairPaths): Promise<GitInspection> {
+export async function inspectGitPair(
+  native: GitNativeBridge,
+  pair: GitPairPaths,
+  activation: { readonly controllerEpoch: number; readonly requestGeneration: number },
+): Promise<GitInspection> {
   const repository = await native.gitDetect()
   if (!repository) return emptyGitInspection
-  const [status, diff, history] = await Promise.all([
+  const [status, diff] = await Promise.all([
     native.gitStatus(repository.root),
     native.gitDiffPair(repository.root, pair.definitionPath, pair.companionPath),
-    native.gitHistoryPair(repository.root, pair.definitionPath, pair.companionPath),
   ])
+  const history = await native.gitHistoryPair(
+    repository.root,
+    pair.definitionPath,
+    pair.companionPath,
+    activation.controllerEpoch,
+    activation.requestGeneration,
+  )
   const pairPaths = new Set([pair.definitionPath, pair.companionPath].filter((path): path is string => path !== null))
   return {
     pair,

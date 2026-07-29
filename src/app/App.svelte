@@ -295,10 +295,10 @@
     settle: tick,
     onPersistenceError: surfaceCanvasPersistenceError,
   })
-  const applicationDisposal = createApplicationDisposal(
-    () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
-    surfaceCanvasPersistenceError,
-  )
+  const applicationDisposal = createApplicationDisposal(async () => {
+    await gitController.dispose()
+    await withCanvasLayoutBarrier(() => documentWorkspace.dispose())
+  }, surfaceCanvasPersistenceError)
 
   const inspectorContract = $derived(
     contracts.find(

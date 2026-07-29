@@ -5,6 +5,7 @@ import { inspectGitPair, inspectGitRepository, loadGitCommit } from './git-api'
 function nativeFixture(): GitNativeBridge {
   return {
     hostHealth: async () => ({ appVersion: 'test', os: 'linux', arch: 'x64' }),
+    gitBeginHistorySession: vi.fn(async () => 1),
     gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
     gitStatus: vi.fn(async () => ({
       entries: [{ path: 'flows/a b.yaml', index: '.', worktree: 'M', untracked: false }],
@@ -24,6 +25,7 @@ function nativeFixture(): GitNativeBridge {
     })),
     gitRetainHistoryAuthorization: vi.fn(async () => undefined),
     gitRevokeHistoryAuthorization: vi.fn(async () => undefined),
+    gitDisposeHistorySession: vi.fn(async () => undefined),
     gitShowPair: vi.fn(async () => ({
       oid: '0123456789abcdef',
       definition: 'name: historical\n',
@@ -48,10 +50,14 @@ describe('Git inspection API', () => {
   it('loads exact literal pair paths through the closed native methods', async () => {
     const native = nativeFixture()
 
-    const result = await inspectGitPair(native, {
-      definitionPath: 'flows/a b.yaml',
-      companionPath: 'flows/a b.hermes.yaml',
-    })
+    const result = await inspectGitPair(
+      native,
+      {
+        definitionPath: 'flows/a b.yaml',
+        companionPath: 'flows/a b.hermes.yaml',
+      },
+      { controllerEpoch: 7, requestGeneration: 11 },
+    )
 
     expect(result.repository?.branch).toBe('main')
     expect(result.status.entries).toHaveLength(1)
@@ -60,17 +66,21 @@ describe('Git inspection API', () => {
     expect(native.gitDetect).toHaveBeenCalledWith()
     expect(native.gitStatus).toHaveBeenCalledWith('/repo')
     expect(native.gitDiffPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml')
-    expect(native.gitHistoryPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml')
+    expect(native.gitHistoryPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml', 7, 11)
   })
 
   it('returns an explicit no-repository view without issuing repository reads', async () => {
     const native = nativeFixture()
     vi.mocked(native.gitDetect).mockResolvedValue(null)
 
-    const result = await inspectGitPair(native, {
-      definitionPath: 'flow.yaml',
-      companionPath: null,
-    })
+    const result = await inspectGitPair(
+      native,
+      {
+        definitionPath: 'flow.yaml',
+        companionPath: null,
+      },
+      { controllerEpoch: 1, requestGeneration: 1 },
+    )
 
     expect(result.repository).toBeNull()
     expect(result.status.entries).toEqual([])

@@ -47,11 +47,13 @@ pub fn run() {
             contracts::contract_cache_load,
             contracts::contract_cache_write,
             git::git_detect,
+            git::git_begin_history_session,
             git::git_status,
             git::git_diff_pair,
             git::git_history_pair,
             git::git_retain_history_authorization,
             git::git_revoke_history_authorization,
+            git::git_dispose_history_session,
             git::git_show_pair,
         ])
         .run(tauri::generate_context!())
