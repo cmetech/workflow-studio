@@ -16,8 +16,19 @@ export function renderMarkdown(markdown: string): string {
   const template = document.createElement('template')
   template.innerHTML = sanitized
   for (const link of template.content.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const rawHref = link.getAttribute('href') ?? ''
+    if (rawHref.startsWith('#')) {
+      if (/^#(?:field|node|contract):[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawHref)) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.dataset.topicId = rawHref.slice(1)
+        button.setAttribute('aria-label', `Open documentation topic: ${link.textContent ?? rawHref.slice(1)}`)
+        button.textContent = link.textContent
+        link.replaceWith(button)
+      } else link.removeAttribute('href')
+      continue
+    }
     const href = link.href
-    if (link.getAttribute('href')?.startsWith('#')) continue
     if (/^https?:$/i.test(new URL(href).protocol)) {
       const button = document.createElement('button')
       button.type = 'button'

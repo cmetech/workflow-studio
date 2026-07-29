@@ -1,6 +1,6 @@
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob, RecoveryWriteRequest } from '../recovery/types'
-import type { ContractCacheStoredEntry } from '../contract/contract-cache'
+import type { ContractCacheLoadResult, ContractCacheStoredEntry } from '../contract/contract-cache'
 import type { WorkflowProfile } from '../contract/types'
 
 export interface HostInfo {
@@ -101,7 +101,7 @@ export interface ContractNativeBridge extends NativeBridge {
     readonly executablePath: string
     readonly profile: WorkflowProfile
   }): Promise<Uint8Array>
-  contractCacheLoad(): Promise<readonly ContractCacheStoredEntry[]>
+  contractCacheLoad(): Promise<ContractCacheLoadResult | readonly ContractCacheStoredEntry[]>
   contractCacheWrite(entries: readonly ContractCacheStoredEntry[]): Promise<void>
 }
 

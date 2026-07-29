@@ -100,6 +100,19 @@ pub struct ContractCacheStoredEntry {
     pub active: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractCacheLoadAdvisory {
+    pub code: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractCacheLoadResult {
+    pub entries: Vec<ContractCacheStoredEntry>,
+    pub advisories: Vec<ContractCacheLoadAdvisory>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContractCacheIndexEntry {
@@ -186,29 +199,60 @@ pub fn contract_run_hermes_cli(
 }
 
 #[tauri::command]
-pub fn contract_cache_load(app: AppHandle) -> ContractResult<Vec<ContractCacheStoredEntry>> {
+pub fn contract_cache_load(app: AppHandle) -> ContractResult<ContractCacheLoadResult> {
     cache_load_at(&app_data_dir(&app)?)
 }
 
-fn cache_load_at(app_data: &Path) -> ContractResult<Vec<ContractCacheStoredEntry>> {
+fn cache_load_at(app_data: &Path) -> ContractResult<ContractCacheLoadResult> {
     let root = contract_cache_root_at(app_data)?;
     let index_path = root.join(CACHE_INDEX);
     if !index_path.exists() {
-        return Ok(Vec::new());
+        return Ok(ContractCacheLoadResult {
+            entries: Vec::new(),
+            advisories: Vec::new(),
+        });
     }
-    reject_non_regular_file(&index_path, "contract_cache_read_failed")?;
-    let index = read_bounded_utf8(&index_path, "contract_cache_read_failed")?;
-    let index_entries: Vec<ContractCacheIndexEntry> =
-        serde_json::from_str(&index).map_err(|_| {
-            contract_error(
-                "contract_cache_read_failed",
-                "The contract cache index is invalid.",
-            )
-        })?;
+    let index = match reject_non_regular_file(&index_path, "contract_cache_read_failed")
+        .and_then(|_| read_bounded_utf8(&index_path, "contract_cache_read_failed"))
+    {
+        Ok(index) => index,
+        Err(_) => return reset_malformed_cache_index(app_data, &index_path),
+    };
+    let index_entries: Vec<ContractCacheIndexEntry> = match serde_json::from_str(&index) {
+        Ok(entries) => entries,
+        Err(_) => return reset_malformed_cache_index(app_data, &index_path),
+    };
     let mut entries = Vec::with_capacity(index_entries.len());
+    let mut advisories = Vec::new();
     for index_entry in index_entries {
-        let path = root.join(cache_file_name(&index_entry.digest)?);
-        reject_non_regular_file(&path, "contract_cache_read_failed")?;
+        let file_name = match cache_file_name(&index_entry.digest) {
+            Ok(file_name) => file_name,
+            Err(_) => {
+                advisories.push(ContractCacheLoadAdvisory {
+                    code: "contract_cache_blob_invalid",
+                });
+                continue;
+            }
+        };
+        let path = root.join(file_name);
+        if !path.exists() {
+            advisories.push(ContractCacheLoadAdvisory {
+                code: "contract_cache_blob_missing",
+            });
+            continue;
+        }
+        let content = match reject_non_regular_file(&path, "contract_cache_read_failed")
+            .and_then(|_| read_bounded_utf8(&path, "contract_cache_read_failed"))
+        {
+            Ok(content) => content,
+            Err(_) => {
+                let _ = fs::remove_file(&path);
+                advisories.push(ContractCacheLoadAdvisory {
+                    code: "contract_cache_blob_invalid",
+                });
+                continue;
+            }
+        };
         entries.push(ContractCacheStoredEntry {
             digest: index_entry.digest,
             profile: index_entry.profile,
@@ -216,11 +260,38 @@ fn cache_load_at(app_data: &Path) -> ContractResult<Vec<ContractCacheStoredEntry
             normalizer_version: index_entry.normalizer_version,
             reader_version: index_entry.reader_version,
             source: index_entry.source,
-            content: read_bounded_utf8(&path, "contract_cache_read_failed")?,
+            content,
             active: index_entry.active,
         });
     }
-    Ok(entries)
+    if !advisories.is_empty() && cache_write_at(app_data, entries.clone()).is_err() {
+        advisories.push(ContractCacheLoadAdvisory {
+            code: "contract_cache_cleanup_failed",
+        });
+    }
+    Ok(ContractCacheLoadResult {
+        entries,
+        advisories,
+    })
+}
+
+fn reset_malformed_cache_index(
+    app_data: &Path,
+    index_path: &Path,
+) -> ContractResult<ContractCacheLoadResult> {
+    let _ = fs::remove_file(index_path);
+    let mut advisories = vec![ContractCacheLoadAdvisory {
+        code: "contract_cache_index_invalid",
+    }];
+    if cache_write_at(app_data, Vec::new()).is_err() {
+        advisories.push(ContractCacheLoadAdvisory {
+            code: "contract_cache_cleanup_failed",
+        });
+    }
+    Ok(ContractCacheLoadResult {
+        entries: Vec::new(),
+        advisories,
+    })
 }
 
 #[tauri::command]
@@ -1163,7 +1234,57 @@ mod tests {
             .path()
             .join(format!("contracts-v1/{}.json", "a".repeat(64)))
             .exists());
-        assert_eq!(cache_load_at(app_data.path()).unwrap(), vec![second]);
+        assert_eq!(
+            cache_load_at(app_data.path()).unwrap().entries,
+            vec![second]
+        );
+    }
+
+    #[test]
+    fn damaged_cache_restart_fails_open_for_malformed_index_missing_blob_and_invalid_utf8() {
+        for damage in ["malformed-index", "missing-blob", "invalid-utf8"] {
+            let app_data = tempfile::tempdir().unwrap();
+            let good = cached_entry('a', "good");
+            cache_write_at(app_data.path(), vec![good.clone()]).unwrap();
+            let root = app_data.path().join("contracts-v1");
+            match damage {
+                "malformed-index" => fs::write(root.join("index.json"), b"{not json").unwrap(),
+                "missing-blob" => {
+                    fs::remove_file(root.join(format!("{}.json", "a".repeat(64)))).unwrap()
+                }
+                "invalid-utf8" => {
+                    fs::write(root.join(format!("{}.json", "a".repeat(64))), [0xff, 0xfe]).unwrap()
+                }
+                _ => unreachable!(),
+            }
+
+            let restarted = cache_load_at(app_data.path()).unwrap();
+
+            assert!(restarted.entries.is_empty());
+            assert_eq!(restarted.advisories.len(), 1);
+            assert!(restarted.advisories[0].code.starts_with("contract_cache_"));
+        }
+    }
+
+    #[test]
+    fn damaged_blob_does_not_discard_other_valid_cached_contracts_on_restart() {
+        let app_data = tempfile::tempdir().unwrap();
+        let good = cached_entry('a', "good");
+        let damaged = cached_entry('b', "damaged");
+        cache_write_at(app_data.path(), vec![good.clone(), damaged]).unwrap();
+        fs::write(
+            app_data
+                .path()
+                .join("contracts-v1")
+                .join(format!("{}.json", "b".repeat(64))),
+            [0xff],
+        )
+        .unwrap();
+
+        let restarted = cache_load_at(app_data.path()).unwrap();
+
+        assert_eq!(restarted.entries, vec![good]);
+        assert_eq!(restarted.advisories.len(), 1);
     }
 
     fn cached_entry(hex: char, content: &str) -> ContractCacheStoredEntry {

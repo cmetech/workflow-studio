@@ -34,7 +34,7 @@ const index: DocumentationIndex = {
       kind: 'guide',
       title: 'DAG dependencies',
       description: 'Guide.',
-      body: '[External](https://docs.example.test)',
+      body: '[Prompt field](#field:prompt.node.prompt) [Missing node](#node:missing) [Malformed](#field:../bad) [External](https://docs.example.test)',
       examples: [],
       status: 'supported',
       profile: 'archon-2026-07',
@@ -77,6 +77,22 @@ describe('DocumentationView', () => {
     await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
     await fireEvent.click(screen.getByRole('button', { name: 'Open external link' }))
     expect(onOpenExternal).toHaveBeenCalledWith('https://docs.example.test/')
+  })
+
+  it('delegates validated internal guide links to an exact topic and moves focus while malformed links stay inert', async () => {
+    render(DocumentationView, { index, topicId: 'guide:dag' })
+    const article = screen.getByRole('article')
+    const malformed = screen.getByText('Malformed')
+    expect(malformed.closest('a')).not.toHaveAttribute('href')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Prompt field' }))
+
+    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+    expect(article).toHaveFocus()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'DAG dependencies — guide:dag' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Missing node' }))
+    expect(screen.getByRole('heading', { name: 'DAG dependencies' })).toBeVisible()
   })
 
   it('renders the exact contract field topic for the inspector Docs tab', () => {
@@ -150,5 +166,55 @@ describe('DocumentationView', () => {
     await fireEvent.input(search, { target: { value: 'Prompt' } })
     await fireEvent.keyDown(search, { key: 'Enter' })
     expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+  })
+
+  it('remaps selected topics and history by ID when the profile index changes, then clears absent IDs', async () => {
+    const { rerender } = render(DocumentationView, { index, topicId: 'field:prompt.node.prompt' })
+    const replacementTopic = {
+      ...index.byId.get('field:prompt.node.prompt')!,
+      title: 'Prompt text (legacy)',
+      body: 'Legacy field body',
+      profile: 'hermes-legacy' as const,
+    }
+    const replacement: DocumentationIndex = {
+      topics: [replacementTopic],
+      byId: new Map([[replacementTopic.id, replacementTopic]]),
+      searchText: new Map([[replacementTopic.id, 'prompt text legacy']]),
+      tokenIndex: new Map([['prompt', new Set([replacementTopic.id])]]),
+    }
+
+    await rerender({ index: replacement, topicId: undefined })
+    expect(screen.getByRole('heading', { name: 'Prompt text (legacy)' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Prompt text (legacy) — field:prompt.node.prompt' })).toBeVisible()
+
+    const absent: DocumentationIndex = {
+      topics: [],
+      byId: new Map(),
+      searchText: new Map(),
+      tokenIndex: new Map(),
+    }
+    await rerender({ index: absent, topicId: undefined })
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Documentation history' })).not.toBeInTheDocument()
+  })
+
+  it('consumes an unresolved requested topic so a later profile index cannot replay it', async () => {
+    const onTopicConsumed = vi.fn()
+    const absent: DocumentationIndex = {
+      topics: [],
+      byId: new Map(),
+      searchText: new Map(),
+      tokenIndex: new Map(),
+    }
+    const { rerender } = render(DocumentationView, {
+      index: absent,
+      topicId: 'field:prompt.node.prompt',
+      navigationRequestId: 7,
+      onTopicConsumed,
+    })
+    expect(onTopicConsumed).toHaveBeenCalledWith('field:prompt.node.prompt', 7)
+
+    await rerender({ index, topicId: undefined, navigationRequestId: undefined, onTopicConsumed })
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 })

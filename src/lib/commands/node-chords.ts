@@ -25,6 +25,11 @@ const chordKinds: Readonly<Record<string, NodeChordKind>> = {
 }
 const choiceLabels = Object.keys(chordKinds)
 
+export function nodeChordForKind(kind: string): string | undefined {
+  const choice = choiceLabels.find((key) => chordKinds[key] === kind)
+  return choice ? `N ${choice}` : undefined
+}
+
 export class NodeChordController {
   #pending = false
   #afterSelection = false

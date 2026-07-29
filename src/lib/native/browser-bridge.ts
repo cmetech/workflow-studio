@@ -53,8 +53,10 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
         'Hermes CLI refresh is available only in the native desktop app.',
       )
     },
-    contractCacheLoad: async () =>
-      cachedContracts.map((entry) => ({ ...entry, source: structuredClone(entry.source) })),
+    contractCacheLoad: async () => ({
+      entries: cachedContracts.map((entry) => ({ ...entry, source: structuredClone(entry.source) })),
+      advisories: [],
+    }),
     contractCacheWrite: async (entries) => {
       cachedContracts = entries.map((entry) => ({ ...entry, source: structuredClone(entry.source) }))
     },

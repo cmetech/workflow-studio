@@ -28,6 +28,7 @@ export interface CanvasProjection {
 }
 
 export interface CanvasDragDetail {
-  readonly id: string
-  readonly position: CanvasPosition
+  readonly nodes?: readonly { readonly id: string; readonly position: CanvasPosition }[]
+  readonly id?: string
+  readonly position?: CanvasPosition
 }

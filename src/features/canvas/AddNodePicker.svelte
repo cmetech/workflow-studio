@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
   import type { NodeKindDescriptor, WorkflowProfile } from '$src/lib/contract/types'
+  import { nodeKindAvailable, nodeKindStatus } from './node-kind-options'
 
   interface Props {
     descriptors: readonly NodeKindDescriptor[]
@@ -34,12 +35,11 @@
   const activeId = $derived(active ? `add-node-${safeId(active.id)}` : undefined)
 
   function available(descriptor: NodeKindDescriptor): boolean {
-    return descriptor.status === 'supported' && descriptor.applicability.profiles.includes(profile)
+    return nodeKindAvailable(descriptor, profile)
   }
 
   function statusLabel(descriptor: NodeKindDescriptor): string {
-    if (!descriptor.applicability.profiles.includes(profile)) return `not available in ${profile}`
-    return descriptor.status
+    return nodeKindStatus(descriptor, profile)
   }
 
   function safeId(value: string): string {

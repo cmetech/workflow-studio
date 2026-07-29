@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import archonFixtureText from '../../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import legacyFixtureText from '../../../tests/fixtures/contracts/minimal-legacy-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { createContractCache } from './contract-cache'
 import { loadAuthoringContract } from './contract-loader'
 import type { AuthoringContract } from './types'
+import type { ContractCacheStoredEntry } from './contract-cache'
 
 async function signedFixture(overrides: Record<string, unknown> = {}): Promise<Uint8Array> {
   const envelope = { ...(JSON.parse(archonFixtureText) as Record<string, unknown>), ...overrides }
@@ -26,7 +27,83 @@ async function bundled(): Promise<readonly AuthoringContract[]> {
   return contracts
 }
 
+async function storedFixture(
+  overrides: Record<string, unknown> = {},
+  active = false,
+): Promise<ContractCacheStoredEntry> {
+  const content = new TextDecoder().decode(await signedFixture(overrides))
+  const payload = JSON.parse(content) as {
+    contract_digest: `sha256:${string}`
+    profile: 'archon-2026-07'
+    schema_version: number
+    normalizer_version: number
+    contract_reader_version: number
+  }
+  return {
+    digest: payload.contract_digest,
+    profile: payload.profile,
+    schemaVersion: payload.schema_version,
+    normalizerVersion: payload.normalizer_version,
+    readerVersion: payload.contract_reader_version,
+    source: { kind: 'user', identifier: '/cached/contract.json' },
+    content,
+    active,
+  }
+}
+
 describe('contract cache activation', () => {
+  it('fails open to bundled contracts and a bounded advisory when the native cache index cannot load', async () => {
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: {
+        contractCacheLoad: async () => Promise.reject(new Error('malformed index included secret cache content')),
+        contractCacheWrite: async () => undefined,
+      },
+      activate: async () => true,
+    })
+
+    await expect(cache.hydrate()).resolves.toBeUndefined()
+
+    expect(cache.activeContract('hermes-legacy')).toBeDefined()
+    expect(cache.activeContract('archon-2026-07')).toBeDefined()
+    expect(cache.listAdvisories()).toEqual([expect.objectContaining({ code: 'contract_cache_load_failed' })])
+    expect(cache.listAdvisories()[0]?.message).not.toContain('secret')
+  })
+
+  it('skips corrupt cached envelopes individually, retains a good active entry, and rewrites only validated data', async () => {
+    const good = await storedFixture({ normalizer_version: 2 }, true)
+    const digestMismatch = { ...(await storedFixture({ normalizer_version: 3 })), content: good.content }
+    const invalidContract = { ...(await storedFixture({ normalizer_version: 4 })), content: '{"profile":' }
+    const writes: ContractCacheStoredEntry[][] = []
+    const activate = vi.fn(async () => true)
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: {
+        contractCacheLoad: async () => ({
+          entries: [digestMismatch, good, invalidContract],
+          advisories: [{ code: 'contract_cache_blob_missing' }],
+        }),
+        contractCacheWrite: async (entries) => {
+          writes.push([...entries])
+        },
+      },
+      activate,
+    })
+
+    await expect(cache.hydrate()).resolves.toBeUndefined()
+
+    expect(cache.activeContract('archon-2026-07')?.contract_digest).toBe(good.digest)
+    expect(activate).toHaveBeenCalledWith(expect.objectContaining({ contract_digest: good.digest }))
+    expect(cache.listAuthoringContracts()).toContainEqual(expect.objectContaining({ contract_digest: good.digest }))
+    expect(cache.listAuthoringContracts()).not.toContainEqual(
+      expect.objectContaining({ contract_digest: digestMismatch.digest }),
+    )
+    expect(writes.at(-1)).toEqual([expect.objectContaining({ digest: good.digest, active: true })])
+    expect(cache.listAdvisories().map(({ code }) => code)).toEqual(
+      expect.arrayContaining(['contract_cache_blob_missing', 'contract_cache_entry_invalid']),
+    )
+  })
+
   it('keeps every bundled profile available while imported contracts are cached by profile, schema, and digest', async () => {
     const writes: { digest: string; content: string }[][] = []
     const cache = createContractCache({

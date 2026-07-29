@@ -7,6 +7,7 @@ import { commandRegistry, createCommandRegistry, listCommands } from '$src/lib/c
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
+import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
 
 function renderCanvas(props: Record<string, unknown>) {
   return render(GraphCanvas, { commandSurface: commandRegistry, ...props } as never)
@@ -124,6 +125,89 @@ describe('GraphCanvas', () => {
     expect(persistLayout).toHaveBeenCalledWith(
       expect.objectContaining({ nodePositions: { collect: { x: 100, y: 200 }, review: { x: 320, y: 0 } } }),
     )
+  })
+
+  it('applies every selected node in one drag payload, persists once, and restores both positions on reopen', async () => {
+    vi.useFakeTimers()
+    let persisted: LayoutRecordV1 | undefined
+    const persistLayout = vi.fn(async (next: LayoutRecordV1) => {
+      persisted = structuredClone(next)
+    })
+    let rendered = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
+    let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const nodes = [
+      { id: 'collect', position: { x: 140, y: 160 } },
+      { id: 'review', position: { x: 460, y: 160 } },
+    ]
+
+    await fireEvent(canvas, new CustomEvent('workflowdragmove', { bubbles: true, detail: { nodes } }))
+    expect($canvasPositions.get()).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
+    expect(persistLayout).not.toHaveBeenCalled()
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstop', { bubbles: true, detail: { nodes } }))
+    await vi.advanceTimersByTimeAsync(300)
+    expect(persistLayout).toHaveBeenCalledOnce()
+    expect(persisted?.nodePositions).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
+
+    rendered.unmount()
+    rendered = renderCanvas({ projection, layout: persisted!, onPersistLayout: persistLayout })
+    canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    expect(canvas).toBeVisible()
+    expect($canvasPositions.get()).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
+  })
+
+  it('accepts a validated node-kind HTML drop at exact flow coordinates', async () => {
+    const onDropNodeKind = vi.fn()
+    const { container } = renderCanvas({ projection, layout, onDropNodeKind })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 50,
+      left: 100,
+      top: 50,
+      right: 900,
+      bottom: 650,
+      width: 800,
+      height: 600,
+      toJSON: () => undefined,
+    })
+    const transfer = {
+      types: [NODE_KIND_DRAG_TYPE],
+      dropEffect: '',
+      getData: (type: string) => (type === NODE_KIND_DRAG_TYPE ? 'command' : ''),
+    }
+
+    await fireEvent.dragOver(canvas, { dataTransfer: transfer })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperties(drop, {
+      clientX: { value: 500 },
+      clientY: { value: 350 },
+      dataTransfer: { value: transfer },
+    })
+    await fireEvent(canvas, drop)
+
+    expect(transfer.dropEffect).toBe('copy')
+    expect(onDropNodeKind).toHaveBeenCalledOnce()
+    expect(onDropNodeKind).toHaveBeenCalledWith('command', { x: 400, y: 300 })
+  })
+
+  it('fails closed for palette drops while read-only and for malformed drag payloads', async () => {
+    const onDropNodeKind = vi.fn()
+    const { container } = renderCanvas({ projection, layout, readOnly: true, onDropNodeKind })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+    await fireEvent.drop(canvas, {
+      clientX: 100,
+      clientY: 100,
+      dataTransfer: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
+    })
+    await fireEvent.drop(canvas, {
+      clientX: 100,
+      clientY: 100,
+      dataTransfer: { types: ['text/plain'], getData: () => 'command' },
+    })
+
+    expect(onDropNodeKind).not.toHaveBeenCalled()
   })
 
   it('renders read-only stale affordances, canvas controls, minimap toggle, and explicit Arrange', async () => {

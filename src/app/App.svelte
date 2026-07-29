@@ -19,7 +19,7 @@
   import type { ExampleDescriptor } from '$src/lib/examples/types'
   import { buildDocumentationIndex } from '$src/lib/docs/build-index'
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
-  import { createContractCache, type ContractCache } from '$src/lib/contract/contract-cache'
+  import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
@@ -76,6 +76,8 @@
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import { canvasCapacityForProjection } from '$src/features/canvas/project-canvas'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
+  import NodePalette from '$src/features/canvas/NodePalette.svelte'
+  import { nodeKindAvailable } from '$src/features/canvas/node-kind-options'
   import CommandPalette from '$src/features/commands/CommandPalette.svelte'
   import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
@@ -136,6 +138,7 @@
   let examples = $state.raw<readonly ExampleDescriptor[]>([])
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
+  let contractCacheAdvisories = $state.raw<readonly ContractCacheAdvisory[]>([])
   function synchronizeContractRegistry(next: readonly AuthoringContract[]): void {
     availableContracts.splice(0, availableContracts.length, ...next)
     contracts = next
@@ -151,9 +154,13 @@
       activate: (contract) => documentWorkspace.activateContract(contract),
     })
     synchronizeContractRegistry(appContractCache.listAuthoringContracts())
-    await appContractCache.hydrate()
-    synchronizeContractRegistry(appContractCache.listAuthoringContracts())
-    contractsLoaded = true
+    try {
+      await appContractCache.hydrate()
+    } finally {
+      synchronizeContractRegistry(appContractCache.listAuthoringContracts())
+      contractCacheAdvisories = appContractCache.listAdvisories()
+      contractsLoaded = true
+    }
     return loaded
   })
   const examplesReadiness = loadExampleCatalog().then((loaded) => {
@@ -238,6 +245,7 @@
         )
       }),
     onWorkspaceChanged: refreshWorkspace,
+    activeContractForProfile,
   })
   const canvasAuthoring = createCanvasAuthoringCoordinator({ getContext: canvasAuthoringContext })
   const nodeChords = new NodeChordController({
@@ -295,6 +303,7 @@
     ),
   )
   const canvasCapacity = $derived(canvasProjection ? canvasCapacityForProjection(canvasProjection) : null)
+  const nodesPaletteDisabled = $derived(nodesPaletteDisabledReason())
   const inspectorNodes = $derived(
     (canvasProjection?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)),
   )
@@ -544,6 +553,12 @@
     return undefined
   }
 
+  function nodesPaletteDisabledReason(): string | undefined {
+    if (canvasCapacity?.visual === false) return canvasCapacity.advisory
+    const context = canvasAuthoringContext()
+    return 'unavailable' in context ? context.unavailable : undefined
+  }
+
   function formFieldValue(definition: Readonly<Record<string, unknown>>, field: FormField): unknown {
     let value: unknown = definition
     for (const segment of field.concretePath ?? []) {
@@ -637,6 +652,21 @@
     if (!request) return
     const result = await canvasAuthoring.add(descriptor, request)
     addNodeRequest = null
+    if (result.status !== 'committed') workspaceError = result.message
+  }
+
+  async function choosePaletteNode(descriptor: NodeKindDescriptor): Promise<void> {
+    const position = graphCanvas?.viewportCenterPosition() ?? { x: 0, y: 0 }
+    const result = await canvasAuthoring.add(descriptor, { viewportCenter: position })
+    if (result.status !== 'committed') workspaceError = result.message
+  }
+
+  async function dropPaletteNode(kind: string, position: { readonly x: number; readonly y: number }): Promise<void> {
+    const contract = inspectorContract
+    const profile = canvasProjection?.profile
+    const descriptor = contract?.node_kinds.find((candidate) => candidate.id === kind)
+    if (!descriptor || !profile || !nodeKindAvailable(descriptor, profile) || nodesPaletteDisabled) return
+    const result = await canvasAuthoring.add(descriptor, { viewportCenter: position })
     if (result.status !== 'committed') workspaceError = result.message
   }
 
@@ -1134,6 +1164,11 @@
       No validated production authoring contract is bundled. Contract-dependent creation and import are disabled.
     </p>
   {/if}
+  {#if contractCacheAdvisories.length > 0}
+    <p class="contract-cache-advisory" role="status" aria-label="Contract cache advisory">
+      {contractCacheAdvisories.map(({ message }) => message).join(' ')}
+    </p>
+  {/if}
   {#if workspaceError}
     <p class="workspace-error" role="alert">{workspaceError}</p>
   {/if}
@@ -1205,6 +1240,13 @@
         {:else}
           <p>Loading validated examples…</p>
         {/if}
+      {:else if $activeActivity === 'nodes'}
+        <NodePalette
+          descriptors={inspectorContract?.node_kinds ?? []}
+          profile={canvasProjection?.profile ?? inspectorContract?.profile ?? 'hermes-legacy'}
+          disabledReason={nodesPaletteDisabled}
+          onChoose={choosePaletteNode}
+        />
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
@@ -1262,6 +1304,7 @@
                   onRequestAdd={requestCanvasAdd}
                   onRequestDelete={requestCanvasDelete}
                   onOpenInspector={focusInspector}
+                  onDropNodeKind={dropPaletteNode}
                 />
               </div>
             {/if}

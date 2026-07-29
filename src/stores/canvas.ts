@@ -16,8 +16,17 @@ export function replaceCanvasPositions(positions: Readonly<Record<string, Canvas
 }
 
 export function moveCanvasPosition(id: string, position: CanvasPosition): void {
-  if (!id || !validPosition(position)) return
-  $canvasPositions.set({ ...$canvasPositions.get(), [id]: { x: position.x, y: position.y } })
+  moveCanvasPositions([{ id, position }])
+}
+
+export function moveCanvasPositions(
+  updates: readonly { readonly id: string; readonly position: CanvasPosition }[],
+): void {
+  const valid = updates.filter(({ id, position }) => Boolean(id) && validPosition(position))
+  if (valid.length === 0) return
+  const next = { ...$canvasPositions.get() }
+  for (const { id, position } of valid) next[id] = { x: position.x, y: position.y }
+  $canvasPositions.set(next)
 }
 
 export function setCanvasSelection(ids: readonly string[]): void {

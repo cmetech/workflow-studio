@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -218,12 +218,20 @@ import {
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
+  updateDocumentSession,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasPositions, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
-import { closeCommandPalette, closeKeyboardShortcuts, showEditorMode, showYamlDocument } from '$src/stores/shell'
+import {
+  closeCommandPalette,
+  closeKeyboardShortcuts,
+  showActivity,
+  showEditorMode,
+  showYamlDocument,
+} from '$src/stores/shell'
+import { NODE_KIND_DRAG_TYPE } from '$src/features/canvas/node-kind-options'
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
 
@@ -402,6 +410,7 @@ describe('App canvas authoring composition', () => {
     closeCommandPalette()
     closeKeyboardShortcuts()
     showEditorMode('visual')
+    showActivity('explorer')
     showYamlDocument('definition')
     historyStore.set(createHistoryState())
     $documentWorkspace.set({
@@ -440,6 +449,95 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('mounts the Nodes activity and authors one YAML transaction by click or exact-position HTML drop', async () => {
+    showActivity('nodes')
+    let rendered = await renderAuthoringApp()
+    expect(screen.getByRole('heading', { name: 'Nodes' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /add command node/i })).toHaveTextContent('N C')
+
+    await fireEvent.click(screen.getByRole('button', { name: /add command node/i }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
+    expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
+
+    historyStore.set(createHistoryState())
+    showActivity('nodes')
+    rendered = await renderAuthoringApp()
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 50,
+      left: 100,
+      top: 50,
+      right: 900,
+      bottom: 650,
+      width: 800,
+      height: 600,
+      toJSON: () => undefined,
+    })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperties(drop, {
+      clientX: { value: 500 },
+      clientY: { value: 350 },
+      dataTransfer: {
+        value: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
+      },
+    })
+    await fireEvent(canvas, drop)
+
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
+    expect(historyStore.get().undo).toHaveLength(1)
+    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.command).toEqual({ x: 400, y: 300 }))
+    rendered.unmount()
+  })
+
+  it('fails the Nodes activity closed for read-only, stale, unavailable-contract, and over-capacity states', async () => {
+    showActivity('nodes')
+    let rendered = await renderAuthoringApp({ readOnly: true })
+    let palette = within(screen.getByLabelText('Workspace panel'))
+    expect(palette.getByText(/read-only/)).toBeVisible()
+    expect(palette.getByRole('button', { name: /command node.*read-only/i })).toBeDisabled()
+    rendered.unmount()
+
+    showActivity('nodes')
+    rendered = await renderAuthoringApp()
+    receiveDocumentAnalysis({ ...$documentSession.get().revision!, structurallyValid: false, issues: [] })
+    palette = within(screen.getByLabelText('Workspace panel'))
+    await waitFor(() => expect(palette.getByText(/projection is stale/)).toBeVisible())
+    expect(palette.getByRole('button', { name: /command node.*stale/i })).toBeDisabled()
+
+    const pair = $documentSession.get().pair!
+    updateDocumentSession(pair, `sha256:${'d'.repeat(64)}`)
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: projection(),
+    })
+    await waitFor(() => expect(palette.getByText(/authoring contract is unavailable/)).toBeVisible())
+    expect(palette.queryByRole('button', { name: /add command node/i })).not.toBeInTheDocument()
+
+    updateDocumentSession(pair, digest)
+    const crowded = projection()
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: {
+        ...crowded,
+        nodes: Array.from({ length: 251 }, (_, index) => ({
+          ...crowded.nodes[0]!,
+          id: `node-${index}`,
+          source: { path: `/nodes/${index}`, start: index, end: index + 1 },
+        })),
+        edges: [],
+      },
+    })
+    await waitFor(() => expect(palette.getByText(/at most 250 nodes/)).toBeVisible())
+    expect(palette.getByRole('button', { name: /command node.*250 nodes/i })).toBeDisabled()
+    rendered.unmount()
+  })
+
   it('duplicates from a canvas keydown and exposes command collisions without changing YAML', async () => {
     let rendered = await renderAuthoringApp()
     const canvas = screen.getByRole('region', { name: 'Workflow graph' })
@@ -467,8 +565,9 @@ describe('App canvas authoring composition', () => {
     const before = $documentSession.get().pair?.definition.text
     await fireEvent.keyDown(collidingCanvas, { key: 'd', ctrlKey: true })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /shortcut collision.*duplicate selection.*shadow duplicate/i,
+    expect(await screen.findByText(/shortcut collision.*duplicate selection.*shadow duplicate/i)).toHaveAttribute(
+      'role',
+      'alert',
     )
     expect($documentSession.get().pair?.definition.text).toBe(before)
     expect(historyStore.get().undo).toHaveLength(0)

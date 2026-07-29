@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import { renderMarkdown } from '$src/lib/docs/render-markdown'
   import { searchDocumentation } from '$src/lib/docs/build-index'
   import type { DocumentationIndex, DocumentationTopic, DocumentationTopicKind } from '$src/lib/docs/types'
@@ -18,6 +19,9 @@
   let selected = $state<DocumentationTopic | null>(null)
   let history = $state<readonly string[]>([])
   let consumedRequestId = $state<number | undefined>()
+  let consumedTopicId = $state<string | undefined>()
+  let reconciledIndex: DocumentationIndex | undefined
+  let article = $state<HTMLElement>()
   const results = $derived(searchDocumentation(index, query, kind))
 
   function activeResultId(): string | undefined {
@@ -31,14 +35,26 @@
   }
 
   $effect(() => {
+    if (index === reconciledIndex) return
+    reconciledIndex = index
+    selected = selected ? (index.byId.get(selected.id) ?? null) : null
+    history = history.filter((id) => index.byId.has(id))
+    highlighted = Math.min(highlighted, Math.max(0, results.length - 1))
+  })
+
+  $effect(() => {
     const topic = topicId ? index.byId.get(topicId) : undefined
     if (topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
       if (selected?.id !== topic.id) select(topic)
       consumedRequestId = navigationRequestId
       onTopicConsumed?.(topic.id, navigationRequestId)
-    } else if (topic && navigationRequestId === undefined && selected?.id !== topic.id) {
-      select(topic)
+    } else if (topic && navigationRequestId === undefined && consumedTopicId !== topic.id) {
+      if (selected?.id !== topic.id) select(topic)
+      consumedTopicId = topic.id
       onTopicConsumed?.(topic.id)
+    } else if (topicId && !topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
+      consumedRequestId = navigationRequestId
+      onTopicConsumed?.(topicId, navigationRequestId)
     }
   })
 
@@ -58,15 +74,23 @@
     }
   }
 
-  function delegateExternal(node: HTMLElement): { destroy(): void } {
-    const followExternal = (event: MouseEvent): void => {
+  function delegateLinks(node: HTMLElement): { destroy(): void } {
+    const followLink = (event: MouseEvent): void => {
+      const internal =
+        event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-topic-id]') : null
+      const topic = internal?.dataset.topicId ? index.byId.get(internal.dataset.topicId) : undefined
+      if (topic) {
+        select(topic)
+        void tick().then(() => article?.focus())
+        return
+      }
       const target =
         event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-external-url]') : null
       const url = target?.dataset.externalUrl
       if (url) onOpenExternal?.(url)
     }
-    node.addEventListener('click', followExternal)
-    return { destroy: () => node.removeEventListener('click', followExternal) }
+    node.addEventListener('click', followLink)
+    return { destroy: () => node.removeEventListener('click', followLink) }
   }
 
   function renderSanitized(node: HTMLElement, markdown: string): { update(next: string): void } {
@@ -125,7 +149,7 @@
     </nav>
   {/if}
   {#if selected}
-    <article use:delegateExternal>
+    <article bind:this={article} tabindex="-1" use:delegateLinks>
       <h2>{selected.title}</h2>
       {#if selected.examples.length > 0}
         <section aria-label="Examples">

@@ -28,8 +28,22 @@ export interface ContractCacheStoredEntry {
   readonly active: boolean
 }
 
+export interface ContractCacheLoadAdvisory {
+  readonly code: string
+}
+
+export interface ContractCacheLoadResult {
+  readonly entries: readonly ContractCacheStoredEntry[]
+  readonly advisories: readonly ContractCacheLoadAdvisory[]
+}
+
+export interface ContractCacheAdvisory {
+  readonly code: string
+  readonly message: string
+}
+
 export interface ContractCacheNative {
-  contractCacheLoad(): Promise<readonly ContractCacheStoredEntry[]>
+  contractCacheLoad(): Promise<ContractCacheLoadResult | readonly ContractCacheStoredEntry[]>
   contractCacheWrite(entries: readonly ContractCacheStoredEntry[]): Promise<void>
 }
 
@@ -59,6 +73,7 @@ export interface ContractCache {
     options?: { readonly cacheUnsupported?: boolean },
   ): Promise<ContractCacheEntry>
   listCachedContracts(): readonly ContractCacheEntry[]
+  listAdvisories(): readonly ContractCacheAdvisory[]
   listAuthoringContracts(): readonly AuthoringContract[]
   activeContract(profile: WorkflowProfile): AuthoringContract | undefined
   activateContract(digest: `sha256:${string}`, profile: WorkflowProfile): Promise<ContractActivationResult>
@@ -85,6 +100,7 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
   const bundled = new Map(options.bundled.map((contract) => [contract.contract_digest, contract]))
   const cached = new Map<string, CachedContract>()
   const activeByProfile = new Map<WorkflowProfile, `sha256:${string}`>()
+  const advisories: ContractCacheAdvisory[] = []
   const coverage = options.widgetCoverage ?? validateContractFormCoverage
 
   for (const contract of options.bundled) activeByProfile.set(contract.profile, contract.contract_digest)
@@ -114,17 +130,50 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
   }
 
   async function hydrate(): Promise<void> {
-    for (const stored of await options.native.contractCacheLoad()) {
-      await acceptStored(stored, true)
+    let loaded: ContractCacheLoadResult | readonly ContractCacheStoredEntry[]
+    try {
+      loaded = await options.native.contractCacheLoad()
+    } catch {
+      addAdvisory('contract_cache_load_failed')
+      return
+    }
+    const report: ContractCacheLoadResult = Array.isArray(loaded)
+      ? { entries: loaded, advisories: [] }
+      : (loaded as ContractCacheLoadResult)
+    let needsCleanup = report.advisories.length > 0
+    for (const advisory of report.advisories) addAdvisory(advisory.code)
+    for (const stored of report.entries) {
+      try {
+        await acceptStored(stored, true)
+      } catch {
+        needsCleanup = true
+        addAdvisory('contract_cache_entry_invalid')
+      }
     }
     for (const value of cached.values()) {
       if (!value.entry.active || !value.contract || !value.canActivate) continue
       try {
         if (await options.activate(value.contract)) activeByProfile.set(value.contract.profile, value.entry.digest)
       } catch {
-        // Keep unavailable cached contracts inspectable; the bundled contract remains active.
+        addAdvisory('contract_cache_activation_failed')
       }
     }
+    if (needsCleanup) {
+      try {
+        await persist()
+      } catch {
+        addAdvisory('contract_cache_cleanup_failed')
+      }
+    }
+  }
+
+  function listAdvisories(): readonly ContractCacheAdvisory[] {
+    return advisories.map((advisory) => ({ ...advisory }))
+  }
+
+  function addAdvisory(code: string): void {
+    if (advisories.some((advisory) => advisory.code === code) || advisories.length >= 8) return
+    advisories.push({ code, message: cacheAdvisoryMessage(code) })
   }
 
   function listAuthoringContracts(): readonly AuthoringContract[] {
@@ -217,6 +266,14 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
           'contract_digest_mismatch',
           'The cached digest does not match the contract payload.',
         )
+      if (
+        loaded.contract.profile !== stored.profile ||
+        loaded.contract.schema_version !== stored.schemaVersion ||
+        loaded.contract.normalizer_version !== stored.normalizerVersion ||
+        loaded.contract.contract_reader_version !== stored.readerVersion
+      ) {
+        throw new ContractCacheError('contract_shape_invalid', 'The cached contract identity does not match its index.')
+      }
       const value = { entry: stored, contract: loaded.contract, canActivate: coverage(loaded.contract).length === 0 }
       cached.set(stored.digest, value)
       return value
@@ -249,6 +306,7 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     hydrate,
     importBytes,
     listCachedContracts,
+    listAdvisories,
     listAuthoringContracts,
     activeContract,
     activateContract,
@@ -343,4 +401,22 @@ function isProfile(value: unknown): value is WorkflowProfile {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1
+}
+
+function cacheAdvisoryMessage(code: string): string {
+  switch (code) {
+    case 'contract_cache_index_invalid':
+      return 'The local contract cache index was damaged and was ignored. Bundled contracts remain available.'
+    case 'contract_cache_blob_missing':
+    case 'contract_cache_blob_invalid':
+      return 'A damaged local contract cache entry was ignored. Other contracts remain available.'
+    case 'contract_cache_entry_invalid':
+      return 'An invalid cached authoring contract was ignored. Other contracts remain available.'
+    case 'contract_cache_activation_failed':
+      return 'A cached contract could not be restored as active. Its bundled profile contract remains active.'
+    case 'contract_cache_cleanup_failed':
+      return 'Damaged contract cache data was ignored but could not be cleaned up automatically.'
+    default:
+      return 'The local contract cache could not be read. Bundled contracts remain available.'
+  }
 }

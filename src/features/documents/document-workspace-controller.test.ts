@@ -38,6 +38,12 @@ const contract = {
   limits: { max_document_bytes: 2 * 1024 * 1024 },
 } as AuthoringContract
 
+const archonContract = {
+  ...contract,
+  profile: 'archon-2026-07',
+  contract_digest: `sha256:${'b'.repeat(64)}` as const,
+} as AuthoringContract
+
 function entry(path: string): WorkflowPairEntry {
   return {
     kind: 'workflow',
@@ -137,6 +143,83 @@ afterEach(() => {
 })
 
 describe('DocumentWorkspaceController', () => {
+  it('switches exact contracts for form legacy-to-Archon and YAML Archon-to-legacy profile migrations', async () => {
+    const { deps, client } = dependencies({
+      read: vi.fn(async (path: string) =>
+        read(
+          path,
+          path.endsWith('.hermes.yaml') ? 'language_compatibility: hermes-legacy\n' : 'name: flow\nnodes: []\n',
+        ),
+      ),
+      validateContractCoverage: () => [],
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    await controller.activateContract(archonContract)
+    vi.mocked(client.schedule).mockClear()
+
+    const legacyPair = $documentSession.get().pair!
+    controller.changed(editDocumentText(legacyPair, 'companion', 'language_compatibility: archon-2026-07\n'), 'form')
+    await vi.waitFor(() =>
+      expect(client.schedule).toHaveBeenLastCalledWith(
+        expect.objectContaining({ companion: expect.objectContaining({ text: expect.stringContaining('archon') }) }),
+        archonContract,
+        'contract-change',
+      ),
+    )
+    expect($documentSession.get().revision?.contractDigest).toBe(archonContract.contract_digest)
+
+    const archonPair = $documentSession.get().pair!
+    controller.changed(editDocumentText(archonPair, 'companion', 'language_compatibility: hermes-legacy\n'), 'user')
+    await vi.waitFor(() =>
+      expect(client.schedule).toHaveBeenLastCalledWith(
+        expect.objectContaining({ companion: expect.objectContaining({ text: expect.stringContaining('legacy') }) }),
+        contract,
+        'contract-change',
+      ),
+    )
+    expect($documentSession.get().revision?.contractDigest).toBe(contract.contract_digest)
+  })
+
+  it('records a cross-profile Settings activation without rebinding or reanalyzing the open pair', async () => {
+    const { deps, client } = dependencies({ validateContractCoverage: () => [] })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.activateContract(archonContract)).resolves.toBe(true)
+
+    expect(client.registerContract).toHaveBeenCalledWith(archonContract)
+    expect(client.schedule).not.toHaveBeenCalled()
+    expect($documentSession.get().revision?.contractDigest).toBe(contract.contract_digest)
+  })
+
+  it('fails closed without stale-profile analysis when a companion selects an unavailable exact contract', async () => {
+    const { deps, client } = dependencies({
+      read: vi.fn(async (path: string) =>
+        read(
+          path,
+          path.endsWith('.hermes.yaml') ? 'language_compatibility: hermes-legacy\n' : 'name: flow\nnodes: []\n',
+        ),
+      ),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    vi.mocked(client.schedule).mockClear()
+
+    const changed = editDocumentText(
+      $documentSession.get().pair!,
+      'companion',
+      'language_compatibility: archon-2026-07\n',
+    )
+    controller.changed(changed, 'user')
+
+    await vi.waitFor(() => expect($documentSession.get().analysis?.issues[0]?.code).toBe('contract_unavailable'))
+    expect($documentSession.get().pair?.companion?.text).toBe('language_compatibility: archon-2026-07\n')
+    expect($documentSession.get().revision?.contractDigest).not.toBe(contract.contract_digest)
+    expect(client.schedule).not.toHaveBeenCalled()
+  })
+
   it('registers a selected contract without an open pair so the next compatible document can use it', async () => {
     const next = { ...contract, contract_digest: `sha256:${'d'.repeat(64)}` as const }
     const { deps, client } = dependencies({ validateContractCoverage: () => [] })

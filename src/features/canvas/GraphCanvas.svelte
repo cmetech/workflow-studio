@@ -22,12 +22,14 @@
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
     moveCanvasPosition,
+    moveCanvasPositions,
     replaceCanvasPositions,
     setCanvasSelection,
   } from '$src/stores/canvas'
   import { createMemoizedCanvasProjector, projectCanvas } from './project-canvas'
   import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
-  import type { CanvasDragDetail, CanvasEdge, CanvasNode } from './types'
+  import type { CanvasDragDetail, CanvasEdge, CanvasNode, CanvasPosition } from './types'
+  import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
 
@@ -56,6 +58,7 @@
     }) => void | Promise<void>
     onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
     onOpenInspector?: () => void
+    onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
   }
 
   let {
@@ -74,6 +77,7 @@
     onRequestAdd,
     onRequestDelete,
     onOpenInspector,
+    onDropNodeKind,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -136,14 +140,34 @@
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
     if (readOnly || stale || transitionLocked) return
-    moveCanvasPosition(detail.id, detail.position)
+    moveCanvasPositions(draggedPositions(detail))
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
     recordEditorMetric('dragCompletions')
     if (readOnly || stale || transitionLocked) return
-    moveCanvasPosition(detail.id, detail.position)
+    const updates = draggedPositions(detail)
+    if (updates.length === 0) return
+    moveCanvasPositions(updates)
     schedulePersist(layoutWithPositions())
+  }
+
+  function draggedPositions(
+    detail: CanvasDragDetail,
+  ): readonly { readonly id: string; readonly position: CanvasPosition }[] {
+    if (detail.nodes) return detail.nodes
+    return detail.id && detail.position ? [{ id: detail.id, position: detail.position }] : []
+  }
+
+  function dragDetail(
+    nodes: readonly { readonly id: string; readonly position: CanvasPosition }[],
+    targetNode?: { readonly id: string; readonly position: CanvasPosition } | null,
+  ): CanvasDragDetail {
+    const updates = nodes.map(({ id, position }) => ({ id, position }))
+    if (targetNode && !updates.some(({ id }) => id === targetNode.id)) {
+      updates.push({ id: targetNode.id, position: targetNode.position })
+    }
+    return { nodes: updates }
   }
 
   export function arrange(): void {
@@ -327,7 +351,7 @@
     return !readOnly && !stale && !transitionLocked
   }
 
-  function viewportCenter(): { x: number; y: number } {
+  export function viewportCenterPosition(): { x: number; y: number } {
     const zoom = flowViewport.zoom || 1
     return {
       x: (root.clientWidth / 2 - flowViewport.x) / zoom,
@@ -349,7 +373,32 @@
 
   export function requestAdd(afterNodeId?: string): void {
     if (!canAuthor() || !onRequestAdd) return
-    void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenter() })
+    void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenterPosition() })
+  }
+
+  function acceptsNodeDrop(event: DragEvent): boolean {
+    return (
+      canAuthor() && Boolean(event.dataTransfer && Array.from(event.dataTransfer.types).includes(NODE_KIND_DRAG_TYPE))
+    )
+  }
+
+  function dragNodeKindOver(event: DragEvent): void {
+    if (!acceptsNodeDrop(event) || !event.dataTransfer) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function dropNodeKind(event: DragEvent): void {
+    if (!acceptsNodeDrop(event) || !event.dataTransfer || !onDropNodeKind) return
+    const kind = event.dataTransfer.getData(NODE_KIND_DRAG_TYPE)
+    if (!kind) return
+    event.preventDefault()
+    const bounds = root.getBoundingClientRect()
+    const zoom = flowViewport.zoom || 1
+    void onDropNodeKind(kind, {
+      x: (event.clientX - bounds.left - flowViewport.x) / zoom,
+      y: (event.clientY - bounds.top - flowViewport.y) / zoom,
+    })
   }
 
   async function beforeDelete(
@@ -483,6 +532,8 @@
   aria-label="Workflow graph"
   aria-busy={transitionLocked}
   bind:this={root}
+  ondragover={dragNodeKindOver}
+  ondrop={dropNodeKind}
 >
   <div class="canvas-toolbar" aria-label="Canvas tools">
     {#if addCommand}
@@ -577,12 +628,10 @@
     maxZoom={4}
     fitViewOptions={{ padding: 0.18, duration: 0 }}
     onnodedrag={({ targetNode, nodes }) => {
-      const node = targetNode ?? nodes[0]
-      if (node) handleDrag({ id: node.id, position: node.position })
+      handleDrag(dragDetail(nodes, targetNode))
     }}
     onnodedragstop={({ targetNode, nodes }) => {
-      const node = targetNode ?? nodes[0]
-      if (node) handleDragStop({ id: node.id, position: node.position })
+      handleDragStop(dragDetail(nodes, targetNode))
     }}
     onselectionchange={({ nodes }) => scheduleSelectionChanged(nodes.map(({ id }) => id))}
     onconnect={({ source, target }) => {

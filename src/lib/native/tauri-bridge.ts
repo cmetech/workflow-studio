@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
-import type { ContractCacheStoredEntry } from '../contract/contract-cache'
+import type { ContractCacheLoadResult } from '../contract/contract-cache'
 import {
   NativeError,
   type PathOperationResult,
@@ -75,7 +75,7 @@ export const tauriBridge: WorkspaceNativeBridge = {
         profile,
       }),
     ),
-  contractCacheLoad: () => invokeTyped<readonly ContractCacheStoredEntry[]>('contract_cache_load'),
+  contractCacheLoad: () => invokeTyped<ContractCacheLoadResult>('contract_cache_load'),
   contractCacheWrite: (entries) =>
     invokeTyped<void>('contract_cache_write', { entries: entries.map((entry) => ({ ...entry })) }),
   chooseWorkspaceFolder: () => invokeTyped<string | null>('dialog_choose_workspace'),

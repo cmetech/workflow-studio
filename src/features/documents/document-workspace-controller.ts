@@ -1,5 +1,5 @@
 import { atom } from 'nanostores'
-import type { AuthoringContract } from '$src/lib/contract/types'
+import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
 import {
   confirmDocumentSaved,
@@ -25,6 +25,7 @@ import type { RecoveryStore } from '$src/lib/recovery/recovery-store'
 import { createRecoveryDraft } from '$src/lib/recovery/recovery-store'
 import type { RecoveryDraft } from '$src/lib/recovery/types'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
+import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { createHistoryState, historyStore, migrateHistoryWorkflowIdentity } from '$src/stores/history'
 import {
   $documentSession,
@@ -82,6 +83,7 @@ export interface DocumentWorkspaceControllerDependencies {
   createLayoutPersistence(layout: LayoutRecordV1): LayoutPersistenceLifecycle
   onWorkspaceChanged(): Promise<void>
   validateContractCoverage?(contract: AuthoringContract): readonly { readonly code: string }[]
+  activeContractForProfile?(profile: WorkflowProfile): AuthoringContract | undefined
 }
 
 export interface MissingDocumentChange {
@@ -110,7 +112,9 @@ export const $documentWorkspace = atom<DocumentWorkspaceState>(emptyState)
 
 export class DocumentWorkspaceController {
   private activationGeneration = 0
-  private activeContract: AuthoringContract | null = null
+  private contractResolutionGeneration = 0
+  private documentContract: AuthoringContract | null = null
+  private readonly activeContracts = new Map<WorkflowProfile, AuthoringContract>()
   private activeWorkspaceId: string | null = null
   private unlisten: UnlistenWorkspace | null = null
   private layoutPersistence: LayoutPersistenceLifecycle | null = null
@@ -160,35 +164,35 @@ export class DocumentWorkspaceController {
     await this.flushActiveLayout()
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
     const pair = openedPair(entry, definition, companion)
-    this.activeContract = contract
+    const selectedContract = this.contractForPair(pair, contract)
+    this.documentContract = selectedContract
+    if (selectedContract) this.activeContracts.set(selectedContract.profile, selectedContract)
     this.activeWorkspaceId = workspaceId
-    const contractDigest = contract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
+    const contractDigest = selectedContract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
     historyStore.set(createHistoryState())
     openDocumentSession(pair, contractDigest)
     $documentWorkspace.set({ ...emptyState })
     await this.loadActiveLayout(workspaceId, pair)
     await this.loadRecoveryOffers(pair)
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return null
-    if (contract) this.analysisClient.schedule(pair, contract, 'open')
-    else this.publishContractUnavailable(pair, contractDigest)
+    if (selectedContract) this.analysisClient.schedule(pair, selectedContract, 'open')
+    else this.publishContractUnavailable(pair, contractDigest, selectedWorkflowProfile(pair))
     return pair
   }
 
   changed(pair: WorkflowPairText, origin: DocumentSyncOrigin = 'visual'): void {
     if (this.publicationSuppressed()) return
-    const contract = this.activeContract
     const revision = $documentSession.get().revision
     if (!revision || $documentSession.get().pair?.workflowId !== pair.workflowId) return
     updateDocumentSession(pair, revision.contractDigest, origin)
     this.dependencies.recoveryDrafts.changed(pair)
-    if (contract) this.analysisClient.schedule(pair, contract, 'edit')
-    else this.publishContractUnavailable(pair, revision.contractDigest)
+    this.reconcileDocumentContract(pair, 'edit')
   }
 
   validateCurrent(): boolean {
     const pair = $documentSession.get().pair
-    if (!pair || this.publicationSuppressed() || !this.activeContract) return false
-    this.analysisClient.schedule(pair, this.activeContract, 'explicit-validate')
+    if (!pair || this.publicationSuppressed() || !this.documentContract) return false
+    this.analysisClient.schedule(pair, this.documentContract, 'explicit-validate')
     return true
   }
 
@@ -202,13 +206,14 @@ export class DocumentWorkspaceController {
     } catch {
       return false
     }
-    if (!pair) {
-      this.activeContract = contract
-      return true
-    }
+    this.activeContracts.set(contract.profile, contract)
+    if (!pair) return true
     const current = $documentSession.get()
     if (current.pair !== pair || this.publicationSuppressed()) return false
-    this.activeContract = contract
+    const selected = selectedWorkflowProfile(pair)
+    if (selected.status !== 'selected' || selected.profile !== contract.profile) return true
+    this.contractResolutionGeneration += 1
+    this.documentContract = contract
     updateDocumentSession(pair, contract.contract_digest)
     this.analysisClient.schedule(pair, contract, 'contract-change')
     return true
@@ -225,17 +230,19 @@ export class DocumentWorkspaceController {
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     await this.flushActiveLayout()
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return
-    this.activeContract = contract
+    const selectedContract = this.contractForPair(pair, contract)
+    this.documentContract = selectedContract
+    if (selectedContract) this.activeContracts.set(selectedContract.profile, selectedContract)
     this.activeWorkspaceId = workspaceId
-    const contractDigest = contract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
+    const contractDigest = selectedContract?.contract_digest ?? UNAVAILABLE_CONTRACT_DIGEST
     historyStore.set(createHistoryState())
     openDocumentSession(pair, contractDigest)
     $documentWorkspace.set({ ...emptyState })
     await this.loadActiveLayout(workspaceId, pair)
     if (generation !== this.activationGeneration || this.publicationSuppressed()) return
     this.dependencies.recoveryDrafts.changed(pair)
-    if (contract) this.analysisClient.schedule(pair, contract, 'open')
-    else this.publishContractUnavailable(pair, contractDigest)
+    if (selectedContract) this.analysisClient.schedule(pair, selectedContract, 'open')
+    else this.publishContractUnavailable(pair, contractDigest, selectedWorkflowProfile(pair))
   }
 
   async save(): Promise<SaveWorkflowPairResult | null> {
@@ -263,7 +270,7 @@ export class DocumentWorkspaceController {
       $documentWorkspace.set({ ...$documentWorkspace.get(), saveOutcome: outcome })
       return outcome
     }
-    if (!this.activeContract) return null
+    if (!this.documentContract) return null
     const generation = this.activationGeneration
     const workflowId = session.pair.workflowId
     const definitionPath = session.pair.definition.path
@@ -368,10 +375,7 @@ export class DocumentWorkspaceController {
     }
     const active = $documentSession.get().pair
     if (!active || $documentWorkspace.get().missingChange) return
-    if (this.activeContract) this.analysisClient.schedule(active, this.activeContract, 'open')
-    else if ($documentSession.get().revision) {
-      this.publishContractUnavailable(active, $documentSession.get().revision!.contractDigest)
-    }
+    this.reconcileDocumentContract(active, 'open')
   }
 
   async closeMissing(): Promise<void> {
@@ -397,7 +401,7 @@ export class DocumentWorkspaceController {
     const initialSession = $documentSession.get()
     const initial = initialSession.pair
     const priorWorkflowId = initial?.workflowId
-    const contract = this.activeContract
+    const contract = this.documentContract
     if (
       !initial ||
       !initialSession.revision ||
@@ -457,7 +461,6 @@ export class DocumentWorkspaceController {
 
   async companionCreated(definitionPath: string, companionPath: string): Promise<void> {
     const session = $documentSession.get()
-    const contract = this.activeContract
     const pair = session.pair
     const operationGeneration = this.activationGeneration
     if (!pair || !session.revision || pair.definition.path !== definitionPath || pair.companion) return
@@ -475,13 +478,11 @@ export class DocumentWorkspaceController {
     updateDocumentSession(next, current.revision?.contractDigest ?? session.revision.contractDigest)
     this.clearMissingPaths([companionPath])
     this.dependencies.recoveryDrafts.changed(next)
-    if (contract) this.analysisClient.schedule(next, contract, 'contract-change')
-    else this.publishContractUnavailable(next, session.revision.contractDigest)
+    this.reconcileDocumentContract(next, 'contract-change')
   }
 
   async companionRemoved(companionPath: string): Promise<void> {
     const session = $documentSession.get()
-    const contract = this.activeContract
     const pair = session.pair
     if (!pair || !session.revision || pair.companion?.path !== companionPath) return
     const changed = removeCompanion(pair)
@@ -489,8 +490,7 @@ export class DocumentWorkspaceController {
     updateDocumentSession(next, session.revision.contractDigest)
     this.clearMissingPaths([companionPath])
     this.dependencies.recoveryDrafts.changed(next)
-    if (contract) this.analysisClient.schedule(next, contract, 'contract-change')
-    else this.publishContractUnavailable(next, session.revision.contractDigest)
+    this.reconcileDocumentContract(next, 'contract-change')
   }
 
   recoverDraft(draft: RecoveryDraft): void {
@@ -518,7 +518,7 @@ export class DocumentWorkspaceController {
     }
     updateDocumentSession(recovered, session.revision.contractDigest, 'recovery')
     this.dependencies.recoveryDrafts.changed(recovered)
-    if (this.activeContract) this.analysisClient.schedule(recovered, this.activeContract, 'edit')
+    this.reconcileDocumentContract(recovered, 'edit')
     $documentWorkspace.set({ ...$documentWorkspace.get(), recoveryOffers: [] })
   }
 
@@ -546,7 +546,8 @@ export class DocumentWorkspaceController {
       return
     closeDocumentSession()
     clearActiveLayout()
-    this.activeContract = null
+    this.contractResolutionGeneration += 1
+    this.documentContract = null
     this.activeWorkspaceId = null
     $documentWorkspace.set({ ...emptyState })
   }
@@ -562,7 +563,8 @@ export class DocumentWorkspaceController {
     }
     closeDocumentSession()
     clearActiveLayout()
-    this.activeContract = null
+    this.contractResolutionGeneration += 1
+    this.documentContract = null
     this.activeWorkspaceId = null
     $documentWorkspace.set({ ...emptyState })
   }
@@ -570,7 +572,6 @@ export class DocumentWorkspaceController {
   resolveConflict(choice: ExternalChangeChoice): void {
     if (this.publicationSuppressed()) return
     const conflict = $documentWorkspace.get().conflict
-    const contract = this.activeContract
     const revision = $documentSession.get().revision
     if (!conflict || !revision) return
     const result = resolveExternalChange(conflict, choice, historyStore.get())
@@ -582,8 +583,7 @@ export class DocumentWorkspaceController {
     updateDocumentSession(result.pair, revision.contractDigest, choice === 'reload-disk' ? 'disk' : 'unknown')
     this.clearMissingPaths([conflict.disk.relativePath])
     this.dependencies.recoveryDrafts.changed(result.pair)
-    if (contract) this.analysisClient.schedule(result.pair, contract, 'open')
-    else this.publishContractUnavailable(result.pair, revision.contractDigest)
+    this.reconcileDocumentContract(result.pair, 'open')
     $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: null })
   }
 
@@ -644,8 +644,110 @@ export class DocumentWorkspaceController {
     $documentWorkspace.set({ ...$documentWorkspace.get(), analysisError: message })
   }
 
-  private publishContractUnavailable(pair: WorkflowPairText, contractDigest: DocumentAnalysis['contractDigest']): void {
+  private contractForPair(pair: WorkflowPairText, requested: AuthoringContract | null): AuthoringContract | null {
+    const selected = selectedWorkflowProfile(pair)
+    if (selected.status === 'indeterminate') return requested
+    if (selected.status === 'unsupported') return null
+    if (requested?.profile === selected.profile) return requested
+    return this.resolveActiveContract(selected.profile) ?? null
+  }
+
+  private resolveActiveContract(profile: WorkflowProfile): AuthoringContract | undefined {
+    return this.dependencies.activeContractForProfile?.(profile) ?? this.activeContracts.get(profile)
+  }
+
+  private reconcileDocumentContract(
+    pair: WorkflowPairText,
+    reason: Parameters<DocumentAnalysisClient['schedule']>[2],
+  ): void {
     if (this.publicationSuppressed()) return
+    const active = $documentSession.get().pair
+    if (!active || !samePairRevision(active, pair)) return
+    const selected = selectedWorkflowProfile(pair)
+    if (selected.status === 'indeterminate') {
+      if (this.documentContract) this.analysisClient.schedule(pair, this.documentContract, reason)
+      else this.publishContractUnavailable(pair, UNAVAILABLE_CONTRACT_DIGEST, selected)
+      return
+    }
+    if (selected.status === 'unsupported') {
+      this.contractResolutionGeneration += 1
+      this.documentContract = null
+      updateDocumentSession(pair, UNAVAILABLE_CONTRACT_DIGEST)
+      this.publishContractUnavailable(pair, UNAVAILABLE_CONTRACT_DIGEST, selected)
+      return
+    }
+    const target = this.resolveActiveContract(selected.profile)
+    if (!target) {
+      this.contractResolutionGeneration += 1
+      this.documentContract = null
+      updateDocumentSession(pair, UNAVAILABLE_CONTRACT_DIGEST)
+      this.publishContractUnavailable(pair, UNAVAILABLE_CONTRACT_DIGEST, selected)
+      return
+    }
+    const sessionDigest = $documentSession.get().revision?.contractDigest
+    if (!this.documentContract && this.contractResolutionGeneration === 0 && sessionDigest !== target.contract_digest) {
+      this.publishContractUnavailable(pair, sessionDigest ?? UNAVAILABLE_CONTRACT_DIGEST, selected)
+      return
+    }
+    if (!this.documentContract && sessionDigest === target.contract_digest) {
+      this.activeContracts.set(selected.profile, target)
+      this.documentContract = target
+      this.analysisClient.schedule(pair, target, reason)
+      return
+    }
+    if (
+      this.documentContract?.profile === selected.profile &&
+      this.documentContract.contract_digest === target.contract_digest
+    ) {
+      updateDocumentSession(pair, target.contract_digest)
+      this.analysisClient.schedule(pair, target, reason)
+      return
+    }
+
+    const resolution = ++this.contractResolutionGeneration
+    this.documentContract = null
+    updateDocumentSession(pair, UNAVAILABLE_CONTRACT_DIGEST)
+    invalidateDocumentAnalysis()
+    void this.registerAndSwitchDocumentContract(pair, selected.profile, target, resolution)
+  }
+
+  private async registerAndSwitchDocumentContract(
+    pair: WorkflowPairText,
+    profile: WorkflowProfile,
+    contract: AuthoringContract,
+    resolution: number,
+  ): Promise<void> {
+    try {
+      if ((this.dependencies.validateContractCoverage ?? validateContractFormCoverage)(contract).length > 0) {
+        throw new Error('The active contract requires unsupported editor widgets.')
+      }
+      if (!this.analysisClient.registerContract) throw new Error('Contract registration is unavailable.')
+      await this.analysisClient.registerContract(contract)
+    } catch {
+      if (resolution !== this.contractResolutionGeneration || this.publicationSuppressed()) return
+      const active = $documentSession.get().pair
+      if (!active || !samePairRevision(active, pair)) return
+      this.publishContractUnavailable(active, UNAVAILABLE_CONTRACT_DIGEST, { status: 'selected', profile })
+      return
+    }
+    if (resolution !== this.contractResolutionGeneration || this.publicationSuppressed()) return
+    const active = $documentSession.get().pair
+    if (!active || !samePairRevision(active, pair)) return
+    const selected = selectedWorkflowProfile(active)
+    if (selected.status !== 'selected' || selected.profile !== profile) return
+    this.activeContracts.set(profile, contract)
+    this.documentContract = contract
+    updateDocumentSession(active, contract.contract_digest)
+    this.analysisClient.schedule(active, contract, 'contract-change')
+  }
+
+  private publishContractUnavailable(
+    pair: WorkflowPairText,
+    contractDigest: DocumentAnalysis['contractDigest'],
+    selection: ProfileSelection = selectedWorkflowProfile(pair),
+  ): void {
+    if (this.publicationSuppressed()) return
+    const profile = selection.status === 'selected' ? selection.profile : null
     receiveDocumentAnalysis({
       ...createDocumentRevision(pair, contractDigest),
       issues: [
@@ -654,8 +756,10 @@ export class DocumentWorkspaceController {
           layer: 'contract',
           severity: 'error',
           blocking: true,
-          message: 'Workflow analysis is unavailable because no validated production authoring contract is bundled.',
-          document: 'definition',
+          message: profile
+            ? `Workflow analysis is unavailable because no exact active ${profile} authoring contract is available.`
+            : 'Workflow analysis is unavailable because the companion does not select a supported authoring profile.',
+          document: pair.companion ? 'companion' : 'definition',
         },
       ],
       structurallyValid: false,
@@ -674,7 +778,6 @@ export class DocumentWorkspaceController {
       this.deferredWorkspaceChanges.push(change)
       return
     }
-    const contract = this.activeContract
     const revision = $documentSession.get().revision
     let pair = $documentSession.get().pair
     if (!pair || !revision) return
@@ -707,7 +810,7 @@ export class DocumentWorkspaceController {
       if (result.status === 'reloaded') {
         pair = result.pair
         updateDocumentSession(pair, revision.contractDigest, 'disk')
-        if (contract) this.analysisClient.schedule(pair, contract, 'open')
+        this.reconcileDocumentContract(pair, 'open')
       } else if (result.status === 'conflict') {
         $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: result.conflict })
       }
@@ -801,8 +904,7 @@ export class DocumentWorkspaceController {
     setActiveLayout(layout)
     this.layoutPersistence = this.dependencies.createLayoutPersistence(layout)
     $documentWorkspace.set({ ...$documentWorkspace.get(), missingChange: null })
-    if (this.activeContract) this.analysisClient.schedule(migrated, this.activeContract, 'open')
-    else this.publishContractUnavailable(migrated, contractDigest)
+    this.reconcileDocumentContract(migrated, 'open')
     return true
   }
 
@@ -943,6 +1045,35 @@ function samePairIdentity(left: WorkflowPairText, right: WorkflowPairText): bool
     left.definition.path === right.definition.path &&
     (left.companion?.path ?? null) === (right.companion?.path ?? null)
   )
+}
+
+function samePairRevision(left: WorkflowPairText, right: WorkflowPairText): boolean {
+  return (
+    samePairIdentity(left, right) &&
+    left.generation === right.generation &&
+    left.definition.revision === right.definition.revision &&
+    (left.companion?.revision ?? null) === (right.companion?.revision ?? null)
+  )
+}
+
+type ProfileSelection =
+  | { readonly status: 'selected'; readonly profile: WorkflowProfile }
+  | { readonly status: 'unsupported' }
+  | { readonly status: 'indeterminate' }
+
+function selectedWorkflowProfile(pair: WorkflowPairText): ProfileSelection {
+  if (!pair.companion) return { status: 'selected', profile: 'hermes-legacy' }
+  const parsed = parseWorkflowYaml(pair.companion.text, {
+    document: 'companion',
+    maxBytes: Number.MAX_SAFE_INTEGER,
+  }).parsed
+  if (!parsed) return { status: 'indeterminate' }
+  const value: unknown = parsed.document.toJS({ maxAliasCount: 1_000 })
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 'indeterminate' }
+  const profile = (value as Record<string, unknown>).language_compatibility ?? 'hermes-legacy'
+  return profile === 'hermes-legacy' || profile === 'archon-2026-07'
+    ? { status: 'selected', profile }
+    : { status: 'unsupported' }
 }
 
 function invalidateMissingDiskIdentity(pair: WorkflowPairText, paths: readonly string[]): WorkflowPairText {
