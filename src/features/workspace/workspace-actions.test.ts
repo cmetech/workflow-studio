@@ -240,17 +240,77 @@ describe('workspace actions', () => {
     expect(native.workspaceSetRoot).toHaveBeenCalledTimes(1)
   })
 
-  it('creates and imports with the selected active same-profile contract, not lexical contract order', async () => {
-    const cached = {
+  function sameProfileActions() {
+    const active = {
       ...contract,
       contract_digest: `sha256:${'f'.repeat(64)}` as const,
+      sidecar_schema: {
+        type: 'object',
+        properties: {
+          language_compatibility: { enum: ['hermes-legacy'] },
+          runtime: { type: 'string' },
+          active_marker: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
     }
-    let selected: AuthoringContract = cached
     const api = createWorkspaceActions({
       native,
-      contracts: [contract, cached],
-      activeContract: (profile) => profile === 'hermes-legacy' ? selected : undefined,
-      analyze: async ({ contract: candidate }) => ({ ...validAnalysis(), contractDigest: candidate.contract_digest, structurallyValid: candidate.contract_digest === selected.contract_digest }),
+      contracts: [contract, active],
+      activeContract: (profile) => profile === 'hermes-legacy' ? active : undefined,
+      analyze: async ({ contract: candidate }) => ({
+        ...validAnalysis(),
+        contractDigest: candidate.contract_digest,
+        structurallyValid: candidate.contract_digest === active.contract_digest,
+      }),
+      activate,
+      openDraft,
+      closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
+      renameDocument,
+      companionCreated,
+      companionRemoved,
+      recoverDraft,
+    })
+    return api
+  }
+
+  it('creates with the active same-profile contract when lexical digest order differs', async () => {
+    const api = sameProfileActions()
+
+    await expect(api.createWorkflow({
+      name: 'Active contract', description: 'Uses the selected version', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
+    })).resolves.toMatchObject({ status: 'completed' })
+  })
+
+  it('imports with the unchanged active same-profile contract when lexical digest order differs', async () => {
+    const api = sameProfileActions()
+
+    await expect(api.importWorkflow({ profile: 'hermes-legacy' })).resolves.toMatchObject({ status: 'imported' })
+  })
+
+  it('creates a companion with the active same-profile contract when lexical digest order differs', async () => {
+    const api = sameProfileActions()
+
+    await expect(api.createCompanion({
+      definitionPath: 'legacy.yaml',
+      profile: 'hermes-legacy',
+      metadata: { active_marker: 'selected' },
+    })).resolves.toBe('legacy.hermes.yaml')
+    await expect(native.workspaceRead('legacy.hermes.yaml')).resolves.toMatchObject({
+      text: expect.stringContaining('active_marker: selected'),
+    })
+  })
+
+  it('blocks ambiguous same-profile creation before writing when no active contract is selected', async () => {
+    const active = { ...contract, contract_digest: `sha256:${'f'.repeat(64)}` as const }
+    const api = createWorkspaceActions({
+      native,
+      contracts: [contract, active],
+      activeContract: () => undefined,
+      analyze: async () => validAnalysis(),
       activate,
       openDraft,
       closeDocument,
@@ -264,10 +324,9 @@ describe('workspace actions', () => {
     })
 
     await expect(api.createWorkflow({
-      name: 'Active contract', description: 'Uses the selected version', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
-    })).resolves.toMatchObject({ status: 'completed' })
-    selected = contract
-    await expect(api.importWorkflow({ profile: 'hermes-legacy' })).resolves.toMatchObject({ status: 'imported' })
+      name: 'Ambiguous', description: 'Must not select lexical first', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
+    })).rejects.toMatchObject({ code: 'contract_unavailable' })
+    expect(native.workspaceWrite).not.toHaveBeenCalled()
   })
 
   it('aborts a root switch when the active lifecycle cannot flush and close', async () => {

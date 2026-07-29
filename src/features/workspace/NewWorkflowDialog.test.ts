@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import NewWorkflowDialog from './NewWorkflowDialog.svelte'
@@ -63,6 +63,18 @@ describe('NewWorkflowDialog', () => {
     })
 
     expect(screen.getByRole('combobox', { name: 'First node kind' })).toHaveValue('active')
+  })
+
+  it('does not select either same-profile contract when the active resolver is ambiguous', () => {
+    const lexicalFirst = { ...contract, contract_digest: `sha256:${'0'.repeat(64)}` as `sha256:${string}` }
+    const lexicalLast = { ...contract, contract_digest: `sha256:${'f'.repeat(64)}` as `sha256:${string}` }
+    render(NewWorkflowDialog, {
+      contracts: [lexicalFirst, lexicalLast],
+      activeContract: () => undefined,
+    })
+
+    expect(within(screen.getByRole('combobox', { name: 'Profile' })).queryAllByRole('option')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Create Workflow' })).toBeDisabled()
   })
 
   it('focuses the first field and restores its opener when Escape dismisses the modal', async () => {

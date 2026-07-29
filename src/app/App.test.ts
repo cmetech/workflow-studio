@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { undo } from '@codemirror/commands'
 import { EditorView } from '@codemirror/view'
 import { tick } from 'svelte'
@@ -22,12 +22,57 @@ import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
+import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import App from './App.svelte'
+
+const contractResolverTestState = vi.hoisted(() => ({
+  missingActiveProfile: null as 'hermes-legacy' | 'archon-2026-07' | null,
+}))
+
+vi.mock('$src/lib/contract/contract-cache', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$src/lib/contract/contract-cache')>()
+  return {
+    ...actual,
+    createContractCache(options: Parameters<typeof actual.createContractCache>[0]) {
+      const cache = actual.createContractCache(options)
+      return {
+        ...cache,
+        activeContract(profile: 'hermes-legacy' | 'archon-2026-07') {
+          return contractResolverTestState.missingActiveProfile === profile
+            ? undefined
+            : cache.activeContract(profile)
+        },
+      }
+    },
+  }
+})
 
 async function cachedArchonFixture(): Promise<Uint8Array> {
   const payload: Record<string, unknown> = { ...(JSON.parse(archonFixtureText) as Record<string, unknown>), normalizer_version: 2 }
   payload.contract_digest = `sha256:${await sha256Hex(canonicalizeContractPayload(payload))}`
   return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
+  const bytes = await cachedArchonFixture()
+  const content = new TextDecoder().decode(bytes)
+  const payload = JSON.parse(content) as {
+    contract_digest: `sha256:${string}`
+    profile: 'archon-2026-07'
+    schema_version: number
+    normalizer_version: number
+    contract_reader_version: number
+  }
+  return {
+    digest: payload.contract_digest,
+    profile: payload.profile,
+    schemaVersion: payload.schema_version,
+    normalizerVersion: payload.normalizer_version,
+    readerVersion: payload.contract_reader_version,
+    source: { kind: 'user', identifier: '/selected/archon-v2.json' },
+    content,
+    active: false,
+  }
 }
 
 describe('App', () => {
@@ -56,6 +101,7 @@ describe('App', () => {
   })
 
   afterEach(() => {
+    contractResolverTestState.missingActiveProfile = null
     setNativeBridgeForTest(undefined)
     showActivity('explorer')
     showEditorMode('visual')
@@ -164,6 +210,67 @@ describe('App', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'New Workflow' })).toBeEnabled())
     expect(screen.queryByText(/no validated production authoring contract is bundled/i)).not.toBeInTheDocument()
+  })
+
+  it('does not offer a lexical same-profile fallback in New Workflow when the App cache has no active selection', async () => {
+    contractResolverTestState.missingActiveProfile = 'archon-2026-07'
+    setNativeBridgeForTest({ contractCacheLoad: async () => [await cachedArchonEntry()] })
+    render(App)
+
+    const openDialog = screen.getByRole('button', { name: 'New Workflow' })
+    await waitFor(() => expect(openDialog).toBeEnabled())
+    await fireEvent.click(openDialog)
+
+    const profile = await screen.findByRole('combobox', { name: 'Profile' })
+    expect(within(profile).queryByRole('option', { name: 'archon-2026-07' })).not.toBeInTheDocument()
+    expect(within(profile).getByRole('option', { name: 'hermes-legacy' })).toBeInTheDocument()
+  })
+
+  it('does not open Import with a lexical same-profile fallback when the App cache has no active selection', async () => {
+    contractResolverTestState.missingActiveProfile = 'archon-2026-07'
+    setNativeBridgeForTest({ contractCacheLoad: async () => [await cachedArchonEntry()] })
+    loadWorkspaceEntries('ambiguous-contracts', 'Ambiguous contracts', [])
+    render(App)
+
+    const importButton = screen.getByRole('button', { name: 'Import' })
+    await waitFor(() => expect(importButton).toBeEnabled())
+    await fireEvent.click(importButton)
+
+    expect(screen.queryByRole('dialog', { name: 'Import workflow' })).not.toBeInTheDocument()
+  })
+
+  it('blocks companion creation before reading or writing YAML when the App cache has no active selection', async () => {
+    contractResolverTestState.missingActiveProfile = 'archon-2026-07'
+    const workspaceRead = vi.fn(async (path: string) => ({
+      relativePath: path,
+      text: 'name: Existing\ndescription: Existing workflow\nnodes:\n  - id: first\n    command: echo\n',
+      sha256: 'a'.repeat(64),
+      size: 1,
+      modifiedAt: 'now',
+      readOnly: false,
+    }))
+    const workspaceWrite = vi.fn()
+    setNativeBridgeForTest({
+      contractCacheLoad: async () => [await cachedArchonEntry()],
+      workspaceRead,
+      workspaceWrite,
+    })
+    loadWorkspaceEntries('ambiguous-contracts', 'Ambiguous contracts', [
+      { relativePath: 'existing.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    render(App)
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled'))).toBe(true)
+    })
+
+    await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /existing.yaml/i }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Create Companion' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The active archon-2026-07 authoring contract is unavailable.',
+    )
+    expect(workspaceRead).not.toHaveBeenCalled()
+    expect(workspaceWrite).not.toHaveBeenCalled()
   })
 
   it('opens existing YAML against the bundled legacy production contract', async () => {

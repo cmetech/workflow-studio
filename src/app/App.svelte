@@ -98,7 +98,7 @@
     contracts = next
   }
   function activeContractForProfile(profile: 'hermes-legacy' | 'archon-2026-07'): AuthoringContract | undefined {
-    return appContractCache?.activeContract(profile) ?? contracts.find((contract) => contract.profile === profile)
+    return appContractCache?.activeContract(profile)
   }
   const contractReadiness = loadBundledAuthoringContracts().then(async (loaded) => {
     appContractCache = createContractCache({
@@ -529,7 +529,7 @@
   async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
     if (contracts.length === 0) return undefined
     if (!entry.companionPath) {
-      return appContractCache?.activeContract('hermes-legacy') ?? contracts.find(({ profile }) => profile === 'hermes-legacy')
+      return activeContractForProfile('hermes-legacy')
     }
     const companion = await native.workspaceRead(entry.companionPath)
     const parsed = parseWorkflowYaml(companion.text, {
