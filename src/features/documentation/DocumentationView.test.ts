@@ -138,4 +138,17 @@ describe('DocumentationView', () => {
 
     expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
   })
+
+  it('consumes a repeated topic request once even when that topic is already selected', async () => {
+    const onTopicConsumed = vi.fn()
+    const { rerender } = render(DocumentationView, { index, topicId: 'guide:dag', onTopicConsumed })
+    await rerender({ index, topicId: 'guide:dag', navigationRequestId: 2, onTopicConsumed })
+    expect(onTopicConsumed).toHaveBeenCalledWith('guide:dag', 2)
+
+    await rerender({ index, topicId: undefined, navigationRequestId: undefined, onTopicConsumed })
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+    await fireEvent.input(search, { target: { value: 'Prompt' } })
+    await fireEvent.keyDown(search, { key: 'Enter' })
+    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+  })
 })

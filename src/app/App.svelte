@@ -138,7 +138,9 @@
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
   let exportBlockingIssues = $state<readonly string[]>([])
-  let documentationTopicId = $state<string | undefined>()
+  let inspectorDocumentationTopicId = $state<string | undefined>()
+  let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
+  let documentationNavigationSequence = 0
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
@@ -939,9 +941,12 @@
         {#if documentationIndex}
           <DocumentationView
             index={documentationIndex}
-            topicId={documentationTopicId}
-            onTopicConsumed={(id) => {
-              if (documentationTopicId === id) documentationTopicId = undefined
+            topicId={documentationNavigationRequest?.topicId}
+            navigationRequestId={documentationNavigationRequest?.id}
+            onTopicConsumed={(_id, requestId) => {
+              if (requestId !== undefined && documentationNavigationRequest?.id === requestId) {
+                documentationNavigationRequest = undefined
+              }
             }}
             onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
           />
@@ -1038,7 +1043,8 @@
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
           onDocumentation={(id) => {
-            documentationTopicId = id
+            documentationNavigationSequence += 1
+            documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
             showActivity('documentation')
           }}
         />
@@ -1097,8 +1103,8 @@
         issues={$documentSessionStore.analysis?.issues ?? []}
         disabledReason={inspectorDisabledReason}
         documentationIndex={documentationIndex ?? undefined}
-        {documentationTopicId}
-        onDocumentationTopic={(id) => (documentationTopicId = id)}
+        documentationTopicId={inspectorDocumentationTopicId}
+        onDocumentationTopic={(id) => (inspectorDocumentationTopicId = id)}
         onCommit={commitInspectorField}
       />
     </aside>

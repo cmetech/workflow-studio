@@ -6,16 +6,18 @@
   interface Props {
     index: DocumentationIndex
     topicId?: string | undefined
-    onTopicConsumed?: ((id: string) => void) | undefined
+    navigationRequestId?: number | undefined
+    onTopicConsumed?: ((id: string, requestId?: number) => void) | undefined
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
-  let { index, topicId, onTopicConsumed, onOpenExternal }: Props = $props()
+  let { index, topicId, navigationRequestId, onTopicConsumed, onOpenExternal }: Props = $props()
   let query = $state('')
   let kind = $state<DocumentationTopicKind | 'all'>('all')
   let highlighted = $state(0)
   let selected = $state<DocumentationTopic | null>(null)
   let history = $state<readonly string[]>([])
+  let consumedRequestId = $state<number | undefined>()
   const results = $derived(searchDocumentation(index, query, kind))
 
   function activeResultId(): string | undefined {
@@ -30,7 +32,11 @@
 
   $effect(() => {
     const topic = topicId ? index.byId.get(topicId) : undefined
-    if (topic && selected?.id !== topic.id) {
+    if (topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
+      if (selected?.id !== topic.id) select(topic)
+      consumedRequestId = navigationRequestId
+      onTopicConsumed?.(topic.id, navigationRequestId)
+    } else if (topic && navigationRequestId === undefined && selected?.id !== topic.id) {
       select(topic)
       onTopicConsumed?.(topic.id)
     }
