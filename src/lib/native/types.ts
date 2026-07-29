@@ -97,7 +97,10 @@ export interface ContractNativeBridge extends NativeBridge {
   chooseContractFile(): Promise<string | null>
   chooseHermesExecutable(): Promise<string | null>
   contractReadFile(path: string): Promise<Uint8Array>
-  contractRunHermesCli(request: { readonly executablePath: string; readonly profile: WorkflowProfile }): Promise<Uint8Array>
+  contractRunHermesCli(request: {
+    readonly executablePath: string
+    readonly profile: WorkflowProfile
+  }): Promise<Uint8Array>
   contractCacheLoad(): Promise<readonly ContractCacheStoredEntry[]>
   contractCacheWrite(entries: readonly ContractCacheStoredEntry[]): Promise<void>
 }

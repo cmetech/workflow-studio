@@ -17,7 +17,12 @@
   let nameInput = $state<HTMLInputElement>()
   function contractFor(profile: WorkflowProfile): AuthoringContract | undefined {
     const resolved = resolveActiveContract?.(profile)
-    if (resolved && resolved.profile === profile && contracts.some(({ contract_digest }) => contract_digest === resolved.contract_digest)) return resolved
+    if (
+      resolved &&
+      resolved.profile === profile &&
+      contracts.some(({ contract_digest }) => contract_digest === resolved.contract_digest)
+    )
+      return resolved
     const candidates = contracts.filter((contract) => contract.profile === profile)
     return candidates.length === 1 ? candidates[0] : undefined
   }
@@ -31,10 +36,12 @@
   let firstNodeKind = $state(initialContract()?.node_kinds.find(({ status }) => status === 'supported')?.id ?? '')
   let firstNodeValues = $state<Record<string, string>>({})
   const selectedContract = $derived(contractFor(profile))
-  const availableContracts = $derived(['archon-2026-07', 'hermes-legacy'].flatMap((candidate) => {
-    const contract = contractFor(candidate as WorkflowProfile)
-    return contract ? [contract] : []
-  }))
+  const availableContracts = $derived(
+    ['archon-2026-07', 'hermes-legacy'].flatMap((candidate) => {
+      const contract = contractFor(candidate as WorkflowProfile)
+      return contract ? [contract] : []
+    }),
+  )
   const kinds = $derived(selectedContract?.node_kinds.filter(({ status }) => status === 'supported') ?? [])
   const descriptor = $derived(kinds.find(({ id }) => id === firstNodeKind) ?? kinds[0])
   const fields = $derived(descriptor?.fields.filter(({ status }) => status === 'supported') ?? [])
@@ -52,9 +59,7 @@
 
   function chooseProfile(value: WorkflowProfile): void {
     profile = value
-    firstNodeKind =
-      contractFor(value)?.node_kinds.find(({ status }) => status === 'supported')
-        ?.id ?? ''
+    firstNodeKind = contractFor(value)?.node_kinds.find(({ status }) => status === 'supported')?.id ?? ''
     firstNodeValues = {}
   }
 

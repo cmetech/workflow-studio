@@ -33,7 +33,9 @@ describe('contract cache activation', () => {
       bundled: await bundled(),
       native: {
         contractCacheLoad: async () => [],
-        contractCacheWrite: async (entries) => { writes.push([...entries]) },
+        contractCacheWrite: async (entries) => {
+          writes.push([...entries])
+        },
       },
       activate: async () => true,
     })
@@ -43,7 +45,12 @@ describe('contract cache activation', () => {
       identifier: '/chosen/archon.json',
     })
 
-    expect(imported).toMatchObject({ status: 'cached', profile: 'archon-2026-07', schemaVersion: 1, normalizerVersion: 2 })
+    expect(imported).toMatchObject({
+      status: 'cached',
+      profile: 'archon-2026-07',
+      schemaVersion: 1,
+      normalizerVersion: 2,
+    })
     expect(cache.listCachedContracts()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ status: 'bundled', profile: 'archon-2026-07', active: true }),
@@ -56,7 +63,11 @@ describe('contract cache activation', () => {
   })
 
   it('does not duplicate an immutable cache entry when the same digest is imported twice', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
     const bytes = await signedFixture({ normalizer_version: 2 })
 
     const first = await cache.importBytes(bytes, { kind: 'user', identifier: '/one.json' })
@@ -70,7 +81,12 @@ describe('contract cache activation', () => {
     const writes: unknown[] = []
     const cache = createContractCache({
       bundled: await bundled(),
-      native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { writes.push(entries) } },
+      native: {
+        contractCacheLoad: async () => [],
+        contractCacheWrite: async (entries) => {
+          writes.push(entries)
+        },
+      },
       activate: async () => true,
     })
 
@@ -84,44 +100,74 @@ describe('contract cache activation', () => {
   })
 
   it('lists unsupported reader contracts for inspection without allowing activation', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
     const bytes = await signedFixture({ contract_reader_version: 2 })
 
-    const imported = await cache.importBytes(bytes, { kind: 'user', identifier: '/future.json' }, { cacheUnsupported: true })
+    const imported = await cache.importBytes(
+      bytes,
+      { kind: 'user', identifier: '/future.json' },
+      { cacheUnsupported: true },
+    )
 
     expect(imported).toMatchObject({ status: 'cached', canActivate: false, readerVersion: 2 })
-    await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({ ok: false, code: 'contract_reader_unsupported' })
+    await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_reader_unsupported',
+    })
   })
 
   it('never writes an imported payload whose declared digest does not match its content', async () => {
     const writes: unknown[] = []
     const cache = createContractCache({
       bundled: await bundled(),
-      native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { writes.push(entries) } },
+      native: {
+        contractCacheLoad: async () => [],
+        contractCacheWrite: async (entries) => {
+          writes.push(entries)
+        },
+      },
       activate: async () => true,
     })
     const tampered = JSON.parse(archonFixtureText) as Record<string, unknown>
     tampered.contract_digest = `sha256:${'0'.repeat(64)}`
 
     await expect(
-      cache.importBytes(new TextEncoder().encode(JSON.stringify(tampered)), { kind: 'user', identifier: '/tampered.json' }),
+      cache.importBytes(new TextEncoder().encode(JSON.stringify(tampered)), {
+        kind: 'user',
+        identifier: '/tampered.json',
+      }),
     ).rejects.toMatchObject({ code: 'contract_digest_mismatch' })
     expect(writes).toEqual([])
   })
 
   it('activates a newer normalizer only for the contract profile it declares', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
     const imported = await cache.importBytes(await signedFixture({ normalizer_version: 3 }), {
       kind: 'user',
       identifier: '/archon-v3.json',
     })
 
-    await expect(cache.activateContract(imported.digest, 'hermes-legacy')).resolves.toMatchObject({ ok: false, code: 'contract_profile_mismatch' })
+    await expect(cache.activateContract(imported.digest, 'hermes-legacy')).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_profile_mismatch',
+    })
     await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({ ok: true })
   })
 
   it('reverts an active cached contract to its bundled profile before removing it', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
     const imported = await cache.importBytes(await signedFixture({ normalizer_version: 2 }), {
       kind: 'user',
       identifier: '/archon-v2.json',
@@ -130,10 +176,14 @@ describe('contract cache activation', () => {
 
     await cache.removeContract(imported.digest)
 
-    expect(cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active)).toMatchObject({
+    expect(
+      cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active),
+    ).toMatchObject({
       status: 'bundled',
     })
-    expect(cache.listCachedContracts()).not.toContainEqual(expect.objectContaining({ digest: imported.digest, status: 'cached' }))
+    expect(cache.listCachedContracts()).not.toContainEqual(
+      expect.objectContaining({ digest: imported.digest, status: 'cached' }),
+    )
   })
 
   it('retains the previous active contract when the acknowledged editor activation returns false', async () => {
@@ -151,7 +201,9 @@ describe('contract cache activation', () => {
       ok: false,
       code: 'contract_activation_failed',
     })
-    expect(cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active)).toMatchObject({
+    expect(
+      cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active),
+    ).toMatchObject({
       status: 'bundled',
     })
     expect(cache.listCachedContracts().find((entry) => entry.digest === imported.digest)).toMatchObject({
@@ -164,7 +216,12 @@ describe('contract cache activation', () => {
     let persisted: readonly import('./contract-cache').ContractCacheStoredEntry[] = []
     const writer = createContractCache({
       bundled: await bundled(),
-      native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { persisted = entries } },
+      native: {
+        contractCacheLoad: async () => [],
+        contractCacheWrite: async (entries) => {
+          persisted = entries
+        },
+      },
       activate: async () => true,
     })
     const imported = await writer.importBytes(importedBytes, { kind: 'cli', identifier: '/Applications/Hermes' })
@@ -177,7 +234,9 @@ describe('contract cache activation', () => {
 
     await restarted.hydrate()
 
-    expect(restarted.listAuthoringContracts()).toContainEqual(expect.objectContaining({ contract_digest: imported.digest }))
+    expect(restarted.listAuthoringContracts()).toContainEqual(
+      expect.objectContaining({ contract_digest: imported.digest }),
+    )
     expect(restarted.activeContract('archon-2026-07')).toMatchObject({ contract_digest: imported.digest })
   })
 })

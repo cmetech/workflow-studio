@@ -38,9 +38,7 @@ vi.mock('$src/lib/contract/contract-cache', async (importOriginal) => {
       return {
         ...cache,
         activeContract(profile: 'hermes-legacy' | 'archon-2026-07') {
-          return contractResolverTestState.missingActiveProfile === profile
-            ? undefined
-            : cache.activeContract(profile)
+          return contractResolverTestState.missingActiveProfile === profile ? undefined : cache.activeContract(profile)
         },
       }
     },
@@ -48,7 +46,10 @@ vi.mock('$src/lib/contract/contract-cache', async (importOriginal) => {
 })
 
 async function cachedArchonFixture(): Promise<Uint8Array> {
-  const payload: Record<string, unknown> = { ...(JSON.parse(archonFixtureText) as Record<string, unknown>), normalizer_version: 2 }
+  const payload: Record<string, unknown> = {
+    ...(JSON.parse(archonFixtureText) as Record<string, unknown>),
+    normalizer_version: 2,
+  }
   payload.contract_digest = `sha256:${await sha256Hex(canonicalizeContractPayload(payload))}`
   return new TextEncoder().encode(JSON.stringify(payload))
 }
@@ -159,28 +160,78 @@ describe('App', () => {
 
   it('resolves a selected cached contract when a matching paired workflow opens after Settings activation', async () => {
     class ContractAcknowledgingWorker {
-      private listeners = new Set<(event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void>()
-      postMessage(message: { type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }): void {
+      private listeners = new Set<
+        (
+          event: MessageEvent<{
+            type: string
+            requestId: string
+            contractDigest: `sha256:${string}`
+            profile: 'archon-2026-07'
+          }>,
+        ) => void
+      >()
+      postMessage(message: {
+        type: string
+        requestId: string
+        contractDigest: `sha256:${string}`
+        profile: 'archon-2026-07'
+      }): void {
         if (message.type !== 'contract-register') return
         queueMicrotask(() => {
-          for (const listener of this.listeners) listener({ data: { type: 'contract-registered', requestId: message.requestId, contractDigest: message.contractDigest, profile: message.profile } } as MessageEvent)
+          for (const listener of this.listeners)
+            listener({
+              data: {
+                type: 'contract-registered',
+                requestId: message.requestId,
+                contractDigest: message.contractDigest,
+                profile: message.profile,
+              },
+            } as MessageEvent)
         })
       }
-      addEventListener(_type: 'message', listener: (event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void): void { this.listeners.add(listener) }
-      removeEventListener(_type: 'message', listener: (event: MessageEvent<{ type: string; requestId: string; contractDigest: `sha256:${string}`; profile: 'archon-2026-07' }>) => void): void { this.listeners.delete(listener) }
+      addEventListener(
+        _type: 'message',
+        listener: (
+          event: MessageEvent<{
+            type: string
+            requestId: string
+            contractDigest: `sha256:${string}`
+            profile: 'archon-2026-07'
+          }>,
+        ) => void,
+      ): void {
+        this.listeners.add(listener)
+      }
+      removeEventListener(
+        _type: 'message',
+        listener: (
+          event: MessageEvent<{
+            type: string
+            requestId: string
+            contractDigest: `sha256:${string}`
+            profile: 'archon-2026-07'
+          }>,
+        ) => void,
+      ): void {
+        this.listeners.delete(listener)
+      }
       terminate(): void {}
     }
     const originalWorker = globalThis.Worker
     Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ContractAcknowledgingWorker })
     const bytes = await cachedArchonFixture()
-    const digest = (JSON.parse(new TextDecoder().decode(bytes)) as { contract_digest: `sha256:${string}` }).contract_digest
+    const digest = (JSON.parse(new TextDecoder().decode(bytes)) as { contract_digest: `sha256:${string}` })
+      .contract_digest
     setNativeBridgeForTest({
       chooseContractFile: async () => '/selected/archon.json',
       contractReadFile: async () => bytes,
       workspaceRead: async (path) => ({
         relativePath: path,
         text: path.endsWith('.hermes.yaml') ? 'language_compatibility: archon-2026-07\n' : 'name: cached\nnodes: []\n',
-        sha256: 'a'.repeat(64), size: 1, modifiedAt: 'now', readOnly: false,
+        sha256: 'a'.repeat(64),
+        size: 1,
+        modifiedAt: 'now',
+        readOnly: false,
       }),
     })
     try {
@@ -192,7 +243,14 @@ describe('App', () => {
 
       loadWorkspaceEntries('cached-workspace', 'Cached workspace', [
         { relativePath: 'cached.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
-        { relativePath: 'cached.hermes.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+        {
+          relativePath: 'cached.hermes.yaml',
+          kind: 'file',
+          size: 1,
+          modifiedAt: '0',
+          symlink: 'none',
+          readOnly: false,
+        },
       ])
       showActivity('explorer')
       await tick()
@@ -260,7 +318,9 @@ describe('App', () => {
     ])
     render(App)
     await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled'))).toBe(true)
+      expect(
+        screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
+      ).toBe(true)
     })
 
     await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /existing.yaml/i }))

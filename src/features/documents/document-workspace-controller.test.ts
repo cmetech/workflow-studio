@@ -106,7 +106,11 @@ function workerSuccess(request: AnalyzeDocumentRequest, projection: unknown): Do
 
 function dependencies(overrides: Partial<DocumentWorkspaceControllerDependencies> = {}) {
   let watcher: ((change: RereadWorkspaceChange) => Promise<void>) | undefined
-  const client: DocumentAnalysisClient = { schedule: vi.fn(), registerContract: vi.fn(async () => undefined), dispose: vi.fn() }
+  const client: DocumentAnalysisClient = {
+    schedule: vi.fn(),
+    registerContract: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+  }
   const deps: DocumentWorkspaceControllerDependencies = {
     read: vi.fn(async (path) => read(path)),
     write: vi.fn(),

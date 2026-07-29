@@ -257,7 +257,7 @@ describe('workspace actions', () => {
     const api = createWorkspaceActions({
       native,
       contracts: [contract, active],
-      activeContract: (profile) => profile === 'hermes-legacy' ? active : undefined,
+      activeContract: (profile) => (profile === 'hermes-legacy' ? active : undefined),
       analyze: async ({ contract: candidate }) => ({
         ...validAnalysis(),
         contractDigest: candidate.contract_digest,
@@ -280,9 +280,16 @@ describe('workspace actions', () => {
   it('creates with the active same-profile contract when lexical digest order differs', async () => {
     const api = sameProfileActions()
 
-    await expect(api.createWorkflow({
-      name: 'Active contract', description: 'Uses the selected version', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
-    })).resolves.toMatchObject({ status: 'completed' })
+    await expect(
+      api.createWorkflow({
+        name: 'Active contract',
+        description: 'Uses the selected version',
+        profile: 'hermes-legacy',
+        firstNodeId: 'first',
+        firstNodeKind: 'command',
+        firstNodeValues: { 'command-value': 'echo' },
+      }),
+    ).resolves.toMatchObject({ status: 'completed' })
   })
 
   it('imports with the unchanged active same-profile contract when lexical digest order differs', async () => {
@@ -294,11 +301,13 @@ describe('workspace actions', () => {
   it('creates a companion with the active same-profile contract when lexical digest order differs', async () => {
     const api = sameProfileActions()
 
-    await expect(api.createCompanion({
-      definitionPath: 'legacy.yaml',
-      profile: 'hermes-legacy',
-      metadata: { active_marker: 'selected' },
-    })).resolves.toBe('legacy.hermes.yaml')
+    await expect(
+      api.createCompanion({
+        definitionPath: 'legacy.yaml',
+        profile: 'hermes-legacy',
+        metadata: { active_marker: 'selected' },
+      }),
+    ).resolves.toBe('legacy.hermes.yaml')
     await expect(native.workspaceRead('legacy.hermes.yaml')).resolves.toMatchObject({
       text: expect.stringContaining('active_marker: selected'),
     })
@@ -323,9 +332,16 @@ describe('workspace actions', () => {
       recoverDraft,
     })
 
-    await expect(api.createWorkflow({
-      name: 'Ambiguous', description: 'Must not select lexical first', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
-    })).rejects.toMatchObject({ code: 'contract_unavailable' })
+    await expect(
+      api.createWorkflow({
+        name: 'Ambiguous',
+        description: 'Must not select lexical first',
+        profile: 'hermes-legacy',
+        firstNodeId: 'first',
+        firstNodeKind: 'command',
+        firstNodeValues: { 'command-value': 'echo' },
+      }),
+    ).rejects.toMatchObject({ code: 'contract_unavailable' })
     expect(native.workspaceWrite).not.toHaveBeenCalled()
   })
 

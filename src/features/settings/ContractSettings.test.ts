@@ -58,7 +58,9 @@ describe('ContractSettings', () => {
     expect(screen.getByRole('button', { name: `Remove ${entries[0]!.digest}` })).toBeDisabled()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Import Contract File' }))
-    await fireEvent.change(screen.getByRole('combobox', { name: 'CLI profile' }), { target: { value: 'hermes-legacy' } })
+    await fireEvent.change(screen.getByRole('combobox', { name: 'CLI profile' }), {
+      target: { value: 'hermes-legacy' },
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Refresh From Hermes CLI' }))
     await fireEvent.click(screen.getByRole('button', { name: `Activate ${entries[1]!.digest}` }))
     await fireEvent.click(screen.getByRole('button', { name: `Remove ${entries[1]!.digest}` }))

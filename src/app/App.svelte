@@ -90,7 +90,7 @@
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
   const draftDigest = `sha256:${'0'.repeat(64)}` as const
   const availableContracts: AuthoringContract[] = []
-  let contracts = $state<readonly AuthoringContract[]>([])
+  let contracts = $state.raw<readonly AuthoringContract[]>([])
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
   function synchronizeContractRegistry(next: readonly AuthoringContract[]): void {
@@ -106,6 +106,7 @@
       native,
       activate: (contract) => documentWorkspace.activateContract(contract),
     })
+    synchronizeContractRegistry(appContractCache.listAuthoringContracts())
     await appContractCache.hydrate()
     synchronizeContractRegistry(appContractCache.listAuthoringContracts())
     contractsLoaded = true
@@ -852,7 +853,7 @@
     <div class="title-actions">
       <button
         type="button"
-        disabled={contracts.length === 0}
+        disabled={!contractsLoaded || contracts.length === 0}
         onclick={(event) => {
           newDialogOpener = event.currentTarget
           newDialogVisible = true
@@ -876,7 +877,7 @@
     <aside class="panel left-panel" aria-label="Workspace panel">
       {#if $activeActivity === 'explorer' && $workspace.id !== null}
         <Explorer
-          contractAvailable={contracts.length > 0}
+          contractAvailable={contractsLoaded && contracts.length > 0}
           onOpen={(entry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry))}
           onContext={(entry) => {
             contextEntryId = entry.id
@@ -904,7 +905,8 @@
           <ContractSettingsHost
             cache={appContractCache}
             {native}
-            confirmUnsupported={() => Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+            confirmUnsupported={() =>
+              Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
             onContractsChanged={synchronizeContractRegistry}
           />
         {:else}

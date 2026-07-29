@@ -42,11 +42,22 @@ export interface ContractCacheOptions {
 
 export type ContractActivationResult =
   | { readonly ok: true; readonly contract: AuthoringContract }
-  | { readonly ok: false; readonly code: 'contract_not_found' | 'contract_profile_mismatch' | 'contract_reader_unsupported' | 'contract_activation_failed' }
+  | {
+      readonly ok: false
+      readonly code:
+        | 'contract_not_found'
+        | 'contract_profile_mismatch'
+        | 'contract_reader_unsupported'
+        | 'contract_activation_failed'
+    }
 
 export interface ContractCache {
   hydrate(): Promise<void>
-  importBytes(bytes: Uint8Array, source: ContractSource, options?: { readonly cacheUnsupported?: boolean }): Promise<ContractCacheEntry>
+  importBytes(
+    bytes: Uint8Array,
+    source: ContractSource,
+    options?: { readonly cacheUnsupported?: boolean },
+  ): Promise<ContractCacheEntry>
   listCachedContracts(): readonly ContractCacheEntry[]
   listAuthoringContracts(): readonly AuthoringContract[]
   activeContract(profile: WorkflowProfile): AuthoringContract | undefined
@@ -80,7 +91,10 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
 
   function listCachedContracts(): readonly ContractCacheEntry[] {
     const entries: ContractCacheEntry[] = []
-    for (const contract of bundled.values()) entries.push(publicEntry(contract, 'bundled', activeByProfile.get(contract.profile) === contract.contract_digest, true))
+    for (const contract of bundled.values())
+      entries.push(
+        publicEntry(contract, 'bundled', activeByProfile.get(contract.profile) === contract.contract_digest, true),
+      )
     for (const value of cached.values()) {
       entries.push({
         digest: value.entry.digest,
@@ -94,7 +108,9 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
         canActivate: value.canActivate,
       })
     }
-    return entries.sort((left, right) => left.profile.localeCompare(right.profile) || left.digest.localeCompare(right.digest))
+    return entries.sort(
+      (left, right) => left.profile.localeCompare(right.profile) || left.digest.localeCompare(right.digest),
+    )
   }
 
   async function hydrate(): Promise<void> {
@@ -112,13 +128,18 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
   }
 
   function listAuthoringContracts(): readonly AuthoringContract[] {
-    return [...bundled.values(), ...[...cached.values()].flatMap((value) => value.contract ? [value.contract] : [])]
-      .sort((left, right) => left.profile.localeCompare(right.profile) || left.contract_digest.localeCompare(right.contract_digest))
+    return [
+      ...bundled.values(),
+      ...[...cached.values()].flatMap((value) => (value.contract ? [value.contract] : [])),
+    ].sort(
+      (left, right) =>
+        left.profile.localeCompare(right.profile) || left.contract_digest.localeCompare(right.contract_digest),
+    )
   }
 
   function activeContract(profile: WorkflowProfile): AuthoringContract | undefined {
     const digest = activeByProfile.get(profile)
-    return digest ? bundled.get(digest) ?? cached.get(digest)?.contract ?? undefined : undefined
+    return digest ? (bundled.get(digest) ?? cached.get(digest)?.contract ?? undefined) : undefined
   }
 
   async function importBytes(
@@ -129,15 +150,27 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     const stored = await storedFromBytes(bytes, source)
     const existingBundled = bundled.get(stored.digest)
     if (existingBundled) {
-      return publicEntry(existingBundled, 'bundled', activeByProfile.get(existingBundled.profile) === existingBundled.contract_digest, true)
+      return publicEntry(
+        existingBundled,
+        'bundled',
+        activeByProfile.get(existingBundled.profile) === existingBundled.contract_digest,
+        true,
+      )
     }
     const value = await acceptStored(stored, importOptions.cacheUnsupported === true)
-    if (!value) throw new ContractCacheError('contract_reader_unsupported', 'This contract reader version cannot be cached without confirmation.')
+    if (!value)
+      throw new ContractCacheError(
+        'contract_reader_unsupported',
+        'This contract reader version cannot be cached without confirmation.',
+      )
     await persist()
     return listCachedContracts().find((entry) => entry.digest === stored.digest && entry.status === 'cached')!
   }
 
-  async function activateContract(digest: `sha256:${string}`, profile: WorkflowProfile): Promise<ContractActivationResult> {
+  async function activateContract(
+    digest: `sha256:${string}`,
+    profile: WorkflowProfile,
+  ): Promise<ContractActivationResult> {
     const cachedCandidate = cached.get(digest)
     if (cachedCandidate && !cachedCandidate.canActivate) return { ok: false, code: 'contract_reader_unsupported' }
     const candidate = bundled.get(digest) ?? cachedCandidate?.contract
@@ -161,24 +194,38 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
       const fallback = [...bundled.values()].find((contract) => contract.profile === value.entry.profile)
       if (fallback) {
         const result = await activateContract(fallback.contract_digest, value.entry.profile)
-        if (!result.ok) throw new ContractCacheError('contract_reader_unsupported', 'The bundled fallback contract cannot be activated.')
+        if (!result.ok)
+          throw new ContractCacheError(
+            'contract_reader_unsupported',
+            'The bundled fallback contract cannot be activated.',
+          )
       }
     }
     cached.delete(digest)
     await persist()
   }
 
-  async function acceptStored(stored: ContractCacheStoredEntry, allowUnsupported: boolean): Promise<CachedContract | null> {
+  async function acceptStored(
+    stored: ContractCacheStoredEntry,
+    allowUnsupported: boolean,
+  ): Promise<CachedContract | null> {
     if (cached.has(stored.digest) || bundled.has(stored.digest)) return cached.get(stored.digest) ?? null
     const loaded = await loadAuthoringContract(new TextEncoder().encode(stored.content), stored.source)
     if (loaded.ok) {
-      if (loaded.contract.contract_digest !== stored.digest) throw new ContractCacheError('contract_digest_mismatch', 'The cached digest does not match the contract payload.')
+      if (loaded.contract.contract_digest !== stored.digest)
+        throw new ContractCacheError(
+          'contract_digest_mismatch',
+          'The cached digest does not match the contract payload.',
+        )
       const value = { entry: stored, contract: loaded.contract, canActivate: coverage(loaded.contract).length === 0 }
       cached.set(stored.digest, value)
       return value
     }
     if (loaded.code !== 'contract_reader_unsupported' || !allowUnsupported) {
-      throw new ContractCacheError(loaded.code === 'contract_digest_mismatch' ? loaded.code : 'contract_shape_invalid', loaded.message)
+      throw new ContractCacheError(
+        loaded.code === 'contract_digest_mismatch' ? loaded.code : 'contract_shape_invalid',
+        loaded.message,
+      )
     }
     const inspected = await inspectUnsupported(stored.content)
     if (!inspected || inspected.digest !== stored.digest || inspected.profile !== stored.profile) {
@@ -191,14 +238,30 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
 
   async function persist(): Promise<void> {
     await options.native.contractCacheWrite(
-      [...cached.values()].map(({ entry }) => ({ ...entry, active: activeByProfile.get(entry.profile) === entry.digest })),
+      [...cached.values()].map(({ entry }) => ({
+        ...entry,
+        active: activeByProfile.get(entry.profile) === entry.digest,
+      })),
     )
   }
 
-  return { hydrate, importBytes, listCachedContracts, listAuthoringContracts, activeContract, activateContract, removeContract }
+  return {
+    hydrate,
+    importBytes,
+    listCachedContracts,
+    listAuthoringContracts,
+    activeContract,
+    activateContract,
+    removeContract,
+  }
 }
 
-function publicEntry(contract: AuthoringContract, status: ContractCacheSource, active: boolean, canActivate: boolean): ContractCacheEntry {
+function publicEntry(
+  contract: AuthoringContract,
+  status: ContractCacheSource,
+  active: boolean,
+  canActivate: boolean,
+): ContractCacheEntry {
   return {
     digest: contract.contract_digest,
     profile: contract.profile,
@@ -224,7 +287,12 @@ async function storedFromBytes(bytes: Uint8Array, source: ContractSource): Promi
     throw new ContractCacheError('contract_shape_invalid', 'The authoring contract must be UTF-8 JSON object.')
   }
   const digest = await verifiedDigest(payload)
-  if (!isProfile(payload.profile) || !isPositiveInteger(payload.schema_version) || !isPositiveInteger(payload.normalizer_version) || !isPositiveInteger(payload.contract_reader_version)) {
+  if (
+    !isProfile(payload.profile) ||
+    !isPositiveInteger(payload.schema_version) ||
+    !isPositiveInteger(payload.normalizer_version) ||
+    !isPositiveInteger(payload.contract_reader_version)
+  ) {
     throw new ContractCacheError('contract_shape_invalid', 'The authoring contract is missing cache identity fields.')
   }
   return {
@@ -239,7 +307,9 @@ async function storedFromBytes(bytes: Uint8Array, source: ContractSource): Promi
   }
 }
 
-async function inspectUnsupported(content: string): Promise<{ readonly digest: string; readonly profile: WorkflowProfile } | null> {
+async function inspectUnsupported(
+  content: string,
+): Promise<{ readonly digest: string; readonly profile: WorkflowProfile } | null> {
   try {
     const parsed: unknown = JSON.parse(content)
     if (!isRecord(parsed) || !isProfile(parsed.profile)) return null
@@ -255,7 +325,11 @@ async function verifiedDigest(payload: Record<string, unknown>): Promise<`sha256
   }
   const actual = await sha256Hex(canonicalizeContractPayload(payload))
   const digest = payload.contract_digest.toLowerCase()
-  if (digest !== `sha256:${actual}`) throw new ContractCacheError('contract_digest_mismatch', 'The authoring contract digest does not match its canonical payload.')
+  if (digest !== `sha256:${actual}`)
+    throw new ContractCacheError(
+      'contract_digest_mismatch',
+      'The authoring contract digest does not match its canonical payload.',
+    )
   return digest as `sha256:${string}`
 }
 

@@ -48,9 +48,13 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       throw new NativeError('dialog_permission_required', `No one-time browser permission exists for ${path}.`)
     },
     contractRunHermesCli: async () => {
-      throw new NativeError('native_command_unavailable', 'Hermes CLI refresh is available only in the native desktop app.')
+      throw new NativeError(
+        'native_command_unavailable',
+        'Hermes CLI refresh is available only in the native desktop app.',
+      )
     },
-    contractCacheLoad: async () => cachedContracts.map((entry) => ({ ...entry, source: structuredClone(entry.source) })),
+    contractCacheLoad: async () =>
+      cachedContracts.map((entry) => ({ ...entry, source: structuredClone(entry.source) })),
     contractCacheWrite: async (entries) => {
       cachedContracts = entries.map((entry) => ({ ...entry, source: structuredClone(entry.source) }))
     },

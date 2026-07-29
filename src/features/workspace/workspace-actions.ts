@@ -536,7 +536,11 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
 
 function contractFor(dependencies: WorkspaceActionsDependencies, profile: WorkflowProfile): AuthoringContract {
   const active = dependencies.activeContract?.(profile)
-  if (active && active.profile === profile && dependencies.contracts.some((contract) => contract.contract_digest === active.contract_digest)) {
+  if (
+    active &&
+    active.profile === profile &&
+    dependencies.contracts.some((contract) => contract.contract_digest === active.contract_digest)
+  ) {
     return active
   }
   const candidates = dependencies.contracts.filter((contract) => contract.profile === profile)
