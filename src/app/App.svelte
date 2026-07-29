@@ -634,7 +634,29 @@
       mutation = { type: 'set-field', document: commit.field.document, path, value: commit.value }
     }
 
-    const result = await applyWorkflowMutation(session.pair, mutation, contract)
+    let mutationContract = contract
+    if (commit.field.document === 'companion' && path.length === 1 && path[0] === 'language_compatibility') {
+      const proposedProfile = commit.remove ? 'hermes-legacy' : commit.value
+      if (proposedProfile !== 'hermes-legacy' && proposedProfile !== 'archon-2026-07') {
+        workspaceError = 'Choose a supported workflow profile before applying Language compatibility.'
+        return
+      }
+      const proposedContract = activeContractForProfile(proposedProfile)
+      if (!proposedContract || proposedContract.profile !== proposedProfile) {
+        workspaceError = `Cannot change Language compatibility to ${proposedProfile} because no exact active contract is available. Activate the ${proposedProfile} contract in Settings and try again.`
+        return
+      }
+      if (
+        proposedContract.contract_digest !== contract.contract_digest &&
+        !(await documentWorkspace.activateContract(proposedContract))
+      ) {
+        workspaceError = `Cannot change Language compatibility to ${proposedProfile} because its active contract could not be prepared. Reactivate the contract in Settings and try again.`
+        return
+      }
+      mutationContract = proposedContract
+    }
+
+    const result = await applyWorkflowMutation(session.pair, mutation, mutationContract)
     if (!result.ok) {
       workspaceError = result.message
       return

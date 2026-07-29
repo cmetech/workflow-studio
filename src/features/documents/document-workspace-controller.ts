@@ -115,6 +115,7 @@ export class DocumentWorkspaceController {
   private contractResolutionGeneration = 0
   private documentContract: AuthoringContract | null = null
   private readonly activeContracts = new Map<WorkflowProfile, AuthoringContract>()
+  private readonly registeredContractDigests = new Set<AuthoringContract['contract_digest']>()
   private activeWorkspaceId: string | null = null
   private unlisten: UnlistenWorkspace | null = null
   private layoutPersistence: LayoutPersistenceLifecycle | null = null
@@ -206,6 +207,7 @@ export class DocumentWorkspaceController {
     } catch {
       return false
     }
+    this.registeredContractDigests.add(contract.contract_digest)
     this.activeContracts.set(contract.profile, contract)
     if (!pair) return true
     const current = $documentSession.get()
@@ -704,6 +706,15 @@ export class DocumentWorkspaceController {
       return
     }
 
+    if (this.registeredContractDigests.has(target.contract_digest)) {
+      this.contractResolutionGeneration += 1
+      this.activeContracts.set(selected.profile, target)
+      this.documentContract = target
+      updateDocumentSession(pair, target.contract_digest)
+      this.analysisClient.schedule(pair, target, 'contract-change')
+      return
+    }
+
     const resolution = ++this.contractResolutionGeneration
     this.documentContract = null
     updateDocumentSession(pair, UNAVAILABLE_CONTRACT_DIGEST)
@@ -735,6 +746,7 @@ export class DocumentWorkspaceController {
     if (!active || !samePairRevision(active, pair)) return
     const selected = selectedWorkflowProfile(active)
     if (selected.status !== 'selected' || selected.profile !== profile) return
+    this.registeredContractDigests.add(contract.contract_digest)
     this.activeContracts.set(profile, contract)
     this.documentContract = contract
     updateDocumentSession(active, contract.contract_digest)
