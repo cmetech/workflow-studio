@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import type { FormField } from '$src/lib/forms/types'
+import { fieldsForNode } from '$src/lib/forms/widget-registry'
 import ArrayField from './ArrayField.svelte'
 import MapField from './MapField.svelte'
 import ObjectField from './ObjectField.svelte'
@@ -107,5 +109,92 @@ describe('recursive structured inspector controls', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Apply Agents' }))
     expect(screen.getByRole('alert')).toHaveTextContent(/map keys must be unique/i)
     expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it('selects the object branch of production hookSpecificOutput and authors its nested const and enum fields', async () => {
+    const onCommit = vi.fn()
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const hookOutput = fieldsForNode(productionContract, 'command').find(
+      ({ fieldPath }) => fieldPath === 'nodes[].hooks.*[].response.hookSpecificOutput',
+    )!
+
+    render(ObjectField, { field: hookOutput, value: null, present: true, onCommit })
+    const branch = screen.getByRole('combobox', { name: 'Hookspecificoutput type' })
+    await fireEvent.change(branch, { target: { value: '1' } })
+    expect(screen.getByRole('combobox', { name: 'Hookeventname' })).toHaveDisplayValue('ConfigChange')
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Action' }))
+    expect(screen.getByRole('combobox', { name: 'Action' })).toHaveDisplayValue('accept')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Hookspecificoutput' }))
+    expect(onCommit).toHaveBeenCalledWith({
+      field: hookOutput,
+      value: { hookEventName: 'ConfigChange', action: 'accept' },
+    })
+  })
+
+  it('keeps both production thinking branches typed with const and branch-local numeric constraints', async () => {
+    const onCommit = vi.fn()
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const thinking = fieldsForNode(productionContract, 'command').find(
+      ({ fieldPath }) => fieldPath === 'nodes[].thinking',
+    )!
+
+    render(ObjectField, { field: thinking, value: 'adaptive', present: true, onCommit })
+    const branch = screen.getByRole('combobox', { name: 'Thinking type' })
+    const scalar = screen.getByRole('combobox', { name: 'Thinking value' })
+    expect(scalar).toHaveDisplayValue('adaptive')
+    await fireEvent.change(scalar, { target: { value: '1' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Thinking' }))
+    expect(onCommit).toHaveBeenLastCalledWith({ field: thinking, value: 'disabled' })
+
+    await fireEvent.change(branch, { target: { value: '1' } })
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveDisplayValue('enabled')
+    const budget = screen.getByRole('spinbutton', { name: /budget tokens/i })
+    await fireEvent.input(budget, { target: { value: '0' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Thinking' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/budget tokens must be at least 1/i)
+
+    await fireEvent.input(budget, { target: { value: '8' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Thinking' }))
+    expect(onCommit).toHaveBeenLastCalledWith({ field: thinking, value: { type: 'enabled', budgetTokens: 8 } })
+  })
+
+  it('allows dynamic keys when additionalProperties is omitted and still enforces duplicate and property-name rules', async () => {
+    const onCommit = vi.fn()
+    const freeFormMap = field({
+      id: 'free-form',
+      label: 'Free form',
+      widget: 'map',
+      schema: { type: 'object', propertyNames: { pattern: '^[a-z]+$' } },
+    })
+    render(MapField, { field: freeFormMap, value: { reviewer: 'Review.' }, present: true, onCommit })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Free form entry' }))
+    const keys = screen.getAllByRole('textbox', { name: /Free form key/i })
+    await fireEvent.input(keys[1]!, { target: { value: 'reviewer' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Free form' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/map keys must be unique/i)
+
+    await fireEvent.input(keys[1]!, { target: { value: 'Writer' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Free form' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/key "Writer" is not allowed/i)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it('offers dynamic entry creation for a production free-form map with omitted additionalProperties', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const updatedInput = fieldsForNode(productionContract, 'command').find(
+      ({ fieldPath }) => fieldPath === 'nodes[].hooks.*[].response.hookSpecificOutput.updatedInput',
+    )!
+    expect(Object.hasOwn(updatedInput.schema, 'additionalProperties')).toBe(false)
+
+    render(MapField, { field: updatedInput, value: {}, present: true })
+    expect(screen.getByRole('button', { name: 'Add Updatedinput entry' })).toBeEnabled()
   })
 })

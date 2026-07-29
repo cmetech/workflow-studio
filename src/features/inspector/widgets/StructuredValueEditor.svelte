@@ -5,6 +5,8 @@
     fieldLabel,
     objectAllowsDynamicEntries,
     objectOptionalProperties,
+    selectStructuredUnionBranch,
+    structuredBranchLabel,
     type ObjectEntryDraft,
     type StructuredDraft,
   } from '$src/lib/forms/structured-draft'
@@ -22,6 +24,9 @@
     Array.isArray(draft.schema.type) ? draft.schema.type.find((value) => value !== 'null') : draft.schema.type,
   )
   const enumOptions = $derived(Array.isArray(draft.schema.enum) ? draft.schema.enum : [])
+  const scalarOptions = $derived(
+    enumOptions.length > 0 ? enumOptions : Object.hasOwn(draft.schema, 'const') ? [draft.schema.const] : [],
+  )
 
   function replaceArrayItem(index: number, value: StructuredDraft): void {
     if (draft.kind !== 'array') return
@@ -37,17 +42,36 @@
   }
 </script>
 
-{#if draft.kind === 'scalar'}
-  {#if enumOptions.length > 0}
+{#if draft.kind === 'union'}
+  <label
+    >{label} type<select
+      {disabled}
+      value={String(draft.activeIndex)}
+      onchange={(event) => onChange(selectStructuredUnionBranch(draft, Number(event.currentTarget.value)))}
+      >{#each draft.branches as branch, index (index)}<option value={String(index)}
+          >{structuredBranchLabel(branch, index)}</option
+        >{/each}</select
+    ></label
+  >
+  <StructuredValueEditor
+    draft={draft.value}
+    label={`${label} value`}
+    {disabled}
+    onChange={(value) => onChange({ ...draft, value })}
+  />
+{:else if draft.kind === 'scalar'}
+  {#if scalarOptions.length > 0}
     <label
       >{label}<select
         {disabled}
-        value={String(enumOptions.findIndex((candidate) => Object.is(candidate, draft.value)))}
-        onchange={(event) => onChange({ ...draft, value: enumOptions[Number(event.currentTarget.value)] })}
-        >{#each enumOptions as option, index (index)}<option value={String(index)}>{String(option)}</option
+        value={String(scalarOptions.findIndex((candidate) => Object.is(candidate, draft.value)))}
+        onchange={(event) => onChange({ ...draft, value: scalarOptions[Number(event.currentTarget.value)] })}
+        >{#each scalarOptions as option, index (index)}<option value={String(index)}>{String(option)}</option
           >{/each}</select
       ></label
     >
+  {:else if scalarType === 'null'}
+    <p role="status">{label}: null</p>
   {:else if scalarType === 'boolean'}
     <label
       ><input

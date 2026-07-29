@@ -192,6 +192,37 @@ describe('schema-driven widget registry', () => {
     })
   })
 
+  it('fails closed for object unions that the recursive editor cannot safely represent', () => {
+    const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
+
+    expect(
+      resolveWidget({
+        ...field,
+        widget: 'object',
+        schema: {
+          oneOf: [{ type: 'object', properties: { value: { type: 'string' } } }, { not: { type: 'null' } }],
+        },
+      }),
+    ).toEqual({
+      ok: false,
+      code: 'contract_reader_unsupported_widget',
+      message: 'Workflow Studio cannot safely render the contract widget "object" for name.',
+    })
+  })
+
+  it('accepts each supported production union only when all of its branches are recursively editable', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const fields = fieldsForNode(productionContract, 'command')
+
+    for (const fieldPath of ['nodes[].thinking', 'nodes[].hooks.*[].response.hookSpecificOutput']) {
+      const field = fields.find((candidate) => candidate.fieldPath === fieldPath)
+      expect(field?.schema.oneOf, fieldPath).toHaveLength(2)
+      expect(resolveWidget(field!), fieldPath).toEqual(expect.objectContaining({ ok: true }))
+    }
+  })
+
   it('marks every production branch-required node field as required and non-removable', async () => {
     const expectedRequired = {
       command: ['id', 'command'],
@@ -216,6 +247,17 @@ describe('schema-driven widget registry', () => {
         }
       }
     }
+  })
+
+  it('marks nested properties required by the selected production union branch as required', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )!
+    const hookEventName = fieldsForNode(productionContract, 'command').find(
+      ({ fieldPath }) => fieldPath === 'nodes[].hooks.*[].response.hookSpecificOutput.hookEventName',
+    )
+
+    expect(hookEventName).toEqual(expect.objectContaining({ required: true }))
   })
 
   it('uses distinct context wildcards for nested map and array descriptors', async () => {
@@ -278,7 +320,7 @@ describe('schema-driven widget registry', () => {
     )
   })
 
-  it('keeps every production wildcard descriptor reachable through a recursive structured ancestor', async () => {
+  it('keeps every production wildcard descriptor reachable through a recursively editable structured ancestor', async () => {
     const structuredWidgets = new Set(['array', 'map', 'object'])
 
     for (const productionContract of await loadBundledAuthoringContracts()) {
@@ -292,6 +334,7 @@ describe('schema-driven widget registry', () => {
             fields.some(
               (candidate) =>
                 structuredWidgets.has(candidate.widget) &&
+                resolveWidget(candidate).ok &&
                 candidate.pathTemplate.length === ancestorPath.length &&
                 candidate.pathTemplate.every((token, index) => token === ancestorPath[index]),
             ),

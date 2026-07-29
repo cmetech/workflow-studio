@@ -1,4 +1,4 @@
-export type StructuredDraft = ScalarDraft | ArrayDraft | ObjectDraft
+export type StructuredDraft = ScalarDraft | ArrayDraft | ObjectDraft | UnionDraft
 
 export interface ScalarDraft {
   readonly kind: 'scalar'
@@ -27,7 +27,30 @@ export interface ObjectDraft {
   readonly entries: readonly ObjectEntryDraft[]
 }
 
+export interface UnionDraft {
+  readonly kind: 'union'
+  readonly schema: Readonly<Record<string, unknown>>
+  readonly branches: readonly Readonly<Record<string, unknown>>[]
+  readonly activeIndex: number
+  readonly value: StructuredDraft
+}
+
 export function createStructuredDraft(schema: Readonly<Record<string, unknown>>, value: unknown): StructuredDraft {
+  const branches = structuredUnionBranches(schema)
+  if (branches) {
+    const activeIndex = matchingBranchIndex(branches, value)
+    const activeSchema = branches[activeIndex] ?? branches[0] ?? {}
+    return {
+      kind: 'union',
+      schema,
+      branches,
+      activeIndex,
+      value: createStructuredDraft(
+        activeSchema,
+        valueMatchesSchema(value, activeSchema) ? value : defaultValue(activeSchema),
+      ),
+    }
+  }
   const type = schemaType(schema, value)
   if (type === 'array') {
     const itemSchema = schemaRecord(schema.items) ?? {}
@@ -71,12 +94,14 @@ export function createStructuredDraft(schema: Readonly<Record<string, unknown>>,
 
 export function structuredDraftValue(draft: StructuredDraft): unknown {
   if (draft.kind === 'scalar') return draft.value
+  if (draft.kind === 'union') return structuredDraftValue(draft.value)
   if (draft.kind === 'array') return draft.items.map(structuredDraftValue)
   return Object.fromEntries(draft.entries.map((entry) => [entry.key, structuredDraftValue(entry.value)]))
 }
 
 export function validateStructuredDraft(draft: StructuredDraft, label = 'Value'): readonly string[] {
   if (draft.kind === 'scalar') return validateScalar(draft.value, draft.schema, label)
+  if (draft.kind === 'union') return validateStructuredDraft(draft.value, label)
   if (draft.kind === 'array') {
     const errors: string[] = []
     if (typeof draft.schema.minItems === 'number' && draft.items.length < draft.schema.minItems)
@@ -116,6 +141,57 @@ export function emptyStructuredDraft(schema: Readonly<Record<string, unknown>>):
   return createStructuredDraft(schema, defaultValue(schema))
 }
 
+export function selectStructuredUnionBranch(draft: UnionDraft, activeIndex: number): UnionDraft {
+  const schema = draft.branches[activeIndex]
+  if (!schema) return draft
+  return {
+    ...draft,
+    activeIndex,
+    value: createStructuredDraft(schema, defaultValue(schema)),
+  }
+}
+
+export function structuredBranchLabel(schema: Readonly<Record<string, unknown>>, index: number): string {
+  const type = schemaType(schema, undefined)
+  if (type === 'null') return 'Null'
+  if (type === 'object') return 'Object'
+  if (type === 'array') return 'List'
+  if (type === 'string') return 'Text'
+  if (type === 'number' || type === 'integer') return 'Number'
+  if (type === 'boolean') return 'True or false'
+  return `Option ${index + 1}`
+}
+
+export function canEditStructuredSchema(schema: Readonly<Record<string, unknown>>): boolean {
+  const branches = structuredUnionBranches(schema)
+  if (branches) return branches.length > 0 && branches.every(canEditStructuredSchema)
+  if (hasMalformedUnion(schema)) return false
+
+  const type = schemaType(schema, undefined)
+  if (type === 'object') {
+    const properties = schemaRecord(schema.properties) ?? {}
+    if (
+      !Object.values(properties).every((child) => !schemaRecord(child) || canEditStructuredSchema(schemaRecord(child)!))
+    )
+      return false
+    if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') {
+      const additional = schemaRecord(schema.additionalProperties)
+      if (!additional || !canEditStructuredSchema(additional)) return false
+    }
+    return Object.values(schemaRecord(schema.patternProperties) ?? {}).every(
+      (child) => Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!),
+    )
+  }
+  if (type === 'array') {
+    if (schema.items === undefined || schema.items === true) return true
+    const items = schemaRecord(schema.items)
+    return Boolean(items && canEditStructuredSchema(items))
+  }
+  if (type === 'null' || type === 'string' || type === 'number' || type === 'integer' || type === 'boolean') return true
+  if (type !== undefined) return false
+  return !['not', 'if', 'then', 'else'].some((keyword) => Object.hasOwn(schema, keyword))
+}
+
 export function schemaRecord(value: unknown): Readonly<Record<string, unknown>> | null {
   return isRecord(value) ? value : null
 }
@@ -133,7 +209,7 @@ export function objectOptionalProperties(draft: ObjectDraft): readonly [string, 
 }
 
 export function objectAllowsDynamicEntries(draft: ObjectDraft): boolean {
-  return draft.schema.additionalProperties !== false && draft.schema.additionalProperties !== undefined
+  return draft.schema.additionalProperties !== false
 }
 
 export function additionalPropertySchema(
@@ -154,6 +230,7 @@ export function additionalPropertySchema(
 function validateScalar(value: unknown, schema: Readonly<Record<string, unknown>>, label: string): string[] {
   const errors: string[] = []
   const type = schemaType(schema, value)
+  if (type === 'null' && value !== null) errors.push(`${label} must be null.`)
   if (type === 'string' && typeof value !== 'string') errors.push(`${label} must be text.`)
   if ((type === 'number' || type === 'integer') && (typeof value !== 'number' || !Number.isFinite(value)))
     errors.push(`${label} must be a number.`)
@@ -177,12 +254,16 @@ function validateScalar(value: unknown, schema: Readonly<Record<string, unknown>
   }
   if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => deepEqual(candidate, value)))
     errors.push(`${label} must use an allowed value.`)
+  if (Object.hasOwn(schema, 'const') && !deepEqual(schema.const, value))
+    errors.push(`${label} must be ${String(schema.const)}.`)
   return errors
 }
 
 function schemaType(schema: Readonly<Record<string, unknown>>, value: unknown): string | undefined {
   const declared = Array.isArray(schema.type) ? schema.type.find((candidate) => candidate !== 'null') : schema.type
   if (typeof declared === 'string') return declared
+  if (Object.hasOwn(schema, 'const')) return valueType(schema.const)
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return valueType(schema.enum[0])
   if (schema.properties || schema.additionalProperties || schema.patternProperties) return 'object'
   if (schema.items) return 'array'
   if (Array.isArray(value)) return 'array'
@@ -192,13 +273,66 @@ function schemaType(schema: Readonly<Record<string, unknown>>, value: unknown): 
 
 function defaultValue(schema: Readonly<Record<string, unknown>>): unknown {
   if (Object.hasOwn(schema, 'default')) return structuredClone(schema.default)
+  if (Object.hasOwn(schema, 'const')) return structuredClone(schema.const)
+  if (Array.isArray(schema.enum)) return structuredClone(schema.enum[0])
+  const branches = structuredUnionBranches(schema)
+  if (branches) return defaultValue(branches[0] ?? {})
   const type = schemaType(schema, undefined)
   if (type === 'array') return []
   if (type === 'object') return {}
   if (type === 'boolean') return false
   if (type === 'number' || type === 'integer') return Number.NaN
-  if (Array.isArray(schema.enum)) return schema.enum[0]
+  if (type === 'null') return null
   return ''
+}
+
+function structuredUnionBranches(
+  schema: Readonly<Record<string, unknown>>,
+): readonly Readonly<Record<string, unknown>>[] | null {
+  const oneOf = Array.isArray(schema.oneOf) ? schema.oneOf : null
+  const anyOf = Array.isArray(schema.anyOf) ? schema.anyOf : null
+  if ((oneOf && anyOf) || (!oneOf && !anyOf)) return null
+  const unresolved = oneOf ?? anyOf ?? []
+  if (unresolved.length === 0) return null
+  const base = Object.fromEntries(Object.entries(schema).filter(([key]) => key !== 'oneOf' && key !== 'anyOf'))
+  const branches: Readonly<Record<string, unknown>>[] = []
+  for (const candidate of unresolved) {
+    const branch = schemaRecord(candidate)
+    if (!branch) return null
+    branches.push({ ...base, ...branch })
+  }
+  return branches
+}
+
+function hasMalformedUnion(schema: Readonly<Record<string, unknown>>): boolean {
+  return Object.hasOwn(schema, 'oneOf') || Object.hasOwn(schema, 'anyOf')
+}
+
+function matchingBranchIndex(branches: readonly Readonly<Record<string, unknown>>[], value: unknown): number {
+  const index = branches.findIndex((branch) => valueMatchesSchema(value, branch))
+  return index < 0 ? 0 : index
+}
+
+function valueMatchesSchema(value: unknown, schema: Readonly<Record<string, unknown>>): boolean {
+  if (Object.hasOwn(schema, 'const') && !deepEqual(schema.const, value)) return false
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => deepEqual(candidate, value))) return false
+  const type = schemaType(schema, value)
+  if (type === 'null') return value === null
+  if (type === 'array') return Array.isArray(value)
+  if (type === 'object') return isRecord(value)
+  if (type === 'integer') return typeof value === 'number' && Number.isInteger(value)
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value)
+  if (type === 'string') return typeof value === 'string'
+  if (type === 'boolean') return typeof value === 'boolean'
+  return value !== undefined
+}
+
+function valueType(value: unknown): string | undefined {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (isRecord(value)) return 'object'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'number'
+  return typeof value === 'string' || typeof value === 'boolean' ? typeof value : undefined
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {

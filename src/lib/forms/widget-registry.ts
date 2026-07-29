@@ -9,6 +9,7 @@ import NumberField from '$src/features/inspector/widgets/NumberField.svelte'
 import ObjectField from '$src/features/inspector/widgets/ObjectField.svelte'
 import TextAreaField from '$src/features/inspector/widgets/TextAreaField.svelte'
 import TextField from '$src/features/inspector/widgets/TextField.svelte'
+import { canEditStructuredSchema } from './structured-draft'
 import type { FormConstraints, FormCoverageIssue, FormField, WidgetDefinition, WidgetResolution } from './types'
 
 const definitions: readonly WidgetDefinition[] = [
@@ -29,7 +30,9 @@ const definitions: readonly WidgetDefinition[] = [
   {
     id: 'array',
     component: ArrayField,
-    accepts: (field) => schemaType(field.schema) === undefined || schemaType(field.schema) === 'array',
+    accepts: (field) =>
+      (schemaType(field.schema) === undefined || schemaType(field.schema) === 'array') &&
+      canEditStructuredSchema(field.schema),
   },
   { id: 'map', component: MapField, accepts: objectSchema },
   { id: 'object', component: ObjectField, accepts: objectSchema },
@@ -362,7 +365,18 @@ function schemaRequiredAtFieldPath(root: Record<string, unknown>, path: string, 
     parent = parent ? childSchema(parent, name, root) : null
     if (sequence && parent) parent = resolveSchema(parent.items, root)
   }
-  return Array.isArray(parent?.required) && parent.required.includes(leaf)
+  return schemaRequires(parent, leaf)
+}
+
+function schemaRequires(schema: Readonly<Record<string, unknown>> | null, property: string): boolean {
+  if (!schema) return false
+  if (Array.isArray(schema.required) && schema.required.includes(property)) return true
+  for (const keyword of ['oneOf', 'anyOf'] as const) {
+    const branches = schema[keyword]
+    if (!Array.isArray(branches)) continue
+    if (branches.some((branch) => schemaRequires(record(branch), property))) return true
+  }
+  return false
 }
 
 function descriptorPathTemplate(path: string): readonly (string | number)[] {
@@ -436,13 +450,13 @@ function numberSchema(field: FormField): boolean {
 }
 
 function objectSchema(field: FormField): boolean {
-  return (
+  const objectLike =
     schemaType(field.schema) === 'object' ||
     schemaType(field.schema) === undefined ||
     field.schema.additionalProperties !== undefined ||
     Array.isArray(field.schema.oneOf) ||
     Array.isArray(field.schema.anyOf)
-  )
+  return objectLike && canEditStructuredSchema(field.schema)
 }
 
 function jsonValueSchema(field: FormField): boolean {
