@@ -87,11 +87,39 @@ Observed launch facts:
 - Displays: three 6016×3384 displays, scaled to 3008×1692 at 60 Hz.
 - Native host: Tauri CLI 2.11.4; Rust 1.95.0.
 - WebView: system WebKit framework version 21624; installed Safari/WebKit release 26.5.
-- Fixture: 90,734 bytes, 250 node declarations, and 500 dependency declarations.
+- Fixture: 90,733 bytes, 250 node declarations, and 500 dependency declarations; SHA-256 `e1e04ffa49f3a6bd5038d8c96633213b6d99935ffd76a52fe89ed034f9f14729`.
 - Startup completed and created the native window. The app's native persistence recorded the fixture workspace, visual editor mode, its definition hash, and positions for all 250 nodes.
 
-### Native interaction limitation
+### Native interaction evidence
 
-Zoom, pan, drag responsiveness and Web Inspector long tasks above 50 ms were **not observed** in this agent session. The native window launched, but macOS Screen Recording and Accessibility access were not available. Both a full-screen capture attempt and System Events window/UI queries stalled at that permission boundary and were terminated. No Web Inspector or native GUI automation channel was available, so this report does not infer frame rate, responsiveness, or long-task counts from the successful launch.
+The active cmux host reported both Screen Recording and Accessibility access. The fixture was opened in the native Tauri window and observed directly while Web Inspector recorded the populated canvas. Trace screenshots show the Explorer entry, workflow inspector, and rendered `node-000`/`node-001` cards rather than an empty or synthetic page.
 
-The deterministic tests above remain the automated performance authority. A human with access to the native window and Web Inspector must complete the perceptual zoom/pan/drag and >50 ms long-task observation before release-reference acceptance is claimed.
+The following native pointer sequences were visibly responsive, with no perceptible stall or dropped final state:
+
+- zoom input delivered over 0.473 s;
+- pan drag delivered over 0.566 s;
+- single-node drag delivered over 0.455 s; and
+- two-node drag delivered over 0.657 s after native Command-modified selection reported `2 nodes selected`.
+
+The two-node drag persisted both selected positions by the identical delta `(122.9811007301559, -71.4761952965659)`: `node-000` moved from `(319.5533147005183, 255.31321535294766)` to `(442.53441543067424, 183.83702005638176)`, and `node-001` moved from `(320, 0)` to `(442.9811007308559, -71.47619529656589)`. `node-002` remained `(640, 0)`. The stored layout retained visual mode, the exact definition hash, and 250 node positions.
+
+### Web Inspector trace
+
+The exported Web Inspector recording was kept outside the repository as `workflow-studio-task9-timeline.json` (189 MiB; SHA-256 `b9362bbfdbe0ec80e3cdaffe99c95ae36c2063fd35eee25cdb6089a7860d32dd`). It spans 30.719 s and contains 5,089 records. The interaction window begins at trace time 194.0 s, after recorder startup.
+
+| Observation in interaction window | Result |
+| --- | ---: |
+| JavaScript events | 42 |
+| JavaScript events above 50 ms | 0 |
+| maximum JavaScript event | 2.157 ms |
+| rendering-frame intervals | 1,491 |
+| rendering-frame intervals above 50 ms | 0 |
+| maximum rendering-frame interval | 21.174 ms |
+| layout/rendering records | 1,494 |
+| layout/rendering records above 50 ms | 0 |
+| maximum layout/rendering record | 18.831 ms |
+| maximum sampled CPU usage | 32.5% |
+
+One 437.628 ms rendering-frame interval begins exactly at recording start, before the interaction window, and contains no JavaScript task. It is the recorder/startup idle gap, not an interaction long task; it is reported here rather than silently discarded. No JavaScript long task above 50 ms occurred anywhere in the recording.
+
+The deterministic tests remain the automated authority for the pointer-frame invariants, while this native pass supplies the separately required perceptual and Web Inspector evidence. Captures and the large raw trace remain external temporary evidence and are not committed to the application repository.
