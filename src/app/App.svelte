@@ -305,6 +305,11 @@
   const documentationIndex = $derived.by<DocumentationIndex | null>(() =>
     documentationContract ? buildDocumentationIndex(documentationContract, bundledGuides) : null,
   )
+  const exampleTopicLabels = $derived.by(() =>
+    Object.fromEntries(
+      contracts.flatMap((contract) => contract.documentation.topics.map((topic) => [topic.id, topic.title])),
+    ),
+  )
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
@@ -604,6 +609,12 @@
       open: openEntry,
     })
     await refreshWorkspace()
+  }
+
+  function openExampleDocumentation(topicId: string): void {
+    documentationNavigationSequence += 1
+    documentationNavigationRequest = { id: documentationNavigationSequence, topicId: `contract:${topicId}` }
+    showActivity('documentation')
   }
 
   function analyzeCandidateInWorker(input: {
@@ -984,7 +995,9 @@
         {#if examples.length > 0}
           <ExampleGallery
             {examples}
+            topicLabels={exampleTopicLabels}
             onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
+            onOpenDocumentation={openExampleDocumentation}
           />
         {:else}
           <p>Loading validated examples…</p>

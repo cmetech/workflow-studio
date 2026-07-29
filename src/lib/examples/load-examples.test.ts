@@ -5,6 +5,7 @@ import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import type { DocumentAnalysis } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import { createExampleCopy, loadExampleCatalog } from './load-examples'
+import { validateExampleIntents } from './validate-example-intents'
 
 describe('bundled workflow examples', () => {
   it('loads unique, contained immutable resources that pass their claimed production contract', async () => {
@@ -64,6 +65,47 @@ describe('bundled workflow examples', () => {
     }
   })
 
+  it('enforces every exact example graph intent against analyzed projections', async () => {
+    const [examples, contracts] = await Promise.all([loadExampleCatalog(), loadBundledAuthoringContracts()])
+    const projections = new Map<string, WorkflowProjection>()
+    for (const example of examples) {
+      const contract = contracts.find(({ profile }) => profile === example.profile)!
+      const analysis = await analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: `intent:${example.id}`,
+          workflowId: `intent:${example.id}`,
+          pairGeneration: 0,
+          definition: { path: example.definitionPath, text: example.definitionText, revision: 0 },
+          companion: example.companionText
+            ? { path: example.companionPath!, text: example.companionText, revision: 0 }
+            : null,
+          profile: example.profile,
+          contractDigest: contract.contract_digest,
+          reason: 'explicit-validate',
+        },
+        contract,
+      )
+      projections.set(example.id, analysis.projection as WorkflowProjection)
+    }
+
+    expect(validateExampleIntents(projections)).toEqual([])
+
+    const approval = projections.get('approval')!
+    const rejectedContinuation = new Map(projections)
+    rejectedContinuation.set('approval', {
+      ...approval,
+      nodes: approval.nodes.map((node) =>
+        node.id === 'continue'
+          ? { ...node, options: { ...node.options, when: '$approve.output.accepted == 0' } }
+          : node,
+      ),
+    })
+    expect(validateExampleIntents(rejectedContinuation)).toContain(
+      'approval: continuation must use the accepted outcome.',
+    )
+  })
+
   it('creates collision-safe exact YAML copies without mutating the bundled source', async () => {
     const example = (await loadExampleCatalog()).find(({ id }) => id === 'sequential')
     expect(example).toBeDefined()
@@ -71,7 +113,7 @@ describe('bundled workflow examples', () => {
     const native = createBrowserBridge()
     await native.workspaceSetRoot('/examples-test')
     await native.workspaceWrite({ relativePath: 'workflow.yaml', text: 'occupied\n', expectedCurrentHash: null })
-    let opened: string | undefined
+    let opened: DocumentAnalysis | undefined
 
     const copied = await createExampleCopy(example!, {
       native,
@@ -94,7 +136,22 @@ describe('bundled workflow examples', () => {
           activeContract,
         ),
       open: async (entry) => {
-        opened = entry.id
+        const definition = await native.workspaceRead(entry.definitionPath)
+        const companion = entry.companionPath ? await native.workspaceRead(entry.companionPath) : null
+        opened = await analyzeWorkflowPair(
+          {
+            type: 'analyze',
+            requestId: 'opened-copy',
+            workflowId: entry.id,
+            pairGeneration: 0,
+            definition: { path: entry.definitionPath, text: definition.text, revision: 0 },
+            companion: companion === null ? null : { path: entry.companionPath!, text: companion.text, revision: 0 },
+            profile: contract.profile,
+            contractDigest: contract.contract_digest,
+            reason: 'explicit-validate',
+          },
+          contract,
+        )
       },
     })
 
@@ -103,7 +160,12 @@ describe('bundled workflow examples', () => {
     expect(await native.workspaceRead('workflow-2.yaml')).toMatchObject({ text: example!.definitionText })
     expect(await native.workspaceRead('workflow-2.hermes.yaml')).toMatchObject({ text: example!.companionText })
     expect(await native.workspaceRead('workflow.yaml')).toMatchObject({ text: 'occupied\n' })
-    expect(opened).toBe('workflow:browser-workspace:workflow-2.yaml')
+    expect(opened).toMatchObject({
+      workflowId: 'workflow:browser-workspace:workflow-2.yaml',
+      definitionPath: 'workflow-2.yaml',
+      companionPath: 'workflow-2.hermes.yaml',
+      structurallyValid: true,
+    })
   })
 
   it('moves a newly written definition to Trash when its companion cannot be created', async () => {

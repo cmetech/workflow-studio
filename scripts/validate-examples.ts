@@ -5,13 +5,16 @@ import { parse } from 'yaml'
 import { loadAuthoringContract } from '../src/lib/contract/contract-loader'
 import type { WorkflowProfile } from '../src/lib/contract/types'
 import { parseExampleCatalog } from '../src/lib/examples/types'
+import { validateExampleIntents } from '../src/lib/examples/validate-example-intents'
 import { analyzeWorkflowPair } from '../src/lib/validation/analyze-workflow'
+import type { WorkflowProjection } from '../src/lib/projection/types'
 
 export async function validateExampleResources(
   root = resolve('examples'),
   contractsDirectory = resolve('contracts'),
 ): Promise<readonly string[]> {
   const errors: string[] = []
+  const projections = new Map<string, WorkflowProjection>()
   let catalog
   try {
     catalog = parseExampleCatalog(await readFile(join(root, 'catalog.yaml'), 'utf8'))
@@ -77,6 +80,7 @@ export async function validateExampleResources(
             .map(({ message }) => message)
             .join('; ')}`,
         )
+      if (analysis.projection) projections.set(example.id, analysis.projection as WorkflowProjection)
       const nodeIds = new Set(analysis.projection?.nodes.map(({ id }) => id) ?? [])
       if (example.highlighted_nodes.some((id) => !nodeIds.has(id)))
         errors.push(`${example.id}: highlighted node is missing.`)
@@ -90,6 +94,7 @@ export async function validateExampleResources(
       errors.push(`${example.id}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  errors.push(...validateExampleIntents(projections))
   return errors
 }
 

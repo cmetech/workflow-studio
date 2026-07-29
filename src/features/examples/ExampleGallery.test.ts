@@ -24,7 +24,13 @@ const example: ExampleDescriptor = {
 describe('ExampleGallery', () => {
   it('previews immutable example YAML and delegates editable-copy creation', async () => {
     const onCreateEditableCopy = vi.fn(async () => undefined)
-    render(ExampleGallery, { examples: [example], onCreateEditableCopy })
+    const onOpenDocumentation = vi.fn()
+    render(ExampleGallery, {
+      examples: [example],
+      topicLabels: { 'workflow-definition': 'Workflow definition' },
+      onCreateEditableCopy,
+      onOpenDocumentation,
+    })
 
     expect(screen.getByText('hermes-legacy')).toBeVisible()
     expect(screen.getByText('starter')).toBeVisible()
@@ -32,5 +38,9 @@ describe('ExampleGallery', () => {
     expect(screen.getByLabelText('Example preview')).toHaveTextContent('name: Minimal')
     await fireEvent.click(screen.getByRole('button', { name: 'Create Editable Copy: Minimal prompt' }))
     expect(onCreateEditableCopy).toHaveBeenCalledWith(example)
+    const topic = screen.getByRole('button', { name: 'Open documentation: Workflow definition' })
+    await fireEvent.keyDown(topic, { key: 'Enter' })
+    await fireEvent.click(topic)
+    expect(onOpenDocumentation).toHaveBeenCalledWith('workflow-definition')
   })
 })

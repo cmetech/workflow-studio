@@ -3,10 +3,12 @@
 
   interface Props {
     examples: readonly ExampleDescriptor[]
+    topicLabels: Readonly<Record<string, string>>
     onCreateEditableCopy: (example: ExampleDescriptor) => void | Promise<void>
+    onOpenDocumentation: (topicId: string) => void
   }
 
-  let { examples, onCreateEditableCopy }: Props = $props()
+  let { examples, topicLabels, onCreateEditableCopy, onOpenDocumentation }: Props = $props()
   let preview = $state<ExampleDescriptor | null>(null)
 </script>
 
@@ -36,6 +38,13 @@
             <dd>{example.concepts.join(', ')}</dd>
           </div>
         </dl>
+        <div class="topics" aria-label={`${example.title} documentation`}>
+          {#each example.documentationTopicIds as topicId (topicId)}
+            <button type="button" onclick={() => onOpenDocumentation(topicId)}>
+              Open documentation: {topicLabels[topicId] ?? topicId}
+            </button>
+          {/each}
+        </div>
         <div class="actions">
           <button type="button" onclick={() => (preview = example)}>Preview {example.title}</button>
           <button type="button" onclick={() => onCreateEditableCopy(example)}
@@ -92,6 +101,12 @@
     overflow-wrap: anywhere;
   }
   .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+  .topics {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;

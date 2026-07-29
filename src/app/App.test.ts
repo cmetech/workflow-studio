@@ -22,6 +22,7 @@ import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import App from './App.svelte'
 
@@ -107,6 +108,36 @@ describe('App', () => {
     render(App)
 
     expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
+  })
+
+  it('opens the exact offline documentation topic from an example card', async () => {
+    const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:example-host.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'example-host:definition',
+          kind: 'definition',
+          path: 'example-host.yaml',
+          text: 'name: Example host\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      legacy.contract_digest,
+    )
+    showActivity('examples')
+    render(App)
+
+    const topics = await screen.findAllByRole('button', { name: 'Open documentation: Workflow definition' })
+    await fireEvent.click(topics[0]!)
+
+    expect(await screen.findByLabelText('Offline documentation')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
   })
 
   beforeAll(() => {
