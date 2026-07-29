@@ -1,4 +1,5 @@
 import type { WorkspaceFileEntry } from '../workspace/types'
+import type { ContractCacheStoredEntry } from '../contract/contract-cache'
 import {
   NativeError,
   type WorkspaceNativeBridge,
@@ -29,6 +30,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   let layoutContent: string | null = null
   let selectedRoot = '/browser/workspace'
   let recentWorkspaces = ''
+  let cachedContracts: readonly ContractCacheStoredEntry[] = []
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
     await Promise.all([...handlers].map((handler) => handler(event)))
@@ -40,6 +42,16 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       os: 'browser',
       arch: 'browser',
     }),
+    contractReadFile: async (path) => {
+      throw new NativeError('dialog_permission_required', `No one-time browser permission exists for ${path}.`)
+    },
+    contractRunHermesCli: async () => {
+      throw new NativeError('native_command_unavailable', 'Hermes CLI refresh is available only in the native desktop app.')
+    },
+    contractCacheLoad: async () => cachedContracts.map((entry) => ({ ...entry, source: structuredClone(entry.source) })),
+    contractCacheWrite: async (entries) => {
+      cachedContracts = entries.map((entry) => ({ ...entry, source: structuredClone(entry.source) }))
+    },
     chooseWorkspaceFolder: async () => selectedRoot,
     chooseImportDefinition: async () => null,
     chooseExportDirectory: async () => null,

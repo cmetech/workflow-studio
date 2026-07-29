@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 import type { AuthoringContract } from '$src/lib/contract/types'
+import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
 import {
   confirmDocumentSaved,
   confirmPairStructureSaved,
@@ -51,6 +52,7 @@ export interface DocumentAnalysisClient {
     contract: AuthoringContract,
     reason: 'edit' | 'open' | 'explicit-validate' | 'contract-change',
   ): unknown
+  registerContract?(contract: AuthoringContract): Promise<void>
   dispose(): void
 }
 
@@ -79,6 +81,7 @@ export interface DocumentWorkspaceControllerDependencies {
   layout: LayoutStore
   createLayoutPersistence(layout: LayoutRecordV1): LayoutPersistenceLifecycle
   onWorkspaceChanged(): Promise<void>
+  validateContractCoverage?(contract: AuthoringContract): readonly { readonly code: string }[]
 }
 
 export interface MissingDocumentChange {
@@ -180,6 +183,25 @@ export class DocumentWorkspaceController {
     this.dependencies.recoveryDrafts.changed(pair)
     if (contract) this.analysisClient.schedule(pair, contract, 'edit')
     else this.publishContractUnavailable(pair, revision.contractDigest)
+  }
+
+  async activateContract(contract: AuthoringContract): Promise<boolean> {
+    if ((this.dependencies.validateContractCoverage ?? validateContractFormCoverage)(contract).length > 0) return false
+    const active = $documentSession.get()
+    const pair = active.pair
+    if (!pair) return false
+    try {
+      if (!this.analysisClient.registerContract) return false
+      await this.analysisClient.registerContract(contract)
+    } catch {
+      return false
+    }
+    const current = $documentSession.get()
+    if (current.pair !== pair || this.publicationSuppressed()) return false
+    this.activeContract = contract
+    updateDocumentSession(pair, contract.contract_digest)
+    this.analysisClient.schedule(pair, contract, 'contract-change')
+    return true
   }
 
   async openDraft(

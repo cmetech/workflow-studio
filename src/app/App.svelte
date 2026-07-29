@@ -133,6 +133,9 @@
       if (typeof Worker === 'undefined') {
         return {
           schedule: () => onError('Document analysis worker is unavailable.'),
+          registerContract: async () => {
+            throw new Error('Document analysis worker is unavailable.')
+          },
           dispose: () => undefined,
         }
       }
@@ -140,6 +143,7 @@
       const client = new DocumentClient(worker, { onAnalysis, onError: (error) => onError(error.message) })
       return {
         schedule: (pair, contract, reason) => client.schedule(pair, contract, reason),
+        registerContract: (contract) => client.registerContract(contract),
         dispose: () => {
           client.dispose()
           worker.terminate()

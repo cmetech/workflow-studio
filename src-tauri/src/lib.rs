@@ -1,4 +1,5 @@
 mod commands;
+mod contracts;
 mod layout;
 mod recovery;
 mod startup;
@@ -36,6 +37,10 @@ pub fn run() {
             recovery::recovery_list,
             recovery::recovery_write,
             recovery::recovery_delete,
+            contracts::contract_read_file,
+            contracts::contract_run_hermes_cli,
+            contracts::contract_cache_load,
+            contracts::contract_cache_write,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Workflow Studio");

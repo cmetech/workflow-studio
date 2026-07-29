@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
+import type { ContractCacheStoredEntry } from '../contract/contract-cache'
 import {
   NativeError,
   type PathOperationResult,
@@ -64,6 +65,17 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
 
 export const tauriBridge: WorkspaceNativeBridge = {
   hostHealth: () => invokeTyped<HostInfo>('host_health'),
+  contractReadFile: async (path) => new Uint8Array(await invokeTyped<number[]>('contract_read_file', { path })),
+  contractRunHermesCli: async ({ executablePath, profile }) =>
+    new Uint8Array(
+      await invokeTyped<number[]>('contract_run_hermes_cli', {
+        executablePath,
+        profile,
+      }),
+    ),
+  contractCacheLoad: () => invokeTyped<readonly ContractCacheStoredEntry[]>('contract_cache_load'),
+  contractCacheWrite: (entries) =>
+    invokeTyped<void>('contract_cache_write', { entries: entries.map((entry) => ({ ...entry })) }),
   chooseWorkspaceFolder: () => invokeTyped<string | null>('dialog_choose_workspace'),
   chooseImportDefinition: () => invokeTyped<string | null>('dialog_choose_import_definition'),
   chooseExportDirectory: () => invokeTyped<string | null>('dialog_choose_export_directory'),

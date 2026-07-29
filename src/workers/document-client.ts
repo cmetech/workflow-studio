@@ -37,7 +37,11 @@ function requestId(prefix: 'contract' | 'analysis'): string {
 
 export class DocumentClient {
   private timer: ReturnType<typeof setTimeout> | undefined
-  private readonly registeredContracts = new Set<string>()
+  private readonly registrations = new Map<string, Promise<void>>()
+  private readonly registrationResolvers = new Map<
+    string,
+    { readonly resolve: () => void; readonly reject: (reason: Error) => void }
+  >()
   private analysisState: AnalysisState | null = null
   private currentRequestId: string | null = null
   private currentProfile: WorkflowProfile | null = null
@@ -82,6 +86,29 @@ export class DocumentClient {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
     this.worker.removeEventListener('message', this.onMessage)
+    for (const { reject } of this.registrationResolvers.values()) {
+      reject(new Error('Document worker client was disposed before contract registration completed.'))
+    }
+    this.registrationResolvers.clear()
+    this.registrations.clear()
+  }
+
+  registerContract(contract: AuthoringContract): Promise<void> {
+    const known = this.registrations.get(contract.contract_digest)
+    if (known) return known
+    const registrationId = requestId('contract')
+    const registration = new Promise<void>((resolve, reject) => {
+      this.registrationResolvers.set(registrationId, { resolve, reject })
+    })
+    this.registrations.set(contract.contract_digest, registration)
+    this.worker.postMessage({
+      type: 'contract-register',
+      requestId: registrationId,
+      contractDigest: contract.contract_digest,
+      profile: contract.profile,
+      contract,
+    })
+    return registration
   }
 
   private createAnalyzeRequest(
@@ -113,22 +140,23 @@ export class DocumentClient {
   }
 
   private dispatch(request: AnalyzeDocumentRequest, contract: AuthoringContract): void {
-    if (!this.registeredContracts.has(request.contractDigest)) {
-      this.worker.postMessage({
-        type: 'contract-register',
-        requestId: requestId('contract'),
-        contractDigest: request.contractDigest,
-        profile: request.profile,
-        contract,
-      })
-      this.registeredContracts.add(request.contractDigest)
-    }
+    void this.registerContract(contract).catch(() => undefined)
 
     this.worker.postMessage(request)
   }
 
   private receive(response: DocumentWorkerResponse): void {
-    if (response.type === 'contract-registered' || response.type === 'contract-registration-error') return
+    if (response.type === 'contract-registered' || response.type === 'contract-registration-error') {
+      const resolver = this.registrationResolvers.get(response.requestId)
+      if (!resolver) return
+      this.registrationResolvers.delete(response.requestId)
+      if (response.type === 'contract-registered') resolver.resolve()
+      else {
+        this.registrations.delete(response.contractDigest)
+        resolver.reject(new Error(response.message))
+      }
+      return
+    }
     if (!this.responseIdentityIsCurrent(response)) return
 
     if (response.type === 'analysis-error') {

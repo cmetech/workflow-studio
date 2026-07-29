@@ -1,5 +1,7 @@
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob, RecoveryWriteRequest } from '../recovery/types'
+import type { ContractCacheStoredEntry } from '../contract/contract-cache'
+import type { WorkflowProfile } from '../contract/types'
 
 export interface HostInfo {
   appVersion: string
@@ -91,7 +93,14 @@ export interface LayoutNativeBridge extends NativeBridge {
   layoutSave(content: string): Promise<void>
 }
 
-export interface WorkspaceNativeBridge extends LayoutNativeBridge {
+export interface ContractNativeBridge extends NativeBridge {
+  contractReadFile(path: string): Promise<Uint8Array>
+  contractRunHermesCli(request: { readonly executablePath: string; readonly profile: WorkflowProfile }): Promise<Uint8Array>
+  contractCacheLoad(): Promise<readonly ContractCacheStoredEntry[]>
+  contractCacheWrite(entries: readonly ContractCacheStoredEntry[]): Promise<void>
+}
+
+export interface WorkspaceNativeBridge extends LayoutNativeBridge, ContractNativeBridge {
   chooseWorkspaceFolder(): Promise<string | null>
   chooseImportDefinition(): Promise<string | null>
   chooseExportDirectory(): Promise<string | null>

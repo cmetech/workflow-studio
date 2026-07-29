@@ -106,7 +106,7 @@ function workerSuccess(request: AnalyzeDocumentRequest, projection: unknown): Do
 
 function dependencies(overrides: Partial<DocumentWorkspaceControllerDependencies> = {}) {
   let watcher: ((change: RereadWorkspaceChange) => Promise<void>) | undefined
-  const client: DocumentAnalysisClient = { schedule: vi.fn(), dispose: vi.fn() }
+  const client: DocumentAnalysisClient = { schedule: vi.fn(), registerContract: vi.fn(async () => undefined), dispose: vi.fn() }
   const deps: DocumentWorkspaceControllerDependencies = {
     read: vi.fn(async (path) => read(path)),
     write: vi.fn(),
@@ -133,6 +133,25 @@ afterEach(() => {
 })
 
 describe('DocumentWorkspaceController', () => {
+  it('keeps the current contract and YAML untouched when worker registration rejects a contract switch', async () => {
+    const current = { ...contract, contract_digest: `sha256:${'b'.repeat(64)}` as const }
+    const next = { ...contract, contract_digest: `sha256:${'c'.repeat(64)}` as const }
+    const registerContract = vi.fn(async (candidate: AuthoringContract) => {
+      if (candidate.contract_digest === next.contract_digest) throw new Error('worker rejected the contract')
+    })
+    const { deps, client } = dependencies({ validateContractCoverage: () => [] })
+    Object.assign(client, { registerContract })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', entry('flow.yaml'), current)
+    const before = $documentSession.get()
+
+    await expect(controller.activateContract(next)).resolves.toBe(false)
+
+    expect(registerContract).toHaveBeenCalledWith(next)
+    expect(client.schedule).toHaveBeenCalledTimes(1)
+    expect($documentSession.get().pair?.definition.text).toBe(before.pair?.definition.text)
+    expect($documentSession.get().revision?.contractDigest).toBe(current.contract_digest)
+  })
   it('lets only the newest activation publish a session or schedule worker analysis', async () => {
     let releaseA: ((value: WorkspaceReadResult) => void) | undefined
     const { deps, client } = dependencies({
