@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { AuthoringContract, FieldDescriptor } from '$src/lib/contract/types'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
-import { collectContractFields, resolveWidget, validateContractFormCoverage } from './widget-registry'
+import {
+  collectContractFields,
+  fieldsForNode,
+  materializeFormFields,
+  resolveWidget,
+  validateContractFormCoverage,
+} from './widget-registry'
 
 const baseField: FieldDescriptor = {
   id: 'prompt.node.prompt',
@@ -174,6 +180,126 @@ describe('schema-driven widget registry', () => {
       code: 'contract_reader_unsupported_widget',
       message: 'Workflow Studio does not support the contract widget "future-control".',
     })
+  })
+
+  it('fails closed when a known widget is incompatible with the published schema shape', () => {
+    const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
+
+    expect(resolveWidget({ ...field, schema: { type: 'array', items: { type: 'string' } } })).toEqual({
+      ok: false,
+      code: 'contract_reader_unsupported_widget',
+      message: 'Workflow Studio cannot safely render the contract widget "text" for name.',
+    })
+  })
+
+  it('marks every production branch-required node field as required and non-removable', async () => {
+    const expectedRequired = {
+      command: ['id', 'command'],
+      prompt: ['id', 'prompt'],
+      bash: ['id', 'bash'],
+      script: ['id', 'script', 'runtime'],
+      loop: ['id', 'loop'],
+      approval: ['id', 'approval'],
+      cancel: ['id', 'cancel'],
+    } as const
+
+    for (const productionContract of await loadBundledAuthoringContracts()) {
+      for (const [nodeKind, names] of Object.entries(expectedRequired)) {
+        const nodeFields = collectContractFields(productionContract).filter((field) =>
+          field.nodeKinds?.includes(nodeKind),
+        )
+        for (const name of names) {
+          expect(
+            nodeFields.find(({ fieldPath }) => fieldPath === `nodes[].${name}`),
+            `${productionContract.profile}:${nodeKind}:${name}`,
+          ).toEqual(expect.objectContaining({ required: true }))
+        }
+      }
+    }
+  })
+
+  it('uses distinct context wildcards for nested map and array descriptors', async () => {
+    const [productionContract] = await loadBundledAuthoringContracts()
+    const fields = collectContractFields(productionContract!)
+
+    expect(fields.find(({ fieldPath }) => fieldPath === 'nodes[].agents.*.description')?.pathTemplate).toEqual([
+      'nodes',
+      '$node',
+      'agents',
+      '*',
+      'description',
+    ])
+    expect(fields.find(({ fieldPath }) => fieldPath === 'nodes[].hooks.*[].matcher')?.pathTemplate).toEqual([
+      'nodes',
+      '$node',
+      'hooks',
+      '*',
+      '*',
+      'matcher',
+    ])
+  })
+
+  it('materializes nested and wildcard production descriptors against a selected YAML node context', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'hermes-legacy',
+    )!
+    const collected = fieldsForNode(productionContract, 'prompt')
+    expect(collected.find(({ fieldPath }) => fieldPath === 'nodes[].retry.max_attempts')).toBeDefined()
+    expect(collected.find(({ fieldPath }) => fieldPath === 'nodes[].agents.*.description')).toBeDefined()
+
+    const materialized = materializeFormFields(
+      collected,
+      {
+        nodes: [
+          {
+            id: 'review',
+            prompt: 'Review.',
+            retry: { max_attempts: 2 },
+            agents: { reviewer: { description: 'Review the result.', prompt: 'Check it.' } },
+          },
+        ],
+      },
+      0,
+    )
+
+    expect(materialized).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fieldPath: 'nodes[].retry.max_attempts',
+          label: 'Retry Max attempts',
+          concretePath: ['nodes', 0, 'retry', 'max_attempts'],
+        }),
+        expect.objectContaining({
+          fieldPath: 'nodes[].agents.*.description',
+          label: 'Agents Reviewer Description',
+          concretePath: ['nodes', 0, 'agents', 'reviewer', 'description'],
+        }),
+      ]),
+    )
+  })
+
+  it('keeps every production wildcard descriptor reachable through a recursive structured ancestor', async () => {
+    const structuredWidgets = new Set(['array', 'map', 'object'])
+
+    for (const productionContract of await loadBundledAuthoringContracts()) {
+      for (const nodeKind of productionContract.node_kinds) {
+        const fields = fieldsForNode(productionContract, nodeKind.id)
+        for (const field of fields) {
+          const wildcardIndex = field.pathTemplate.indexOf('*')
+          if (wildcardIndex < 0) continue
+          const ancestorPath = field.pathTemplate.slice(0, wildcardIndex)
+          expect(
+            fields.some(
+              (candidate) =>
+                structuredWidgets.has(candidate.widget) &&
+                candidate.pathTemplate.length === ancestorPath.length &&
+                candidate.pathTemplate.every((token, index) => token === ancestorPath[index]),
+            ),
+            `${productionContract.profile}:${nodeKind.id}:${field.fieldPath}`,
+          ).toBe(true)
+        }
+      }
+    }
   })
 
   it('rejects descriptor/schema mismatches and blank documentation', () => {

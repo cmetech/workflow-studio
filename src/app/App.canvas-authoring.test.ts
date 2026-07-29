@@ -26,6 +26,72 @@ const nodeField = (kind: 'command' | 'prompt', name: 'id' | 'depends_on' | 'comm
   status: 'supported' as const,
   examples: [name === 'depends_on' ? ['collect'] : name],
 })
+const promptNestedFields = [
+  {
+    id: 'prompt.node.retry',
+    label: 'Retry',
+    description: 'Retry settings.',
+    field_path: 'nodes[].retry',
+    applicability: {
+      profiles: ['hermes-legacy'] as const,
+      documents: ['definition'] as const,
+      node_kinds: ['prompt'],
+    },
+    widget: 'object',
+    section: 'Execution',
+    order: 4,
+    status: 'supported' as const,
+    examples: [{ max_attempts: 2 }],
+  },
+  {
+    id: 'prompt.node.retry.max_attempts',
+    label: 'Max attempts',
+    description: 'Retry attempts.',
+    field_path: 'nodes[].retry.max_attempts',
+    applicability: {
+      profiles: ['hermes-legacy'] as const,
+      documents: ['definition'] as const,
+      node_kinds: ['prompt'],
+    },
+    widget: 'number',
+    section: 'Execution',
+    order: 5,
+    status: 'supported' as const,
+    examples: [2],
+  },
+  {
+    id: 'prompt.node.agents',
+    label: 'Agents',
+    description: 'Agent settings.',
+    field_path: 'nodes[].agents',
+    applicability: {
+      profiles: ['hermes-legacy'] as const,
+      documents: ['definition'] as const,
+      node_kinds: ['prompt'],
+    },
+    widget: 'object',
+    section: 'Advanced',
+    order: 6,
+    status: 'supported' as const,
+    examples: [{ reviewer: { description: 'Review.' } }],
+  },
+  {
+    id: 'prompt.node.agents.description',
+    label: 'Description',
+    description: 'Agent description.',
+    field_path: 'nodes[].agents.*.description',
+    applicability: {
+      profiles: ['hermes-legacy'] as const,
+      documents: ['definition'] as const,
+      node_kinds: ['prompt'],
+    },
+    widget: 'textarea',
+    section: 'Advanced',
+    order: 7,
+    status: 'supported' as const,
+    examples: ['Review.'],
+  },
+]
 const contract: AuthoringContract = {
   schema_version: 1,
   contract_reader_version: 1,
@@ -64,6 +130,19 @@ const contract: AuthoringContract = {
             depends_on: { type: 'array', items: { type: 'string' } },
             command: { type: 'string' },
             prompt: { type: 'string' },
+            retry: {
+              type: 'object',
+              properties: { max_attempts: { type: 'integer', minimum: 1, maximum: 10, title: 'Max attempts' } },
+              required: ['max_attempts'],
+            },
+            agents: {
+              type: 'object',
+              additionalProperties: {
+                type: 'object',
+                properties: { description: { type: 'string', minLength: 1, title: 'Description' } },
+                required: ['description'],
+              },
+            },
           },
           required: ['id'],
           additionalProperties: false,
@@ -99,7 +178,12 @@ const contract: AuthoringContract = {
       order: 2,
       status: 'supported',
       examples: [],
-      fields: [nodeField('prompt', 'id'), nodeField('prompt', 'prompt'), nodeField('prompt', 'depends_on')],
+      fields: [
+        nodeField('prompt', 'id'),
+        nodeField('prompt', 'prompt'),
+        nodeField('prompt', 'depends_on'),
+        ...promptNestedFields,
+      ],
     },
   ],
   semantic_rules: [
@@ -147,6 +231,11 @@ nodes:
     command: collect
   - id: review
     prompt: review
+    retry:
+      max_attempts: 2
+    agents:
+      reviewer:
+        description: Review the result.
 `
 
 function projection(text = source) {
@@ -393,6 +482,34 @@ describe('App canvas authoring composition', () => {
     setCanvasSelection(['review'])
     await waitFor(() => expect(screen.getByText('This workflow is read-only.')).toBeVisible())
     expect(screen.getByRole('textbox', { name: 'Prompt' })).toBeDisabled()
+    rendered.unmount()
+  })
+
+  it('reaches nested and wildcard descriptors with contextual paths and resets drafts without YAML mutation', async () => {
+    const rendered = await renderAuthoringApp()
+    setCanvasSelection(['review'])
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Execution' }))
+    await waitFor(() => expect(screen.queryAllByText('Retry attempts.')).toHaveLength(1))
+    const retryAttempts = await screen.findByRole('spinbutton', { name: /retry max attempts.*required/i })
+    expect(retryAttempts).toHaveValue(2)
+    await fireEvent.input(retryAttempts, { target: { value: '4' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Reset Retry Max attempts draft' }))
+    expect(screen.getByRole('spinbutton', { name: /retry max attempts.*required/i })).toHaveValue(2)
+    expect($documentSession.get().pair?.definition.text).toBe(source)
+    expect(historyStore.get().undo).toHaveLength(0)
+
+    await fireEvent.input(screen.getByRole('spinbutton', { name: /retry max attempts.*required/i }), {
+      target: { value: '4' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Retry Max attempts' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('max_attempts: 4'))
+    expect(historyStore.get().undo).toHaveLength(1)
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
+    expect(await screen.findByRole('textbox', { name: /agents reviewer description.*required/i })).toHaveValue(
+      'Review the result.',
+    )
     rendered.unmount()
   })
 

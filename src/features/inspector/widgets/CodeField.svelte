@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
-  let { field, value, present, disabled = false, issues = [], onCommit }: WidgetProps = $props()
+  let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
   let draft = $derived(value === undefined ? '' : String(value))
 </script>
 
@@ -18,11 +18,6 @@
     aria-describedby={`${field.id}-description`}></textarea>
   <p id={`${field.id}-description`}>{field.description}</p>
   <button type="button" {disabled} onclick={() => void onCommit?.({ field, value: draft })}>Apply {field.label}</button>
-  {#if !field.required && present}<button
-      type="button"
-      {disabled}
-      onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
-    >{/if}
 </div>
 
 <style>

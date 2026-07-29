@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
-  let { field, value, present, disabled = false, onCommit }: WidgetProps = $props()
+  let { field, value, disabled = false, onCommit }: WidgetProps = $props()
   let draft = $derived(JSON.stringify(value ?? {}, null, 2))
   let error = $state('')
   function apply() {
@@ -21,11 +21,7 @@
   <p>{field.description}</p>
   {#if error}<p role="alert">{error}</p>{/if}<button type="button" {disabled} onclick={apply}
     >Apply {field.label}</button
-  >{#if !field.required && present}<button
-      type="button"
-      {disabled}
-      onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
-    >{/if}
+  >
 </div>
 
 <style>

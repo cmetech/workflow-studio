@@ -1,6 +1,12 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
   let { field, value, present, disabled = false, onCommit }: WidgetProps = $props()
+  const options = $derived(field.constraints.enum ?? [])
+  const selected = $derived(present ? String(options.findIndex((option) => sameValue(option, value))) : '__absent__')
+
+  function sameValue(left: unknown, right: unknown): boolean {
+    return Object.is(left, right) || JSON.stringify(left) === JSON.stringify(right)
+  }
 </script>
 
 <div class="field-control">
@@ -10,21 +16,17 @@
   <select
     id={field.id}
     {disabled}
-    value={String(value ?? '')}
+    value={selected}
     aria-describedby={`${field.id}-description`}
-    onchange={(event) => void onCommit?.({ field, value: event.currentTarget.value })}
+    onchange={(event) => {
+      if (event.currentTarget.value === '__absent__') void onCommit?.({ field, remove: true })
+      else void onCommit?.({ field, value: options[Number(event.currentTarget.value)] })
+    }}
   >
-    {#if !field.required}<option value="">Inherited / absent</option>{/if}
-    {#each field.constraints.enum ?? [] as option (String(option))}<option value={String(option)}
-        >{String(option)}</option
-      >{/each}
+    {#if !field.required}<option value="__absent__">Inherited / absent</option>{/if}
+    {#each options as option, index (index)}<option value={String(index)}>{String(option)}</option>{/each}
   </select>
   <p id={`${field.id}-description`}>{field.description}</p>
-  {#if !field.required && present}<button
-      type="button"
-      {disabled}
-      onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
-    >{/if}
 </div>
 
 <style>

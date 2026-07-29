@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loadAuthoringContract } from '../src/lib/contract/contract-loader'
 import { canonicalizeContractPayload, sha256Hex } from '../src/lib/contract/canonical-json'
-import { parseSyncArguments, syncContracts } from './sync-contracts'
+import { deterministicJson, parseSyncArguments, syncContracts } from './sync-contracts'
 import { validateContractResources } from './validate-contracts'
 
 async function envelope(profile: 'hermes-legacy' | 'archon-2026-07'): Promise<Record<string, unknown>> {
@@ -95,5 +95,72 @@ describe('contract resource synchronization', () => {
       }),
     ).rejects.toThrow(/archon-2026-07/i)
     await expect(readFile(join(outputDirectory, 'hermes-legacy-v1.json'))).rejects.toThrow()
+  })
+
+  it('rolls back the complete pre-existing bundle when the directory commit fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-rollback-'))
+    const legacyPath = join(directory, 'legacy-input.json')
+    const archonPath = join(directory, 'archon-input.json')
+    const outputDirectory = join(directory, 'output')
+    await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
+    await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await mkdir(outputDirectory)
+    const oldResources = {
+      'hermes-legacy-v1.json': 'old legacy\n',
+      'archon-2026-07-v1.json': 'old archon\n',
+      'manifest.json': 'old manifest\n',
+    }
+    await Promise.all(Object.entries(oldResources).map(([file, text]) => writeFile(join(outputDirectory, file), text)))
+
+    let directoryRenames = 0
+    await expect(
+      syncContracts(
+        {
+          source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+          generatedAt: '2026-07-29T00:00:00.000Z',
+          outputDirectory,
+        },
+        {
+          rename: async (from, to) => {
+            directoryRenames += 1
+            if (directoryRenames === 2) throw new Error('injected directory commit failure')
+            await rename(from, to)
+          },
+        },
+      ),
+    ).rejects.toThrow(/injected directory commit failure/i)
+
+    await expect(
+      Promise.all(Object.keys(oldResources).map((file) => readFile(join(outputDirectory, file), 'utf8'))),
+    ).resolves.toEqual(Object.values(oldResources))
+  })
+
+  it('uses locale-independent code-point ordering for deterministic JSON', () => {
+    expect(deterministicJson({ a: 1, Z: 2 })).toBe('{\n  "Z": 2,\n  "a": 1\n}\n')
+  })
+
+  it('rejects duplicate, extra, and mismatched manifest resources', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-manifest-'))
+    const legacyPath = join(directory, 'legacy-input.json')
+    const archonPath = join(directory, 'archon-input.json')
+    const outputDirectory = join(directory, 'output')
+    await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
+    await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await syncContracts({
+      source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+      generatedAt: '2026-07-29T00:00:00.000Z',
+      outputDirectory,
+    })
+    const manifestPath = join(outputDirectory, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { contracts: Record<string, unknown>[] }
+    manifest.contracts.push({ ...manifest.contracts[0], file: 'unexpected.json' })
+    await writeFile(manifestPath, deterministicJson(manifest))
+
+    await expect(validateContractResources(outputDirectory)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/exactly one.*archon-2026-07/i),
+        expect.stringMatching(/unexpected\.json/i),
+      ]),
+    )
   })
 })

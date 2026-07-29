@@ -11,7 +11,7 @@
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import type { AuthoringContract } from '$src/lib/contract/types'
-  import { collectContractFields, fieldsForNode } from '$src/lib/forms/widget-registry'
+  import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
   import { applyWorkflowMutation } from '$src/lib/documents/transactions'
   import type { WorkflowMutation } from '$src/lib/yaml/mutations'
@@ -224,28 +224,29 @@
   )
   const inspectorFields = $derived.by(() => {
     const node = inspectorNodes[0]
-    if (!inspectorContract || inspectorNodes.length > 1) return []
+    const projection = canvasProjection
+    if (!inspectorContract || !projection || inspectorNodes.length > 1) return []
+    const index = node ? projection.nodes.findIndex(({ id }) => id === node.id) : -1
     if (!node) {
-      return collectContractFields(inspectorContract).filter((field) => {
-        if (field.nodeKinds) return false
-        if (field.document === 'companion' && !canvasProjection?.companion) return false
-        const relative = field.fieldPath.replace(/^sidecar\./, '')
-        return !relative.includes('.') && !relative.includes('[]') && !relative.includes('*')
-      })
+      const fields = collectContractFields(inspectorContract).filter(
+        (field) => !field.nodeKinds && (field.document !== 'companion' || projection.companion),
+      )
+      return fields.flatMap((field) =>
+        materializeFormFields(
+          [field],
+          field.document === 'companion' ? (projection.companion ?? {}) : projection.definition,
+          index,
+        ),
+      )
     }
-    return fieldsForNode(inspectorContract, node.kind).filter((field) => {
-      const relative = field.fieldPath.replace(/^nodes\[\]\./, '')
-      return !relative.includes('.') && !relative.includes('*')
-    })
+    return materializeFormFields(fieldsForNode(inspectorContract, node.kind), projection.definition, index)
   })
   const inspectorValues = $derived.by(() => {
-    const node = inspectorNodes[0]
     if (!canvasProjection) return {}
-    const index = node ? canvasProjection.nodes.findIndex(({ id }) => id === node.id) : -1
     const values: Record<string, unknown> = {}
     for (const field of inspectorFields) {
       const root = field.document === 'companion' ? canvasProjection.companion : canvasProjection.definition
-      const value = root ? formFieldValue(root, field, index) : undefined
+      const value = root ? formFieldValue(root, field) : undefined
       if (value !== undefined) values[field.id] = value
     }
     return values
@@ -371,10 +372,9 @@
     return undefined
   }
 
-  function formFieldValue(definition: Readonly<Record<string, unknown>>, field: FormField, nodeIndex: number): unknown {
+  function formFieldValue(definition: Readonly<Record<string, unknown>>, field: FormField): unknown {
     let value: unknown = definition
-    for (const token of field.pathTemplate) {
-      const segment = token === '$node' ? nodeIndex : token
+    for (const segment of field.concretePath ?? []) {
       if (typeof segment === 'number') {
         if (!Array.isArray(value)) return undefined
         value = value[segment]
@@ -387,7 +387,7 @@
   }
 
   function concreteFormPath(field: FormField, nodeIndex: number): readonly (string | number)[] | null {
-    const path = field.pathTemplate.map((token) => (token === '$node' ? nodeIndex : token))
+    const path = field.concretePath ?? field.pathTemplate.map((token) => (token === '$node' ? nodeIndex : token))
     return path.some((token) => token === '*') ? null : path
   }
 
@@ -1017,6 +1017,7 @@
             ? 'Workflow'
             : `${inspectorNodes.length} nodes`}
         selectionCount={inspectorNodes.length}
+        selectionNodeId={inspectorNodes[0]?.id}
         bindingIdentity={inspectorBindingIdentity}
         issues={$documentSessionStore.analysis?.issues ?? []}
         disabledReason={inspectorDisabledReason}

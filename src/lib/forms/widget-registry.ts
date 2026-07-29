@@ -49,6 +49,13 @@ export function resolveWidget(field: FieldDescriptor | FormField): WidgetResolut
       message: `Workflow Studio does not support the contract widget "${field.widget}".`,
     }
   }
+  if ('schema' in field && !definition.accepts(field)) {
+    return {
+      ok: false,
+      code: 'contract_reader_unsupported_widget',
+      message: `Workflow Studio cannot safely render the contract widget "${field.widget}" for ${field.fieldPath}.`,
+    }
+  }
   return { ok: true, definition }
 }
 
@@ -79,6 +86,21 @@ export function collectContractFields(contract: AuthoringContract): readonly For
 export function fieldsForNode(contract: AuthoringContract, nodeKind: string): readonly FormField[] {
   return collectContractFields(contract).filter(
     (field) => field.document === 'definition' && field.nodeKinds?.includes(nodeKind),
+  )
+}
+
+export function materializeFormFields(
+  fields: readonly FormField[],
+  root: Readonly<Record<string, unknown>>,
+  nodeIndex: number,
+): readonly FormField[] {
+  return fields.flatMap((field) =>
+    materializePaths(root, field.pathTemplate, nodeIndex).map((concretePath) => ({
+      ...field,
+      id: `${field.id}@/${concretePath.map(String).join('/')}`,
+      label: contextualLabel(field, concretePath),
+      concretePath,
+    })),
   )
 }
 
@@ -189,7 +211,7 @@ function collectDocumentChildren(
   const objectSchemaValue = schemaType(schema) === 'array' ? resolveSchema(schema.items, root) : schema
   if (!objectSchemaValue) return
   const nextPath = schemaType(schema) === 'array' ? `${fieldPath}[]` : fieldPath
-  const nextTemplate = schemaType(schema) === 'array' ? [...pathTemplate, 0] : pathTemplate
+  const nextTemplate = schemaType(schema) === 'array' ? [...pathTemplate, '*'] : pathTemplate
   const properties = record(objectSchemaValue.properties)
   const required = new Set(
     Array.isArray(objectSchemaValue.required)
@@ -214,7 +236,7 @@ function formFieldFromDescriptor(
   schema: Record<string, unknown>,
   nodeKind: string,
 ): FormField {
-  const required = schemaRequiredAtFieldPath(contract.definition_schema, descriptor.field_path)
+  const required = schemaRequiredAtFieldPath(contract.definition_schema, descriptor.field_path, nodeKind)
   return {
     id: descriptor.id,
     label: descriptor.label,
@@ -278,8 +300,9 @@ function formFieldFromSchema(
 }
 
 function schemaAtFieldPath(root: Record<string, unknown>, path: string): Record<string, unknown> | null {
+  const tokens = path.replaceAll('[*]', '[]').split('.').filter(Boolean)
   let schema: Record<string, unknown> | null = root
-  for (const token of path.replaceAll('[*]', '[]').split('.').filter(Boolean)) {
+  for (const token of tokens) {
     const sequence = token.endsWith('[]')
     const name = sequence ? token.slice(0, -2) : token
     schema = schema ? childSchema(schema, name, root) : null
@@ -324,20 +347,50 @@ function childSchema(
   return null
 }
 
-function schemaRequiredAtFieldPath(root: Record<string, unknown>, path: string): boolean {
+function schemaRequiredAtFieldPath(root: Record<string, unknown>, path: string, nodeKind: string): boolean {
   const tokens = path.replaceAll('[*]', '[]').split('.').filter(Boolean)
   const leaf = tokens.at(-1)?.replace('[]', '')
   if (!leaf) return false
-  const parentPath = tokens.slice(0, -1).join('.')
-  const parent = parentPath ? schemaAtFieldPath(root, parentPath) : root
+  if (tokens[0] === 'nodes[]' && tokens.length === 2) {
+    const branch = nodeKindSchema(root, nodeKind)
+    if (Array.isArray(branch?.required) && branch.required.includes(leaf)) return true
+  }
+  let parent: Record<string, unknown> | null = root
+  for (const token of tokens.slice(0, -1)) {
+    const sequence = token.endsWith('[]')
+    const name = sequence ? token.slice(0, -2) : token
+    parent = parent ? childSchema(parent, name, root) : null
+    if (sequence && parent) parent = resolveSchema(parent.items, root)
+  }
   return Array.isArray(parent?.required) && parent.required.includes(leaf)
 }
 
 function descriptorPathTemplate(path: string): readonly (string | number)[] {
+  let nodeSlotAssigned = false
   return path
     .replaceAll('[*]', '[]')
     .split('.')
-    .flatMap((token) => (token.endsWith('[]') ? [token.slice(0, -2), '$node'] : [token]))
+    .flatMap((token) => {
+      if (!token.endsWith('[]')) return [token]
+      const name = token.slice(0, -2)
+      const slot = name === 'nodes' && !nodeSlotAssigned ? '$node' : '*'
+      if (name === 'nodes') nodeSlotAssigned = true
+      return [name, slot]
+    })
+}
+
+function nodeKindSchema(root: Record<string, unknown>, nodeKind: string): Record<string, unknown> | null {
+  const nodes = childSchema(root, 'nodes', root)
+  const items = nodes ? resolveSchema(nodes.items, root) : null
+  if (!items) return null
+  const branches = Array.isArray(items.oneOf) ? items.oneOf : []
+  for (const unresolved of branches) {
+    const branch = resolveSchema(unresolved, root)
+    if (!branch) continue
+    const required = Array.isArray(branch.required) ? branch.required : []
+    if (required.includes(nodeKind) || Object.hasOwn(record(branch.properties) ?? {}, nodeKind)) return branch
+  }
+  return items
 }
 
 function schemaConstraints(schema: Record<string, unknown>): FormConstraints {
@@ -410,6 +463,54 @@ function normalizeSection(section: string): string {
 function humanize(value: string): string {
   const text = value.replaceAll('_', ' ').replaceAll(/([a-z])([A-Z])/g, '$1 $2')
   return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function materializePaths(
+  root: unknown,
+  template: readonly (string | number)[],
+  nodeIndex: number,
+): readonly (readonly (string | number)[])[] {
+  function visit(
+    value: unknown,
+    index: number,
+    path: readonly (string | number)[],
+  ): readonly (readonly (string | number)[])[] {
+    if (index === template.length) return [path]
+    const token = template[index]
+    if (token === undefined) return []
+    if (token === '$node') {
+      if (nodeIndex < 0) return []
+      const next = Array.isArray(value) ? value[nodeIndex] : undefined
+      return visit(next, index + 1, [...path, nodeIndex])
+    }
+    if (token === '*') {
+      if (Array.isArray(value))
+        return value.flatMap((child, childIndex) => visit(child, index + 1, [...path, childIndex]))
+      const object = record(value)
+      if (object) {
+        return Object.keys(object)
+          .sort(compareCodePoints)
+          .flatMap((key) => visit(object[key], index + 1, [...path, key]))
+      }
+      return []
+    }
+    const next = typeof token === 'number' ? (Array.isArray(value) ? value[token] : undefined) : record(value)?.[token]
+    return visit(next, index + 1, [...path, token])
+  }
+  return visit(root, 0, [])
+}
+
+function contextualLabel(field: FormField, concretePath: readonly (string | number)[]): string {
+  const contextStart = field.nodeKinds && concretePath[0] === 'nodes' ? 2 : 0
+  const context = concretePath.slice(contextStart, -1)
+  if (context.length === 0) return field.label
+  return `${context
+    .map((token) => (typeof token === 'number' ? `Item ${token + 1}` : humanize(token)))
+    .join(' ')} ${field.label}`
+}
+
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function record(value: unknown): Record<string, unknown> | null {

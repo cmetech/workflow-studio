@@ -20,6 +20,7 @@ export interface FormField {
   readonly description: string
   readonly fieldPath: string
   readonly pathTemplate: readonly (string | number)[]
+  readonly concretePath?: readonly (string | number)[]
   readonly document: DocumentKind
   readonly nodeKinds?: readonly string[]
   readonly widget: string

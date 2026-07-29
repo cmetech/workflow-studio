@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WidgetProps } from '$src/lib/forms/types'
-  let { field, value, present, disabled = false, issues = [], onCommit }: WidgetProps = $props()
+  let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
   let draft = $derived(value === undefined ? '' : String(value))
 </script>
 
@@ -25,11 +25,6 @@
   <button type="button" {disabled} onclick={() => void onCommit?.({ field, value: Number(draft) })}
     >Apply {field.label}</button
   >
-  {#if !field.required && present}<button
-      type="button"
-      {disabled}
-      onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
-    >{/if}
 </div>
 
 <style>

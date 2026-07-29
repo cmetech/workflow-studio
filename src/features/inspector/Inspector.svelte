@@ -7,6 +7,7 @@
     fields: readonly FormField[]
     values: Readonly<Record<string, unknown>>
     selectionLabel?: string | undefined
+    selectionNodeId?: string | undefined
     selectionCount?: number | undefined
     bindingIdentity?: string | undefined
     issues?: readonly ValidationIssue[] | undefined
@@ -18,6 +19,7 @@
     fields,
     values,
     selectionLabel = 'No selection',
+    selectionNodeId,
     selectionCount = 1,
     bindingIdentity = selectionLabel,
     issues = [],
@@ -29,6 +31,7 @@
   type InspectorTab = (typeof tabs)[number]
   let activeTab = $state<InspectorTab>('General')
   let tabButtons = $state<HTMLButtonElement[]>([])
+  let resetVersions = $state<Record<string, number>>({})
   const visibleFields = $derived(
     activeTab === 'Docs' ? [] : fields.filter(({ section }) => section.toLowerCase() === activeTab.toLowerCase()),
   )
@@ -49,10 +52,36 @@
   }
 
   function fieldIssues(field: FormField): readonly ValidationIssue[] {
-    const suffix = field.fieldPath.replace(/^sidecar\./, '').replaceAll('[]', '')
-    return issues.filter(
-      (issue) => issue.field === suffix.split('.').at(-1) || issue.path?.endsWith(`/${suffix.replaceAll('.', '/')}`),
-    )
+    if (!field.concretePath) return []
+    const pointer = `/${field.concretePath
+      .map((token) => String(token).replaceAll('~', '~0').replaceAll('/', '~1'))
+      .join('/')}`
+    const leaf = String(field.concretePath.at(-1) ?? '')
+    return issues.filter((issue) => {
+      if (issue.document !== field.document) return false
+      if (issue.path) return issue.path === pointer
+      return Boolean(selectionNodeId && issue.nodeId === selectionNodeId && issue.field === leaf)
+    })
+  }
+
+  function resetDraft(field: FormField): void {
+    resetVersions = { ...resetVersions, [field.id]: (resetVersions[field.id] ?? 0) + 1 }
+  }
+
+  function sameValue(left: unknown, right: unknown): boolean {
+    if (Object.is(left, right)) return true
+    if (Array.isArray(left) && Array.isArray(right))
+      return left.length === right.length && left.every((value, index) => sameValue(value, right[index]))
+    if (left && right && typeof left === 'object' && typeof right === 'object') {
+      const leftRecord = left as Record<string, unknown>
+      const rightRecord = right as Record<string, unknown>
+      const keys = Object.keys(leftRecord)
+      return (
+        keys.length === Object.keys(rightRecord).length &&
+        keys.every((key) => Object.hasOwn(rightRecord, key) && sameValue(leftRecord[key], rightRecord[key]))
+      )
+    }
+    return false
   }
 </script>
 
@@ -96,7 +125,7 @@
         {#if resolution.ok}
           {@const Widget = resolution.definition.component}
           <div class="field" class:deferred={field.status !== 'supported'}>
-            {#key `${bindingIdentity}:${field.id}`}
+            {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
               <Widget
                 {field}
                 value={values[field.id]}
@@ -131,11 +160,14 @@
             {#if !Object.hasOwn(values, field.id) && field.hasDefault}<span class="badge"
                 >inherited default: {String(field.defaultValue)}</span
               >{/if}
+            {#if Object.hasOwn(values, field.id) && field.hasDefault && sameValue(values[field.id], field.defaultValue)}<span
+                class="badge">explicit default: {String(field.defaultValue)}</span
+              >{/if}
             {#if field.unit}<span class="badge">{field.unit}</span>{/if}
           </div>
           {#if resolution.ok}
             {@const Widget = resolution.definition.component}
-            {#key `${bindingIdentity}:${field.id}`}
+            {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
               <Widget
                 {field}
                 value={values[field.id]}
@@ -144,6 +176,13 @@
                 {onCommit}
               />
             {/key}
+            <div class="field-actions">
+              <button type="button" onclick={() => resetDraft(field)}>Reset {field.label} draft</button>
+              {#if !field.required && Object.hasOwn(values, field.id)}<button
+                  type="button"
+                  onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
+                >{/if}
+            </div>
           {:else}
             <p class="unsupported" role="status">{resolution.message} YAML is preserved; this field is read-only.</p>
           {/if}
@@ -212,6 +251,12 @@
     flex-wrap: wrap;
     gap: 0.25rem;
     margin-bottom: 0.25rem;
+  }
+  .field-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.35rem;
   }
   .badge {
     padding: 0.1rem 0.3rem;

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadAuthoringContract } from '../src/lib/contract/contract-loader'
 import type { WorkflowProfile } from '../src/lib/contract/types'
-import { deterministicJson } from './sync-contracts'
+import { compareCodePoints, deterministicJson } from './sync-contracts'
 
 const profiles = ['archon-2026-07', 'hermes-legacy'] as const
 
@@ -41,13 +41,30 @@ export async function validateContractResources(directory = resolve('contracts')
         errors.push('manifest.json: generated_at must be an exact ISO timestamp.')
       }
       const entries = manifest.contracts
-      const sorted = [...entries].sort((left, right) => profileOf(left).localeCompare(profileOf(right)))
+      const sorted = [...entries].sort((left, right) => compareCodePoints(profileOf(left), profileOf(right)))
       if (JSON.stringify(entries) !== JSON.stringify(sorted))
         errors.push('manifest.json: contracts must be profile-sorted.')
+      if (entries.length !== profiles.length) {
+        errors.push(`manifest.json: expected exactly ${profiles.length} contract resources.`)
+      }
+      for (const entry of entries) {
+        const profile = profileOf(entry)
+        if (!profiles.includes(profile as (typeof profiles)[number])) {
+          errors.push(`manifest.json: unexpected profile ${profile || '<missing>'}.`)
+          continue
+        }
+        if (!isRecord(entry) || entry.file !== `${profile}-v1.json`) {
+          errors.push(`manifest.json: unexpected file ${isRecord(entry) ? String(entry.file) : '<missing>'}.`)
+        }
+      }
       for (const profile of profiles) {
         const resource = loaded.get(profile)
         const contract = resource?.contract
-        const entry = entries.find((candidate) => profileOf(candidate) === profile)
+        const matching = entries.filter((candidate) => profileOf(candidate) === profile)
+        if (matching.length !== 1) {
+          errors.push(`manifest.json: expected exactly one ${profile} entry.`)
+        }
+        const entry = matching[0]
         if (!isRecord(entry) || !contract?.ok) {
           errors.push(`manifest.json: missing valid ${profile} entry.`)
           continue

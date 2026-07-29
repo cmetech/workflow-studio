@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { loadAuthoringContract } from '../src/lib/contract/contract-loader'
@@ -18,6 +18,12 @@ export interface SyncOptions {
   readonly generatedAt: string
   readonly outputDirectory: string
 }
+
+export interface SyncFileOperations {
+  readonly rename: (from: string, to: string) => Promise<void>
+}
+
+const defaultFileOperations: SyncFileOperations = { rename }
 
 export function parseSyncArguments(arguments_: readonly string[]): SyncOptions {
   let hermesCommand: string | undefined
@@ -68,7 +74,10 @@ export function parseSyncArguments(arguments_: readonly string[]): SyncOptions {
   }
 }
 
-export async function syncContracts(options: SyncOptions): Promise<void> {
+export async function syncContracts(
+  options: SyncOptions,
+  fileOperations: SyncFileOperations = defaultFileOperations,
+): Promise<void> {
   const candidates = await Promise.all(
     profiles.map(async (profile) => {
       const bytes = await readCandidate(options.source, profile)
@@ -92,22 +101,48 @@ export async function syncContracts(options: SyncOptions): Promise<void> {
     generated_at: options.generatedAt,
     contracts: candidates
       .map(({ profile, contract }) => manifestEntry(profile, contract))
-      .sort((left, right) => left.profile.localeCompare(right.profile)),
+      .sort((left, right) => compareCodePoints(left.profile, right.profile)),
   }
   const resources = new Map<string, string>([
     ...candidates.map(({ profile, text }) => [`${profile}-v1.json`, text] as const),
     ['manifest.json', deterministicJson(manifest)],
   ])
 
-  await mkdir(options.outputDirectory, { recursive: true })
-  const staging = join(options.outputDirectory, `.sync-${process.pid}-${Date.now()}`)
+  const parentDirectory = dirname(options.outputDirectory)
+  const resourceName = basename(options.outputDirectory)
+  const transactionId = `${process.pid}-${Date.now()}`
+  const staging = join(parentDirectory, `.${resourceName}.sync-${transactionId}`)
+  const backup = join(parentDirectory, `.${resourceName}.backup-${transactionId}`)
+  await mkdir(parentDirectory, { recursive: true })
   await mkdir(staging)
+  let backedUp = false
+  let committed = false
   try {
     await Promise.all([...resources].map(([file, text]) => writeFile(join(staging, file), text, { flag: 'wx' })))
-    for (const file of [...resources.keys()].sort())
-      await rename(join(staging, file), join(options.outputDirectory, file))
+    if (await pathExists(options.outputDirectory)) {
+      await fileOperations.rename(options.outputDirectory, backup)
+      backedUp = true
+    }
+    try {
+      await fileOperations.rename(staging, options.outputDirectory)
+      committed = true
+    } catch (error) {
+      if (backedUp) {
+        try {
+          await fileOperations.rename(backup, options.outputDirectory)
+          backedUp = false
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Contract bundle commit and rollback both failed.')
+        }
+      }
+      throw error
+    }
+    if (backedUp) {
+      await rm(backup, { recursive: true })
+      backedUp = false
+    }
   } finally {
-    await rm(staging, { recursive: true, force: true })
+    if (!committed) await rm(staging, { recursive: true, force: true })
   }
 }
 
@@ -150,9 +185,23 @@ function sortJson(value: unknown): unknown {
   if (!value || typeof value !== 'object') return value
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodePoints(left, right))
       .map(([key, child]) => [key, sortJson(child)]),
   )
+}
+
+export function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return false
+    throw error
+  }
 }
 
 function absolutePath(value: string, flag: string): string {

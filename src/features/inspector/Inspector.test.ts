@@ -42,6 +42,29 @@ const fields: readonly FormField[] = [
   },
 ]
 
+const optionalDefaultField: FormField = {
+  ...fields[0]!,
+  id: 'prompt.node.model',
+  label: 'Model',
+  fieldPath: 'nodes[].model',
+  pathTemplate: ['nodes', '$node', 'model'],
+  concretePath: ['nodes', 1, 'model'],
+  required: false,
+  hasDefault: true,
+  defaultValue: 'fast',
+}
+
+const enumField: FormField = {
+  ...fields[1]!,
+  id: 'prompt.node.mode',
+  label: 'Mode',
+  fieldPath: 'nodes[].mode',
+  pathTemplate: ['nodes', '$node', 'mode'],
+  concretePath: ['nodes', 1, 'mode'],
+  widget: 'enum',
+  constraints: { enum: [1, '1', false] },
+}
+
 describe('Inspector', () => {
   it('renders accessible roving tabs and field semantics from contract descriptors', async () => {
     render(Inspector, { fields, values: { 'prompt.node.id': 'review' }, selectionLabel: 'review' })
@@ -110,5 +133,89 @@ describe('Inspector', () => {
     })
     expect(screen.getByRole('textbox', { name: /node id/i })).toBeDisabled()
     expect(screen.getByText('The YAML projection is stale.')).toBeVisible()
+  })
+
+  it('distinguishes inherited and explicit defaults and resets a draft without committing or deleting', async () => {
+    const onCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields: [optionalDefaultField],
+      values: {},
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      onCommit,
+    })
+    expect(screen.getByText('inherited default: fast')).toBeVisible()
+
+    await rerender({
+      fields: [optionalDefaultField],
+      values: { [optionalDefaultField.id]: 'fast' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      onCommit,
+    })
+    expect(screen.getByText('explicit default: fast')).toBeVisible()
+    const input = screen.getByRole('textbox', { name: 'Model' })
+    await fireEvent.input(input, { target: { value: 'draft' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Reset Model draft' }))
+    expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue('fast')
+    expect(onCommit).not.toHaveBeenCalled()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove Model' }))
+    expect(onCommit).toHaveBeenCalledWith({ field: optionalDefaultField, remove: true })
+  })
+
+  it('routes the enum absent choice to removal and preserves non-string enum value types', async () => {
+    const onCommit = vi.fn()
+    render(Inspector, {
+      fields: [enumField],
+      values: { [enumField.id]: 1 },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      onCommit,
+    })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Execution' }))
+    const select = screen.getByRole('combobox', { name: 'Mode' })
+
+    await fireEvent.change(select, { target: { value: '1' } })
+    expect(onCommit).toHaveBeenLastCalledWith({ field: enumField, value: '1' })
+    await fireEvent.change(select, { target: { value: '__absent__' } })
+    expect(onCommit).toHaveBeenLastCalledWith({ field: enumField, remove: true })
+  })
+
+  it('shows issues only for the selected node exact canonical field path', () => {
+    const contextualField = { ...fields[0]!, concretePath: ['nodes', 1, 'id'] }
+    render(Inspector, {
+      fields: [contextualField],
+      values: { [contextualField.id]: 'review' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      issues: [
+        {
+          code: 'wrong-node',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Collect ID issue.',
+          document: 'definition',
+          path: '/nodes/0/id',
+          nodeId: 'collect',
+          field: 'id',
+        },
+        {
+          code: 'selected-node',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Review ID issue.',
+          document: 'definition',
+          path: '/nodes/1/id',
+          nodeId: 'review',
+          field: 'id',
+        },
+      ],
+    })
+
+    expect(screen.getByText('Review ID issue.')).toBeVisible()
+    expect(screen.queryByText('Collect ID issue.')).not.toBeInTheDocument()
   })
 })
