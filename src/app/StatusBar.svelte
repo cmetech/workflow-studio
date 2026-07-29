@@ -1,10 +1,26 @@
+<script lang="ts">
+  import { gitState } from '$src/stores/git'
+
+  const gitLabel = $derived.by(() => {
+    if ($gitState.phase === 'idle') return 'Git: no workspace'
+    if ($gitState.phase === 'loading') return 'Git: refreshing…'
+    if ($gitState.phase === 'error') return 'Git: unavailable'
+    const repository = $gitState.inspection.repository
+    if (!repository) return 'Git: not a repository'
+    const location = repository.branch ?? `detached ${repository.detachedHead ?? 'unknown'}`
+    const changes = $gitState.inspection.status.entries.length
+    const scope = $gitState.inspection.pair ? 'pair' : 'workspace'
+    return `Git: ${location}${changes === 0 ? '' : ` · ${changes} ${scope} ${changes === 1 ? 'change' : 'changes'}`}`
+  })
+</script>
+
 <footer
   class="status-bar"
   role="status"
   aria-label="Application status"
   style:background-color="var(--color-node-selected)"
 >
-  <span>Git: no workspace</span>
+  <span>{gitLabel}</span>
   <span>YAML: pending</span>
   <span>DAG: pending</span>
   <span class="update">Offline ready</span>

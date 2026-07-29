@@ -19,6 +19,7 @@ import {
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
+import { resetGitState, setGitInspection } from '$src/stores/git'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
@@ -217,6 +218,7 @@ describe('App', () => {
     clearWorkspace()
     closeDocumentSession()
     clearActiveLayout()
+    resetGitState()
     $documentWorkspace.set({
       conflict: null,
       recoveryOffers: [],
@@ -557,6 +559,21 @@ describe('App', () => {
 
     expect(screen.getByRole('button', { name: 'Nodes' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('mounts the local Git activity view from feature-owned Git state', async () => {
+    setGitInspection({
+      repository: { root: '/repo', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: '', index: '' },
+      history: [],
+    })
+    render(App)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Git' }))
+
+    expect(screen.getByRole('heading', { name: 'Git' })).toBeVisible()
+    expect(screen.getByText('Branch: main')).toBeVisible()
   })
 
   it('uses an accessible button group to select the editor mode', async () => {

@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
 import type { ContractCacheLoadResult } from '../contract/contract-cache'
+import type { GitCommitSummary, GitDiff, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
 import {
   NativeError,
   type PathOperationResult,
@@ -115,6 +116,14 @@ export const tauriBridge: WorkspaceNativeBridge = {
   recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),
   layoutLoad: () => invokeTyped<string | null>('layout_load'),
   layoutSave: (content) => invokeTyped<void>('layout_save', { content }),
+  gitDetect: () => invokeTyped<GitRepository | null>('git_detect'),
+  gitStatus: (root) => invokeTyped<GitStatus>('git_status', { root }),
+  gitDiffPair: (root, definitionPath, companionPath) =>
+    invokeTyped<GitDiff>('git_diff_pair', { root, definitionPath, companionPath }),
+  gitHistoryPair: (root, definitionPath, companionPath) =>
+    invokeTyped<readonly GitCommitSummary[]>('git_history_pair', { root, definitionPath, companionPath }),
+  gitShowPair: (root, oid, definitionPath, companionPath) =>
+    invokeTyped<GitPairSnapshot>('git_show_pair', { root, oid, definitionPath, companionPath }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

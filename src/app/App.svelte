@@ -84,6 +84,9 @@
   import Inspector from '$src/features/inspector/Inspector.svelte'
   import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
+  import GitView from '$src/features/version-control/GitView.svelte'
+  import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
+  import { createGitInspectionController } from '$src/stores/git'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
@@ -128,6 +131,7 @@
     .sort((left, right) => left.id.localeCompare(right.id))
   const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
   const native = getNativeBridge()
+  const gitController = createGitInspectionController(native)
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
@@ -741,7 +745,11 @@
   }
 
   async function openWorkspace(rootPath?: string): Promise<void> {
-    await actions.openWorkspace(rootPath)
+    const selected = await actions.openWorkspace(rootPath)
+    if (selected) {
+      gitController.reset()
+      void refreshGitRepository()
+    }
     await refreshRecent()
   }
 
@@ -749,6 +757,34 @@
     const current = $workspace
     if (!current.id || !current.displayName) return
     loadWorkspaceEntries(current.id, current.displayName, await native.workspaceScan())
+    void refreshGit()
+  }
+
+  function activeGitPair(): GitPairPaths | null {
+    const pair = documentSessionStore.get().pair
+    return pair ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null } : null
+  }
+
+  async function refreshGit(): Promise<void> {
+    const pair = activeGitPair()
+    if (!pair) return
+    await gitController.refreshPair(pair)
+  }
+
+  async function refreshGitRepository(): Promise<void> {
+    await gitController.refreshRepository()
+  }
+
+  function loadHistoricalGitPair(oid: string): Promise<GitPairSnapshot> {
+    const pair = activeGitPair()
+    if (!pair) return Promise.reject(new Error('Open a workflow in a Git repository first.'))
+    return gitController.loadCommit(oid, pair)
+  }
+
+  async function handleExternalWorkspacePath(path: string): Promise<void> {
+    await actions.handleExternalPath(path)
+    gitController.reset()
+    void refreshGit()
   }
 
   async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
@@ -771,6 +807,7 @@
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
     const requestToken = documentWorkspace.beginActivation()
+    let didOpen = false
     await withCanvasLayoutBarrier(async () => {
       await contractReadiness
       const contract = await activeContractFor(entry)
@@ -778,10 +815,12 @@
       if (!workspaceId) return
       const opened = await documentWorkspace.activate(workspaceId, entry, contract ?? null, requestToken)
       if (opened) {
+        didOpen = true
         exampleDocumentationProfile = undefined
         selectWorkspaceEntry(entry.id)
       }
     })
+    if (didOpen) void refreshGit()
   }
 
   async function createEditableExampleCopy(example: ExampleDescriptor): Promise<void> {
@@ -952,6 +991,11 @@
       quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
       quickOpenVisible = true
     } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
+  })
+
+  $effect(() => {
+    if ($activeActivity !== 'git' || !$workspace.id || !$documentSessionStore.pair) return
+    void refreshGit()
   })
 
   $effect.pre(() => {
@@ -1125,13 +1169,15 @@
       if (disposed) return
       try {
         await actions.handleStartupPaths()
+        if (activeGitPair()) void refreshGit()
+        else if ($workspace.id) void refreshGitRepository()
       } catch (error: unknown) {
         workspaceError = error instanceof Error ? error.message : 'The startup workflow could not be opened.'
       }
       if (disposed || !currentWindow) return
       const disposeDragDrop = await currentWindow.onDragDropEvent((event) => {
         if (event.payload.type !== 'drop') return
-        for (const path of event.payload.paths) runWorkspaceOperation(actions.handleExternalPath(path))
+        for (const path of event.payload.paths) runWorkspaceOperation(handleExternalWorkspacePath(path))
       })
       if (disposed) {
         disposeDragDrop()
@@ -1235,6 +1281,8 @@
         {:else}
           <p>Loading bundled contracts…</p>
         {/if}
+      {:else if $activeActivity === 'git'}
+        <GitView onSelectCommit={loadHistoricalGitPair} />
       {:else if $activeActivity === 'documentation'}
         {#if documentationIndex}
           <DocumentationView
@@ -1294,7 +1342,7 @@
           <OpenWorkspace
             {recent}
             onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
-            onDropPath={(path) => runWorkspaceOperation(actions.handleExternalPath(path))}
+            onDropPath={(path) => runWorkspaceOperation(handleExternalWorkspacePath(path))}
           />
         {:else}
           <div

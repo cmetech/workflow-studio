@@ -1,5 +1,6 @@
 mod commands;
 mod contracts;
+mod git;
 mod layout;
 mod recovery;
 mod startup;
@@ -44,6 +45,11 @@ pub fn run() {
             contracts::contract_choose_hermes_executable,
             contracts::contract_cache_load,
             contracts::contract_cache_write,
+            git::git_detect,
+            git::git_status,
+            git::git_diff_pair,
+            git::git_history_pair,
+            git::git_show_pair,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Workflow Studio");

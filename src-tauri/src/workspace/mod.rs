@@ -42,6 +42,19 @@ pub struct WorkspaceState {
     active: Mutex<Option<ActiveWorkspace>>,
 }
 
+impl WorkspaceState {
+    pub(crate) fn active_root_path(&self) -> Result<PathBuf, WorkspaceError> {
+        let active = self.active.lock().map_err(|_| state_error())?;
+        let active = active.as_ref().ok_or_else(|| {
+            WorkspaceError::new(
+                "workspace_not_selected",
+                "Select a workspace folder before inspecting local Git.",
+            )
+        })?;
+        Ok(active.scope.root_path()?.to_path_buf())
+    }
+}
+
 struct ActiveWorkspace {
     scope: WorkspaceScope,
     _watcher: watcher::WorkspaceWatcher,
