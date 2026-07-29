@@ -76,6 +76,14 @@ describe('App', () => {
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
+  it('mounts contract management from the Settings activity without a workspace', async () => {
+    render(App)
+    showActivity('settings')
+
+    expect(await screen.findByRole('heading', { name: 'Workflow contracts' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Import Contract File' })).toBeEnabled()
+  })
+
   it('enables contract-dependent creation from validated bundled production contracts', async () => {
     render(App)
 

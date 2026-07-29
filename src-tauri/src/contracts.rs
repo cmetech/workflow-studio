@@ -1,19 +1,45 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use same_file::Handle;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 const MAX_CONTRACT_BYTES: usize = 512 * 1024;
 const CLI_TIMEOUT: Duration = Duration::from_secs(10);
 const CACHE_DIRECTORY: &str = "contracts-v1";
 const CACHE_INDEX: &str = "index.json";
 static NEXT_CACHE_TEMP: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+pub struct ContractGrantState {
+    files: Mutex<HashMap<PathBuf, GrantedContractFile>>,
+    executables: Mutex<HashMap<PathBuf, GrantedExecutable>>,
+}
+
+struct GrantedContractFile {
+    path: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: Handle,
+    file_identity: Handle,
+    file: File,
+}
+
+struct GrantedExecutable {
+    path: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: Handle,
+    file_identity: Handle,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub enum ContractProfile {
@@ -41,7 +67,7 @@ pub struct ContractError {
 
 type ContractResult<T> = Result<T, ContractError>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractCacheStoredEntry {
     pub digest: String,
@@ -53,41 +79,135 @@ pub struct ContractCacheStoredEntry {
     pub content: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContractCacheIndexEntry {
+    digest: String,
+    profile: String,
+    schema_version: u32,
+    normalizer_version: u32,
+    reader_version: u32,
+    source: serde_json::Value,
+}
+
+impl From<&ContractCacheStoredEntry> for ContractCacheIndexEntry {
+    fn from(entry: &ContractCacheStoredEntry) -> Self {
+        Self {
+            digest: entry.digest.clone(),
+            profile: entry.profile.clone(),
+            schema_version: entry.schema_version,
+            normalizer_version: entry.normalizer_version,
+            reader_version: entry.reader_version,
+            source: entry.source.clone(),
+        }
+    }
+}
+
 #[tauri::command]
-pub fn contract_read_file(path: String) -> ContractResult<Vec<u8>> {
-    read_contract_file(Path::new(&path))
+pub fn contract_choose_file(
+    app: AppHandle,
+    grants: State<'_, ContractGrantState>,
+) -> ContractResult<Option<String>> {
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .add_filter("Authoring contract", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = selected.into_path().map_err(|_| {
+        contract_error(
+            "invalid_dialog_path",
+            "The selected contract path is unavailable.",
+        )
+    })?;
+    let canonical = grant_contract_file(&path, &grants)?;
+    unicode_path(&canonical).map(Some)
+}
+
+#[tauri::command]
+pub fn contract_choose_hermes_executable(
+    app: AppHandle,
+    grants: State<'_, ContractGrantState>,
+) -> ContractResult<Option<String>> {
+    let Some(selected) = app.dialog().file().blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = selected.into_path().map_err(|_| {
+        contract_error(
+            "invalid_dialog_path",
+            "The selected Hermes path is unavailable.",
+        )
+    })?;
+    let canonical = grant_executable(&path, &grants)?;
+    unicode_path(&canonical).map(Some)
+}
+
+#[tauri::command]
+pub fn contract_read_file(
+    path: String,
+    grants: State<'_, ContractGrantState>,
+) -> ContractResult<Vec<u8>> {
+    read_granted_contract_file(Path::new(&path), &grants)
 }
 
 #[tauri::command]
 pub fn contract_run_hermes_cli(
     executable_path: String,
     profile: ContractProfile,
+    grants: State<'_, ContractGrantState>,
 ) -> ContractResult<Vec<u8>> {
-    run_hermes_cli(Path::new(&executable_path), profile)
+    run_granted_hermes_cli(Path::new(&executable_path), profile, &grants)
 }
 
 #[tauri::command]
 pub fn contract_cache_load(app: AppHandle) -> ContractResult<Vec<ContractCacheStoredEntry>> {
-    let root = contract_cache_root(&app)?;
+    cache_load_at(&app_data_dir(&app)?)
+}
+
+fn cache_load_at(app_data: &Path) -> ContractResult<Vec<ContractCacheStoredEntry>> {
+    let root = contract_cache_root_at(app_data)?;
     let index_path = root.join(CACHE_INDEX);
     if !index_path.exists() {
         return Ok(Vec::new());
     }
     reject_non_regular_file(&index_path, "contract_cache_read_failed")?;
     let index = read_bounded_utf8(&index_path, "contract_cache_read_failed")?;
-    let mut entries: Vec<ContractCacheStoredEntry> = serde_json::from_str(&index)
-        .map_err(|_| contract_error("contract_cache_read_failed", "The contract cache index is invalid."))?;
-    for entry in &mut entries {
-        let path = root.join(cache_file_name(&entry.digest)?);
+    let index_entries: Vec<ContractCacheIndexEntry> =
+        serde_json::from_str(&index).map_err(|_| {
+            contract_error(
+                "contract_cache_read_failed",
+                "The contract cache index is invalid.",
+            )
+        })?;
+    let mut entries = Vec::with_capacity(index_entries.len());
+    for index_entry in index_entries {
+        let path = root.join(cache_file_name(&index_entry.digest)?);
         reject_non_regular_file(&path, "contract_cache_read_failed")?;
-        entry.content = read_bounded_utf8(&path, "contract_cache_read_failed")?;
+        entries.push(ContractCacheStoredEntry {
+            digest: index_entry.digest,
+            profile: index_entry.profile,
+            schema_version: index_entry.schema_version,
+            normalizer_version: index_entry.normalizer_version,
+            reader_version: index_entry.reader_version,
+            source: index_entry.source,
+            content: read_bounded_utf8(&path, "contract_cache_read_failed")?,
+        });
     }
     Ok(entries)
 }
 
 #[tauri::command]
-pub fn contract_cache_write(entries: Vec<ContractCacheStoredEntry>, app: AppHandle) -> ContractResult<()> {
-    let root = contract_cache_root(&app)?;
+pub fn contract_cache_write(
+    entries: Vec<ContractCacheStoredEntry>,
+    app: AppHandle,
+) -> ContractResult<()> {
+    cache_write_at(&app_data_dir(&app)?, entries)
+}
+
+fn cache_write_at(app_data: &Path, entries: Vec<ContractCacheStoredEntry>) -> ContractResult<()> {
+    let root = contract_cache_root_at(app_data)?;
     for entry in &entries {
         let file_name = cache_file_name(&entry.digest)?;
         let path = root.join(file_name);
@@ -100,64 +220,434 @@ pub fn contract_cache_write(entries: Vec<ContractCacheStoredEntry>, app: AppHand
                 ));
             }
         } else {
-            write_atomic(&path, entry.content.as_bytes(), "contract_cache_write_failed")?;
+            write_atomic(
+                &path,
+                entry.content.as_bytes(),
+                "contract_cache_write_failed",
+            )?;
         }
     }
-    let index = serde_json::to_vec_pretty(&entries)
-        .map_err(|_| contract_error("contract_cache_write_failed", "The contract cache index could not be encoded."))?;
-    write_atomic(&root.join(CACHE_INDEX), &index, "contract_cache_write_failed")
+    let index_entries = entries
+        .iter()
+        .map(ContractCacheIndexEntry::from)
+        .collect::<Vec<_>>();
+    let index = serde_json::to_vec_pretty(&index_entries).map_err(|_| {
+        contract_error(
+            "contract_cache_write_failed",
+            "The contract cache index could not be encoded.",
+        )
+    })?;
+    write_atomic(
+        &root.join(CACHE_INDEX),
+        &index,
+        "contract_cache_write_failed",
+    )?;
+    let retained = entries
+        .iter()
+        .map(|entry| cache_file_name(&entry.digest))
+        .collect::<ContractResult<std::collections::HashSet<_>>>()?;
+    for entry in fs::read_dir(&root).map_err(|error| {
+        contract_error(
+            "contract_cache_prune_failed",
+            format!("Could not list cached contracts: {error}"),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            contract_error(
+                "contract_cache_prune_failed",
+                format!("Could not inspect cached contracts: {error}"),
+            )
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name != CACHE_INDEX && name.ends_with(".json") && !retained.contains(&name) {
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+                contract_error(
+                    "contract_cache_prune_failed",
+                    format!("Could not inspect stale contract data: {error}"),
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(contract_error(
+                    "contract_cache_prune_failed",
+                    "Stale contract data is not a regular file.",
+                ));
+            }
+            fs::remove_file(entry.path()).map_err(|error| {
+                contract_error(
+                    "contract_cache_prune_failed",
+                    format!("Could not remove stale contract data: {error}"),
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
+#[cfg(test)]
 fn read_contract_file(path: &Path) -> ContractResult<Vec<u8>> {
     reject_non_regular_file(path, "contract_read_failed")?;
     read_bounded_bytes(path, "contract_read_failed")
 }
 
+fn grant_contract_file(path: &Path, grants: &ContractGrantState) -> ContractResult<PathBuf> {
+    let bound = bind_regular_file(path)?;
+    let canonical = bound.path.clone();
+    grants
+        .files
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .insert(canonical.clone(), bound);
+    Ok(canonical)
+}
+
+fn grant_executable(path: &Path, grants: &ContractGrantState) -> ContractResult<PathBuf> {
+    let bound = bind_regular_file(path)?;
+    let canonical = bound.path.clone();
+    grants
+        .executables
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .insert(
+            canonical.clone(),
+            GrantedExecutable {
+                path: bound.path,
+                parent_path: bound.parent_path,
+                parent_identity: bound.parent_identity,
+                file_identity: bound.file_identity,
+            },
+        );
+    Ok(canonical)
+}
+
+fn bind_regular_file(path: &Path) -> ContractResult<GrantedContractFile> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        contract_error(
+            "contract_path_not_found",
+            "The selected contract path does not exist.",
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(contract_error(
+            "contract_path_invalid",
+            "Select a regular file, not a symbolic link.",
+        ));
+    }
+    let canonical = path.canonicalize().map_err(|_| {
+        contract_error(
+            "contract_path_not_found",
+            "The selected contract path does not exist.",
+        )
+    })?;
+    let parent_path = canonical
+        .parent()
+        .ok_or_else(|| {
+            contract_error(
+                "contract_path_invalid",
+                "The selected path has no parent directory.",
+            )
+        })?
+        .to_path_buf();
+    let parent_identity = Handle::from_path(&parent_path).map_err(|error| {
+        contract_error(
+            "contract_grant_failed",
+            format!("Could not bind the selected directory: {error}"),
+        )
+    })?;
+    let file = File::open(&canonical).map_err(|error| {
+        contract_error(
+            "contract_grant_failed",
+            format!("Could not bind the selected file: {error}"),
+        )
+    })?;
+    let file_identity = Handle::from_file(file.try_clone().map_err(|error| {
+        contract_error(
+            "contract_grant_failed",
+            format!("Could not bind the selected file: {error}"),
+        )
+    })?)
+    .map_err(|error| {
+        contract_error(
+            "contract_grant_failed",
+            format!("Could not identify the selected file: {error}"),
+        )
+    })?;
+    if Handle::from_path(&canonical).map_err(|error| {
+        contract_error(
+            "contract_grant_failed",
+            format!("Could not identify the selected file: {error}"),
+        )
+    })? != file_identity
+    {
+        return Err(contract_error(
+            "contract_path_changed",
+            "The selected path changed while permission was granted.",
+        ));
+    }
+    Ok(GrantedContractFile {
+        path: canonical,
+        parent_path,
+        parent_identity,
+        file_identity,
+        file,
+    })
+}
+
+fn read_granted_contract_file(path: &Path, grants: &ContractGrantState) -> ContractResult<Vec<u8>> {
+    let mut granted = grants
+        .files
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .remove(path)
+        .ok_or_else(|| {
+            contract_error(
+                "dialog_permission_required",
+                "Select this exact contract file before reading it.",
+            )
+        })?;
+    verify_granted(
+        &granted.path,
+        &granted.parent_path,
+        &granted.parent_identity,
+        &granted.file_identity,
+    )?;
+    let metadata = granted.file.metadata().map_err(|error| {
+        contract_error(
+            "contract_read_failed",
+            format!("Could not inspect the selected contract: {error}"),
+        )
+    })?;
+    if metadata.len() as usize > MAX_CONTRACT_BYTES {
+        return Err(contract_error(
+            "contract_file_too_large",
+            "Contract files cannot exceed 512 KiB.",
+        ));
+    }
+    granted.file.seek(SeekFrom::Start(0)).map_err(|error| {
+        contract_error(
+            "contract_read_failed",
+            format!("Could not seek the selected contract: {error}"),
+        )
+    })?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut granted.file)
+        .take((MAX_CONTRACT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            contract_error(
+                "contract_read_failed",
+                format!("Could not read the selected contract: {error}"),
+            )
+        })?;
+    if bytes.len() > MAX_CONTRACT_BYTES {
+        return Err(contract_error(
+            "contract_file_too_large",
+            "Contract files cannot exceed 512 KiB.",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn run_granted_hermes_cli(
+    path: &Path,
+    profile: ContractProfile,
+    grants: &ContractGrantState,
+) -> ContractResult<Vec<u8>> {
+    let granted = grants
+        .executables
+        .lock()
+        .map_err(|_| grant_state_error())?
+        .remove(path)
+        .ok_or_else(|| {
+            contract_error(
+                "dialog_permission_required",
+                "Select this exact Hermes executable before refreshing.",
+            )
+        })?;
+    verify_granted(
+        &granted.path,
+        &granted.parent_path,
+        &granted.parent_identity,
+        &granted.file_identity,
+    )?;
+    run_hermes_cli(&granted.path, profile)
+}
+
+fn verify_granted(
+    path: &Path,
+    parent_path: &Path,
+    parent_identity: &Handle,
+    file_identity: &Handle,
+) -> ContractResult<()> {
+    if Handle::from_path(parent_path)
+        .map_err(|_| contract_error("contract_parent_changed", "The selected directory changed."))?
+        != *parent_identity
+    {
+        return Err(contract_error(
+            "contract_parent_changed",
+            "The selected directory changed.",
+        ));
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| contract_error("contract_path_changed", "The selected path changed."))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(contract_error(
+            "contract_path_changed",
+            "The selected path changed.",
+        ));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| contract_error("contract_path_changed", "The selected path changed."))?;
+    if canonical != path
+        || Handle::from_path(&canonical)
+            .map_err(|_| contract_error("contract_path_changed", "The selected path changed."))?
+            != *file_identity
+    {
+        return Err(contract_error(
+            "contract_path_changed",
+            "The selected path changed.",
+        ));
+    }
+    Ok(())
+}
+
+fn unicode_path(path: &Path) -> ContractResult<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        contract_error(
+            "invalid_dialog_path",
+            "The selected path is not valid Unicode.",
+        )
+    })
+}
+
+fn grant_state_error() -> ContractError {
+    contract_error(
+        "dialog_grant_unavailable",
+        "Contract selection grants are unavailable.",
+    )
+}
+
 fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult<Vec<u8>> {
-    let mut child = Command::new(executable)
-        .args(["workflow", "schema", "--profile", profile.as_str(), "--json"])
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "workflow",
+            "schema",
+            "--profile",
+            profile.as_str(),
+            "--json",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| contract_error("contract_cli_spawn_failed", format!("Could not start the selected Hermes executable: {error}")))?;
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| {
+        contract_error(
+            "contract_cli_spawn_failed",
+            format!("Could not start the selected Hermes executable: {error}"),
+        )
+    })?;
+    let process_id = child.id();
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
-    let stdout_reader = thread::spawn(move || read_stream_bounded(stdout));
-    let stderr_reader = thread::spawn(move || read_stream_bounded(stderr));
+    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = stdout_sender.send(read_stream_bounded(stdout));
+    });
+    thread::spawn(move || {
+        let _ = stderr_sender.send(read_stream_bounded(stderr));
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < CLI_TIMEOUT => thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(contract_error("contract_cli_timeout", "Hermes schema output exceeded the 10-second timeout."));
+                terminate_process_tree(&mut child, process_id);
+                return Err(contract_error(
+                    "contract_cli_timeout",
+                    "Hermes schema output exceeded the 10-second timeout.",
+                ));
             }
-            Err(error) => return Err(contract_error("contract_cli_wait_failed", format!("Could not wait for Hermes: {error}"))),
+            Err(error) => {
+                terminate_process_tree(&mut child, process_id);
+                return Err(contract_error(
+                    "contract_cli_wait_failed",
+                    format!("Could not wait for Hermes: {error}"),
+                ));
+            }
         }
     };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| contract_error("contract_cli_read_failed", "Could not read Hermes standard output."))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| contract_error("contract_cli_read_failed", "Could not read Hermes standard error."))??;
+    let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
+    let stdout = stdout_receiver.recv_timeout(remaining).map_err(|_| {
+        terminate_process_tree(&mut child, process_id);
+        contract_error(
+            "contract_cli_timeout",
+            "Hermes schema output exceeded the 10-second timeout.",
+        )
+    })??;
+    let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
+    let stderr = stderr_receiver.recv_timeout(remaining).map_err(|_| {
+        terminate_process_tree(&mut child, process_id);
+        contract_error(
+            "contract_cli_timeout",
+            "Hermes schema output exceeded the 10-second timeout.",
+        )
+    })??;
     if !status.success() {
-        return Err(contract_error("contract_cli_nonzero_exit", "The selected Hermes executable returned a non-zero exit status."));
+        return Err(contract_error(
+            "contract_cli_nonzero_exit",
+            "The selected Hermes executable returned a non-zero exit status.",
+        ));
     }
     if stdout.len() > MAX_CONTRACT_BYTES {
-        return Err(contract_error("contract_cli_output_too_large", "Hermes schema output exceeds the 512 KiB limit."));
+        return Err(contract_error(
+            "contract_cli_output_too_large",
+            "Hermes schema output exceeds the 512 KiB limit.",
+        ));
     }
     if stdout.is_empty() && !stderr.is_empty() {
-        return Err(contract_error("contract_cli_stderr_only", "Hermes wrote diagnostics but no schema JSON."));
+        return Err(contract_error(
+            "contract_cli_stderr_only",
+            "Hermes wrote diagnostics but no schema JSON.",
+        ));
     }
-    String::from_utf8(stdout.clone())
-        .map_err(|_| contract_error("contract_cli_invalid_utf8", "Hermes schema output is not valid UTF-8."))?;
+    String::from_utf8(stdout.clone()).map_err(|_| {
+        contract_error(
+            "contract_cli_invalid_utf8",
+            "Hermes schema output is not valid UTF-8.",
+        )
+    })?;
     Ok(stdout)
+}
+
+fn terminate_process_tree(child: &mut std::process::Child, process_id: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(process_id as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| root.join("System32").join("taskkill.exe"));
+        if let Some(taskkill) = taskkill {
+            let process_id = process_id.to_string();
+            let _ = Command::new(taskkill)
+                .args(["/PID", process_id.as_str(), "/T", "/F"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn read_stream_bounded(mut stream: impl Read) -> ContractResult<Vec<u8>> {
@@ -166,21 +656,42 @@ fn read_stream_bounded(mut stream: impl Read) -> ContractResult<Vec<u8>> {
         .by_ref()
         .take((MAX_CONTRACT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|error| contract_error("contract_cli_read_failed", format!("Could not read Hermes output: {error}")))?;
+        .map_err(|error| {
+            contract_error(
+                "contract_cli_read_failed",
+                format!("Could not read Hermes output: {error}"),
+            )
+        })?;
     Ok(bytes)
 }
 
 fn read_bounded_bytes(path: &Path, code: &'static str) -> ContractResult<Vec<u8>> {
-    let metadata = fs::metadata(path).map_err(|error| contract_error(code, format!("Could not inspect the contract file: {error}")))?;
+    let metadata = fs::metadata(path).map_err(|error| {
+        contract_error(
+            code,
+            format!("Could not inspect the contract file: {error}"),
+        )
+    })?;
     if metadata.len() as usize > MAX_CONTRACT_BYTES {
-        return Err(contract_error("contract_file_too_large", "Contract files cannot exceed 512 KiB."));
+        return Err(contract_error(
+            "contract_file_too_large",
+            "Contract files cannot exceed 512 KiB.",
+        ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     File::open(path)
-        .and_then(|file| file.take((MAX_CONTRACT_BYTES + 1) as u64).read_to_end(&mut bytes))
-        .map_err(|error| contract_error(code, format!("Could not read the contract file: {error}")))?;
+        .and_then(|file| {
+            file.take((MAX_CONTRACT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| {
+            contract_error(code, format!("Could not read the contract file: {error}"))
+        })?;
     if bytes.len() > MAX_CONTRACT_BYTES {
-        return Err(contract_error("contract_file_too_large", "Contract files cannot exceed 512 KiB."));
+        return Err(contract_error(
+            "contract_file_too_large",
+            "Contract files cannot exceed 512 KiB.",
+        ));
     }
     Ok(bytes)
 }
@@ -190,15 +701,31 @@ fn read_bounded_utf8(path: &Path, code: &'static str) -> ContractResult<String> 
         .map_err(|_| contract_error(code, "The cached contract is not valid UTF-8."))
 }
 
-fn contract_cache_root(app: &AppHandle) -> ContractResult<PathBuf> {
-    let app_data = app.path().app_data_dir().map_err(|error| {
-        contract_error("contract_cache_path_unavailable", format!("The application data directory is unavailable: {error}"))
+fn app_data_dir(app: &AppHandle) -> ContractResult<PathBuf> {
+    app.path().app_data_dir().map_err(|error| {
+        contract_error(
+            "contract_cache_path_unavailable",
+            format!("The application data directory is unavailable: {error}"),
+        )
+    })
+}
+
+fn contract_cache_root_at(app_data: &Path) -> ContractResult<PathBuf> {
+    fs::create_dir_all(app_data).map_err(|error| {
+        contract_error(
+            "contract_cache_write_failed",
+            format!("Could not create application data: {error}"),
+        )
     })?;
-    fs::create_dir_all(&app_data).map_err(|error| contract_error("contract_cache_write_failed", format!("Could not create application data: {error}")))?;
     reject_non_directory(&app_data)?;
     let root = app_data.join(CACHE_DIRECTORY);
     if !root.exists() {
-        fs::create_dir(&root).map_err(|error| contract_error("contract_cache_write_failed", format!("Could not create the contract cache: {error}")))?;
+        fs::create_dir(&root).map_err(|error| {
+            contract_error(
+                "contract_cache_write_failed",
+                format!("Could not create the contract cache: {error}"),
+            )
+        })?;
     }
     reject_non_directory(&root)?;
     Ok(root)
@@ -206,60 +733,155 @@ fn contract_cache_root(app: &AppHandle) -> ContractResult<PathBuf> {
 
 fn cache_file_name(digest: &str) -> ContractResult<String> {
     let Some(hex) = digest.strip_prefix("sha256:") else {
-        return Err(contract_error("contract_cache_invalid_digest", "Contract cache digests must use sha256."));
+        return Err(contract_error(
+            "contract_cache_invalid_digest",
+            "Contract cache digests must use sha256.",
+        ));
     };
     if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(contract_error("contract_cache_invalid_digest", "Contract cache digests must contain 64 hexadecimal characters."));
+        return Err(contract_error(
+            "contract_cache_invalid_digest",
+            "Contract cache digests must contain 64 hexadecimal characters.",
+        ));
     }
     Ok(format!("{hex}.json"))
 }
 
 fn reject_non_regular_file(path: &Path, code: &'static str) -> ContractResult<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| contract_error(code, format!("Could not inspect the contract path: {error}")))?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        contract_error(
+            code,
+            format!("Could not inspect the contract path: {error}"),
+        )
+    })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(contract_error(code, "Contract data must be a regular file."));
+        return Err(contract_error(
+            code,
+            "Contract data must be a regular file.",
+        ));
     }
     Ok(())
 }
 
 fn reject_non_directory(path: &Path) -> ContractResult<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| contract_error("contract_cache_write_failed", format!("Could not inspect the cache directory: {error}")))?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        contract_error(
+            "contract_cache_write_failed",
+            format!("Could not inspect the cache directory: {error}"),
+        )
+    })?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(contract_error("contract_cache_write_failed", "Contract cache storage must be a regular directory."));
+        return Err(contract_error(
+            "contract_cache_write_failed",
+            "Contract cache storage must be a regular directory.",
+        ));
     }
     Ok(())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8], code: &'static str) -> ContractResult<()> {
-    let parent = path.parent().ok_or_else(|| contract_error(code, "Contract cache has no parent directory."))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| contract_error(code, "Contract cache has no parent directory."))?;
     let temporary = parent.join(format!(
         ".{}.{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("contract"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("contract"),
         NEXT_CACHE_TEMP.fetch_add(1, Ordering::Relaxed),
     ));
     let result = (|| {
-        let mut file = OpenOptions::new().create_new(true).write(true).open(&temporary)
-            .map_err(|error| contract_error(code, format!("Could not create a cache temporary file: {error}")))?;
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| {
+                contract_error(
+                    code,
+                    format!("Could not create a cache temporary file: {error}"),
+                )
+            })?;
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
-            .map_err(|error| contract_error(code, format!("Could not write a cache temporary file: {error}")))?;
+            .map_err(|error| {
+                contract_error(
+                    code,
+                    format!("Could not write a cache temporary file: {error}"),
+                )
+            })?;
         drop(file);
-        fs::rename(&temporary, path).map_err(|error| contract_error(code, format!("Could not replace cache data: {error}")))?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| contract_error(code, format!("Could not sync cache data: {error}")))
+        replace_atomically(&temporary, path).map_err(|error| {
+            contract_error(code, format!("Could not replace cache data: {error}"))
+        })?;
+        sync_cache_parent(parent, code)
     })();
-    if result.is_err() { let _ = fs::remove_file(&temporary); }
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
     result
 }
 
+#[cfg(unix)]
+fn sync_cache_parent(parent: &Path, code: &'static str) -> ContractResult<()> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| contract_error(code, format!("Could not sync cache data: {error}")))
+}
+
+#[cfg(not(unix))]
+fn sync_cache_parent(_parent: &Path, _code: &'static str) -> ContractResult<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn contract_error(code: &'static str, message: impl Into<String>) -> ContractError {
-    ContractError { code, message: message.into() }
+    ContractError {
+        code,
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{read_contract_file, run_hermes_cli, ContractProfile, MAX_CONTRACT_BYTES};
+    use super::{
+        cache_load_at, cache_write_at, grant_contract_file, read_contract_file,
+        read_granted_contract_file, run_hermes_cli, ContractCacheStoredEntry, ContractGrantState,
+        ContractProfile, MAX_CONTRACT_BYTES,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -284,10 +906,22 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
 
-        assert_eq!(run_hermes_cli(&executable, ContractProfile::HermesLegacy).unwrap(), b"{}");
-        assert_eq!(fs::read_to_string(&argument_log).unwrap(), "5\nworkflow\nschema\n--profile\nhermes-legacy\n--json\n");
-        assert_eq!(run_hermes_cli(&executable, ContractProfile::Archon202607).unwrap(), b"{}");
-        assert_eq!(fs::read_to_string(&argument_log).unwrap(), "5\nworkflow\nschema\n--profile\narchon-2026-07\n--json\n");
+        assert_eq!(
+            run_hermes_cli(&executable, ContractProfile::HermesLegacy).unwrap(),
+            b"{}"
+        );
+        assert_eq!(
+            fs::read_to_string(&argument_log).unwrap(),
+            "5\nworkflow\nschema\n--profile\nhermes-legacy\n--json\n"
+        );
+        assert_eq!(
+            run_hermes_cli(&executable, ContractProfile::Archon202607).unwrap(),
+            b"{}"
+        );
+        assert_eq!(
+            fs::read_to_string(&argument_log).unwrap(),
+            "5\nworkflow\nschema\n--profile\narchon-2026-07\n--json\n"
+        );
     }
 
     #[cfg(unix)]
@@ -296,13 +930,31 @@ mod tests {
         for (script, expected) in [
             ("exit 7", "contract_cli_nonzero_exit"),
             ("printf diagnostic >&2", "contract_cli_stderr_only"),
-            ("dd if=/dev/zero bs=1 count=524289 2>/dev/null", "contract_cli_output_too_large"),
+            (
+                "dd if=/dev/zero bs=1 count=524289 2>/dev/null",
+                "contract_cli_output_too_large",
+            ),
             ("printf '\\377'", "contract_cli_invalid_utf8"),
             ("sleep 11", "contract_cli_timeout"),
         ] {
             let (_directory, executable) = fixture(script);
-            assert_eq!(run_hermes_cli(&executable, ContractProfile::HermesLegacy).unwrap_err().code, expected);
+            assert_eq!(
+                run_hermes_cli(&executable, ContractProfile::HermesLegacy)
+                    .unwrap_err()
+                    .code,
+                expected
+            );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_a_descendant_that_keeps_contract_pipes_open() {
+        let (_directory, executable) = fixture("sleep 30 & exit 0");
+        let started = std::time::Instant::now();
+        let error = run_hermes_cli(&executable, ContractProfile::HermesLegacy).unwrap_err();
+        assert_eq!(error.code, "contract_cli_timeout");
+        assert!(started.elapsed() < std::time::Duration::from_secs(12));
     }
 
     #[test]
@@ -312,7 +964,73 @@ mod tests {
         fs::write(&contract, b"{}").unwrap();
         assert_eq!(read_contract_file(&contract).unwrap(), b"{}");
         fs::write(&contract, vec![b'x'; MAX_CONTRACT_BYTES + 1]).unwrap();
-        assert_eq!(read_contract_file(&contract).unwrap_err().code, "contract_file_too_large");
-        assert_eq!(read_contract_file(Path::new("/not-a-contract-file")).unwrap_err().code, "contract_read_failed");
+        assert_eq!(
+            read_contract_file(&contract).unwrap_err().code,
+            "contract_file_too_large"
+        );
+        assert_eq!(
+            read_contract_file(Path::new("/not-a-contract-file"))
+                .unwrap_err()
+                .code,
+            "contract_read_failed"
+        );
+    }
+
+    #[test]
+    fn consumes_one_exact_contract_file_grant_and_rejects_unselected_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("selected.json");
+        let unrelated = directory.path().join("unrelated.json");
+        fs::write(&selected, b"{}").unwrap();
+        fs::write(&unrelated, b"{} ").unwrap();
+        let grants = ContractGrantState::default();
+        let canonical = grant_contract_file(&selected, &grants).unwrap();
+
+        assert_eq!(
+            read_granted_contract_file(&canonical, &grants).unwrap(),
+            b"{}"
+        );
+        assert_eq!(
+            read_granted_contract_file(&canonical, &grants)
+                .unwrap_err()
+                .code,
+            "dialog_permission_required"
+        );
+        assert_eq!(
+            read_granted_contract_file(&unrelated, &grants)
+                .unwrap_err()
+                .code,
+            "dialog_permission_required"
+        );
+    }
+
+    #[test]
+    fn keeps_contract_content_out_of_the_index_and_prunes_removed_digest_blobs_after_repeated_writes(
+    ) {
+        let app_data = tempfile::tempdir().unwrap();
+        let first = cached_entry('a', "first");
+        let second = cached_entry('b', "second");
+        cache_write_at(app_data.path(), vec![first.clone(), second.clone()]).unwrap();
+        cache_write_at(app_data.path(), vec![second.clone()]).unwrap();
+
+        let index = fs::read_to_string(app_data.path().join("contracts-v1/index.json")).unwrap();
+        assert!(!index.contains("second"));
+        assert!(!app_data
+            .path()
+            .join(format!("contracts-v1/{}.json", "a".repeat(64)))
+            .exists());
+        assert_eq!(cache_load_at(app_data.path()).unwrap(), vec![second]);
+    }
+
+    fn cached_entry(hex: char, content: &str) -> ContractCacheStoredEntry {
+        ContractCacheStoredEntry {
+            digest: format!("sha256:{}", hex.to_string().repeat(64)),
+            profile: "hermes-legacy".into(),
+            schema_version: 1,
+            normalizer_version: 1,
+            reader_version: 1,
+            source: serde_json::json!({"kind":"user", "identifier":"/selected.json"}),
+            content: content.into(),
+        }
     }
 }

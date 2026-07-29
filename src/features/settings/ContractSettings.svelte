@@ -27,11 +27,11 @@
   </header>
 
   <ul aria-label="Available contracts">
-    {#each entries as entry (entry.source + entry.digest)}
+    {#each entries as entry (entry.status + entry.digest)}
       <li>
         <div>
           <strong>{profileLabel(entry.profile)}</strong>
-          <span>{entry.source === 'bundled' ? 'Bundled' : 'Cached'}</span>
+          <span>{entry.status === 'bundled' ? 'Bundled' : 'Cached'}</span>
           {#if entry.active}<span>Active</span>{/if}
         </div>
         <dl>
@@ -39,10 +39,11 @@
           <div><dt>Normalizer</dt><dd>{entry.normalizerVersion}</dd></div>
           <div><dt>Reader</dt><dd>Reader {entry.readerVersion}</dd></div>
           <div><dt>Digest</dt><dd><code>{entry.digest}</code></dd></div>
+          <div><dt>Source</dt><dd>{entry.provenance.identifier}</dd></div>
         </dl>
         <div class="entry-actions">
           <button type="button" aria-label={`Activate ${entry.digest}`} disabled={!entry.canActivate || entry.active} onclick={() => void onActivate(entry.digest)}>Activate</button>
-          <button type="button" aria-label={`Remove ${entry.digest}`} disabled={entry.source === 'bundled'} onclick={() => void onRemove(entry.digest)}>Remove</button>
+          <button type="button" aria-label={`Remove ${entry.digest}`} disabled={entry.status === 'bundled'} onclick={() => void onRemove(entry.digest)}>Remove</button>
         </div>
       </li>
     {/each}

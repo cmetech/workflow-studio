@@ -42,6 +42,8 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       os: 'browser',
       arch: 'browser',
     }),
+    chooseContractFile: async () => null,
+    chooseHermesExecutable: async () => null,
     contractReadFile: async (path) => {
       throw new NativeError('dialog_permission_required', `No one-time browser permission exists for ${path}.`)
     },

@@ -10,6 +10,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
+        .manage(contracts::ContractGrantState::default())
         .manage(layout::LayoutState::default())
         .manage(startup::RecentWorkspaceState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
@@ -39,6 +40,8 @@ pub fn run() {
             recovery::recovery_delete,
             contracts::contract_read_file,
             contracts::contract_run_hermes_cli,
+            contracts::contract_choose_file,
+            contracts::contract_choose_hermes_executable,
             contracts::contract_cache_load,
             contracts::contract_cache_write,
         ])

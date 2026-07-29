@@ -10,6 +10,7 @@
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+  import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import type { AuthoringContract } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
@@ -881,6 +882,17 @@
             importDialogVisible = true
           }}
         />
+      {:else if $activeActivity === 'settings'}
+        {#if contractsLoaded}
+          <ContractSettingsHost
+            bundled={contracts}
+            {native}
+            activateContract={(contract) => documentWorkspace.activateContract(contract)}
+            confirmUnsupported={() => Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+          />
+        {:else}
+          <p>Loading bundled contracts…</p>
+        {/if}
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">

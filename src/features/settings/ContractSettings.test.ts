@@ -10,10 +10,10 @@ const entries: readonly ContractCacheEntry[] = [
     schemaVersion: 1,
     normalizerVersion: 1,
     readerVersion: 1,
-    source: 'bundled' as const,
     status: 'bundled' as const,
     active: true,
     canActivate: true,
+    provenance: { kind: 'bundled', identifier: '/contracts/archon.json' },
   },
   {
     digest: `sha256:${'b'.repeat(64)}`,
@@ -21,10 +21,10 @@ const entries: readonly ContractCacheEntry[] = [
     schemaVersion: 1,
     normalizerVersion: 2,
     readerVersion: 1,
-    source: 'cached' as const,
     status: 'cached' as const,
     active: false,
     canActivate: true,
+    provenance: { kind: 'user', identifier: '/chosen/archon.json' },
   },
   {
     digest: `sha256:${'c'.repeat(64)}`,
@@ -32,10 +32,10 @@ const entries: readonly ContractCacheEntry[] = [
     schemaVersion: 1,
     normalizerVersion: 1,
     readerVersion: 2,
-    source: 'cached' as const,
     status: 'cached' as const,
     active: false,
     canActivate: false,
+    provenance: { kind: 'cli', identifier: '/Applications/Hermes' },
   },
 ]
 
@@ -49,6 +49,8 @@ describe('ContractSettings', () => {
 
     expect(screen.getByText('Bundled')).toBeInTheDocument()
     expect(screen.getAllByText('Cached')).toHaveLength(2)
+    expect(screen.getByText('/chosen/archon.json')).toBeInTheDocument()
+    expect(screen.getByText('/Applications/Hermes')).toBeInTheDocument()
     expect(screen.getByText('Reader 2')).toBeInTheDocument()
     expect(screen.getAllByText('Archon 2026-07')).toHaveLength(2)
     expect(screen.getByRole('button', { name: `Activate ${entries[1]!.digest}` })).toBeEnabled()

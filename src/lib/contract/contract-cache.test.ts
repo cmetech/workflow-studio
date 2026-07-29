@@ -35,6 +35,7 @@ describe('contract cache activation', () => {
         contractCacheLoad: async () => [],
         contractCacheWrite: async (entries) => { writes.push([...entries]) },
       },
+      activate: async () => true,
     })
 
     const imported = await cache.importBytes(await signedFixture({ normalizer_version: 2 }), {
@@ -45,9 +46,9 @@ describe('contract cache activation', () => {
     expect(imported).toMatchObject({ status: 'cached', profile: 'archon-2026-07', schemaVersion: 1, normalizerVersion: 2 })
     expect(cache.listCachedContracts()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ source: 'bundled', profile: 'archon-2026-07', active: true }),
-        expect.objectContaining({ source: 'bundled', profile: 'hermes-legacy' }),
-        expect.objectContaining({ source: 'cached', digest: imported.digest, schemaVersion: 1 }),
+        expect.objectContaining({ status: 'bundled', profile: 'archon-2026-07', active: true }),
+        expect.objectContaining({ status: 'bundled', profile: 'hermes-legacy' }),
+        expect.objectContaining({ status: 'cached', digest: imported.digest, schemaVersion: 1 }),
       ]),
     )
     expect(writes).toHaveLength(1)
@@ -55,7 +56,7 @@ describe('contract cache activation', () => {
   })
 
   it('does not duplicate an immutable cache entry when the same digest is imported twice', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined } })
+    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
     const bytes = await signedFixture({ normalizer_version: 2 })
 
     const first = await cache.importBytes(bytes, { kind: 'user', identifier: '/one.json' })
@@ -70,6 +71,7 @@ describe('contract cache activation', () => {
     const cache = createContractCache({
       bundled: await bundled(),
       native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { writes.push(entries) } },
+      activate: async () => true,
     })
 
     const imported = await cache.importBytes(new TextEncoder().encode(archonFixtureText), {
@@ -77,12 +79,12 @@ describe('contract cache activation', () => {
       identifier: '/bundled-copy.json',
     })
 
-    expect(imported).toMatchObject({ source: 'bundled', status: 'bundled' })
+    expect(imported).toMatchObject({ status: 'bundled' })
     expect(writes).toEqual([])
   })
 
   it('lists unsupported reader contracts for inspection without allowing activation', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined } })
+    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
     const bytes = await signedFixture({ contract_reader_version: 2 })
 
     const imported = await cache.importBytes(bytes, { kind: 'user', identifier: '/future.json' }, { cacheUnsupported: true })
@@ -96,6 +98,7 @@ describe('contract cache activation', () => {
     const cache = createContractCache({
       bundled: await bundled(),
       native: { contractCacheLoad: async () => [], contractCacheWrite: async (entries) => { writes.push(entries) } },
+      activate: async () => true,
     })
     const tampered = JSON.parse(archonFixtureText) as Record<string, unknown>
     tampered.contract_digest = `sha256:${'0'.repeat(64)}`
@@ -107,7 +110,7 @@ describe('contract cache activation', () => {
   })
 
   it('activates a newer normalizer only for the contract profile it declares', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined } })
+    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
     const imported = await cache.importBytes(await signedFixture({ normalizer_version: 3 }), {
       kind: 'user',
       identifier: '/archon-v3.json',
@@ -118,7 +121,7 @@ describe('contract cache activation', () => {
   })
 
   it('reverts an active cached contract to its bundled profile before removing it', async () => {
-    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined } })
+    const cache = createContractCache({ bundled: await bundled(), native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined }, activate: async () => true })
     const imported = await cache.importBytes(await signedFixture({ normalizer_version: 2 }), {
       kind: 'user',
       identifier: '/archon-v2.json',
@@ -128,8 +131,31 @@ describe('contract cache activation', () => {
     await cache.removeContract(imported.digest)
 
     expect(cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active)).toMatchObject({
-      source: 'bundled',
+      status: 'bundled',
     })
-    expect(cache.listCachedContracts()).not.toContainEqual(expect.objectContaining({ digest: imported.digest, source: 'cached' }))
+    expect(cache.listCachedContracts()).not.toContainEqual(expect.objectContaining({ digest: imported.digest, status: 'cached' }))
+  })
+
+  it('retains the previous active contract when the acknowledged editor activation returns false', async () => {
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => false,
+    })
+    const imported = await cache.importBytes(await signedFixture({ normalizer_version: 2 }), {
+      kind: 'cli',
+      identifier: '/Applications/Hermes',
+    })
+
+    await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_activation_failed',
+    })
+    expect(cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07' && entry.active)).toMatchObject({
+      status: 'bundled',
+    })
+    expect(cache.listCachedContracts().find((entry) => entry.digest === imported.digest)).toMatchObject({
+      provenance: { kind: 'cli', identifier: '/Applications/Hermes' },
+    })
   })
 })

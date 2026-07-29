@@ -65,6 +65,8 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
 
 export const tauriBridge: WorkspaceNativeBridge = {
   hostHealth: () => invokeTyped<HostInfo>('host_health'),
+  chooseContractFile: () => invokeTyped<string | null>('contract_choose_file'),
+  chooseHermesExecutable: () => invokeTyped<string | null>('contract_choose_hermes_executable'),
   contractReadFile: async (path) => new Uint8Array(await invokeTyped<number[]>('contract_read_file', { path })),
   contractRunHermesCli: async ({ executablePath, profile }) =>
     new Uint8Array(

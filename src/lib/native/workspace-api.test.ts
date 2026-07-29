@@ -112,6 +112,29 @@ describe('browser workspace bridge', () => {
 })
 
 describe('Tauri workspace bridge', () => {
+  it('uses native contract selectors before the grant-consuming reader and CLI commands', async () => {
+    invoke
+      .mockResolvedValueOnce('/selected/contract.json')
+      .mockResolvedValueOnce([123])
+      .mockResolvedValueOnce('/selected/hermes')
+      .mockResolvedValueOnce([125])
+
+    await expect(tauriBridge.chooseContractFile()).resolves.toBe('/selected/contract.json')
+    await expect(tauriBridge.contractReadFile('/selected/contract.json')).resolves.toEqual(new Uint8Array([123]))
+    await expect(tauriBridge.chooseHermesExecutable()).resolves.toBe('/selected/hermes')
+    await expect(
+      tauriBridge.contractRunHermesCli({ executablePath: '/selected/hermes', profile: 'archon-2026-07' }),
+    ).resolves.toEqual(new Uint8Array([125]))
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'contract_choose_file', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(2, 'contract_read_file', { path: '/selected/contract.json' })
+    expect(invoke).toHaveBeenNthCalledWith(3, 'contract_choose_hermes_executable', undefined)
+    expect(invoke).toHaveBeenNthCalledWith(4, 'contract_run_hermes_cli', {
+      executablePath: '/selected/hermes',
+      profile: 'archon-2026-07',
+    })
+  })
+
   it('represents a native partial filesystem outcome without collapsing it to failure', () => {
     const result: PathOperationResult = {
       relativePath: 'flow.yaml',

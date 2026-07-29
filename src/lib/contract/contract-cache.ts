@@ -11,8 +11,8 @@ export interface ContractCacheEntry {
   readonly schemaVersion: number
   readonly normalizerVersion: number
   readonly readerVersion: number
-  readonly source: ContractCacheSource
   readonly status: ContractCacheSource
+  readonly provenance: ContractSource
   readonly active: boolean
   readonly canActivate: boolean
 }
@@ -35,7 +35,7 @@ export interface ContractCacheNative {
 export interface ContractCacheOptions {
   readonly bundled: readonly AuthoringContract[]
   readonly native: ContractCacheNative
-  readonly activate?: (contract: AuthoringContract) => Promise<void> | void
+  readonly activate: (contract: AuthoringContract) => Promise<boolean>
   readonly widgetCoverage?: (contract: AuthoringContract) => readonly { readonly code: string }[]
 }
 
@@ -77,8 +77,8 @@ export function createContractCache(options: ContractCacheOptions) {
         schemaVersion: value.entry.schemaVersion,
         normalizerVersion: value.entry.normalizerVersion,
         readerVersion: value.entry.readerVersion,
-        source: 'cached',
         status: 'cached',
+        provenance: value.entry.source,
         active: activeByProfile.get(value.entry.profile) === value.entry.digest,
         canActivate: value.canActivate,
       })
@@ -105,7 +105,7 @@ export function createContractCache(options: ContractCacheOptions) {
     const value = await acceptStored(stored, importOptions.cacheUnsupported === true)
     if (!value) throw new ContractCacheError('contract_reader_unsupported', 'This contract reader version cannot be cached without confirmation.')
     await persist()
-    return listCachedContracts().find((entry) => entry.digest === stored.digest && entry.source === 'cached')!
+    return listCachedContracts().find((entry) => entry.digest === stored.digest && entry.status === 'cached')!
   }
 
   async function activateContract(digest: `sha256:${string}`, profile: WorkflowProfile): Promise<ContractActivationResult> {
@@ -116,7 +116,7 @@ export function createContractCache(options: ContractCacheOptions) {
     if (candidate.profile !== profile) return { ok: false, code: 'contract_profile_mismatch' }
     if (coverage(candidate).length > 0) return { ok: false, code: 'contract_reader_unsupported' }
     try {
-      await options.activate?.(candidate)
+      if (!(await options.activate(candidate))) return { ok: false, code: 'contract_activation_failed' }
     } catch {
       return { ok: false, code: 'contract_activation_failed' }
     }
@@ -166,15 +166,15 @@ export function createContractCache(options: ContractCacheOptions) {
   return { hydrate, importBytes, listCachedContracts, activateContract, removeContract }
 }
 
-function publicEntry(contract: AuthoringContract, source: ContractCacheSource, active: boolean, canActivate: boolean): ContractCacheEntry {
+function publicEntry(contract: AuthoringContract, status: ContractCacheSource, active: boolean, canActivate: boolean): ContractCacheEntry {
   return {
     digest: contract.contract_digest,
     profile: contract.profile,
     schemaVersion: contract.schema_version,
     normalizerVersion: contract.normalizer_version,
     readerVersion: contract.contract_reader_version,
-    source,
-    status: source,
+    status,
+    provenance: { kind: 'bundled', identifier: contract.profile },
     active,
     canActivate,
   }

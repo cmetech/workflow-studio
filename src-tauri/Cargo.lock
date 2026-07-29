@@ -4706,6 +4706,7 @@ name = "workflow-studio"
 version = "0.1.0"
 dependencies = [
  "cap-std",
+ "libc",
  "notify",
  "same-file",
  "serde",
