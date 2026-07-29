@@ -13,6 +13,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json --noEmit",
     "contracts:sync": "tsx scripts/sync-contracts.ts",
     "contracts:check": "tsx scripts/validate-contracts.ts",
+    "examples:check": "tsx scripts/validate-examples.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

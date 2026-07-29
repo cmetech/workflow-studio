@@ -1,0 +1,9 @@
+name: Bounded loop
+description: A loop with explicit prompt, stop condition, and bound.
+nodes:
+  - id: iterate
+    loop:
+      prompt: Improve the draft using the previous result.
+      until: The draft meets the acceptance criteria.
+      max_iterations: 3
+      fresh_context: true

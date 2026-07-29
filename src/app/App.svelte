@@ -10,6 +10,8 @@
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+  import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
+  import type { ExampleDescriptor } from '$src/lib/examples/types'
   import { buildDocumentationIndex } from '$src/lib/docs/build-index'
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache } from '$src/lib/contract/contract-cache'
@@ -61,6 +63,7 @@
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
   import Inspector from '$src/features/inspector/Inspector.svelte'
   import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
+  import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
@@ -105,6 +108,7 @@
   const draftDigest = `sha256:${'0'.repeat(64)}` as const
   const availableContracts: AuthoringContract[] = []
   let contracts = $state.raw<readonly AuthoringContract[]>([])
+  let examples = $state.raw<readonly ExampleDescriptor[]>([])
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
   function synchronizeContractRegistry(next: readonly AuthoringContract[]): void {
@@ -124,6 +128,10 @@
     await appContractCache.hydrate()
     synchronizeContractRegistry(appContractCache.listAuthoringContracts())
     contractsLoaded = true
+    return loaded
+  })
+  const examplesReadiness = loadExampleCatalog().then((loaded) => {
+    examples = loaded
     return loaded
   })
   let recent = $state<readonly RecentWorkspace[]>([])
@@ -580,6 +588,24 @@
     })
   }
 
+  async function createEditableExampleCopy(example: ExampleDescriptor): Promise<void> {
+    if (!$workspace.id) {
+      throw new WorkspaceActionError('workspace_required', 'Open a workspace before creating an example copy.')
+    }
+    await contractReadiness
+    const contract = activeContractForProfile(example.profile)
+    if (!contract)
+      throw new WorkspaceActionError('contract_unavailable', 'The example profile contract is unavailable.')
+    await createExampleCopy(example, {
+      native,
+      workspaceId: $workspace.id,
+      contract,
+      analyze: analyzeCandidateInWorker,
+      open: openEntry,
+    })
+    await refreshWorkspace()
+  }
+
   function analyzeCandidateInWorker(input: {
     definitionText: string
     companionText: string | null
@@ -803,6 +829,7 @@
         }
       }
       await contractReadiness
+      await examplesReadiness
       if (disposed) return
       await documentWorkspace.start()
       if (disposed) return
@@ -952,6 +979,15 @@
           />
         {:else}
           <p class="documentation-unavailable" role="status">Documentation is unavailable for the active contract.</p>
+        {/if}
+      {:else if $activeActivity === 'examples'}
+        {#if examples.length > 0}
+          <ExampleGallery
+            {examples}
+            onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
+          />
+        {:else}
+          <p>Loading validated examples…</p>
         {/if}
       {/if}
     </aside>

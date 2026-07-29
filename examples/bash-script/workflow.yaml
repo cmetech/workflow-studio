@@ -1,0 +1,9 @@
+name: Bash and script
+description: A Bash node feeds a script node.
+nodes:
+  - id: shell
+    bash: "printf 'source data\\n'"
+  - id: script
+    script: "print('transform source data')"
+    runtime: uv
+    depends_on: [shell]

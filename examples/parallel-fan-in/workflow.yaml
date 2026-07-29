@@ -1,0 +1,14 @@
+name: Parallel fan-in
+description: Two children run after a root and join.
+nodes:
+  - id: root
+    command: /collect
+  - id: left
+    prompt: Analyze the left part of $root.output.
+    depends_on: [root]
+  - id: right
+    prompt: Analyze the right part of $root.output.
+    depends_on: [root]
+  - id: join
+    prompt: Combine $left.output and $right.output.
+    depends_on: [left, right]

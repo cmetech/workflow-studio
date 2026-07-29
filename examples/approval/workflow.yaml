@@ -1,0 +1,14 @@
+name: Approval gate
+description: Human approval gates a continuation.
+nodes:
+  - id: work
+    prompt: Draft the proposed change.
+  - id: approve
+    approval:
+      message: Approve this proposed change?
+      capture_response: true
+    depends_on: [work]
+  - id: continue
+    command: /apply
+    depends_on: [approve]
+    when: $approve.output.accepted == 1

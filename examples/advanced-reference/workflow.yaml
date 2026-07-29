@@ -1,0 +1,38 @@
+name: Advanced reference
+description: Every node kind with representative common structures.
+tags: [reference]
+nodes:
+  - id: command
+    command: /prepare
+    context: fresh
+  - id: prompt
+    prompt: Summarize $command.output.
+    depends_on: [command]
+    allowed_tools: [read_file]
+  - id: bash
+    bash: "printf 'validated\\n'"
+    depends_on: [prompt]
+    timeout: 30
+  - id: script
+    script: "print('validated')"
+    runtime: uv
+    depends_on: [bash]
+    deps: [requests]
+  - id: loop
+    loop:
+      prompt: Refine the result.
+      until: The result is complete.
+      max_iterations: 2
+    depends_on: [script]
+  - id: approval
+    approval:
+      message: Approve the reference result?
+      capture_response: true
+      on_reject:
+        prompt: Explain the needed revision.
+        max_attempts: 2
+    depends_on: [loop]
+  - id: cancel
+    cancel: Stop when the reference result is rejected.
+    depends_on: [approval]
+    when: $approval.output.accepted == 0

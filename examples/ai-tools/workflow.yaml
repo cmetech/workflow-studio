@@ -1,0 +1,10 @@
+name: AI tools
+description: Prompt and command nodes declare allowed tools.
+nodes:
+  - id: research
+    prompt: Research the supplied topic.
+    allowed_tools: [web_search, read_file]
+  - id: synthesize
+    command: /synthesize
+    allowed_tools: [read_file]
+    depends_on: [research]

@@ -1,0 +1,13 @@
+name: Conditional consumers
+description: Consumers branch on a statically valid upstream output.
+nodes:
+  - id: prepare
+    prompt: Classify the request as ready or blocked.
+  - id: ready_path
+    command: /continue
+    depends_on: [prepare]
+    when: $prepare.output.status == 'ready'
+  - id: fallback_path
+    prompt: Explain how to unblock $prepare.output.
+    depends_on: [prepare]
+    when: $prepare.output.status != 'ready'

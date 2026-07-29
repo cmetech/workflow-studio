@@ -1,0 +1,5 @@
+name: Minimal prompt
+description: A single prompt node.
+nodes:
+  - id: prompt
+    prompt: Summarize the selected input.

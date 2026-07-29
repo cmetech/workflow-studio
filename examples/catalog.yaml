@@ -1,0 +1,101 @@
+examples:
+  - id: minimal
+    path: minimal
+    title: Minimal prompt
+    summary: Start with one prompt node.
+    difficulty: starter
+    profiles: [hermes-legacy]
+    concepts: [prompt, workflow-pair]
+    highlighted_nodes: [prompt]
+    highlighted_fields: [prompt.node.prompt]
+    documentation_topics: [workflow-definition]
+  - id: sequential
+    path: sequential
+    title: Sequential chain
+    summary: Three nodes run in dependency order.
+    difficulty: starter
+    profiles: [archon-2026-07]
+    concepts: [dependencies, dag]
+    highlighted_nodes: [prepare, review, finish]
+    highlighted_fields: [command.node.depends_on]
+    documentation_topics: [dag-and-conditions]
+  - id: parallel-fan-in
+    path: parallel-fan-in
+    title: Parallel fan-in
+    summary: Two independent children converge at a join.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [parallelism, fan-in]
+    highlighted_nodes: [root, left, right, join]
+    highlighted_fields: [prompt.node.depends_on]
+    documentation_topics: [dag-and-conditions]
+  - id: conditional
+    path: conditional
+    title: Conditional consumers
+    summary: Two consumers use valid upstream output conditions.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [conditions, outputs]
+    highlighted_nodes: [prepare, ready_path, fallback_path]
+    highlighted_fields: [prompt.node.when]
+    documentation_topics: [dag-and-conditions]
+  - id: approval
+    path: approval
+    title: Approval gate
+    summary: Work pauses for approval before continuing.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [approval, conditions]
+    highlighted_nodes: [work, approve, continue]
+    highlighted_fields: [approval.node.approval]
+    documentation_topics: [dag-and-conditions]
+  - id: bash-script
+    path: bash-script
+    title: Bash and script
+    summary: A Bash task feeds a script-runtime node.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [bash, script-runtime]
+    highlighted_nodes: [shell, script]
+    highlighted_fields: [script.node.runtime]
+    documentation_topics: [workflow-definition]
+  - id: ai-tools
+    path: ai-tools
+    title: AI tools
+    summary: Prompt and command nodes declare their allowed tools.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [tools, agents]
+    highlighted_nodes: [research, synthesize]
+    highlighted_fields: [prompt.node.allowed_tools]
+    documentation_topics: [workflow-definition]
+  - id: retry-trigger
+    path: retry-trigger
+    title: Retry and trigger rules
+    summary: A legacy retry candidate joins with an explicit trigger rule.
+    difficulty: intermediate
+    profiles: [hermes-legacy]
+    concepts: [retry, trigger-rules]
+    highlighted_nodes: [risky, report]
+    highlighted_fields: [command.node.retry]
+    documentation_topics: [dag-and-conditions]
+  - id: bounded-loop
+    path: bounded-loop
+    title: Bounded loop
+    summary: A loop node has contract-supported stopping controls.
+    difficulty: advanced
+    profiles: [archon-2026-07]
+    concepts: [loops, bounds]
+    highlighted_nodes: [iterate]
+    highlighted_fields: [loop.loop.max_iterations]
+    documentation_topics: [workflow-definition]
+  - id: advanced-reference
+    path: advanced-reference
+    title: Advanced reference
+    summary: All node kinds with common and companion structures.
+    difficulty: advanced
+    profiles: [archon-2026-07]
+    concepts: [node-kinds, companion-policy]
+    highlighted_nodes: [command, prompt, bash, script, loop, approval, cancel]
+    highlighted_fields: [approval.node.approval]
+    documentation_topics: [workflow-definition, dag-and-conditions, companion-policy]

@@ -1,0 +1,20 @@
+language_compatibility: archon-2026-07
+concurrency_key: reference
+delivery_defaults:
+  channel: local
+execution_environment: trusted_local
+limits:
+  max_runs: 1
+outward_action_nodes: [approval]
+outward_action_policy: approval_required
+overlap_policy: queue
+pause_lane_policy: hold
+required_secrets: [REFERENCE_TOKEN]
+required_services: [reference-service]
+resource_limits:
+  cpu: small
+retention:
+  days: 7
+scheduling:
+  mode: manual
+tags: [example, reference]

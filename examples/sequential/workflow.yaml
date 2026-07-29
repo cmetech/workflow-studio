@@ -1,0 +1,11 @@
+name: Sequential chain
+description: Three nodes connected in order.
+nodes:
+  - id: prepare
+    command: /prepare
+  - id: review
+    prompt: Review $prepare.output.
+    depends_on: [prepare]
+  - id: finish
+    command: /finish
+    depends_on: [review]

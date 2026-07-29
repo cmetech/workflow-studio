@@ -1,0 +1,13 @@
+name: Retry and trigger rules
+description: A failing-work candidate demonstrates retry settings.
+nodes:
+  - id: risky
+    command: /sometimes-fails
+    retry:
+      max_attempts: 2
+      on_error: transient
+      delay_ms: 1000
+  - id: report
+    prompt: Report the result, whether or not the candidate succeeded.
+    depends_on: [risky]
+    trigger_rule: all_done
