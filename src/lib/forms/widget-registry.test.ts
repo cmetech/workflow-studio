@@ -222,6 +222,19 @@ describe('schema-driven widget registry', () => {
     ).toEqual(expect.objectContaining({ ok: false, code: 'contract_reader_unsupported_widget' }))
   })
 
+  it.each([
+    { name: 'multi-type arrays', schema: { type: ['string', 'number'] } },
+    { name: 'null-only type arrays', schema: { type: ['null'] } },
+    { name: 'boolean property schemas', schema: { type: 'object', properties: { hidden: false } } },
+    { name: 'malformed property schemas', schema: { type: 'object', properties: { malformed: 42 } } },
+  ])('fails closed for unsupported structured $name', ({ schema }) => {
+    const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
+
+    expect(resolveWidget({ ...field, widget: 'json-schema', schema })).toEqual(
+      expect.objectContaining({ ok: false, code: 'contract_reader_unsupported_widget' }),
+    )
+  })
+
   it('accepts each supported production union only when all of its branches are recursively editable', async () => {
     const productionContract = (await loadBundledAuthoringContracts()).find(
       ({ profile }) => profile === 'archon-2026-07',

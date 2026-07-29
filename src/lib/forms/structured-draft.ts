@@ -131,6 +131,8 @@ export function structuredBranchLabel(schema: Readonly<Record<string, unknown>>,
 
 export function canEditStructuredSchema(schema: Readonly<Record<string, unknown>>): boolean {
   if (!Object.keys(schema).every(schemaKeywordSupported)) return false
+  if (schema.type !== undefined && (typeof schema.type !== 'string' || !supportedSchemaTypes.has(schema.type)))
+    return false
   const branches = structuredUnionBranches(schema)
   if (branches) return branches.length > 0 && branches.every(canEditStructuredSchema)
   if (hasMalformedUnion(schema)) return false
@@ -152,9 +154,12 @@ export function canEditStructuredSchema(schema: Readonly<Record<string, unknown>
 
   const type = schemaType(schema, undefined)
   if (type === 'object') {
+    if (schema.properties !== undefined && !schemaRecord(schema.properties)) return false
     const properties = schemaRecord(schema.properties) ?? {}
     if (
-      !Object.values(properties).every((child) => !schemaRecord(child) || canEditStructuredSchema(schemaRecord(child)!))
+      !Object.values(properties).every(
+        (child) => Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!),
+      )
     )
       return false
     if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') {
@@ -502,6 +507,8 @@ const supportedSchemaKeywords = new Set([
   'type',
   'writeOnly',
 ])
+
+const supportedSchemaTypes = new Set(['null', 'string', 'number', 'integer', 'boolean', 'array', 'object'])
 
 function schemaKeywordSupported(keyword: string): boolean {
   return supportedSchemaKeywords.has(keyword) || keyword.startsWith('x-')
