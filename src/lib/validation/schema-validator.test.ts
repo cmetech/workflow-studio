@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { compileContractValidators, validateContractDocument } from './schema-validator'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 
 let digestNumber = 0
 
@@ -35,6 +36,14 @@ function parsed(source: string) {
 }
 
 describe('contract schema validation', () => {
+  it('strictly compiles both production schemas with descriptive Hermes annotations registered', async () => {
+    const contracts = await loadBundledAuthoringContracts()
+    expect(contracts).toHaveLength(2)
+    for (const productionContract of contracts) {
+      expect(() => compileContractValidators(productionContract), productionContract.profile).not.toThrow()
+    }
+  })
+
   it('compiles and caches Draft 2020-12 validators by contract digest', () => {
     const activeContract = contract('archon-2026-07', {
       $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -263,4 +272,39 @@ describe('contract schema validation', () => {
       }),
     ])
   })
+
+  it.each(['warning', 'blocking'])(
+    'maps runtime %s status through the editor compatibility catalog',
+    (runtimeStatus) => {
+      const activeContract = contract(
+        'archon-2026-07',
+        {
+          type: 'object',
+          properties: {
+            retry: {
+              type: 'object',
+              'x-hermes-status': runtimeStatus,
+              'x-hermes-enforcement-phase': 3,
+              'x-hermes-compatibility-code': 'archon_retry_semantics_unavailable',
+            },
+          },
+        },
+        {
+          archon_retry_semantics_unavailable: {
+            status: 'deferred',
+            description: 'Retry is authorable but unavailable to this runtime profile.',
+          },
+        },
+      )
+
+      expect(validateContractDocument(parsed('retry: {}\n'), 'definition', activeContract)).toEqual([
+        expect.objectContaining({
+          code: 'archon_retry_semantics_unavailable',
+          severity: 'warning',
+          blocking: false,
+          message: 'Retry is authorable but unavailable to this runtime profile.',
+        }),
+      ])
+    },
+  )
 })

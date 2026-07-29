@@ -77,8 +77,69 @@ export function validateDag(
     return { issues, topologicalOrder: [] }
   }
 
+  issues.push(...validateConditions(projection, rules))
   issues.push(...validateReferences(projection, rules, nodesById, dependencies, topologicalOrder))
   return { issues, topologicalOrder }
+}
+
+function validateConditions(
+  projection: WorkflowProjection,
+  rules: readonly SemanticRuleDescriptor[],
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  for (const rule of rules) {
+    if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.profile)) continue
+    if (!Object.hasOwn(rule.parameters, 'expression_pattern')) continue
+    if (typeof rule.parameters.expression_pattern !== 'string') {
+      issues.push(conditionRuleIssue(rule, `Condition rule "${rule.id}" must declare a string expression pattern.`))
+      continue
+    }
+    const flags = contractRegexFlags(rule.parameters.expression_flags, '')
+    if (flags === null) {
+      issues.push(conditionRuleIssue(rule, `Condition rule "${rule.id}" declares unsupported expression flags.`))
+      continue
+    }
+    let expression: RegExp
+    try {
+      expression = new RegExp(rule.parameters.expression_pattern, flags)
+    } catch {
+      issues.push(conditionRuleIssue(rule, `Condition rule "${rule.id}" declares an invalid expression pattern.`))
+      continue
+    }
+    for (const node of projection.nodes) {
+      if (rule.applicability.node_kinds && !rule.applicability.node_kinds.includes(node.kind)) continue
+      for (const fieldPath of rule.field_paths) {
+        const relativePath = nodeRelativePath(fieldPath)
+        if (!relativePath) continue
+        const value = projectedFieldValue(node, relativePath)
+        if (value === undefined) continue
+        if (typeof value !== 'string' || !expression.test(value)) {
+          issues.push(
+            semanticIssue(
+              'condition_expression_invalid',
+              `Node "${node.id}" has a malformed condition expression.`,
+              node,
+              relativePath.join('.'),
+            ),
+          )
+        }
+      }
+    }
+  }
+  return issues
+}
+
+function conditionRuleIssue(rule: SemanticRuleDescriptor, message: string): ValidationIssue {
+  return {
+    code: 'condition_rule_invalid',
+    layer: 'semantic',
+    severity: 'error',
+    blocking: true,
+    message,
+    document: 'definition',
+    path: contractFieldPath(rule.field_paths[0]),
+    documentationId: rule.id,
+  }
 }
 
 function kahnOrder(
@@ -212,10 +273,14 @@ function referenceParser(rule: SemanticRuleDescriptor): ReferenceParserResult {
       return { kind: 'invalid', message: `Reference rule "${rule.id}" declares an invalid capture group.` }
     }
     try {
+      const flags = contractRegexFlags(rule.parameters.pattern_flags, 'g')
+      if (flags === null) {
+        return { kind: 'invalid', message: `Reference rule "${rule.id}" declares unsupported pattern flags.` }
+      }
       return {
         kind: 'valid',
         parser: {
-          expression: new RegExp(pattern, 'g'),
+          expression: new RegExp(pattern, flags),
           captureGroup: typeof captureGroup === 'number' ? captureGroup : 1,
         },
       }
@@ -235,6 +300,14 @@ function referenceParser(rule: SemanticRuleDescriptor): ReferenceParserResult {
   }
 
   return { kind: 'not-reference' }
+}
+
+function contractRegexFlags(value: unknown, required: string): string | null {
+  if (value !== undefined && typeof value !== 'string') return null
+  const declared = value ?? ''
+  if ([...declared].some((flag) => !'imsu'.includes(flag))) return null
+  const combined = new Set(`${required}${declared}`)
+  return [...'dgimsu'].filter((flag) => combined.has(flag)).join('')
 }
 
 function referenceRuleIssue(rule: SemanticRuleDescriptor, message: string): ValidationIssue {

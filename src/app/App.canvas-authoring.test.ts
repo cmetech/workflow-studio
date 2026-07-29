@@ -14,6 +14,18 @@ const nativeWindow = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => nativeWindow }))
 
 const digest = `sha256:${'c'.repeat(64)}` as const
+const nodeField = (kind: 'command' | 'prompt', name: 'id' | 'depends_on' | 'command' | 'prompt') => ({
+  id: `${kind}.node.${name}`,
+  label: name === 'id' ? 'Node ID' : name === 'depends_on' ? 'Depends on' : name === 'command' ? 'Command' : 'Prompt',
+  description: `Edit ${name}.`,
+  field_path: `nodes[].${name}`,
+  applicability: { profiles: ['hermes-legacy'] as const, documents: ['definition'] as const, node_kinds: [kind] },
+  widget: name === 'depends_on' ? 'array' : name === 'command' ? 'code' : name === 'prompt' ? 'textarea' : 'text',
+  section: name === 'depends_on' ? 'Execution' : 'General',
+  order: name === 'id' ? 1 : name === 'depends_on' ? 3 : 2,
+  status: 'supported' as const,
+  examples: [name === 'depends_on' ? ['collect'] : name],
+})
 const contract: AuthoringContract = {
   schema_version: 1,
   contract_reader_version: 1,
@@ -23,8 +35,26 @@ const contract: AuthoringContract = {
   definition_schema: {
     type: 'object',
     properties: {
-      name: { type: 'string' },
-      description: { type: 'string' },
+      name: {
+        type: 'string',
+        title: 'Workflow name',
+        description: 'Workflow name.',
+        examples: ['Flow'],
+        'x-hermes-widget': 'text',
+        'x-hermes-section': 'General',
+        'x-hermes-order': 1,
+        'x-hermes-status': 'supported',
+      },
+      description: {
+        type: 'string',
+        title: 'Workflow description',
+        description: 'Workflow description.',
+        examples: ['App authoring'],
+        'x-hermes-widget': 'textarea',
+        'x-hermes-section': 'General',
+        'x-hermes-order': 2,
+        'x-hermes-status': 'supported',
+      },
       nodes: {
         type: 'array',
         items: {
@@ -56,7 +86,7 @@ const contract: AuthoringContract = {
       order: 1,
       status: 'supported',
       examples: [],
-      fields: [],
+      fields: [nodeField('command', 'id'), nodeField('command', 'command'), nodeField('command', 'depends_on')],
     },
     {
       id: 'prompt',
@@ -69,7 +99,7 @@ const contract: AuthoringContract = {
       order: 2,
       status: 'supported',
       examples: [],
-      fields: [],
+      fields: [nodeField('prompt', 'id'), nodeField('prompt', 'prompt'), nodeField('prompt', 'depends_on')],
     },
   ],
   semantic_rules: [
@@ -104,7 +134,7 @@ import {
   openDocumentSession,
   receiveDocumentAnalysis,
 } from '$src/stores/documents'
-import { clearActiveLayout, setActiveLayout } from '$src/stores/layout'
+import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
@@ -295,6 +325,74 @@ describe('App canvas authoring composition', () => {
     )
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getAllByText('A node cannot depend on itself.')).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('commits an explicit inspector edit as one form history transaction and never commits selection drafts', async () => {
+    const rendered = await renderAuthoringApp()
+    setCanvasSelection(['review'])
+    const prompt = await screen.findByRole('textbox', { name: 'Prompt' })
+
+    await fireEvent.input(prompt, { target: { value: 'edited in inspector' } })
+    setCanvasSelection(['collect'])
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Command' })).toHaveValue('collect'))
+    expect($documentSession.get().pair?.definition.text).toBe(source)
+    expect(historyStore.get().undo).toHaveLength(0)
+
+    setCanvasSelection(['review'])
+    const currentPrompt = await screen.findByRole('textbox', { name: 'Prompt' })
+    await fireEvent.input(currentPrompt, { target: { value: 'edited in inspector' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Prompt' }))
+
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('prompt: edited in inspector'))
+    expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('edits workflow fields with no node selection and migrates layout on an inspector ID rename', async () => {
+    let rendered = await renderAuthoringApp()
+    const workflowName = await screen.findByRole('textbox', { name: /workflow name.*required/i })
+    expect(workflowName).toHaveValue('Flow')
+    await fireEvent.input(workflowName, { target: { value: 'Renamed Flow' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Workflow name' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('name: Renamed Flow'))
+    rendered.unmount()
+
+    historyStore.set(createHistoryState())
+    rendered = await renderAuthoringApp()
+    setCanvasSelection(['review'])
+    const id = await screen.findByRole('textbox', { name: /node id.*required/i })
+    await fireEvent.input(id, { target: { value: 'reviewed' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Node ID' }))
+
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: reviewed'))
+    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.reviewed).toEqual({ x: 320, y: 0 }))
+    expect(activeLayoutStore.get()?.nodePositions.review).toBeUndefined()
+    expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('disables inspector mutation for stale projections and read-only workflow entries', async () => {
+    const rendered = await renderAuthoringApp()
+    setCanvasSelection(['review'])
+    expect(await screen.findByRole('textbox', { name: 'Prompt' })).toBeEnabled()
+
+    receiveDocumentAnalysis({ ...$documentSession.get().revision!, structurallyValid: false, issues: [] })
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Prompt' })).toBeDisabled())
+    expect(screen.getByText('The YAML projection is stale.')).toBeVisible()
+
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: projection(),
+    })
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: true },
+    ])
+    setCanvasSelection(['review'])
+    await waitFor(() => expect(screen.getByText('This workflow is read-only.')).toBeVisible())
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toBeDisabled()
     rendered.unmount()
   })
 

@@ -11,6 +11,10 @@
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import type { AuthoringContract } from '$src/lib/contract/types'
+  import { collectContractFields, fieldsForNode } from '$src/lib/forms/widget-registry'
+  import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
+  import { applyWorkflowMutation } from '$src/lib/documents/transactions'
+  import type { WorkflowMutation } from '$src/lib/yaml/mutations'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
   import { activeEditorMode, showEditorMode } from '$src/stores/shell'
   import { activeActivity, workspaceIntent } from '$src/stores/shell'
@@ -52,10 +56,11 @@
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
+  import Inspector from '$src/features/inspector/Inspector.svelte'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
-  import type { CanvasActionContext, DeleteImpact } from '$src/features/canvas/canvas-actions'
+  import { renameNode, type CanvasActionContext, type DeleteImpact } from '$src/features/canvas/canvas-actions'
   import { createCanvasAuthoringCoordinator } from '$src/features/canvas/canvas-authoring-coordinator'
   import {
     $canvasPositions as canvasPositionsStore,
@@ -207,6 +212,47 @@
     surfaceCanvasPersistenceError,
   )
 
+  const inspectorContract = $derived(
+    contracts.find(
+      (candidate) =>
+        candidate.contract_digest === $documentSessionStore.revision?.contractDigest &&
+        candidate.profile === canvasProjection?.profile,
+    ),
+  )
+  const inspectorNodes = $derived(
+    (canvasProjection?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)),
+  )
+  const inspectorFields = $derived.by(() => {
+    const node = inspectorNodes[0]
+    if (!inspectorContract || inspectorNodes.length > 1) return []
+    if (!node) {
+      return collectContractFields(inspectorContract).filter((field) => {
+        if (field.nodeKinds) return false
+        if (field.document === 'companion' && !canvasProjection?.companion) return false
+        const relative = field.fieldPath.replace(/^sidecar\./, '')
+        return !relative.includes('.') && !relative.includes('[]') && !relative.includes('*')
+      })
+    }
+    return fieldsForNode(inspectorContract, node.kind).filter((field) => {
+      const relative = field.fieldPath.replace(/^nodes\[\]\./, '')
+      return !relative.includes('.') && !relative.includes('*')
+    })
+  })
+  const inspectorValues = $derived.by(() => {
+    const node = inspectorNodes[0]
+    if (!canvasProjection) return {}
+    const index = node ? canvasProjection.nodes.findIndex(({ id }) => id === node.id) : -1
+    const values: Record<string, unknown> = {}
+    for (const field of inspectorFields) {
+      const root = field.document === 'companion' ? canvasProjection.companion : canvasProjection.definition
+      const value = root ? formFieldValue(root, field, index) : undefined
+      if (value !== undefined) values[field.id] = value
+    }
+    return values
+  })
+  const inspectorBindingIdentity = $derived(formBindingIdentity(inspectorNodes[0]?.id ?? 'workflow'))
+  const inspectorDisabledReason = $derived(inspectorMutationDisabledReason())
+
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
   }
@@ -298,6 +344,115 @@
     const pair = documentSessionStore.get().pair
     if (!pair) return
     applyAuthoritativeEditorText(pair, document, text, (next) => documentWorkspace.changed(next, 'user'))
+  }
+
+  function formBindingIdentity(nodeId: string | undefined): string {
+    const session = $documentSessionStore
+    if (!session.pair || !session.revision || !nodeId) return 'no-form-binding'
+    return [
+      session.pair.workflowId,
+      session.pair.generation,
+      session.pair.definition.revision,
+      session.pair.companion?.revision ?? -1,
+      session.revision.contractDigest,
+      nodeId,
+    ].join(':')
+  }
+
+  function inspectorMutationDisabledReason(): string | undefined {
+    if (canvasTransitionLocked) return 'The document is transitioning.'
+    if (canvasStale) return 'The YAML projection is stale.'
+    if ($documentWorkspaceState.missingChange) return 'A backing YAML file is missing.'
+    const entry = $workspace.entries.find(({ id }) => id === $documentSessionStore.pair?.workflowId)
+    if (entry?.readOnly) return 'This workflow is read-only.'
+    if (!inspectorContract || !$documentSessionStore.analysis?.structurallyValid) {
+      return 'A current valid authoring contract and YAML projection are required.'
+    }
+    return undefined
+  }
+
+  function formFieldValue(definition: Readonly<Record<string, unknown>>, field: FormField, nodeIndex: number): unknown {
+    let value: unknown = definition
+    for (const token of field.pathTemplate) {
+      const segment = token === '$node' ? nodeIndex : token
+      if (typeof segment === 'number') {
+        if (!Array.isArray(value)) return undefined
+        value = value[segment]
+      } else {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+        value = (value as Record<string, unknown>)[segment]
+      }
+    }
+    return value
+  }
+
+  function concreteFormPath(field: FormField, nodeIndex: number): readonly (string | number)[] | null {
+    const path = field.pathTemplate.map((token) => (token === '$node' ? nodeIndex : token))
+    return path.some((token) => token === '*') ? null : path
+  }
+
+  async function commitInspectorField(commit: FormFieldCommit): Promise<void> {
+    const node = inspectorNodes[0]
+    const contract = inspectorContract
+    const session = documentSessionStore.get()
+    const projection = canvasProjection
+    const expectedIdentity = inspectorBindingIdentity
+    if (!contract || !session.pair || !projection || inspectorDisabledReason) return
+    const bindingSubject = node?.id ?? 'workflow'
+    const nodeIndex = node ? projection.nodes.findIndex(({ id }) => id === node.id) : -1
+    const path = concreteFormPath(commit.field, nodeIndex)
+    if (!path) {
+      workspaceError = 'This contract field cannot be mutated safely by the current reader.'
+      return
+    }
+
+    const graphFields = commit.field.fieldPath.replace(/^nodes\[\]\./, '')
+    if (node && graphFields === 'id' && !commit.remove && typeof commit.value === 'string') {
+      let didCommit = false
+      const context = canvasAuthoringContext()
+      if ('unavailable' in context) {
+        workspaceError = context.unavailable
+        return
+      }
+      const result = await renameNode(
+        {
+          ...context,
+          commit: (pair, transaction) => {
+            if (formBindingIdentity(node.id) !== expectedIdentity) return
+            didCommit = true
+            historyStore.set(recordTransaction(historyStore.get(), transaction))
+            documentWorkspace.changed(pair, 'form')
+          },
+          commitPositions: (updates) => (didCommit ? context.commitPositions(updates) : undefined),
+        },
+        node.id,
+        commit.value,
+      )
+      if (result.status !== 'committed') workspaceError = result.message
+      else if (!didCommit) workspaceError = 'The inspector binding changed before the edit could commit.'
+      return
+    }
+
+    let mutation: WorkflowMutation
+    if (node && graphFields === 'depends_on' && !commit.remove && Array.isArray(commit.value)) {
+      mutation = { type: 'set-dependencies', nodeId: node.id, dependsOn: commit.value.map(String) }
+    } else if (commit.remove) {
+      mutation = { type: 'delete-field', document: commit.field.document, path }
+    } else {
+      mutation = { type: 'set-field', document: commit.field.document, path, value: commit.value }
+    }
+
+    const result = await applyWorkflowMutation(session.pair, mutation, contract)
+    if (!result.ok) {
+      workspaceError = result.message
+      return
+    }
+    if (formBindingIdentity(bindingSubject) !== expectedIdentity) {
+      workspaceError = 'The inspector binding changed before the edit could commit.'
+      return
+    }
+    historyStore.set(recordTransaction(historyStore.get(), result.transaction))
+    documentWorkspace.changed(result.pair, 'form')
   }
 
   async function chooseCanvasNode(descriptor: NodeKindDescriptor): Promise<void> {
@@ -852,7 +1007,22 @@
         {/if}
       {/if}
     </section>
-    <aside class="panel inspector-panel" aria-label="Inspector"></aside>
+    <aside class="panel inspector-panel" aria-label="Inspector">
+      <Inspector
+        fields={inspectorFields}
+        values={inspectorValues}
+        selectionLabel={inspectorNodes.length === 1
+          ? (inspectorNodes[0]?.id ?? 'Node')
+          : inspectorNodes.length === 0
+            ? 'Workflow'
+            : `${inspectorNodes.length} nodes`}
+        selectionCount={inspectorNodes.length}
+        bindingIdentity={inspectorBindingIdentity}
+        issues={$documentSessionStore.analysis?.issues ?? []}
+        disabledReason={inspectorDisabledReason}
+        onCommit={commitInspectorField}
+      />
+    </aside>
   </div>
 
   <StatusBar />

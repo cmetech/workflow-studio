@@ -192,6 +192,34 @@ describe('source-preserving YAML patches', () => {
     expectUntouched(source, result.text, "    command: |-\n      printf 'prepare'\n      printf 'again'\n")
   })
 
+  it('honors contract reference flags while atomically renaming Unicode IDs and references', () => {
+    const unicodeContract: AuthoringContract = {
+      ...mutationContract,
+      semantic_rules: [
+        mutationContract.semantic_rules[0]!,
+        {
+          ...mutationContract.semantic_rules[1]!,
+          parameters: {
+            pattern: '\\$([\\p{L}\\p{N}_.:-]+)\\.output',
+            pattern_flags: 'u',
+            node_id_capture_group: 1,
+            require_upstream: true,
+          },
+        },
+      ],
+    }
+    const source = `name: Unicode\ndescription: Rename Unicode IDs\nnodes:\n  - id: café\n    command: prepare\n  - id: consume\n    depends_on: [café]\n    prompt: "Use $café.output"\n`
+
+    const result = patchWorkflowDocument(source, { type: 'rename-node', from: 'café', to: 'résumé' }, unicodeContract)
+
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    expect(parse(result.text).nodes).toEqual([
+      { id: 'résumé', command: 'prepare' },
+      { id: 'consume', depends_on: ['résumé'], prompt: 'Use $résumé.output' },
+    ])
+  })
+
   it('preserves unrelated anchors and aliases', () => {
     const result = patchWorkflowDocument(
       aliases,

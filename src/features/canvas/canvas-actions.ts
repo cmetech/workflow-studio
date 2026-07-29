@@ -273,9 +273,6 @@ export async function renameNode(context: CanvasActionContext, from: string, to:
   if (!context.projection.nodes.some(({ id }) => id === from)) {
     return reject(context, 'node_missing', `Node ${from} no longer exists.`)
   }
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(to)) {
-    return reject(context, 'node_id_invalid', 'Node IDs must start with a letter or underscore.')
-  }
   if (context.projection.nodes.some(({ id }) => id === to)) {
     return reject(context, 'node_id_duplicate', `Node ${to} already exists.`)
   }
@@ -480,9 +477,11 @@ function findReferenceMatches(
   const capture = typeof rule.parameters.node_id_capture_group === 'number' ? rule.parameters.node_id_capture_group : 1
   let expression: RegExp
   try {
+    const flags = referenceFlags(rule.parameters.pattern_flags, 'g')
+    if (flags === null) return []
     expression =
       typeof pattern === 'string'
-        ? new RegExp(pattern, 'g')
+        ? new RegExp(pattern, flags)
         : /\$([A-Za-z_][A-Za-z0-9_-]*)\.output(?:\.[A-Za-z_][A-Za-z0-9_-]*)*/g
   } catch {
     return []
@@ -492,6 +491,14 @@ function findReferenceMatches(
     const start = match.index
     return referencedId && start !== undefined ? [{ referencedId, start, end: start + match[0].length }] : []
   })
+}
+
+function referenceFlags(value: unknown, required: string): string | null {
+  if (value !== undefined && typeof value !== 'string') return null
+  const declared = value ?? ''
+  if ([...declared].some((flag) => !'imsu'.includes(flag))) return null
+  const combined = new Set(`${required}${declared}`)
+  return [...'dgimsu'].filter((flag) => combined.has(flag)).join('')
 }
 
 function stringLeaves(

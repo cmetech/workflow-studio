@@ -759,7 +759,9 @@ function referenceExpression(rule: SemanticRuleDescriptor): { expression: RegExp
   const captureGroup = typeof capture === 'number' && Number.isInteger(capture) && capture >= 1 ? capture : 1
   if (typeof rule.parameters.pattern === 'string') {
     try {
-      return { expression: new RegExp(rule.parameters.pattern, 'gd'), captureGroup }
+      const flags = referenceFlags(rule.parameters.pattern_flags)
+      if (flags === null) return null
+      return { expression: new RegExp(rule.parameters.pattern, flags), captureGroup }
     } catch {
       return null
     }
@@ -771,6 +773,14 @@ function referenceExpression(rule: SemanticRuleDescriptor): { expression: RegExp
     }
   }
   return null
+}
+
+function referenceFlags(value: unknown): string | null {
+  if (value !== undefined && typeof value !== 'string') return null
+  const declared = value ?? ''
+  if ([...declared].some((flag) => !'imsu'.includes(flag))) return null
+  const combined = new Set(`gd${declared}`)
+  return [...'dgimsu'].filter((flag) => combined.has(flag)).join('')
 }
 
 function missingNode(id: string): PatchWorkflowDocumentResult {

@@ -80,8 +80,9 @@ describe('App disposal fallback', () => {
     await vi.waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledOnce())
 
     await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
-    await screen.findByText(/workflow analysis is unavailable/i)
-    const session = (await import('$src/stores/documents')).$documentSession.get()
+    const { $documentSession } = await import('$src/stores/documents')
+    await vi.waitFor(() => expect($documentSession.get().pair).not.toBeNull())
+    const session = $documentSession.get()
     receiveDocumentAnalysis({
       ...session.revision!,
       issues: [],

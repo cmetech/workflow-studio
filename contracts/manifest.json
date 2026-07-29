@@ -1,0 +1,19 @@
+{
+  "contracts": [
+    {
+      "contract_digest": "sha256:a1e8b0b0c60da92116eeed39d1c2f72107f79cdfaa98c876f96f93268178d9e3",
+      "file": "archon-2026-07-v1.json",
+      "normalizer_version": 1,
+      "profile": "archon-2026-07",
+      "schema_version": 1
+    },
+    {
+      "contract_digest": "sha256:c40ee0ec0b6c3c4507ebd811d2ed5740f5e576eb3ae24eeec965d0a8f571d5f8",
+      "file": "hermes-legacy-v1.json",
+      "normalizer_version": 1,
+      "profile": "hermes-legacy",
+      "schema_version": 1
+    }
+  ],
+  "generated_at": "2026-07-29T00:00:00.000Z"
+}

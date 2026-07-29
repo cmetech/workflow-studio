@@ -5,6 +5,7 @@ import legacyFixtureText from '../../../tests/fixtures/contracts/minimal-legacy-
 import type { ContractSource } from './types'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { loadAuthoringContract } from './contract-loader'
+import { isBundledContractResource, loadBundledAuthoringContracts } from './bundled-contracts'
 
 const fixtures = {
   archon: new TextEncoder().encode(archonFixtureText),
@@ -48,6 +49,15 @@ async function signedBytes(overrides: Record<string, unknown> = {}): Promise<Uin
 }
 
 describe('authoring contract loader', () => {
+  it('loads both production resources and excludes the manifest from the contract source set', async () => {
+    expect(isBundledContractResource('/contracts/manifest.json')).toBe(false)
+    expect(isBundledContractResource('/contracts/hermes-legacy-v1.json')).toBe(true)
+    await expect(loadBundledAuthoringContracts()).resolves.toEqual([
+      expect.objectContaining({ profile: 'archon-2026-07' }),
+      expect.objectContaining({ profile: 'hermes-legacy' }),
+    ])
+  })
+
   it.each([
     ['archon-2026-07', fixtures.archon],
     ['hermes-legacy', fixtures.legacy],

@@ -18,6 +18,8 @@ const CONTRACT_ANNOTATION_KEYWORDS = [
   'x-hermes-status',
   'x-hermes-compatibility-code',
   'x-hermes-migration',
+  'x-hermes-value-role',
+  'x-hermes-enforcement-phase',
 ] as const
 const SUPPORTED_STRING_FORMATS: Readonly<Record<string, RegExp>> = {
   uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -120,22 +122,30 @@ function collectStatusIssues(
 
   const issues: ValidationIssue[] = []
   const status = schema['x-hermes-status']
-  if (value !== undefined && (status === 'deferred' || status === 'deprecated')) {
+  if (
+    value !== undefined &&
+    (status === 'deferred' || status === 'deprecated' || status === 'warning' || status === 'blocking')
+  ) {
     const annotatedCode = schema['x-hermes-compatibility-code']
     const code = typeof annotatedCode === 'string' ? annotatedCode : `contract_${status}`
     const descriptor = contract.compatibility_codes[code]
-    const field = lastPathSegment(path)
-    const issue: ValidationIssue = {
-      code,
-      layer: 'compatibility',
-      severity: 'warning',
-      blocking: false,
-      message: descriptor?.description ?? `This value is ${status} in the active contract.`,
-      document,
-      path: path || '/',
-      ...(field ? { field } : {}),
+    if ((status === 'warning' || status === 'blocking') && !descriptor) {
+      // Runtime status metadata is descriptive. Without a catalog entry there is
+      // no editor compatibility decision to project.
+    } else {
+      const field = lastPathSegment(path)
+      const issue: ValidationIssue = {
+        code,
+        layer: 'compatibility',
+        severity: 'warning',
+        blocking: false,
+        message: descriptor?.description ?? `This value is ${status} in the active contract.`,
+        document,
+        path: path || '/',
+        ...(field ? { field } : {}),
+      }
+      issues.push(withSourceLocation(issue, parsed, path))
     }
-    issues.push(withSourceLocation(issue, parsed, path))
   }
 
   if (isRecord(value)) {

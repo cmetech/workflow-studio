@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { undo } from '@codemirror/commands'
 import { EditorView } from '@codemirror/view'
 import { tick } from 'svelte'
@@ -76,22 +76,22 @@ describe('App', () => {
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
-  it('visibly disables contract-dependent creation when no validated production contract is bundled', async () => {
+  it('enables contract-dependent creation from validated bundled production contracts', async () => {
     render(App)
 
-    expect(await screen.findByText(/no validated production authoring contract is bundled/i)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'New Workflow' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New Workflow' })).toBeEnabled())
+    expect(screen.queryByText(/no validated production authoring contract is bundled/i)).not.toBeInTheDocument()
   })
 
-  it('opens existing YAML without a production contract and reports analysis as blocking', async () => {
+  it('opens existing YAML against the bundled legacy production contract', async () => {
     loadWorkspaceEntries('browser-workspace', 'Workspace', [
       { relativePath: 'examples/hello.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
     ])
     render(App)
     await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
 
-    expect(await screen.findByText(/workflow analysis is unavailable/i)).toBeVisible()
-    expect(screen.getByText(/1 blocking/i)).toBeVisible()
+    await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('examples/hello.yaml'))
+    expect(screen.queryByText(/workflow analysis is unavailable/i)).not.toBeInTheDocument()
   })
 
   it('renders a structured blocked save outcome for the active document', async () => {
@@ -100,7 +100,7 @@ describe('App', () => {
     ])
     render(App)
     await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
-    await screen.findByText(/workflow analysis is unavailable/i)
+    await waitFor(() => expect($documentSession.get().pair).not.toBeNull())
     const activePair = $documentSession.get().pair
     expect(activePair).not.toBeNull()
 
@@ -190,8 +190,10 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: 'Workflow editor' })).toContainElement(
       screen.getByRole('region', { name: 'Open workspace drop zone' }),
     )
-    expect(screen.getByRole('complementary', { name: 'Inspector' })).toBeEmptyDOMElement()
-    expect(screen.getByRole('status')).toBeVisible()
+    expect(screen.getByRole('complementary', { name: 'Inspector' })).toContainElement(
+      screen.getByRole('region', { name: 'Workflow inspector' }),
+    )
+    expect(screen.getByRole('status', { name: 'Application status' })).toBeVisible()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Nodes' }))
     await tick()
@@ -504,6 +506,8 @@ describe('App', () => {
     expect(screen.getByRole('navigation', { name: 'Activities' }).style.backgroundColor).toBe(
       'var(--color-yaml-gutter)',
     )
-    expect(screen.getByRole('status').style.backgroundColor).toBe('var(--color-node-selected)')
+    expect(screen.getByRole('status', { name: 'Application status' }).style.backgroundColor).toBe(
+      'var(--color-node-selected)',
+    )
   })
 })

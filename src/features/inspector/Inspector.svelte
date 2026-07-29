@@ -1,0 +1,247 @@
+<script lang="ts">
+  import type { ValidationIssue } from '$src/lib/documents/types'
+  import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
+  import { resolveWidget } from '$src/lib/forms/widget-registry'
+
+  interface Props {
+    fields: readonly FormField[]
+    values: Readonly<Record<string, unknown>>
+    selectionLabel?: string | undefined
+    selectionCount?: number | undefined
+    bindingIdentity?: string | undefined
+    issues?: readonly ValidationIssue[] | undefined
+    disabledReason?: string | undefined
+    onCommit?: ((commit: FormFieldCommit) => void | Promise<void>) | undefined
+  }
+
+  let {
+    fields,
+    values,
+    selectionLabel = 'No selection',
+    selectionCount = 1,
+    bindingIdentity = selectionLabel,
+    issues = [],
+    disabledReason,
+    onCommit,
+  }: Props = $props()
+
+  const tabs = ['General', 'Execution', 'Advanced', 'Docs'] as const
+  type InspectorTab = (typeof tabs)[number]
+  let activeTab = $state<InspectorTab>('General')
+  let tabButtons = $state<HTMLButtonElement[]>([])
+  const visibleFields = $derived(
+    activeTab === 'Docs' ? [] : fields.filter(({ section }) => section.toLowerCase() === activeTab.toLowerCase()),
+  )
+
+  function activateTab(index: number): void {
+    const normalized = (index + tabs.length) % tabs.length
+    activeTab = tabs[normalized] ?? 'General'
+    tabButtons[normalized]?.focus()
+  }
+
+  function onTabKeydown(event: KeyboardEvent, index: number): void {
+    if (event.key === 'ArrowRight') activateTab(index + 1)
+    else if (event.key === 'ArrowLeft') activateTab(index - 1)
+    else if (event.key === 'Home') activateTab(0)
+    else if (event.key === 'End') activateTab(tabs.length - 1)
+    else return
+    event.preventDefault()
+  }
+
+  function fieldIssues(field: FormField): readonly ValidationIssue[] {
+    const suffix = field.fieldPath.replace(/^sidecar\./, '').replaceAll('[]', '')
+    return issues.filter(
+      (issue) => issue.field === suffix.split('.').at(-1) || issue.path?.endsWith(`/${suffix.replaceAll('.', '/')}`),
+    )
+  }
+</script>
+
+<section class="inspector" aria-label="Workflow inspector">
+  <header>
+    <span>Inspector</span>
+    <strong>{selectionLabel}</strong>
+  </header>
+  <div class="tabs" role="tablist" aria-label="Inspector sections">
+    {#each tabs as tab, index (tab)}
+      <button
+        bind:this={tabButtons[index]}
+        type="button"
+        role="tab"
+        id={`inspector-tab-${tab.toLowerCase()}`}
+        aria-controls={`inspector-panel-${tab.toLowerCase()}`}
+        aria-selected={activeTab === tab}
+        tabindex={activeTab === tab ? 0 : -1}
+        class:active={activeTab === tab}
+        onclick={() => (activeTab = tab)}
+        onkeydown={(event) => onTabKeydown(event, index)}>{tab}</button
+      >
+    {/each}
+  </div>
+
+  <div
+    class="panel"
+    role="tabpanel"
+    id={`inspector-panel-${activeTab.toLowerCase()}`}
+    aria-labelledby={`inspector-tab-${activeTab.toLowerCase()}`}
+  >
+    {#if selectionCount > 1}
+      <div class="selection-summary">
+        <strong>{selectionCount} nodes selected</strong>
+        <p>Choose one node to edit its fields.</p>
+      </div>
+    {:else if disabledReason}
+      <p class="disabled-reason" aria-live="polite">{disabledReason}</p>
+      {#each visibleFields as field (field.id)}
+        {@const resolution = resolveWidget(field)}
+        {#if resolution.ok}
+          {@const Widget = resolution.definition.component}
+          <div class="field" class:deferred={field.status !== 'supported'}>
+            {#key `${bindingIdentity}:${field.id}`}
+              <Widget
+                {field}
+                value={values[field.id]}
+                present={Object.hasOwn(values, field.id)}
+                disabled={true}
+                issues={fieldIssues(field)}
+                {onCommit}
+              />
+            {/key}
+          </div>
+        {/if}
+      {/each}
+    {:else if activeTab === 'Docs'}
+      <div class="docs">
+        {#if fields.length === 0}<p>Select a node to view contract documentation.</p>{/if}
+        {#each fields as field (field.id)}
+          <article>
+            <h3>{field.label}</h3>
+            <p>{field.description}</p>
+            {#if field.examples.length > 0}<pre>{JSON.stringify(field.examples[0], null, 2)}</pre>{/if}
+          </article>
+        {/each}
+      </div>
+    {:else if visibleFields.length === 0}
+      <p class="empty">No {activeTab.toLowerCase()} fields apply to this selection.</p>
+    {:else}
+      {#each visibleFields as field (field.id)}
+        {@const resolution = resolveWidget(field)}
+        <div class="field" class:deferred={field.status !== 'supported'}>
+          <div class="field-meta">
+            {#if field.status !== 'supported'}<span class="badge">{field.status}</span>{/if}
+            {#if !Object.hasOwn(values, field.id) && field.hasDefault}<span class="badge"
+                >inherited default: {String(field.defaultValue)}</span
+              >{/if}
+            {#if field.unit}<span class="badge">{field.unit}</span>{/if}
+          </div>
+          {#if resolution.ok}
+            {@const Widget = resolution.definition.component}
+            {#key `${bindingIdentity}:${field.id}`}
+              <Widget
+                {field}
+                value={values[field.id]}
+                present={Object.hasOwn(values, field.id)}
+                issues={fieldIssues(field)}
+                {onCommit}
+              />
+            {/key}
+          {:else}
+            <p class="unsupported" role="status">{resolution.message} YAML is preserved; this field is read-only.</p>
+          {/if}
+          {#if field.examples.length > 0}<p class="example">Example: {JSON.stringify(field.examples[0])}</p>{/if}
+        </div>
+      {/each}
+    {/if}
+  </div>
+</section>
+
+<style>
+  .inspector {
+    min-height: 100%;
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  header strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.1rem;
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .tabs button {
+    min-width: 0;
+    padding: 0.35rem 0.15rem;
+    border: 0;
+    border-radius: 0.3rem;
+    color: var(--color-text-muted);
+    background: transparent;
+    font-size: 0.68rem;
+  }
+  .tabs button.active {
+    color: var(--color-accent-strong);
+    background: var(--color-node-selected);
+  }
+  .panel {
+    padding: 0.75rem;
+    overflow: auto;
+  }
+  .field {
+    padding: 0.65rem 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .field.deferred {
+    opacity: 0.82;
+  }
+  .field-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-bottom: 0.25rem;
+  }
+  .badge {
+    padding: 0.1rem 0.3rem;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    color: var(--color-text-muted);
+    font-size: 0.62rem;
+  }
+  .example,
+  .empty,
+  .disabled-reason,
+  .selection-summary p {
+    color: var(--color-text-muted);
+    font-size: 0.68rem;
+  }
+  .unsupported {
+    padding: 0.5rem;
+    border: 1px solid var(--color-warning);
+    color: var(--color-warning);
+  }
+  .docs article {
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .docs h3 {
+    font-size: 0.8rem;
+  }
+  .docs p,
+  .docs pre {
+    white-space: pre-wrap;
+    font-size: 0.7rem;
+  }
+</style>

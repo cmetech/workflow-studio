@@ -46,7 +46,7 @@ const contract: AuthoringContract = {
         items: {
           type: 'object',
           properties: {
-            id: { type: 'string' },
+            id: { type: 'string', pattern: '^[^\\s/\\\\]+$' },
             depends_on: { type: 'array', items: { type: 'string' } },
             command: { type: 'string' },
             prompt: { type: 'string' },
@@ -411,5 +411,38 @@ nodes:
     expect(fixture.apply).toHaveBeenCalledOnce()
     expect(fixture.current().definition.text).toContain('depends_on: [review]')
     expect(fixture.current().definition.text).toContain('$review.output')
+  })
+
+  it('routes Unicode IDs through the contract transaction and rejects schema-invalid IDs', async () => {
+    const unicodeSource = `name: Unicode\ndescription: Canvas rename\nnodes:\n  - id: café\n    command: prepare\n  - id: consume\n    depends_on: [café]\n    prompt: "Use $café.output"\n`
+    const unicodeContract: AuthoringContract = {
+      ...contract,
+      semantic_rules: [
+        contract.semantic_rules[0]!,
+        {
+          ...contract.semantic_rules[1]!,
+          parameters: {
+            pattern: '\\$([\\p{L}\\p{N}_.:-]+)\\.output',
+            pattern_flags: 'u',
+            node_id_capture_group: 1,
+            require_upstream: true,
+          },
+        },
+      ],
+    }
+    const fixture = actionContext(unicodeSource)
+    const renamed = await renameNode({ ...fixture.context, contract: unicodeContract }, 'café', 'résumé')
+
+    expect(renamed).toMatchObject({ status: 'committed', nodeId: 'résumé' })
+    if (renamed.status === 'committed') {
+      expect(parsedNodes(renamed.pair.definition.text)).toEqual([
+        { id: 'résumé', command: 'prepare' },
+        { id: 'consume', depends_on: ['résumé'], prompt: 'Use $résumé.output' },
+      ])
+    }
+
+    const invalidFixture = actionContext(unicodeSource)
+    const invalid = await renameNode({ ...invalidFixture.context, contract: unicodeContract }, 'café', 'bad/id')
+    expect(invalid).toMatchObject({ status: 'rejected', code: 'mutation_invalid_workflow' })
   })
 })

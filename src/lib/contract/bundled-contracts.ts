@@ -17,8 +17,13 @@ export function loadBundledAuthoringContracts(): Promise<readonly AuthoringContr
 async function loadSources(sources: Readonly<Record<string, string>>): Promise<readonly AuthoringContract[]> {
   const contracts: AuthoringContract[] = []
   for (const [identifier, text] of Object.entries(sources).sort(([left], [right]) => left.localeCompare(right))) {
+    if (!isBundledContractResource(identifier)) continue
     const loaded = await loadAuthoringContract(new TextEncoder().encode(text), { kind: 'bundled', identifier })
     if (loaded.ok) contracts.push(loaded.contract)
   }
   return Object.freeze(contracts)
+}
+
+export function isBundledContractResource(identifier: string): boolean {
+  return /\/(?:hermes-legacy|archon-2026-07)-v1\.json$/.test(identifier)
 }

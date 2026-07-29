@@ -42,6 +42,21 @@ const outputReferenceRule: SemanticRuleDescriptor = {
   examples: ['$prepare.output.summary'],
 }
 
+const conditionRule: SemanticRuleDescriptor = {
+  id: 'condition-expression',
+  label: 'Condition expression',
+  description: 'Conditions must match contract syntax.',
+  field_paths: ['nodes[].when'],
+  applicability: { profiles: ['archon-2026-07'], documents: ['definition'] },
+  status: 'supported',
+  parameters: {
+    expression_pattern:
+      '^\\s*\\$[\\p{L}\\p{N}_.:-]+\\.output(?:\\.[\\p{L}\\p{N}_.-]+)*\\s*(?:==|!=|<=|>=|<|>)\\s*(?:\'[^\']*\'|"[^"]*"|-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))(?:\\s*(?:&&|\\|\\|)\\s*\\$[\\p{L}\\p{N}_.:-]+\\.output(?:\\.[\\p{L}\\p{N}_.-]+)*\\s*(?:==|!=|<=|>=|<|>)\\s*(?:\'[^\']*\'|"[^"]*"|-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)))*\\s*$',
+    expression_flags: 'u',
+  },
+  examples: ["$café.output.status == 'ready'"],
+}
+
 const topologyRule: SemanticRuleDescriptor = {
   id: 'workflow-dag-v1',
   label: 'Workflow DAG',
@@ -179,6 +194,42 @@ describe('DAG semantic validation', () => {
 
   it('continues to ignore applicable semantic rules that do not declare reference parsing', () => {
     expect(validateDag(projection([node('only')]), [topologyRule]).issues).toEqual([])
+  })
+
+  it('enforces contract-published condition syntax while accepting Unicode and compound conditions', () => {
+    const valid = {
+      ...node('consume'),
+      options: { when: "$café.output.status == 'ready' && $inspect.output.count >= 2" },
+    }
+    const invalid = { ...node('broken'), options: { when: '$prepare.output.status is ready' } }
+
+    expect(validateDag(projection([valid]), [conditionRule]).issues).toEqual([])
+    expect(validateDag(projection([invalid]), [conditionRule]).issues).toEqual([
+      expect.objectContaining({
+        code: 'condition_expression_invalid',
+        nodeId: 'broken',
+        field: 'when',
+        blocking: true,
+      }),
+    ])
+  })
+
+  it('honors safe reference flags for Unicode node IDs and rejects unsupported flags deterministically', () => {
+    const unicodeRule = {
+      ...outputReferenceRule,
+      parameters: {
+        pattern: '\\$([\\p{L}\\p{N}_.:-]+)\\.output',
+        pattern_flags: 'u',
+        node_id_capture_group: 1,
+        require_upstream: true,
+      },
+    }
+    const graph = projection([node('café'), node('consume', ['café'], 'Use $café.output')])
+    expect(validateDag(graph, [unicodeRule]).issues).toEqual([])
+
+    expect(
+      validateDag(graph, [{ ...unicodeRule, parameters: { ...unicodeRule.parameters, pattern_flags: 'uy' } }]).issues,
+    ).toEqual([expect.objectContaining({ code: 'reference_rule_invalid', blocking: true })])
   })
 
   it('returns a deterministic Kahn topological order using source node order as the tie breaker', () => {
