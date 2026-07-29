@@ -5,19 +5,36 @@
   import HistoryView from './HistoryView.svelte'
 
   interface Props {
-    onSelectCommit: (oid: string) => Promise<GitPairSnapshot>
+    onSelectCommit: (oid: string) => Promise<GitPairSnapshot | null>
   }
   let { onSelectCommit }: Props = $props()
   let selected = $state<GitPairSnapshot | null>(null)
   let selectedOid = $state<string | undefined>()
   let previewError = $state<string | null>(null)
+  let previewGeneration = 0
+  let previewIdentity = ''
+
+  $effect(() => {
+    const inspection = $gitState.inspection
+    const nextIdentity = `${inspection.repository?.root ?? ''}\0${inspection.pair?.definitionPath ?? ''}\0${inspection.pair?.companionPath ?? ''}`
+    if (nextIdentity === previewIdentity) return
+    previewIdentity = nextIdentity
+    previewGeneration += 1
+    selected = null
+    selectedOid = undefined
+    previewError = null
+  })
 
   async function selectCommit(oid: string): Promise<void> {
+    const request = ++previewGeneration
     selectedOid = oid
     previewError = null
     try {
-      selected = await onSelectCommit(oid)
+      const snapshot = await onSelectCommit(oid)
+      if (request !== previewGeneration || snapshot?.oid !== oid) return
+      selected = snapshot
     } catch (error: unknown) {
+      if (request !== previewGeneration) return
       selected = null
       previewError = error instanceof Error ? error.message : 'The historical workflow could not be loaded.'
     }

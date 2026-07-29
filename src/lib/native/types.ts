@@ -83,6 +83,8 @@ export interface WorkspaceChangedEvent {
 
 export type WorkspaceChangedHandler = (event: WorkspaceChangedEvent) => void | Promise<void>
 
+export type GitChangedHandler = (event: WorkspaceChangedEvent) => void | Promise<void>
+
 export type UnlistenWorkspace = () => void
 
 export interface NativeBridge {
@@ -150,4 +152,5 @@ export interface WorkspaceNativeBridge extends LayoutNativeBridge, ContractNativ
   recoveryWrite(request: RecoveryWriteRequest): Promise<void>
   recoveryDelete(id: string): Promise<void>
   onWorkspaceChanged(handler: WorkspaceChangedHandler): Promise<UnlistenWorkspace>
+  onGitChanged(handler: GitChangedHandler): Promise<UnlistenWorkspace>
 }

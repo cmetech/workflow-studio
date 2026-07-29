@@ -25,6 +25,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     Object.entries(DEFAULT_FILES).map(([path, text]) => [path, { text, modifiedAt: FIXED_MODIFIED_AT }]),
   )
   const handlers = new Set<WorkspaceChangedHandler>()
+  const gitHandlers = new Set<WorkspaceChangedHandler>()
   const recovery = new Map<string, { key: string; content: string }>()
   let recoverySequence = 0
   let layoutContent: string | null = null
@@ -212,6 +213,10 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)
       return () => handlers.delete(handler)
+    },
+    onGitChanged: async (handler) => {
+      gitHandlers.add(handler)
+      return () => gitHandlers.delete(handler)
     },
   }
 }

@@ -1,13 +1,17 @@
 mod parse;
 mod runner;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
+use same_file::Handle;
 use serde::Serialize;
 use tauri::State;
 
-use parse::{parse_history, parse_status};
+use parse::{parse_history_records, parse_status, HistoryRecord};
 use runner::{run_read, ReadOperation};
 
 #[derive(Debug, Serialize)]
@@ -65,6 +69,8 @@ pub struct GitCommitSummary {
     pub author_name: String,
     pub authored_at: String,
     pub subject: String,
+    #[serde(skip)]
+    pub(crate) authored_epoch: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -72,6 +78,244 @@ pub struct GitPairSnapshot {
     pub oid: String,
     pub definition: Option<String>,
     pub companion: Option<String>,
+}
+
+#[derive(Default)]
+pub struct GitState {
+    history: Mutex<Option<HistoryAuthorization>>,
+    generation: AtomicU64,
+}
+
+impl GitState {
+    pub(crate) fn clear(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut history) = self.history.lock() {
+            *history = None;
+        }
+    }
+
+    fn begin_history(&self) -> u64 {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut history) = self.history.lock() {
+            *history = None;
+        }
+        generation
+    }
+
+    fn publish_history(
+        &self,
+        generation: u64,
+        authorization: HistoryAuthorization,
+    ) -> GitResult<()> {
+        let mut history = self.history.lock().map_err(|_| state_error())?;
+        if self.generation.load(Ordering::Relaxed) != generation {
+            return Err(GitError::new(
+                "git_context_changed",
+                "The selected Git context changed before history finished loading.",
+            ));
+        }
+        *history = Some(authorization);
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct HistoricalPaths {
+    definition: Option<String>,
+    companion: Option<String>,
+}
+
+#[derive(Clone)]
+struct HistoryAuthorization {
+    workspace_root: PathBuf,
+    repository_root: PathBuf,
+    definition_path: String,
+    companion_path: Option<String>,
+    by_oid: HashMap<String, HistoricalPaths>,
+}
+
+pub(crate) struct AuthorizedGitContext {
+    workspace_root: PathBuf,
+    workspace_identity: Handle,
+    repository_root: PathBuf,
+    repository_identity: Handle,
+    workspace_prefix: String,
+    #[cfg(test)]
+    history: Mutex<Option<HistoryAuthorization>>,
+}
+
+impl AuthorizedGitContext {
+    pub(crate) fn bind(workspace_root: &Path, requested_root: &Path) -> GitResult<Self> {
+        let workspace_root = workspace_root.canonicalize().map_err(|_| {
+            GitError::new(
+                "git_workspace_changed",
+                "The selected workspace was replaced while Git was running.",
+            )
+        })?;
+        let detected = detect_repository(&workspace_root)?.ok_or_else(|| {
+            GitError::new(
+                "git_not_repository",
+                "The selected workspace is not inside a Git repository.",
+            )
+        })?;
+        let repository_root = PathBuf::from(detected.root).canonicalize().map_err(|_| {
+            GitError::new(
+                "git_repository_unavailable",
+                "The detected Git repository root is no longer available.",
+            )
+        })?;
+        let requested = requested_root.canonicalize().map_err(|_| {
+            GitError::new(
+                "git_repository_unavailable",
+                "The requested Git repository root is no longer available.",
+            )
+        })?;
+        if requested != repository_root {
+            return Err(GitError::new(
+                "git_repository_not_authorized",
+                "The Git repository root does not match the selected workspace.",
+            ));
+        }
+        let workspace_prefix = workspace_root
+            .strip_prefix(&repository_root)
+            .map_err(|_| {
+                GitError::new(
+                    "git_workspace_outside_repository",
+                    "The selected workspace is outside the detected Git repository.",
+                )
+            })
+            .and_then(git_relative_path)?;
+        Ok(Self {
+            workspace_identity: Handle::from_path(&workspace_root).map_err(|_| {
+                GitError::new(
+                    "git_workspace_changed",
+                    "The selected workspace is no longer available.",
+                )
+            })?,
+            repository_identity: Handle::from_path(&repository_root).map_err(|_| {
+                GitError::new(
+                    "git_repository_changed",
+                    "The Git repository is no longer available.",
+                )
+            })?,
+            workspace_root,
+            repository_root,
+            workspace_prefix,
+            #[cfg(test)]
+            history: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn verify(&self) -> GitResult<()> {
+        let repository = self.repository_root.canonicalize().ok();
+        let repository_identity = Handle::from_path(&self.repository_root).ok();
+        if repository.as_deref() != Some(self.repository_root.as_path())
+            || repository_identity.as_ref() != Some(&self.repository_identity)
+        {
+            return Err(GitError::new(
+                "git_repository_changed",
+                "The Git repository was replaced while Git was running.",
+            ));
+        }
+        let workspace = self.workspace_root.canonicalize().ok();
+        let workspace_identity = Handle::from_path(&self.workspace_root).ok();
+        if workspace.as_deref() != Some(self.workspace_root.as_path())
+            || workspace_identity.as_ref() != Some(&self.workspace_identity)
+        {
+            return Err(GitError::new(
+                "git_workspace_changed",
+                "The selected workspace was replaced while Git was running.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn translate(&self, path: &str) -> GitResult<String> {
+        validate_path(path)?;
+        Ok(if self.workspace_prefix.is_empty() {
+            path.to_owned()
+        } else {
+            format!("{}/{path}", self.workspace_prefix)
+        })
+    }
+
+    pub(crate) fn status(&self) -> GitResult<GitStatus> {
+        let raw = status(&self.repository_root)?;
+        self.verify()?;
+        Ok(GitStatus {
+            entries: raw
+                .entries
+                .into_iter()
+                .filter_map(|entry| rebase_status_entry(entry, &self.workspace_prefix))
+                .collect(),
+        })
+    }
+
+    pub(crate) fn diff_pair(
+        &self,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<GitDiff> {
+        let definition = self.translate(definition_path)?;
+        let companion = companion_path
+            .map(|path| self.translate(path))
+            .transpose()?;
+        let result = diff_pair(&self.repository_root, &definition, companion.as_deref())?;
+        self.verify()?;
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_pair(
+        &self,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<Vec<GitCommitSummary>> {
+        let (commits, authorization) =
+            self.history_pair_authorized(definition_path, companion_path)?;
+        *self.history.lock().map_err(|_| state_error())? = Some(authorization);
+        Ok(commits)
+    }
+
+    fn history_pair_authorized(
+        &self,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<(Vec<GitCommitSummary>, HistoryAuthorization)> {
+        let definition = self.translate(definition_path)?;
+        let companion = companion_path
+            .map(|path| self.translate(path))
+            .transpose()?;
+        let (commits, by_oid) = history_pair_with_paths(
+            &self.repository_root,
+            &definition,
+            companion.as_deref(),
+            Some(&self.workspace_prefix),
+        )?;
+        self.verify()?;
+        Ok((
+            commits,
+            HistoryAuthorization {
+                workspace_root: self.workspace_root.clone(),
+                repository_root: self.repository_root.clone(),
+                definition_path: definition_path.to_owned(),
+                companion_path: companion_path.map(str::to_owned),
+                by_oid,
+            },
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn show_authorized_pair(
+        &self,
+        oid: &str,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<GitPairSnapshot> {
+        let history = self.history.lock().map_err(|_| state_error())?;
+        let authorization = history.as_ref().ok_or_else(pair_not_authorized)?;
+        show_from_authorization(self, authorization, oid, definition_path, companion_path)
+    }
 }
 
 pub(crate) fn detect_repository(workspace_root: &Path) -> GitResult<Option<GitRepository>> {
@@ -143,54 +387,152 @@ pub(crate) fn diff_pair(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn history_pair(
     root: &Path,
     definition_path: &str,
     companion_path: Option<&str>,
 ) -> GitResult<Vec<GitCommitSummary>> {
-    let paths = pair_paths(definition_path, companion_path)?;
-    let mut commits = Vec::<GitCommitSummary>::new();
-    let mut seen = HashSet::<String>::new();
-    let pair_output = run_read(
-        root,
-        ReadOperation::History {
-            follow: false,
-            paths: &paths,
-        },
-    )?;
-    if !pair_output.success()
-        && pair_output
+    Ok(history_pair_with_paths(root, definition_path, companion_path, None)?.0)
+}
+
+fn history_pair_with_paths(
+    root: &Path,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    workspace_prefix: Option<&str>,
+) -> GitResult<(Vec<GitCommitSummary>, HashMap<String, HistoricalPaths>)> {
+    validate_path(definition_path)?;
+    if let Some(path) = companion_path {
+        validate_path(path)?;
+    }
+    let definition =
+        restrict_history_to_workspace(history_trace(root, definition_path)?, workspace_prefix);
+    let companion = companion_path
+        .map(|path| history_trace(root, path))
+        .transpose()?
+        .map(|records| restrict_history_to_workspace(records, workspace_prefix));
+    let definition_by_oid = definition
+        .iter()
+        .map(|record| (record.summary.oid.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let companion_by_oid = companion
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .map(|record| (record.summary.oid.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut summaries = HashMap::new();
+    for record in definition
+        .iter()
+        .chain(companion.as_ref().into_iter().flatten())
+    {
+        summaries
+            .entry(record.summary.oid.clone())
+            .or_insert_with(|| record.summary.clone());
+    }
+    let mut commits = summaries.into_values().collect::<Vec<_>>();
+    commits.sort_by(|left, right| {
+        right
+            .authored_epoch
+            .cmp(&left.authored_epoch)
+            .then_with(|| left.oid.cmp(&right.oid))
+    });
+
+    let mut lineage = BTreeSet::new();
+    lineage.insert(definition_path.to_owned());
+    if let Some(path) = companion_path {
+        lineage.insert(path.to_owned());
+    }
+    for record in definition
+        .iter()
+        .chain(companion.as_ref().into_iter().flatten())
+    {
+        lineage.extend(record.snapshot_path.iter().cloned());
+        lineage.extend(record.prior_path.iter().cloned());
+    }
+    let lineage = lineage.into_iter().collect::<Vec<_>>();
+    let lineage_refs = lineage.iter().map(String::as_str).collect::<Vec<_>>();
+    let topology = history_records(root, false, &lineage_refs)?;
+    let mut definition_cursor = Some(definition_path.to_owned());
+    let mut companion_cursor = companion_path.map(str::to_owned);
+    let mut by_oid = HashMap::new();
+    for topological in topology {
+        let definition_record = definition_by_oid.get(&topological.summary.oid);
+        let companion_record = companion_by_oid.get(&topological.summary.oid);
+        let definition_snapshot = definition_record
+            .map(|record| record.snapshot_path.clone())
+            .unwrap_or_else(|| definition_cursor.clone());
+        let companion_snapshot = companion_record
+            .map(|record| record.snapshot_path.clone())
+            .unwrap_or_else(|| companion_cursor.clone());
+        by_oid.insert(
+            topological.summary.oid,
+            HistoricalPaths {
+                definition: definition_snapshot,
+                companion: companion_snapshot,
+            },
+        );
+        if let Some(record) = definition_record {
+            definition_cursor = record.prior_path.clone();
+        }
+        if let Some(record) = companion_record {
+            companion_cursor = record.prior_path.clone();
+        }
+    }
+    Ok((commits, by_oid))
+}
+
+fn restrict_history_to_workspace(
+    records: Vec<HistoryRecord>,
+    workspace_prefix: Option<&str>,
+) -> Vec<HistoryRecord> {
+    let Some(prefix) = workspace_prefix.filter(|prefix| !prefix.is_empty()) else {
+        return records;
+    };
+    let mut restricted = Vec::new();
+    for mut record in records {
+        if record
+            .snapshot_path
+            .as_deref()
+            .is_some_and(|path| strip_git_prefix(path, prefix).is_none())
+        {
+            break;
+        }
+        let crosses_boundary = record
+            .prior_path
+            .as_deref()
+            .is_some_and(|path| strip_git_prefix(path, prefix).is_none());
+        if crosses_boundary {
+            record.prior_path = None;
+        }
+        restricted.push(record);
+        if crosses_boundary {
+            break;
+        }
+    }
+    restricted
+}
+
+fn history_trace(root: &Path, path: &str) -> GitResult<Vec<HistoryRecord>> {
+    let followed = [path];
+    history_records(root, true, &followed)
+}
+
+fn history_records(root: &Path, follow: bool, paths: &[&str]) -> GitResult<Vec<HistoryRecord>> {
+    let output = run_read(root, ReadOperation::History { follow, paths })?;
+    if !output.success()
+        && output
             .stderr_text()
             .contains("does not have any commits yet")
     {
         return Ok(Vec::new());
     }
-    ensure_success("git_history_failed", &pair_output)?;
-    for commit in parse_history(&pair_output.stdout)? {
-        if seen.insert(commit.oid.clone()) {
-            commits.push(commit);
-        }
-    }
-    for path in &paths {
-        let followed = [*path];
-        let output = run_read(
-            root,
-            ReadOperation::History {
-                follow: true,
-                paths: &followed,
-            },
-        )?;
-        ensure_success("git_history_failed", &output)?;
-        for commit in parse_history(&output.stdout)? {
-            if seen.insert(commit.oid.clone()) {
-                commits.push(commit);
-            }
-        }
-    }
-    commits.sort_by(|left, right| right.authored_at.cmp(&left.authored_at));
-    Ok(commits)
+    ensure_success("git_history_failed", &output)?;
+    parse_history_records(&output.stdout)
 }
 
+#[cfg(test)]
 pub(crate) fn show_pair(
     root: &Path,
     oid: &str,
@@ -222,6 +564,91 @@ fn show_path(root: &Path, oid: &str, path: &str) -> GitResult<Option<String>> {
         return Ok(None);
     }
     Err(command_error("git_show_failed", &output))
+}
+
+fn show_from_authorization(
+    context: &AuthorizedGitContext,
+    authorization: &HistoryAuthorization,
+    oid: &str,
+    definition_path: &str,
+    companion_path: Option<&str>,
+) -> GitResult<GitPairSnapshot> {
+    validate_oid(oid)?;
+    if authorization.workspace_root != context.workspace_root
+        || authorization.repository_root != context.repository_root
+        || authorization.definition_path != definition_path
+        || authorization.companion_path.as_deref() != companion_path
+    {
+        return Err(pair_not_authorized());
+    }
+    let paths = authorization
+        .by_oid
+        .get(oid)
+        .ok_or_else(pair_not_authorized)?;
+    let snapshot = GitPairSnapshot {
+        oid: oid.to_owned(),
+        definition: paths
+            .definition
+            .as_deref()
+            .map(|path| show_path(&context.repository_root, oid, path))
+            .transpose()?
+            .flatten(),
+        companion: paths
+            .companion
+            .as_deref()
+            .map(|path| show_path(&context.repository_root, oid, path))
+            .transpose()?
+            .flatten(),
+    };
+    context.verify()?;
+    Ok(snapshot)
+}
+
+fn pair_not_authorized() -> GitError {
+    GitError::new(
+        "git_pair_not_authorized",
+        "The requested historical pair is not the currently authorized workflow pair.",
+    )
+}
+
+fn state_error() -> GitError {
+    GitError::new(
+        "git_state_unavailable",
+        "The local Git authorization state is temporarily unavailable.",
+    )
+}
+
+fn git_relative_path(path: &Path) -> GitResult<String> {
+    path.components()
+        .map(|component| match component {
+            Component::Normal(value) => value.to_str().map(str::to_owned).ok_or_else(|| {
+                GitError::new("git_invalid_path", "Git paths must be valid Unicode.")
+            }),
+            _ => Err(GitError::new(
+                "git_invalid_path",
+                "Git paths must be exact relative paths.",
+            )),
+        })
+        .collect::<GitResult<Vec<_>>>()
+        .map(|parts| parts.join("/"))
+}
+
+fn rebase_status_entry(mut entry: GitPathStatus, prefix: &str) -> Option<GitPathStatus> {
+    let path = strip_git_prefix(&entry.path, prefix)?.to_owned();
+    entry.path = path;
+    entry.original_path = entry
+        .original_path
+        .as_deref()
+        .and_then(|original| strip_git_prefix(original, prefix))
+        .map(str::to_owned);
+    Some(entry)
+}
+
+fn strip_git_prefix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return Some(path);
+    }
+    path.strip_prefix(prefix)?.strip_prefix('/')
 }
 
 fn pair_paths<'a>(
@@ -300,52 +727,61 @@ fn command_error(code: &'static str, output: &runner::CommandOutput) -> GitError
     )
 }
 
-fn active_workspace_root(
+fn active_workspace_binding(
     state: &State<'_, crate::workspace::WorkspaceState>,
-) -> GitResult<PathBuf> {
+) -> GitResult<crate::workspace::WorkspaceBinding> {
     state
-        .active_root_path()
+        .active_binding()
         .map_err(|error| GitError::new(error.code, error.message))
 }
 
-fn authorized_repository_root(
-    requested_root: &str,
+fn verify_workspace_binding(
     state: &State<'_, crate::workspace::WorkspaceState>,
-) -> GitResult<PathBuf> {
-    let workspace_root = active_workspace_root(state)?;
-    authorize_repository_root(Path::new(requested_root), &workspace_root)
+    binding: &crate::workspace::WorkspaceBinding,
+) -> GitResult<()> {
+    match state.binding_is_current(binding) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(GitError::new(
+            "git_workspace_changed",
+            "The selected workspace changed while Git was running.",
+        )),
+        Err(error) => Err(GitError::new(error.code, error.message)),
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn authorize_repository_root(
     requested_root: &Path,
     workspace_root: &Path,
 ) -> GitResult<PathBuf> {
-    let detected = detect_repository(&workspace_root)?.ok_or_else(|| {
-        GitError::new(
-            "git_not_repository",
-            "The selected workspace is not inside a Git repository.",
-        )
-    })?;
-    let requested = requested_root.canonicalize().map_err(|_| {
+    Ok(AuthorizedGitContext::bind(workspace_root, requested_root)?.repository_root)
+}
+
+pub(crate) fn detect_repository_metadata(workspace_root: &Path) -> GitResult<Option<PathBuf>> {
+    if detect_repository(workspace_root)?.is_none() {
+        return Ok(None);
+    }
+    let output = run_read(workspace_root, ReadOperation::GitDirectory)?;
+    ensure_success("git_detect_failed", &output)?;
+    let path = PathBuf::from(output_text(&output.stdout)?.trim());
+    path.canonicalize().map(Some).map_err(|_| {
         GitError::new(
             "git_repository_unavailable",
-            "The requested Git repository root is no longer available.",
+            "Git metadata is no longer available.",
         )
-    })?;
-    if requested != Path::new(&detected.root) {
-        return Err(GitError::new(
-            "git_repository_not_authorized",
-            "The Git repository root does not match the selected workspace.",
-        ));
-    }
-    Ok(requested)
+    })
 }
 
 #[tauri::command]
 pub fn git_detect(
     state: State<'_, crate::workspace::WorkspaceState>,
+    git_state: State<'_, GitState>,
 ) -> GitResult<Option<GitRepository>> {
-    detect_repository(&active_workspace_root(&state)?)
+    git_state.clear();
+    let binding = active_workspace_binding(&state)?;
+    let result = detect_repository(&binding.root)?;
+    verify_workspace_binding(&state, &binding)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -353,7 +789,10 @@ pub fn git_status(
     root: String,
     state: State<'_, crate::workspace::WorkspaceState>,
 ) -> GitResult<GitStatus> {
-    status(&authorized_repository_root(&root, &state)?)
+    let binding = active_workspace_binding(&state)?;
+    let result = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?.status()?;
+    verify_workspace_binding(&state, &binding)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -363,11 +802,11 @@ pub fn git_diff_pair(
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
 ) -> GitResult<GitDiff> {
-    diff_pair(
-        &authorized_repository_root(&root, &state)?,
-        &definition_path,
-        companion_path.as_deref(),
-    )
+    let binding = active_workspace_binding(&state)?;
+    let result = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?
+        .diff_pair(&definition_path, companion_path.as_deref())?;
+    verify_workspace_binding(&state, &binding)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -376,12 +815,16 @@ pub fn git_history_pair(
     definition_path: String,
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
+    git_state: State<'_, GitState>,
 ) -> GitResult<Vec<GitCommitSummary>> {
-    history_pair(
-        &authorized_repository_root(&root, &state)?,
-        &definition_path,
-        companion_path.as_deref(),
-    )
+    let history_generation = git_state.begin_history();
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let (commits, authorization) =
+        context.history_pair_authorized(&definition_path, companion_path.as_deref())?;
+    verify_workspace_binding(&state, &binding)?;
+    git_state.publish_history(history_generation, authorization)?;
+    Ok(commits)
 }
 
 #[tauri::command]
@@ -391,13 +834,25 @@ pub fn git_show_pair(
     definition_path: String,
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
+    git_state: State<'_, GitState>,
 ) -> GitResult<GitPairSnapshot> {
-    show_pair(
-        &authorized_repository_root(&root, &state)?,
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let authorization = git_state
+        .history
+        .lock()
+        .map_err(|_| state_error())?
+        .clone()
+        .ok_or_else(pair_not_authorized)?;
+    let snapshot = show_from_authorization(
+        &context,
+        &authorization,
         &oid,
         &definition_path,
         companion_path.as_deref(),
-    )
+    )?;
+    verify_workspace_binding(&state, &binding)?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

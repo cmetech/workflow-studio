@@ -8,6 +8,34 @@ fn scope(path: &std::path::Path) -> WorkspaceScope {
     WorkspaceScope::new(path).unwrap()
 }
 
+#[test]
+fn workspace_bindings_change_generation_even_when_the_same_path_is_reselected() {
+    let root = tempdir().unwrap();
+    let state = super::WorkspaceState::default();
+    {
+        let mut active = state.active.lock().unwrap();
+        *active = Some(super::ActiveWorkspace {
+            scope: scope(root.path()),
+            _watcher: None,
+            generation: state
+                .next_generation
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        });
+    }
+    let first = state.active_binding().unwrap();
+    {
+        let mut active = state.active.lock().unwrap();
+        *active = Some(super::ActiveWorkspace {
+            scope: scope(root.path()),
+            _watcher: None,
+            generation: state
+                .next_generation
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        });
+    }
+    assert!(!state.binding_is_current(&first).unwrap());
+}
+
 fn assert_code<T>(result: Result<T, super::WorkspaceError>, code: &str) {
     let error = result.err().expect("operation should fail");
     assert_eq!(error.code, code);
@@ -839,6 +867,71 @@ fn watcher_debounces_mixed_hints_preserves_rename_paths_and_shuts_down() {
         receiver.recv_timeout(Duration::from_secs(1)),
         Err(mpsc::RecvTimeoutError::Disconnected)
     ));
+}
+
+#[test]
+fn nested_workspace_watcher_emits_parent_repository_metadata_changes_without_polling() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let root = tempdir().unwrap();
+    git_fixture(root.path(), &["init", "-b", "main"]);
+    fs::create_dir(root.path().join("selected")).unwrap();
+    fs::write(root.path().join("selected/flow.yaml"), "name: one\n").unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let watcher = super::watcher::start_with_git_metadata_sink(
+        &root.path().join("selected"),
+        &root.path().join(".git"),
+        move |event| sender.send(event).unwrap(),
+    )
+    .unwrap();
+
+    git_fixture(root.path(), &["add", "selected/flow.yaml"]);
+    git_fixture(root.path(), &["checkout", "-b", "topic"]);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut git_paths = Vec::new();
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let Ok(event) = receiver.recv_timeout(remaining) else {
+            break;
+        };
+        git_paths.extend(
+            event
+                .paths
+                .into_iter()
+                .filter(|path| path.starts_with("@git/")),
+        );
+        if git_paths.iter().any(|path| path.ends_with("index"))
+            && git_paths.iter().any(|path| path.ends_with("HEAD"))
+        {
+            break;
+        }
+    }
+
+    assert!(
+        git_paths.iter().any(|path| path.ends_with("index")),
+        "events: {git_paths:?}"
+    );
+    assert!(
+        git_paths.iter().any(|path| path.ends_with("HEAD")),
+        "events: {git_paths:?}"
+    );
+    drop(watcher);
+}
+
+pub(super) fn git_fixture(root: &std::path::Path, arguments: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(arguments)
+        .output()
+        .expect("git fixture command should start");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

@@ -33,9 +33,11 @@ export function resetGitState(): void {
 
 export function createGitInspectionController(native: GitNativeBridge) {
   let generation = 0
+  let previewGeneration = 0
 
   async function publish(load: () => Promise<GitInspection>): Promise<void> {
     const request = ++generation
+    previewGeneration += 1
     setGitLoading()
     try {
       const inspection = await load()
@@ -50,6 +52,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
   return {
     reset(): void {
       generation += 1
+      previewGeneration += 1
       resetGitState()
     },
     refreshRepository(): Promise<void> {
@@ -58,12 +61,48 @@ export function createGitInspectionController(native: GitNativeBridge) {
     refreshPair(pair: GitPairPaths): Promise<void> {
       return publish(() => inspectGitPair(native, pair))
     },
-    loadCommit(oid: string, pair: GitPairPaths): Promise<GitPairSnapshot> {
-      const root = $gitState.get().inspection.repository?.root
+    async loadCommit(oid: string, pair: GitPairPaths): Promise<GitPairSnapshot | null> {
+      const state = $gitState.get().inspection
+      const root = state.repository?.root
       if (!root) return Promise.reject(new Error('Open a workflow in a Git repository first.'))
-      return loadGitCommit(native, root, oid, pair)
+      if (!samePair(state.pair, pair)) return Promise.reject(new Error('The selected workflow pair changed.'))
+      const request = ++previewGeneration
+      const inspectionGeneration = generation
+      const snapshot = await loadGitCommit(native, root, oid, pair)
+      const current = $gitState.get().inspection
+      if (
+        request !== previewGeneration ||
+        inspectionGeneration !== generation ||
+        snapshot.oid !== oid ||
+        current.repository?.root !== root ||
+        !samePair(current.pair, pair)
+      ) {
+        return null
+      }
+      return snapshot
     },
   }
+}
+
+export interface GitLifecycleController {
+  reset(): void
+  refreshRepository(): Promise<void>
+  refreshPair(pair: GitPairPaths): Promise<void>
+}
+
+export function synchronizeGitLifecycle(
+  controller: GitLifecycleController,
+  context: { readonly workspaceId: string | null; readonly pair: GitPairPaths | null },
+): Promise<void> {
+  if (!context.workspaceId) {
+    controller.reset()
+    return Promise.resolve()
+  }
+  return context.pair ? controller.refreshPair(context.pair) : controller.refreshRepository()
+}
+
+function samePair(left: GitPairPaths | null | undefined, right: GitPairPaths): boolean {
+  return left?.definitionPath === right.definitionPath && left.companionPath === right.companionPath
 }
 
 function freezeInspection(inspection: GitInspection): GitInspection {

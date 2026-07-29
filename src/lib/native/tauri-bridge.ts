@@ -133,4 +133,13 @@ export const tauriBridge: WorkspaceNativeBridge = {
       throw mapNativeError(error)
     }
   },
+  onGitChanged: async (handler) => {
+    try {
+      return await listen<WorkspaceChangedEvent>('git://changed', ({ payload }) => {
+        void handler(payload)
+      })
+    } catch (error: unknown) {
+      throw mapNativeError(error)
+    }
+  },
 }

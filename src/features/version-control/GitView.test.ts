@@ -66,6 +66,41 @@ describe('GitView', () => {
     expect(onSelectCommit).toHaveBeenCalledWith('0123456789abcdef')
   })
 
+  it('clears and generation-gates historical preview when the pair changes', async () => {
+    const onSelectCommit = vi.fn(async () => ({
+      oid: 'aaaaaaaa',
+      definition: 'name: A\n',
+      companion: null,
+    }))
+    setGitInspection({
+      pair: { definitionPath: 'a.yaml', companionPath: null },
+      repository: { root: '/repo-a', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: '', index: '' },
+      history: [
+        {
+          oid: 'aaaaaaaa',
+          shortOid: 'aaaaaaaa',
+          authorName: 'Ada',
+          authoredAt: '2026-07-29T10:00:00Z',
+          subject: 'A',
+        },
+      ],
+    })
+    render(GitView, { props: { onSelectCommit } } as never)
+    await fireEvent.click(screen.getByRole('button', { name: /A/ }))
+    expect(await screen.findByLabelText('Historical definition')).toHaveTextContent('name: A')
+
+    setGitInspection({
+      pair: { definitionPath: 'b.yaml', companionPath: null },
+      repository: { root: '/repo-b', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: '', index: '' },
+      history: [],
+    })
+    await vi.waitFor(() => expect(screen.queryByLabelText('Historical definition')).not.toBeInTheDocument())
+  })
+
   it('distinguishes no repository from a loading or failed inspection', () => {
     setGitInspection({
       repository: null,

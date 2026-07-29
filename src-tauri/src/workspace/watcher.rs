@@ -35,18 +35,71 @@ impl Drop for WorkspaceWatcher {
     }
 }
 
-pub fn start(root: &Path, app: AppHandle) -> WorkspaceResult<WorkspaceWatcher> {
-    start_with_sink(root, move |event| {
-        let _ = app.emit("workspace://changed", event);
+pub fn start(
+    root: &Path,
+    git_metadata: Option<&Path>,
+    app: AppHandle,
+) -> WorkspaceResult<WorkspaceWatcher> {
+    start_with_optional_git_sink(root, git_metadata, move |event| {
+        let mut workspace_paths = Vec::new();
+        let mut git_paths = Vec::new();
+        for path in event.paths {
+            if let Some(path) = path.strip_prefix("@git/") {
+                git_paths.push(path.to_owned());
+            } else {
+                workspace_paths.push(path);
+            }
+        }
+        if !workspace_paths.is_empty() {
+            let _ = app.emit(
+                "workspace://changed",
+                WorkspaceChangedEvent {
+                    paths: workspace_paths,
+                    kind: event.kind.clone(),
+                },
+            );
+        }
+        if !git_paths.is_empty() {
+            let _ = app.emit(
+                "git://changed",
+                WorkspaceChangedEvent {
+                    paths: git_paths,
+                    kind: event.kind,
+                },
+            );
+        }
     })
 }
 
+#[cfg(test)]
 pub(super) fn start_with_sink(
     root: &Path,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
+    start_with_optional_git_sink(root, None, sink)
+}
+
+#[cfg(test)]
+pub(super) fn start_with_git_metadata_sink(
+    root: &Path,
+    git_metadata: &Path,
+    sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
+) -> WorkspaceResult<WorkspaceWatcher> {
+    start_with_optional_git_sink(root, Some(git_metadata), sink)
+}
+
+fn start_with_optional_git_sink(
+    root: &Path,
+    git_metadata: Option<&Path>,
+    sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
+) -> WorkspaceResult<WorkspaceWatcher> {
     let root = paths::canonical_root(root)?;
     let callback_root = root.clone();
+    let git_metadata = git_metadata
+        .map(paths::canonical_root)
+        .transpose()?
+        .filter(|path| !path.starts_with(&root));
+    let callback_git_metadata = git_metadata.clone();
     let (sender, receiver) = mpsc::channel::<Event>();
     let mut watcher = notify::recommended_watcher(move |result| {
         if let Ok(event) = result {
@@ -57,14 +110,29 @@ pub(super) fn start_with_sink(
     watcher
         .watch(&root, RecursiveMode::Recursive)
         .map_err(watch_error)?;
+    if let Some(path) = &git_metadata {
+        watcher
+            .watch(path, RecursiveMode::Recursive)
+            .map_err(watch_error)?;
+    }
 
     let worker = std::thread::spawn(move || {
         while let Ok(first) = receiver.recv() {
             let mut pending = BTreeMap::new();
-            collect_event(&callback_root, first, &mut pending);
+            collect_event(
+                &callback_root,
+                callback_git_metadata.as_deref(),
+                first,
+                &mut pending,
+            );
             loop {
                 match receiver.recv_timeout(DEBOUNCE) {
-                    Ok(event) => collect_event(&callback_root, event, &mut pending),
+                    Ok(event) => collect_event(
+                        &callback_root,
+                        callback_git_metadata.as_deref(),
+                        event,
+                        &mut pending,
+                    ),
                     Err(mpsc::RecvTimeoutError::Timeout) => break,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
@@ -87,10 +155,20 @@ pub(super) fn start_with_sink(
     })
 }
 
-fn collect_event(root: &Path, event: Event, pending: &mut BTreeMap<String, &'static str>) {
+fn collect_event(
+    root: &Path,
+    git_metadata: Option<&Path>,
+    event: Event,
+    pending: &mut BTreeMap<String, &'static str>,
+) {
     let hint = event_hint(&event.kind);
     for path in event.paths {
-        if let Some(relative) = paths::normalize_relative(root, &path) {
+        let relative = paths::normalize_relative(root, &path).or_else(|| {
+            git_metadata
+                .and_then(|metadata| paths::normalize_relative(metadata, &path))
+                .map(|relative| format!("@git/{relative}"))
+        });
+        if let Some(relative) = relative {
             pending
                 .entry(relative)
                 .and_modify(|current| *current = merge_hint(current, hint))

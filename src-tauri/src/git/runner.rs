@@ -3,11 +3,31 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as WindowsCommandExt;
 use wait_timeout::ChildExt;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
 
 use super::{GitError, GitResult};
 
@@ -16,6 +36,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) enum ReadOperation<'a> {
     RepositoryRoot,
+    GitDirectory,
     Branch,
     ShortHead,
     Status,
@@ -24,6 +45,7 @@ pub(crate) enum ReadOperation<'a> {
     Show { oid: &'a str, path: &'a str },
 }
 
+#[derive(Debug)]
 pub(crate) struct CommandOutput {
     status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
@@ -41,51 +63,93 @@ impl CommandOutput {
 }
 
 pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<CommandOutput> {
-    let mut command = build_read_command(root, operation);
+    run_command(build_read_command(root, operation), READ_TIMEOUT, None)
+}
+
+fn run_command(
+    mut command: Command,
+    timeout: Duration,
+    #[cfg_attr(not(test), allow(unused_variables))] injected: Option<InjectedFailure>,
+) -> GitResult<CommandOutput> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_SUSPENDED);
 
+    let started = Instant::now();
     let mut child = command.spawn().map_err(|_| {
         GitError::new(
             "git_unavailable",
             "The system Git executable could not be started.",
         )
     })?;
+    #[cfg(unix)]
+    let process_tree = ProcessTree::new(child.id());
+    #[cfg(windows)]
+    let process_tree = match ProcessTree::contain(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let total = Arc::new(AtomicUsize::new(0));
     let overflow = Arc::new(AtomicBool::new(false));
-    let stdout_reader = spawn_reader(stdout, total.clone(), overflow.clone());
-    let stderr_reader = spawn_reader(stderr, total, overflow.clone());
+    let stdout_receiver = spawn_reader(stdout, total.clone(), overflow.clone());
+    let stderr_receiver = spawn_reader(stderr, total, overflow.clone());
 
-    let status = match child.wait_timeout(READ_TIMEOUT).map_err(|_| {
-        GitError::new(
-            "git_wait_failed",
-            "The local Git command could not be monitored.",
-        )
-    })? {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
+    #[cfg(test)]
+    if injected == Some(InjectedFailure::Read) {
+        process_tree.terminate(&mut child);
+        return Err(GitError::new(
+            "git_read_failed",
+            "Git stdout could not be read.",
+        ));
+    }
+
+    let remaining = timeout.saturating_sub(started.elapsed());
+    #[cfg(test)]
+    let waited = if injected == Some(InjectedFailure::Wait) {
+        Err(std::io::Error::other("injected wait failure"))
+    } else {
+        child.wait_timeout(remaining)
+    };
+    #[cfg(not(test))]
+    let waited = child.wait_timeout(remaining);
+    let status = match waited {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            process_tree.terminate(&mut child);
             return Err(GitError::new(
                 "git_timeout",
                 "The local Git read operation exceeded 10 seconds.",
             ));
         }
+        Err(_) => {
+            process_tree.terminate(&mut child);
+            return Err(GitError::new(
+                "git_wait_failed",
+                "The local Git command could not be monitored.",
+            ));
+        }
     };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| GitError::new("git_read_failed", "Git stdout capture failed."))?
-        .map_err(|_| GitError::new("git_read_failed", "Git stdout could not be read."))?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| GitError::new("git_read_failed", "Git stderr capture failed."))?
-        .map_err(|_| GitError::new("git_read_failed", "Git stderr could not be read."))?;
+
+    let stdout = receive_reader(&stdout_receiver, started, timeout).map_err(|error| {
+        process_tree.terminate(&mut child);
+        error
+    })?;
+    let stderr = receive_reader(&stderr_receiver, started, timeout).map_err(|error| {
+        process_tree.terminate(&mut child);
+        error
+    })?;
     if overflow.load(Ordering::Relaxed) {
         return Err(GitError::new(
             "git_output_too_large",
@@ -97,6 +161,155 @@ pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<C
         stdout,
         stderr,
     })
+}
+
+fn receive_reader(
+    receiver: &mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    started: Instant,
+    timeout: Duration,
+) -> GitResult<Vec<u8>> {
+    let remaining = timeout.saturating_sub(started.elapsed());
+    match receiver.recv_timeout(remaining) {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => Err(GitError::new(
+            "git_read_failed",
+            "Git output could not be read.",
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(GitError::new(
+            "git_timeout",
+            "The local Git read operation exceeded 10 seconds.",
+        )),
+    }
+}
+
+fn spawn_reader(
+    reader: impl Read + Send + 'static,
+    total: Arc<AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(read_bounded(reader, total, overflow));
+    });
+    receiver
+}
+
+fn read_bounded(
+    mut reader: impl Read,
+    total: Arc<AtomicUsize>,
+    overflow: Arc<AtomicBool>,
+) -> std::io::Result<Vec<u8>> {
+    let mut captured = Vec::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let before = total.fetch_add(count, Ordering::Relaxed);
+        if before < MAX_OUTPUT_BYTES {
+            let retain = count.min(MAX_OUTPUT_BYTES - before);
+            captured.extend_from_slice(&buffer[..retain]);
+        }
+        if before.saturating_add(count) > MAX_OUTPUT_BYTES {
+            overflow.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(captured)
+}
+
+#[cfg(unix)]
+struct ProcessTree {
+    process_group: u32,
+}
+
+#[cfg(unix)]
+impl ProcessTree {
+    fn new(process_group: u32) -> Self {
+        Self { process_group }
+    }
+
+    fn terminate(&self, child: &mut std::process::Child) {
+        unsafe {
+            libc::kill(-(self.process_group as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[cfg(windows)]
+struct ProcessTree(HANDLE);
+
+#[cfg(windows)]
+impl ProcessTree {
+    fn contain(child: &std::process::Child) -> GitResult<Self> {
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(process_containment_error("create a process job"));
+        }
+        let tree = Self(job);
+        if unsafe { AssignProcessToJobObject(tree.0, child.as_raw_handle() as HANDLE) } == 0 {
+            return Err(process_containment_error("assign Git to its process job"));
+        }
+        let thread = primary_thread_for(child.id())?;
+        if unsafe { ResumeThread(thread) } == u32::MAX {
+            unsafe { CloseHandle(thread) };
+            return Err(process_containment_error("resume contained Git"));
+        }
+        unsafe { CloseHandle(thread) };
+        Ok(tree)
+    }
+
+    fn terminate(&self, child: &mut std::process::Child) {
+        unsafe {
+            let _ = TerminateJobObject(self.0, 1);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn process_containment_error(action: &str) -> GitError {
+    GitError::new(
+        "git_unavailable",
+        format!("Could not {action}: {}", std::io::Error::last_os_error()),
+    )
+}
+
+#[cfg(windows)]
+fn primary_thread_for(process_id: u32) -> GitResult<HANDLE> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot.is_null() || snapshot as isize == -1 {
+        return Err(process_containment_error("enumerate suspended Git threads"));
+    }
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut found = None;
+    if unsafe { Thread32First(snapshot, &mut entry) } != 0 {
+        loop {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !thread.is_null() {
+                    found = Some(thread);
+                    break;
+                }
+            }
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    unsafe { CloseHandle(snapshot) };
+    found.ok_or_else(|| process_containment_error("open the suspended Git primary thread"))
 }
 
 pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> Command {
@@ -137,51 +350,10 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
     command
 }
 
-fn spawn_reader(
-    reader: impl Read + Send + 'static,
-    total: Arc<AtomicUsize>,
-    overflow: Arc<AtomicBool>,
-) -> thread::JoinHandle<std::io::Result<Vec<u8>>> {
-    thread::spawn(move || read_bounded(reader, total, overflow))
-}
-
-fn read_bounded(
-    mut reader: impl Read,
-    total: Arc<AtomicUsize>,
-    overflow: Arc<AtomicBool>,
-) -> std::io::Result<Vec<u8>> {
-    let mut captured = Vec::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        let before = total.fetch_add(count, Ordering::Relaxed);
-        if before < MAX_OUTPUT_BYTES {
-            let retain = count.min(MAX_OUTPUT_BYTES - before);
-            captured.extend_from_slice(&buffer[..retain]);
-        }
-        if before.saturating_add(count) > MAX_OUTPUT_BYTES {
-            overflow.store(true, Ordering::Relaxed);
-        }
-    }
-    Ok(captured)
-}
-
-#[cfg(test)]
-pub(crate) fn read_for_test(reader: impl Read) -> GitResult<Vec<u8>> {
-    read_bounded(
-        reader,
-        Arc::new(AtomicUsize::new(0)),
-        Arc::new(AtomicBool::new(false)),
-    )
-    .map_err(|_| GitError::new("git_read_failed", "Git output could not be read."))
-}
-
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
+        ReadOperation::GitDirectory => strings(&["rev-parse", "--absolute-git-dir"]),
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
         ReadOperation::Status => {
@@ -207,7 +379,9 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
                 values.push("--follow".into());
             }
             values.extend(strings(&[
-                "--format=%x00%H%x00%h%x00%an%x00%aI%x00%s%x00",
+                "--format=%x00C%x00%H%x00%h%x00%an%x00%at%x00%aI%x00%s%x00",
+                "--name-status",
+                "-z",
                 "--",
             ]));
             values.extend(paths.iter().map(OsString::from));
@@ -223,4 +397,38 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
 
 fn strings(values: &[&str]) -> Vec<OsString> {
     values.iter().map(OsString::from).collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum InjectedFailure {
+    Wait,
+    Read,
+}
+
+#[cfg(test)]
+pub(crate) fn run_command_for_test(
+    command: Command,
+    timeout: Duration,
+) -> GitResult<CommandOutput> {
+    run_command(command, timeout, None)
+}
+
+#[cfg(test)]
+pub(crate) fn run_command_with_failure_for_test(
+    command: Command,
+    timeout: Duration,
+    failure: InjectedFailure,
+) -> GitResult<CommandOutput> {
+    run_command(command, timeout, Some(failure))
+}
+
+#[cfg(test)]
+pub(crate) fn read_for_test(reader: impl Read) -> GitResult<Vec<u8>> {
+    read_bounded(
+        reader,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .map_err(|_| GitError::new("git_read_failed", "Git output could not be read."))
 }

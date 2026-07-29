@@ -86,7 +86,7 @@
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
-  import { createGitInspectionController } from '$src/stores/git'
+  import { createGitInspectionController, synchronizeGitLifecycle } from '$src/stores/git'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
@@ -132,6 +132,7 @@
   const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
   const native = getNativeBridge()
   const gitController = createGitInspectionController(native)
+  let gitLifecycleIdentity = ''
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
@@ -767,8 +768,7 @@
 
   async function refreshGit(): Promise<void> {
     const pair = activeGitPair()
-    if (!pair) return
-    await gitController.refreshPair(pair)
+    await synchronizeGitLifecycle(gitController, { workspaceId: workspace.get().id, pair })
   }
 
   async function refreshGitRepository(): Promise<void> {
@@ -778,7 +778,10 @@
   function loadHistoricalGitPair(oid: string): Promise<GitPairSnapshot> {
     const pair = activeGitPair()
     if (!pair) return Promise.reject(new Error('Open a workflow in a Git repository first.'))
-    return gitController.loadCommit(oid, pair)
+    return gitController.loadCommit(oid, pair).then((snapshot) => {
+      if (!snapshot) throw new Error('The selected historical preview changed before it loaded.')
+      return snapshot
+    })
   }
 
   async function handleExternalWorkspacePath(path: string): Promise<void> {
@@ -994,8 +997,15 @@
   })
 
   $effect(() => {
-    if ($activeActivity !== 'git' || !$workspace.id || !$documentSessionStore.pair) return
-    void refreshGit()
+    const pair = $documentSessionStore.pair
+    const workspaceId = $workspace.id
+    const identity = `${workspaceId ?? ''}\0${pair?.definition.path ?? ''}\0${pair?.companion?.path ?? ''}`
+    if (identity === gitLifecycleIdentity) return
+    gitLifecycleIdentity = identity
+    void synchronizeGitLifecycle(gitController, {
+      workspaceId,
+      pair: pair ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null } : null,
+    })
   })
 
   $effect.pre(() => {
@@ -1104,6 +1114,11 @@
       if (disposed) return
       await documentWorkspace.start()
       if (disposed) return
+      const unlistenGit = await native.onGitChanged(() => refreshGit())
+      if (disposed) {
+        unlistenGit()
+        return
+      }
       const unbindSave = setDocumentSaveHandler(async () => {
         await documentWorkspace.save()
       })
@@ -1157,6 +1172,7 @@
       window.addEventListener('focusin', focusin)
       const disposeClose = dispose
       dispose = () => {
+        unlistenGit()
         unbindSave()
         unbindHistory()
         unbindDocumentCommands()

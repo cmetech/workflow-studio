@@ -19,7 +19,7 @@ import {
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
-import { resetGitState, setGitInspection } from '$src/stores/git'
+import { resetGitState } from '$src/stores/git'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
@@ -562,18 +562,29 @@ describe('App', () => {
   })
 
   it('mounts the local Git activity view from feature-owned Git state', async () => {
-    setGitInspection({
-      repository: { root: '/repo', branch: 'main', detachedHead: null },
-      status: { entries: [] },
-      diff: { working: '', index: '' },
-      history: [],
+    loadWorkspaceEntries('workspace', 'Workspace', [])
+    const gitStatus = vi.fn(async () => ({ entries: [] }))
+    let notifyGitChanged:
+      | ((event: { paths: readonly string[]; kind: 'create' | 'modify' | 'remove' | 'rename' }) => void | Promise<void>)
+      | undefined
+    setNativeBridgeForTest({
+      gitDetect: async () => ({ root: '/repo', branch: 'main', detachedHead: null }),
+      gitStatus,
+      onGitChanged: async (handler) => {
+        notifyGitChanged = handler
+        return () => undefined
+      },
     })
     render(App)
 
     await fireEvent.click(screen.getByRole('button', { name: 'Git' }))
 
     expect(screen.getByRole('heading', { name: 'Git' })).toBeVisible()
-    expect(screen.getByText('Branch: main')).toBeVisible()
+    expect(await screen.findByText('Branch: main')).toBeVisible()
+    await waitFor(() => expect(notifyGitChanged).toBeDefined())
+    const callsBeforeMetadataChange = gitStatus.mock.calls.length
+    await notifyGitChanged!({ paths: ['index', 'HEAD'], kind: 'modify' })
+    await waitFor(() => expect(gitStatus.mock.calls.length).toBeGreaterThan(callsBeforeMetadataChange))
   })
 
   it('uses an accessible button group to select the editor mode', async () => {

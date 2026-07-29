@@ -4,6 +4,7 @@ mod paths;
 mod watcher;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use cap_std::ambient_authority;
@@ -37,13 +38,13 @@ impl WorkspaceError {
 
 type WorkspaceResult<T> = Result<T, WorkspaceError>;
 
-#[derive(Default)]
 pub struct WorkspaceState {
     active: Mutex<Option<ActiveWorkspace>>,
+    next_generation: AtomicU64,
 }
 
 impl WorkspaceState {
-    pub(crate) fn active_root_path(&self) -> Result<PathBuf, WorkspaceError> {
+    pub(crate) fn active_binding(&self) -> Result<WorkspaceBinding, WorkspaceError> {
         let active = self.active.lock().map_err(|_| state_error())?;
         let active = active.as_ref().ok_or_else(|| {
             WorkspaceError::new(
@@ -51,13 +52,42 @@ impl WorkspaceState {
                 "Select a workspace folder before inspecting local Git.",
             )
         })?;
-        Ok(active.scope.root_path()?.to_path_buf())
+        Ok(WorkspaceBinding {
+            root: active.scope.root_path()?.to_path_buf(),
+            generation: active.generation,
+        })
     }
+
+    pub(crate) fn binding_is_current(
+        &self,
+        binding: &WorkspaceBinding,
+    ) -> Result<bool, WorkspaceError> {
+        let active = self.active.lock().map_err(|_| state_error())?;
+        let Some(active) = active.as_ref() else {
+            return Ok(false);
+        };
+        Ok(active.generation == binding.generation && active.scope.root_path()? == binding.root)
+    }
+}
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self {
+            active: Mutex::new(None),
+            next_generation: AtomicU64::new(1),
+        }
+    }
+}
+
+pub(crate) struct WorkspaceBinding {
+    pub(crate) root: PathBuf,
+    generation: u64,
 }
 
 struct ActiveWorkspace {
     scope: WorkspaceScope,
-    _watcher: watcher::WorkspaceWatcher,
+    _watcher: Option<watcher::WorkspaceWatcher>,
+    generation: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -140,11 +170,13 @@ pub struct WorkspaceRootInfo {
 pub fn workspace_set_root(
     root_path: String,
     state: State<'_, WorkspaceState>,
+    git_state: State<'_, crate::git::GitState>,
     app: AppHandle,
 ) -> WorkspaceResult<WorkspaceRootInfo> {
     let scope = WorkspaceScope::new(Path::new(&root_path))?;
     let root = scope.verify()?;
-    let watcher = watcher::start(root, app)?;
+    let git_metadata = crate::git::detect_repository_metadata(root).ok().flatten();
+    let watcher = watcher::start(root, git_metadata.as_deref(), app)?;
     let root_path = root
         .to_str()
         .ok_or_else(|| {
@@ -156,10 +188,13 @@ pub fn workspace_set_root(
         .to_string();
     let workspace_id = files::hash_bytes(root_path.as_bytes());
     let mut active = state.active.lock().map_err(|_| state_error())?;
+    let generation = state.next_generation.fetch_add(1, Ordering::Relaxed);
     *active = Some(ActiveWorkspace {
         scope,
-        _watcher: watcher,
+        _watcher: Some(watcher),
+        generation,
     });
+    git_state.clear();
     Ok(WorkspaceRootInfo {
         workspace_id,
         root_path,

@@ -10,6 +10,7 @@ mod workspace;
 pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
+        .manage(git::GitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(contracts::ContractGrantState::default())
         .manage(layout::LayoutState::default())
