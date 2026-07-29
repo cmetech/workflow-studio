@@ -74,6 +74,7 @@
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
+  import { canvasCapacityForProjection } from '$src/features/canvas/project-canvas'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
   import CommandPalette from '$src/features/commands/CommandPalette.svelte'
   import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
@@ -90,6 +91,7 @@
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
     activateCanvasWorkflowIdentity,
+    setCanvasSelection,
   } from '$src/stores/canvas'
   import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
@@ -292,6 +294,7 @@
         candidate.profile === canvasProjection?.profile,
     ),
   )
+  const canvasCapacity = $derived(canvasProjection ? canvasCapacityForProjection(canvasProjection) : null)
   const inspectorNodes = $derived(
     (canvasProjection?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)),
   )
@@ -597,6 +600,11 @@
       )
       if (result.status !== 'committed') workspaceError = result.message
       else if (!didCommit) workspaceError = 'The inspector binding changed before the edit could commit.'
+      else {
+        setCanvasSelection([commit.value])
+        await tick()
+        document.querySelector<HTMLElement>('.inspector-panel [role="tab"][aria-selected="true"]')?.focus()
+      }
       return
     }
 
@@ -913,6 +921,10 @@
   })
 
   $effect(() => {
+    if (canvasCapacity && !canvasCapacity.visual && $activeEditorMode !== 'yaml') showEditorMode('yaml')
+  })
+
+  $effect(() => {
     const layout = $activeLayoutStore
     const mode = $activeEditorMode
     if (!layout) {
@@ -1223,9 +1235,12 @@
             class="editor-surfaces"
             class:split={$activeEditorMode === 'split'}
             class:yaml-only={$activeEditorMode === 'yaml'}
-            class:no-canvas={!canvasProjection || !$activeLayoutStore}
+            class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
           >
-            {#if canvasProjection && $activeLayoutStore}
+            {#if canvasCapacity?.advisory}
+              <p class="canvas-capacity-advisory" role="status">{canvasCapacity.advisory}</p>
+            {/if}
+            {#if canvasProjection && $activeLayoutStore && canvasCapacity?.visual !== false}
               <div class="canvas-pane">
                 <GraphCanvas
                   bind:this={graphCanvas}
@@ -1722,7 +1737,21 @@
   }
 
   .editor-surfaces {
+    position: relative;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .canvas-capacity-advisory {
+    position: absolute;
+    z-index: 2;
+    top: 0.5rem;
+    right: 0.75rem;
+    max-width: 38rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--color-warning);
+    border-radius: 0.35rem;
+    background: var(--color-surface);
+    font-size: 0.72rem;
   }
 
   .editor-surfaces.split:not(.no-canvas) {

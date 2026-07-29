@@ -1,4 +1,5 @@
 import type { AuthoringContract } from '$src/lib/contract/types'
+import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { ValidationIssue, WorkflowPairText } from './types'
 import { editDocumentText } from './revisions'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
@@ -120,6 +121,7 @@ export async function applyWorkflowMutation(
     }
   }
 
+  recordEditorMetric('yamlTransactions')
   return {
     ok: true,
     pair: proposedPair,

@@ -1,5 +1,6 @@
 import { isMap, parseAllDocuments, type ErrorCode, type YAMLError } from 'yaml'
 import type { ValidationIssue } from '$src/lib/documents/types'
+import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import * as sourceLocations from './source-locations'
 import type { ParseWorkflowYamlOptions, YamlParseResult } from './types'
 
@@ -12,6 +13,7 @@ const YAML_OPTIONS = {
 } as const
 
 export function parseWorkflowYaml(text: string, options: ParseWorkflowYamlOptions): YamlParseResult {
+  recordEditorMetric('parseRequests')
   const invalidUnicodeOffset = findInvalidUnicodeOffset(text)
   const byteLength = new TextEncoder().encode(text).byteLength
 

@@ -17,6 +17,7 @@
   let query = $state('')
   let activeIndex = $state(0)
   let retainedOpener: HTMLElement | undefined
+  let focusTimer: ReturnType<typeof setTimeout> | undefined
   const results = $derived(
     descriptors
       .filter((descriptor) =>
@@ -107,8 +108,12 @@
   onMount(() => {
     retainedOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined)
     search?.focus()
+    focusTimer = setTimeout(() => search?.focus(), 0)
   })
-  onDestroy(restoreOpener)
+  onDestroy(() => {
+    if (focusTimer) clearTimeout(focusTimer)
+    restoreOpener()
+  })
 </script>
 
 <div class="backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && close()}>

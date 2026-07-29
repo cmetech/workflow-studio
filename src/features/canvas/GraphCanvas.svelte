@@ -15,6 +15,7 @@
   import { resolveCommand } from '$src/lib/commands/surface'
   import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
+  import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import {
@@ -24,7 +25,7 @@
     replaceCanvasPositions,
     setCanvasSelection,
   } from '$src/stores/canvas'
-  import { projectCanvas } from './project-canvas'
+  import { createMemoizedCanvasProjector, projectCanvas } from './project-canvas'
   import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
   import type { CanvasDragDetail, CanvasEdge, CanvasNode } from './types'
   import WorkflowEdge from './WorkflowEdge.svelte'
@@ -77,6 +78,7 @@
 
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
+  const projectMemoizedCanvas = createMemoizedCanvasProjector()
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(initialProjection.nodes)
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -87,10 +89,14 @@
   let authoringFeedback = $state('')
   let edgeSourceId = $state<string | null>(null)
   let edgeTargetIndex = $state(0)
+  let reducedMotion = $state(false)
   let root: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: LayoutRecordV1 | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
+  let pendingSelection: readonly string[] | null = null
+  let selectionPublicationQueued = false
+  let canvasMounted = false
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
     canMutate: canAuthor(),
@@ -111,7 +117,7 @@
   }
 
   function deriveCanvas() {
-    return projectCanvas(projection, layout, { issues, stale, readOnly: readOnly || transitionLocked })
+    return projectMemoizedCanvas(projection, layout, { issues, stale, readOnly: readOnly || transitionLocked })
   }
 
   $effect(() => {
@@ -128,11 +134,13 @@
   })
 
   function handleDrag(detail: CanvasDragDetail): void {
+    recordEditorMetric('pointerMoves')
     if (readOnly || stale || transitionLocked) return
     moveCanvasPosition(detail.id, detail.position)
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
+    recordEditorMetric('dragCompletions')
     if (readOnly || stale || transitionLocked) return
     moveCanvasPosition(detail.id, detail.position)
     schedulePersist(layoutWithPositions())
@@ -176,7 +184,7 @@
     const targets = validEdgeTargets(sourceId)
     authoringFeedback = targets.length
       ? 'Choose a valid dependency target.'
-      : 'No valid dependency targets are available.'
+      : 'No valid dependency targets are available; connecting to an upstream node would create a cycle.'
     root?.focus()
   }
 
@@ -302,6 +310,19 @@
     selection = [...ids]
   }
 
+  function scheduleSelectionChanged(ids: readonly string[]): void {
+    if (transitionLocked) return
+    pendingSelection = [...ids]
+    if (selectionPublicationQueued) return
+    selectionPublicationQueued = true
+    queueMicrotask(() => {
+      selectionPublicationQueued = false
+      const next = pendingSelection
+      pendingSelection = null
+      if (canvasMounted && next) selectionChanged(next)
+    })
+  }
+
   function canAuthor(): boolean {
     return !readOnly && !stale && !transitionLocked
   }
@@ -374,12 +395,18 @@
     const next = pendingLayout
     pendingLayout = null
     if (!next) return persistenceQueue
-    const operation = persistenceQueue.catch(() => undefined).then(() => onPersistLayout(next))
+    const operation = persistenceQueue
+      .catch(() => undefined)
+      .then(() => {
+        recordEditorMetric('layoutSaves')
+        return onPersistLayout(next)
+      })
     persistenceQueue = operation
     return operation
   }
 
   onMount(() => {
+    canvasMounted = true
     root.tabIndex = 0
     const drag = (event: Event) => handleDrag((event as CustomEvent<CanvasDragDetail>).detail)
     const stop = (event: Event) => handleDragStop((event as CustomEvent<CanvasDragDetail>).detail)
@@ -408,22 +435,36 @@
       ).detail
       void beforeDelete(detail.nodes, detail.edges)
     }
+    const selectionEvent = (event: Event) => {
+      const ids = (event as CustomEvent<{ readonly ids: readonly string[] }>).detail.ids
+      scheduleSelectionChanged(ids)
+    }
+    const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const motionChanged = (event: MediaQueryListEvent): void => {
+      reducedMotion = event.matches
+    }
+    reducedMotion = motionQuery.matches
     root.addEventListener('workflowdragmove', drag)
     root.addEventListener('workflowdragstop', stop)
     root.addEventListener('workflowconnect', connect)
     root.addEventListener('workflowdisconnect', disconnect)
     root.addEventListener('workflowbeforedelete', beforeDeleteEvent)
+    root.addEventListener('workflowselectionchange', selectionEvent)
     root.addEventListener('keydown', handleEdgeKeydown)
+    motionQuery.addEventListener?.('change', motionChanged)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
       selection = [...ids]
     })
     return () => {
+      canvasMounted = false
       root.removeEventListener('workflowdragmove', drag)
       root.removeEventListener('workflowdragstop', stop)
       root.removeEventListener('workflowconnect', connect)
       root.removeEventListener('workflowdisconnect', disconnect)
       root.removeEventListener('workflowbeforedelete', beforeDeleteEvent)
+      root.removeEventListener('workflowselectionchange', selectionEvent)
       root.removeEventListener('keydown', handleEdgeKeydown)
+      motionQuery.removeEventListener?.('change', motionChanged)
       unsubscribeSelection()
     }
   })
@@ -435,7 +476,10 @@
 
 <section
   class="graph-canvas"
+  class:canvas-transitions={!reducedMotion}
   data-testid="workflow-canvas"
+  data-motion={reducedMotion ? 'reduced' : 'full'}
+  data-keyboard-viewport-focus="instant"
   aria-label="Workflow graph"
   aria-busy={transitionLocked}
   bind:this={root}
@@ -540,7 +584,7 @@
       const node = targetNode ?? nodes[0]
       if (node) handleDragStop({ id: node.id, position: node.position })
     }}
-    onselectionchange={({ nodes }) => selectionChanged(nodes.map(({ id }) => id))}
+    onselectionchange={({ nodes }) => scheduleSelectionChanged(nodes.map(({ id }) => id))}
     onconnect={({ source, target }) => {
       if (source && target) {
         void handleAuthoringResult(
@@ -603,6 +647,12 @@
     min-height: 18rem;
     overflow: hidden;
     background: var(--color-canvas);
+  }
+
+  .graph-canvas:focus {
+    z-index: 1;
+    outline: 3px solid var(--color-focus);
+    outline-offset: -3px;
   }
 
   :global(.graph-canvas .svelte-flow) {
@@ -701,8 +751,8 @@
     :global(.graph-canvas *::before),
     :global(.graph-canvas *::after) {
       scroll-behavior: auto !important;
-      transition-duration: 0s !important;
-      animation-duration: 0s !important;
+      transition: none !important;
+      animation: none !important;
     }
   }
 </style>

@@ -578,7 +578,7 @@ describe('App canvas authoring composition', () => {
     const before = $documentSession.get().pair!.definition.text
     await fireEvent.keyDown(canvas, { key: 'e' })
     expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
-      'No valid dependency targets are available.',
+      /No valid dependency targets are available.*cycle/,
     )
     await fireEvent.keyDown(canvas, { key: 'Enter' })
     expect($documentSession.get().pair!.definition.text).toBe(before)

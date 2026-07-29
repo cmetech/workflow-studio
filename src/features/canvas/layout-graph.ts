@@ -1,4 +1,5 @@
 import dagre from '@dagrejs/dagre'
+import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { CanvasPosition } from './types'
 
 export const CANVAS_NODE_WIDTH = 216
@@ -21,6 +22,7 @@ export type LayoutGraphAdapter = (
 
 /** The sole Dagre boundary. Inputs are inserted in stable order and never mutated. */
 export const layoutGraph: LayoutGraphAdapter = (nodes, edges) => {
+  recordEditorMetric('layouts')
   const graph = new dagre.graphlib.Graph({ directed: true, multigraph: true })
   graph.setGraph({ rankdir: 'LR', ranksep: 104, nodesep: 56, marginx: 24, marginy: 24 })
   graph.setDefaultEdgeLabel(() => ({}))

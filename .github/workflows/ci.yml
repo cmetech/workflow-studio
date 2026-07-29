@@ -28,6 +28,10 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run check
+      - run: npm run contracts:check
+      - run: npm run examples:check
+      - name: Phase 3 performance and accessibility
+        run: npm run test:unit -- tests/performance tests/accessibility
       - run: npm run test:unit
       - run: cargo +1.77.2 check --locked --manifest-path src-tauri/Cargo.toml
       - run: cargo +1.77.2 test --locked --manifest-path src-tauri/Cargo.toml

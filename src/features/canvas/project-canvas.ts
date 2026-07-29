@@ -7,6 +7,8 @@ import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH, layoutGraph, type LayoutGraphAda
 import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition } from './types'
 
 const SUMMARY_LIMIT = 72
+export const MAX_VISUAL_NODES = 250
+export const MAX_VISUAL_EDGES = 500
 
 export interface ProjectCanvasOptions {
   readonly stale?: boolean
@@ -14,6 +16,61 @@ export interface ProjectCanvasOptions {
   readonly arrange?: boolean
   readonly issues?: readonly ValidationIssue[]
   readonly layoutGraph?: LayoutGraphAdapter
+}
+
+export interface CanvasCapacity {
+  readonly visual: boolean
+  readonly blocking: false
+  readonly nodeCount: number
+  readonly edgeCount: number
+  readonly advisory?: string
+}
+
+export type ProjectCanvasAdapter = (
+  projection: WorkflowProjection,
+  savedLayout: LayoutRecordV1,
+  options?: ProjectCanvasOptions,
+) => CanvasProjection
+
+export function createMemoizedCanvasProjector(): ProjectCanvasAdapter {
+  let previousProjection: WorkflowProjection | undefined
+  let previousLayout: LayoutRecordV1 | undefined
+  let previousOptions: ProjectCanvasOptions | undefined
+  let previousResult: CanvasProjection | undefined
+
+  return (projection, savedLayout, options = {}) => {
+    if (
+      previousResult &&
+      projection === previousProjection &&
+      savedLayout === previousLayout &&
+      sameProjectOptions(options, previousOptions)
+    ) {
+      return previousResult
+    }
+    const result = projectCanvas(projection, savedLayout, options)
+    previousProjection = projection
+    previousLayout = savedLayout
+    previousOptions = options
+    previousResult = result
+    return result
+  }
+}
+
+export function canvasCapacityForProjection(projection: WorkflowProjection): CanvasCapacity {
+  const nodeCount = projection.nodes.length
+  const edgeCount = projection.edges.length
+  const visual = nodeCount <= MAX_VISUAL_NODES && edgeCount <= MAX_VISUAL_EDGES
+  return {
+    visual,
+    blocking: false,
+    nodeCount,
+    edgeCount,
+    ...(!visual
+      ? {
+          advisory: `This workflow is preserved and remains editable in YAML-only mode because the visual canvas supports at most ${MAX_VISUAL_NODES} nodes and ${MAX_VISUAL_EDGES} edges.`,
+        }
+      : {}),
+  }
 }
 
 export function projectCanvas(
@@ -25,9 +82,16 @@ export function projectCanvas(
   const readOnly = stale || options.readOnly === true
   const positions = resolvePositions(projection, savedLayout, options)
   const issues = options.issues ?? []
+  const issuesByNode = new Map<string, ValidationIssue[]>()
+  for (const issue of issues) {
+    if (!issue.nodeId) continue
+    const nodeIssues = issuesByNode.get(issue.nodeId) ?? []
+    nodeIssues.push(issue)
+    issuesByNode.set(issue.nodeId, nodeIssues)
+  }
 
   const nodes: CanvasNode[] = projection.nodes.map((node) => {
-    const nodeIssues = issues.filter((issue) => issue.nodeId === node.id)
+    const nodeIssues = issuesByNode.get(node.id) ?? []
     const errorCount = nodeIssues.filter((issue) => issue.severity === 'error').length
     const requiredIssueCount = nodeIssues.filter(
       (issue) => issue.code.toLowerCase().includes('required') || issue.message.toLowerCase().includes('required'),
@@ -70,6 +134,17 @@ export function projectCanvas(
   }))
 
   return { nodes, edges, positions, stale, readOnly }
+}
+
+function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOptions | undefined): boolean {
+  return Boolean(
+    right &&
+    left.stale === right.stale &&
+    left.readOnly === right.readOnly &&
+    left.arrange === right.arrange &&
+    left.issues === right.issues &&
+    left.layoutGraph === right.layoutGraph,
+  )
 }
 
 export function isWorkflowProjection(value: unknown): value is WorkflowProjection {

@@ -1,4 +1,5 @@
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
+import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue } from '$src/lib/documents/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
@@ -10,6 +11,7 @@ export async function analyzeWorkflowPair(
   request: AnalyzeDocumentRequest,
   contract: AuthoringContract,
 ): Promise<DocumentAnalysis> {
+  recordEditorMetric('validationPasses')
   const identity = {
     workflowId: request.workflowId,
     pairGeneration: request.pairGeneration,
