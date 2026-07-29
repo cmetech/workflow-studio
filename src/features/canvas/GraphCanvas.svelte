@@ -22,6 +22,7 @@
     setCanvasSelection,
   } from '$src/stores/canvas'
   import { projectCanvas } from './project-canvas'
+  import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
   import type { CanvasDragDetail, CanvasEdge, CanvasNode } from './types'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
@@ -254,8 +255,8 @@
     if (!nodes.length) return
     const left = Math.min(...nodes.map(({ position }) => position.x))
     const top = Math.min(...nodes.map(({ position }) => position.y))
-    const right = Math.max(...nodes.map(({ position }) => position.x + 180))
-    const bottom = Math.max(...nodes.map(({ position }) => position.y + 90))
+    const right = Math.max(...nodes.map(({ position }) => position.x + CANVAS_NODE_WIDTH))
+    const bottom = Math.max(...nodes.map(({ position }) => position.y + CANVAS_NODE_HEIGHT))
     const width = Math.max(1, right - left)
     const height = Math.max(1, bottom - top)
     const zoom = Math.max(

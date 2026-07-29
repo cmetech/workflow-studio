@@ -175,6 +175,7 @@
   let canvasStale = $state(false)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
+  let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
   let addNodeRequest = $state<{
     request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
     opener: HTMLElement | undefined
@@ -368,7 +369,7 @@
     const canvasContext = surface === 'canvas' ? canvasAuthoringContext() : null
     const pair = documentSessionStore.get().pair
     const activeEntry = workspace.get().entries.find((entry) => entry.id === pair?.workflowId)
-    const documentCanMutate = Boolean(pair && activeEntry?.readOnly !== true)
+    const documentCanMutate = Boolean(pair && activeEntry?.readOnly === false)
     return {
       surface,
       canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
@@ -401,22 +402,16 @@
   }
 
   function findInCurrentSurface(): void {
-    const editor = document.querySelector<HTMLElement>('.cm-content')
-    if (editor) {
-      editor.focus()
-      return
-    }
-    void runCommand('workbench.command-palette', {
-      ...globalContext,
-      canMutate: Boolean(documentSessionStore.get().pair),
-    })
+    if (editorModesHost?.openFind()) return
+    void runCommand('workbench.command-palette', globalContext)
   }
 
   function validateCurrentWorkflow(): void {
     const pair = documentSessionStore.get().pair
     if (!pair) return
-    documentWorkspace.changed(pair, 'user')
-    workspaceError = 'Validation scheduled for the current workflow.'
+    workspaceError = documentWorkspace.validateCurrent()
+      ? 'Validation scheduled for the current workflow.'
+      : 'Validation is unavailable for the current workflow.'
   }
 
   function focusInspector(): void {
@@ -1242,6 +1237,7 @@
               <div class="yaml-pane">
                 {#key $documentSessionStore.pair.workflowId}
                   <EditorModes
+                    bind:this={editorModesHost}
                     pair={$documentSessionStore.pair}
                     revision={$documentSessionStore.revision}
                     analysis={$documentSessionStore.analysis}

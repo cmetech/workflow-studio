@@ -185,6 +185,13 @@ export class DocumentWorkspaceController {
     else this.publishContractUnavailable(pair, revision.contractDigest)
   }
 
+  validateCurrent(): boolean {
+    const pair = $documentSession.get().pair
+    if (!pair || this.publicationSuppressed() || !this.activeContract) return false
+    this.analysisClient.schedule(pair, this.activeContract, 'explicit-validate')
+    return true
+  }
+
   async activateContract(contract: AuthoringContract): Promise<boolean> {
     if ((this.dependencies.validateContractCoverage ?? validateContractFormCoverage)(contract).length > 0) return false
     const active = $documentSession.get()

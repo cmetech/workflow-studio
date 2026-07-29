@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import type { EditorView } from '@codemirror/view'
+  import { openSearchPanel } from '@codemirror/search'
   import type { EditorMode } from '$src/lib/commands/types'
   import { isAnalysisCurrent } from '$src/lib/documents/revisions'
   import type { DocumentAnalysis, DocumentKind, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
@@ -114,6 +115,14 @@
     if (document === 'definition') throw new Error('The definition editor has not mounted.')
     if (!companionEditor) throw new Error('The active workflow has no companion editor.')
     return companionEditor.getView()
+  }
+
+  export function openFind(): boolean {
+    if (mode === 'visual') return false
+    const editor = $activeYamlDocument === 'definition' ? definitionEditor : companionEditor
+    if (!editor) return false
+    openSearchPanel(editor.getView())
+    return true
   }
 </script>
 
