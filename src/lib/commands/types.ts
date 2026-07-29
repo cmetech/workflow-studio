@@ -5,6 +5,7 @@ export type EditorMode = 'visual' | 'split' | 'yaml'
 export interface CommandContext {
   surface: 'global' | 'canvas' | 'yaml' | 'form'
   canMutate: boolean
+  canValidate?: boolean
   hasSelection: boolean
   targetEntryId?: string | null
   contractAvailable?: boolean

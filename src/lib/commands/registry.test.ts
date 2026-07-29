@@ -229,6 +229,20 @@ describe('command registry', () => {
     ).toBe(true)
   })
 
+  it('enables explicit validation for a read-only active document without enabling mutations', () => {
+    const context: CommandContext = { surface: 'yaml', canMutate: false, canValidate: true, hasSelection: false }
+    expect(
+      listCommands()
+        .find(({ id }) => id === 'workflow.validate')
+        ?.enabled(context),
+    ).toBe(true)
+    expect(
+      listCommands()
+        .find(({ id }) => id === 'document.save')
+        ?.enabled(context),
+    ).toBe(false)
+  })
+
   it('routes the Mod+S document command to the active lifecycle handler', async () => {
     const save = vi.fn(async () => undefined)
     const unbind = setDocumentSaveHandler(save)

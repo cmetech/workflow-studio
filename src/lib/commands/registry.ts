@@ -402,7 +402,7 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Validate Workflow',
     category: 'Workflow',
     defaultBindings: [],
-    enabled: (context) => context.canMutate,
+    enabled: (context) => context.canValidate === true,
     run: () => workflowValidateHandler?.(),
   },
   {

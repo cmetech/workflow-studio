@@ -373,6 +373,7 @@
     return {
       surface,
       canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
+      canValidate: Boolean(pair),
       hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,
     }
   }
