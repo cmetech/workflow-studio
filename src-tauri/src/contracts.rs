@@ -12,10 +12,20 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
+use std::os::windows::process::CommandExt as WindowsCommandExt;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
 };
 
 use same_file::Handle;
@@ -560,6 +570,8 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    #[cfg(windows)]
+    command.creation_flags(CREATE_SUSPENDED);
     let mut child = command.spawn().map_err(|error| {
         contract_error(
             "contract_cli_spawn_failed",
@@ -569,7 +581,7 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     #[cfg(unix)]
     let process_id = child.id();
     #[cfg(windows)]
-    let process_job = match assign_windows_process_job(&child) {
+    let process_job = match contain_windows_suspended_child(&child) {
         Ok(job) => job,
         Err(error) => {
             let _ = child.kill();
@@ -701,7 +713,9 @@ impl Drop for WindowsProcessJob {
 }
 
 #[cfg(windows)]
-fn assign_windows_process_job(child: &std::process::Child) -> ContractResult<WindowsProcessJob> {
+fn contain_windows_suspended_child(
+    child: &std::process::Child,
+) -> ContractResult<WindowsProcessJob> {
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() {
         return Err(contract_error(
@@ -722,7 +736,58 @@ fn assign_windows_process_job(child: &std::process::Child) -> ContractResult<Win
             ),
         ));
     }
+    let thread = primary_thread_for(child.id())?;
+    if unsafe { ResumeThread(thread) } == u32::MAX {
+        unsafe { CloseHandle(thread) };
+        unsafe { TerminateJobObject(job.0, 1) };
+        return Err(contract_error(
+            "contract_cli_spawn_failed",
+            format!(
+                "Could not resume contained Hermes: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    unsafe { CloseHandle(thread) };
     Ok(job)
+}
+
+#[cfg(windows)]
+fn primary_thread_for(process_id: u32) -> ContractResult<HANDLE> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot.is_null() || snapshot as isize == -1 {
+        return Err(contract_error(
+            "contract_cli_spawn_failed",
+            format!(
+                "Could not enumerate suspended Hermes threads: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut found = None;
+    if unsafe { Thread32First(snapshot, &mut entry) } != 0 {
+        loop {
+            if entry.th32OwnerProcessID == process_id {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !thread.is_null() {
+                    found = Some(thread);
+                    break;
+                }
+            }
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+    }
+    unsafe { CloseHandle(snapshot) };
+    found.ok_or_else(|| {
+        contract_error(
+            "contract_cli_spawn_failed",
+            "Could not open the suspended Hermes primary thread.",
+        )
+    })
 }
 
 fn read_stream_bounded(mut stream: impl Read) -> ContractResult<Vec<u8>> {

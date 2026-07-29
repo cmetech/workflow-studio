@@ -71,6 +71,7 @@ export interface WorkspaceActionsNative {
 export interface WorkspaceActionsDependencies {
   readonly native: WorkspaceActionsNative
   readonly contracts: readonly AuthoringContract[]
+  readonly activeContract?: (profile: WorkflowProfile) => AuthoringContract | undefined
   readonly analyze: (input: {
     definitionText: string
     companionText: string | null
@@ -174,7 +175,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 
   async function createWorkflow(input: NewWorkflowInput) {
-    const activeContract = contractFor(dependencies.contracts, input.profile)
+    const activeContract = contractFor(dependencies, input.profile)
     const descriptor = activeContract.node_kinds.find(
       (kind) =>
         kind.id === input.firstNodeKind &&
@@ -278,7 +279,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     profile: WorkflowProfile
     metadata: Readonly<Record<string, unknown>>
   }): Promise<string> {
-    const activeContract = contractFor(dependencies.contracts, input.profile)
+    const activeContract = contractFor(dependencies, input.profile)
     const text = companionTextFor(activeContract, input.profile, input.metadata)
     const definition = await dependencies.native.workspaceRead(input.definitionPath)
     const analysis = await dependencies.analyze({
@@ -368,7 +369,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     } catch (error: unknown) {
       if (!hasCode(error, 'path_not_found') && !hasCode(error, 'dialog_permission_required')) throw error
     }
-    const activeContract = contractFor(dependencies.contracts, input.profile)
+    const activeContract = contractFor(dependencies, input.profile)
     const analysis = await dependencies.analyze({
       definitionText: definition.text,
       companionText: companion?.text ?? null,
@@ -533,11 +534,14 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 }
 
-function contractFor(contracts: readonly AuthoringContract[], profile: WorkflowProfile): AuthoringContract {
-  const active = contracts.find((contract) => contract.profile === profile)
-  if (!active)
-    throw new WorkspaceActionError('contract_unavailable', `The ${profile} authoring contract is unavailable.`)
-  return active
+function contractFor(dependencies: WorkspaceActionsDependencies, profile: WorkflowProfile): AuthoringContract {
+  const active = dependencies.activeContract?.(profile)
+  if (active && active.profile === profile && dependencies.contracts.some((contract) => contract.contract_digest === active.contract_digest)) {
+    return active
+  }
+  const candidates = dependencies.contracts.filter((contract) => contract.profile === profile)
+  if (candidates.length === 1) return candidates[0]!
+  throw new WorkspaceActionError('contract_unavailable', `The active ${profile} authoring contract is unavailable.`)
 }
 
 function graphParameters(contract: AuthoringContract) {

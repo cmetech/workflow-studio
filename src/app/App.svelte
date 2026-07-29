@@ -97,6 +97,9 @@
     availableContracts.splice(0, availableContracts.length, ...next)
     contracts = next
   }
+  function activeContractForProfile(profile: 'hermes-legacy' | 'archon-2026-07'): AuthoringContract | undefined {
+    return appContractCache?.activeContract(profile) ?? contracts.find((contract) => contract.profile === profile)
+  }
   const contractReadiness = loadBundledAuthoringContracts().then(async (loaded) => {
     appContractCache = createContractCache({
       bundled: loaded,
@@ -185,6 +188,7 @@
   const actions = createWorkspaceActions({
     native,
     contracts: availableContracts,
+    activeContract: activeContractForProfile,
     analyze: analyzeCandidateInWorker,
     activate: openEntry,
     openDraft: (pair, contract) => {
@@ -537,7 +541,7 @@
       value && typeof value === 'object' && 'language_compatibility' in value
         ? value.language_compatibility
         : 'hermes-legacy'
-    return appContractCache?.activeContract(profile) ?? contracts.find((contract) => contract.profile === profile)
+    return activeContractForProfile(profile)
   }
 
   async function openEntry(entry: WorkflowPairEntry): Promise<void> {
@@ -1112,6 +1116,7 @@
   {#if newDialogVisible && contracts.length > 0}
     <NewWorkflowDialog
       {contracts}
+      activeContract={activeContractForProfile}
       opener={newDialogOpener}
       onCancel={() => (newDialogVisible = false)}
       onCreate={async (input) => {
@@ -1125,13 +1130,13 @@
       }}
     />
   {/if}
-  {#if importDialogVisible && contracts[0]}
+  {#if importDialogVisible && activeContractForProfile('archon-2026-07')}
     <ImportExportDialog
       mode="import"
       opener={importDialogOpener}
       onCancel={() => (importDialogVisible = false)}
       onConfirm={async () => {
-        const outcome = await actions.importWorkflow({ profile: contracts[0]!.profile })
+        const outcome = await actions.importWorkflow({ profile: 'archon-2026-07' })
         await refreshWorkspace()
         if (outcome.status !== 'partial') importDialogVisible = false
         else

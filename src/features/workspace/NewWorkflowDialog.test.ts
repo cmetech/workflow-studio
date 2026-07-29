@@ -54,6 +54,17 @@ describe('NewWorkflowDialog', () => {
     )
   })
 
+  it('uses the supplied active same-profile contract rather than the first sorted version', () => {
+    const inactive = { ...contract, contract_digest: `sha256:${'0'.repeat(64)}` as `sha256:${string}`, node_kinds: [{ ...contract.node_kinds[0]!, id: 'inactive' }] }
+    const active = { ...contract, contract_digest: `sha256:${'f'.repeat(64)}` as `sha256:${string}`, node_kinds: [{ ...contract.node_kinds[0]!, id: 'active' }] }
+    render(NewWorkflowDialog, {
+      contracts: [inactive, active],
+      activeContract: () => active,
+    })
+
+    expect(screen.getByRole('combobox', { name: 'First node kind' })).toHaveValue('active')
+  })
+
   it('focuses the first field and restores its opener when Escape dismisses the modal', async () => {
     const opener = document.createElement('button')
     document.body.append(opener)

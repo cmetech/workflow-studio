@@ -240,6 +240,36 @@ describe('workspace actions', () => {
     expect(native.workspaceSetRoot).toHaveBeenCalledTimes(1)
   })
 
+  it('creates and imports with the selected active same-profile contract, not lexical contract order', async () => {
+    const cached = {
+      ...contract,
+      contract_digest: `sha256:${'f'.repeat(64)}` as const,
+    }
+    let selected: AuthoringContract = cached
+    const api = createWorkspaceActions({
+      native,
+      contracts: [contract, cached],
+      activeContract: (profile) => profile === 'hermes-legacy' ? selected : undefined,
+      analyze: async ({ contract: candidate }) => ({ ...validAnalysis(), contractDigest: candidate.contract_digest, structurallyValid: candidate.contract_digest === selected.contract_digest }),
+      activate,
+      openDraft,
+      closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
+      renameDocument,
+      companionCreated,
+      companionRemoved,
+      recoverDraft,
+    })
+
+    await expect(api.createWorkflow({
+      name: 'Active contract', description: 'Uses the selected version', profile: 'hermes-legacy', firstNodeId: 'first', firstNodeKind: 'command', firstNodeValues: { 'command-value': 'echo' },
+    })).resolves.toMatchObject({ status: 'completed' })
+    selected = contract
+    await expect(api.importWorkflow({ profile: 'hermes-legacy' })).resolves.toMatchObject({ status: 'imported' })
+  })
+
   it('aborts a root switch when the active lifecycle cannot flush and close', async () => {
     closeWorkspace.mockRejectedValueOnce(new Error('recovery flush failed'))
     await expect(actions().openWorkspace('/other')).rejects.toThrow('recovery flush failed')
