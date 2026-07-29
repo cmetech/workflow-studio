@@ -16,7 +16,7 @@
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
-  import type { AuthoringContract } from '$src/lib/contract/types'
+  import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
   import { applyWorkflowMutation } from '$src/lib/documents/transactions'
@@ -108,6 +108,7 @@
   const draftDigest = `sha256:${'0'.repeat(64)}` as const
   const availableContracts: AuthoringContract[] = []
   let contracts = $state.raw<readonly AuthoringContract[]>([])
+  let bundledContracts = $state.raw<readonly AuthoringContract[]>([])
   let examples = $state.raw<readonly ExampleDescriptor[]>([])
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
@@ -119,6 +120,7 @@
     return appContractCache?.activeContract(profile)
   }
   const contractReadiness = loadBundledAuthoringContracts().then(async (loaded) => {
+    bundledContracts = loaded
     appContractCache = createContractCache({
       bundled: loaded,
       native,
@@ -148,6 +150,7 @@
   let exportBlockingIssues = $state<readonly string[]>([])
   let inspectorDocumentationTopicId = $state<string | undefined>()
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
+  let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
   let documentationNavigationSequence = 0
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
@@ -299,15 +302,31 @@
   })
   const inspectorBindingIdentity = $derived(formBindingIdentity(inspectorNodes[0]?.id ?? 'workflow'))
   const inspectorDisabledReason = $derived(inspectorMutationDisabledReason())
-  const documentationContract = $derived(
+  const activeDocumentDocumentationContract = $derived(
     contracts.find((candidate) => candidate.contract_digest === $documentSessionStore.revision?.contractDigest),
   )
+  const activeDocumentDocumentationIndex = $derived.by<DocumentationIndex | null>(() =>
+    activeDocumentDocumentationContract
+      ? buildDocumentationIndex(activeDocumentDocumentationContract, bundledGuides)
+      : null,
+  )
+  const exampleDocumentationContract = $derived(
+    exampleDocumentationProfile
+      ? bundledContracts.find((candidate) => candidate.profile === exampleDocumentationProfile)
+      : undefined,
+  )
   const documentationIndex = $derived.by<DocumentationIndex | null>(() =>
-    documentationContract ? buildDocumentationIndex(documentationContract, bundledGuides) : null,
+    exampleDocumentationProfile
+      ? exampleDocumentationContract
+        ? buildDocumentationIndex(exampleDocumentationContract, bundledGuides)
+        : null
+      : activeDocumentDocumentationIndex,
   )
   const exampleTopicLabels = $derived.by(() =>
     Object.fromEntries(
-      contracts.flatMap((contract) => contract.documentation.topics.map((topic) => [topic.id, topic.title])),
+      bundledContracts.flatMap((contract) =>
+        contract.documentation.topics.map((topic) => [`${contract.profile}:${topic.id}`, topic.title]),
+      ),
     ),
   )
 
@@ -589,7 +608,10 @@
       const workspaceId = $workspace.id
       if (!workspaceId) return
       const opened = await documentWorkspace.activate(workspaceId, entry, contract ?? null, requestToken)
-      if (opened) selectWorkspaceEntry(entry.id)
+      if (opened) {
+        exampleDocumentationProfile = undefined
+        selectWorkspaceEntry(entry.id)
+      }
     })
   }
 
@@ -611,7 +633,8 @@
     await refreshWorkspace()
   }
 
-  function openExampleDocumentation(topicId: string): void {
+  function openExampleDocumentation(example: ExampleDescriptor, topicId: string): void {
+    exampleDocumentationProfile = example.profile
     documentationNavigationSequence += 1
     documentationNavigationRequest = { id: documentationNavigationSequence, topicId: `contract:${topicId}` }
     showActivity('documentation')
@@ -1092,6 +1115,7 @@
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
           onDocumentation={(id) => {
+            exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
             documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
             showActivity('documentation')
@@ -1151,7 +1175,7 @@
         bindingIdentity={inspectorBindingIdentity}
         issues={$documentSessionStore.analysis?.issues ?? []}
         disabledReason={inspectorDisabledReason}
-        documentationIndex={documentationIndex ?? undefined}
+        documentationIndex={activeDocumentDocumentationIndex ?? undefined}
         documentationTopicId={inspectorDocumentationTopicId}
         onDocumentationTopic={(id) => (inspectorDocumentationTopicId = id)}
         onCommit={commitInspectorField}

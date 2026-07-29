@@ -78,7 +78,7 @@
   }
 </script>
 
-<section class="documentation" aria-label="Offline documentation">
+<section class="documentation" aria-label="Offline documentation" data-profile={index.topics[0]?.profile}>
   <label>
     Search documentation
     <input

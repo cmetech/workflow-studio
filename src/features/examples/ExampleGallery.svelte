@@ -5,7 +5,7 @@
     examples: readonly ExampleDescriptor[]
     topicLabels: Readonly<Record<string, string>>
     onCreateEditableCopy: (example: ExampleDescriptor) => void | Promise<void>
-    onOpenDocumentation: (topicId: string) => void
+    onOpenDocumentation: (example: ExampleDescriptor, topicId: string) => void
   }
 
   let { examples, topicLabels, onCreateEditableCopy, onOpenDocumentation }: Props = $props()
@@ -40,8 +40,8 @@
         </dl>
         <div class="topics" aria-label={`${example.title} documentation`}>
           {#each example.documentationTopicIds as topicId (topicId)}
-            <button type="button" onclick={() => onOpenDocumentation(topicId)}>
-              Open documentation: {topicLabels[topicId] ?? topicId}
+            <button type="button" onclick={() => onOpenDocumentation(example, topicId)}>
+              Open documentation: {topicLabels[`${example.profile}:${topicId}`] ?? topicId}
             </button>
           {/each}
         </div>

@@ -27,7 +27,7 @@ describe('ExampleGallery', () => {
     const onOpenDocumentation = vi.fn()
     render(ExampleGallery, {
       examples: [example],
-      topicLabels: { 'workflow-definition': 'Workflow definition' },
+      topicLabels: { 'hermes-legacy:workflow-definition': 'Workflow definition' },
       onCreateEditableCopy,
       onOpenDocumentation,
     })
@@ -41,6 +41,6 @@ describe('ExampleGallery', () => {
     const topic = screen.getByRole('button', { name: 'Open documentation: Workflow definition' })
     await fireEvent.keyDown(topic, { key: 'Enter' })
     await fireEvent.click(topic)
-    expect(onOpenDocumentation).toHaveBeenCalledWith('workflow-definition')
+    expect(onOpenDocumentation).toHaveBeenCalledWith(example, 'workflow-definition')
   })
 })

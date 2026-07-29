@@ -140,6 +140,50 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
   })
 
+  it('opens a legacy example topic without an active document', async () => {
+    showActivity('examples')
+    render(App)
+
+    const minimalTitle = await screen.findByRole('heading', { name: 'Minimal prompt' })
+    const minimalCard = minimalTitle.closest('article')!
+    await fireEvent.click(within(minimalCard).getByRole('button', { name: 'Open documentation: Workflow definition' }))
+
+    const documentation = await screen.findByLabelText('Offline documentation')
+    expect(documentation).toHaveAttribute('data-profile', 'hermes-legacy')
+    expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+  })
+
+  it('uses the example profile rather than an open document profile for documentation', async () => {
+    const archon = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:archon-host.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'archon-host:definition',
+          kind: 'definition',
+          path: 'archon-host.yaml',
+          text: 'name: Archon host\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      archon.contract_digest,
+    )
+    showActivity('examples')
+    render(App)
+
+    const minimalTitle = await screen.findByRole('heading', { name: 'Minimal prompt' })
+    await fireEvent.click(
+      within(minimalTitle.closest('article')!).getByRole('button', { name: 'Open documentation: Workflow definition' }),
+    )
+
+    expect(await screen.findByLabelText('Offline documentation')).toHaveAttribute('data-profile', 'hermes-legacy')
+  })
+
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
