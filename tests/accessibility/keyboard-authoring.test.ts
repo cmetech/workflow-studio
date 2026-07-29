@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { render, screen, waitFor } from '@testing-library/svelte'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -198,14 +199,11 @@ function expectVisibleKeyboardFocus(element: HTMLElement): void {
   expect(element.matches(':focus-visible') || (outline !== '' && outline !== '0px')).toBe(true)
 }
 
-async function openAddNodeWithKeyboard(canvas: HTMLElement): Promise<HTMLInputElement> {
-  canvas.focus()
-  expectVisibleKeyboardFocus(canvas)
-  await fireEvent.keyDown(canvas, { key: 'F1' })
+async function openAddNodeWithKeyboard(user: UserEvent): Promise<HTMLInputElement> {
+  await user.keyboard('{F1}')
   const commands = await screen.findByRole('combobox', { name: 'Search commands' })
   expectVisibleKeyboardFocus(commands)
-  await fireEvent.input(commands, { target: { value: 'Add Node' } })
-  await fireEvent.keyDown(commands, { key: 'Enter' })
+  await user.keyboard('Add Node{Enter}')
   const nodeKinds = await screen.findByRole('combobox', { name: 'Search node kinds' })
   await waitFor(() => expectVisibleKeyboardFocus(nodeKinds))
   return nodeKinds
@@ -220,14 +218,18 @@ async function waitForCurrentAnalysis(): Promise<void> {
   await tick()
 }
 
-async function selectNodeWithKeyboard(id: string): Promise<HTMLElement> {
+async function tabTo(user: UserEvent, target: HTMLElement, limit = 80): Promise<void> {
+  for (let index = 0; index < limit && document.activeElement !== target; index += 1) await user.tab()
+  expectVisibleKeyboardFocus(target)
+}
+
+async function selectNodeWithKeyboard(user: UserEvent, id: string): Promise<HTMLElement> {
   const node = (await screen.findAllByLabelText(`command node ${id}`)).find((element) =>
     element.classList.contains('svelte-flow__node'),
   ) as HTMLElement | undefined
   expect(node).toBeDefined()
-  node!.focus()
-  expectVisibleKeyboardFocus(node!)
-  await fireEvent.keyDown(node!, { key: ' ' })
+  await tabTo(user, node!)
+  await user.keyboard(' ')
   await waitFor(() => expect($canvasSelection.get()).toEqual([id]))
   await new Promise((resolve) => setTimeout(resolve, 0))
   await tick()
@@ -286,6 +288,7 @@ describe('keyboard-only workflow authoring', () => {
   })
 
   it('adds two nodes, connects and edits them, saves, and rejects a cycle with visible focus throughout', async () => {
+    const user = userEvent.setup()
     const writes: string[] = []
     setNativeBridgeForTest({
       workspaceRead: async (relativePath) => ({
@@ -307,28 +310,23 @@ describe('keyboard-only workflow authoring', () => {
     const App = (await import('$src/app/App.svelte')).default
     const rendered = render(App)
     const workflowEntry = await screen.findByRole('treeitem', { name: /keyboard\.yaml, legacy workflow/i })
+    // jsdom does not seed focus into a newly mounted application. This is the
+    // single initial entry point; every subsequent move uses keyboard actions.
     workflowEntry.focus()
     expectVisibleKeyboardFocus(workflowEntry)
-    await fireEvent.keyDown(workflowEntry, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     const canvas = await screen.findByRole('region', { name: 'Workflow graph' })
     await waitFor(() =>
       expect(
         screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
       ).toBe(true),
     )
-    await waitFor(() => {
-      canvas.focus()
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F1', bubbles: true }))
-      expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
-    })
-    closeCommandPalette()
-    await tick()
-
-    let picker = await openAddNodeWithKeyboard(canvas)
-    await fireEvent.keyDown(picker, { key: 'Enter' })
+    await tabTo(user, canvas)
+    let picker = await openAddNodeWithKeyboard(user)
+    await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
     await waitFor(() => expect(projection($documentSession.get().pair!.definition.text).nodes).toHaveLength(2))
+    expectVisibleKeyboardFocus(canvas)
 
-    await selectNodeWithKeyboard('seed')
     const pairAfterAdd = $documentSession.get().pair!
     await waitFor(() => {
       expect($documentSession.get().analysis?.issues).toEqual([])
@@ -339,61 +337,59 @@ describe('keyboard-only workflow authoring', () => {
     })
     expect(screen.queryByText(/last valid graph shown read-only/i)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
+    await selectNodeWithKeyboard(user, 'seed')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled())
-    const seed = await selectNodeWithKeyboard('seed')
-    await fireEvent.keyDown(seed, { key: 'e' })
+    await user.keyboard('e')
     expect(await screen.findByRole('option', { name: 'command' })).toHaveAttribute('aria-selected', 'true')
     expectVisibleKeyboardFocus(canvas)
-    await fireEvent.keyDown(canvas, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     await waitFor(() => {
       const nodes = projection($documentSession.get().pair!.definition.text).nodes
       expect(nodes.find(({ id }) => id === 'command')?.dependsOn).toEqual(['seed'])
     })
     await waitForCurrentAnalysis()
 
-    const command = await selectNodeWithKeyboard('command')
-    await fireEvent.keyDown(command, { key: 'N', shiftKey: true })
+    await selectNodeWithKeyboard(user, 'command')
+    await user.keyboard('{Shift>}n{/Shift}')
     picker = await screen.findByRole('combobox', { name: 'Search node kinds' })
     await waitFor(() => expectVisibleKeyboardFocus(picker))
-    await fireEvent.keyDown(picker, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     await waitFor(() => {
       const nodes = projection($documentSession.get().pair!.definition.text).nodes
       expect(nodes.find(({ id }) => id === 'command-2')?.dependsOn).toEqual(['command'])
     })
+    expectVisibleKeyboardFocus(canvas)
     await waitForCurrentAnalysis()
 
-    const downstream = await selectNodeWithKeyboard('command-2')
+    await selectNodeWithKeyboard(user, 'command-2')
     const beforeCycleAttempt = $documentSession.get().pair!.definition.text
-    await fireEvent.keyDown(downstream, { key: 'e' })
+    await user.keyboard('e')
     const liveFeedback = screen.getByRole('status', { name: 'Canvas authoring feedback' })
     expect(liveFeedback).toHaveTextContent(/cycle/i)
     expect($documentSession.get().pair!.definition.text).toBe(beforeCycleAttempt)
+    expectVisibleKeyboardFocus(canvas)
 
-    canvas.focus()
-    await fireEvent.keyDown(canvas, { key: 'Enter' })
+    await user.keyboard('{Enter}')
     const generalTab = await screen.findByRole('tab', { name: 'General' })
     expectVisibleKeyboardFocus(generalTab)
     const requiredId = await screen.findByRole('textbox', { name: /node id/i })
     expect(requiredId).toHaveAttribute('aria-required', 'true')
-    requiredId.focus()
-    expectVisibleKeyboardFocus(requiredId)
-    await fireEvent.input(requiredId, { target: { value: 'final-command' } })
-    await fireEvent.keyDown(requiredId, { key: 'Enter' })
+    await tabTo(user, requiredId)
+    await user.keyboard(
+      `${/mac/i.test(navigator.platform) ? '{Meta>}' : '{Control>}'}a${/mac/i.test(navigator.platform) ? '{/Meta}' : '{/Control}'}final-command{Enter}`,
+    )
     await waitFor(() => expect($documentSession.get().pair!.definition.text).toContain('id: final-command'))
     await waitFor(() => {
       const pair = $documentSession.get().pair!
       expect($documentSession.get().analysis?.definitionRevision).toBe(pair.definition.revision)
     })
 
-    const saveTarget = await screen.findByRole('textbox', { name: /node id/i })
-    saveTarget.focus()
-    await fireEvent.keyDown(saveTarget, {
-      key: 's',
-      ...(/mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }),
-    })
+    const saveTarget = await screen.findByRole('tab', { name: 'General' })
+    expectVisibleKeyboardFocus(saveTarget)
+    await user.keyboard(/mac/i.test(navigator.platform) ? '{Meta>}s{/Meta}' : '{Control>}s{/Control}')
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0]).toContain('id: final-command')
     expectVisibleKeyboardFocus(saveTarget)
     rendered.unmount()
-  }, 15_000)
+  }, 20_000)
 })

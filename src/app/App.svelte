@@ -507,7 +507,9 @@
     }
     addNodeRequest = {
       request,
-      opener: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+      opener:
+        document.querySelector<HTMLElement>('.graph-canvas') ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement : undefined),
     }
   }
 

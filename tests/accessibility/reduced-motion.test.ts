@@ -6,6 +6,34 @@ import { commandRegistry } from '$src/lib/commands/registry'
 import { clearCanvasState } from '$src/stores/canvas'
 import { createLargeWorkflowFixture } from '../performance/large-workflow'
 
+function createMotionPreference(initialMatches = false) {
+  let matches = initialMatches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
+  const query = {
+    get matches() {
+      return matches
+    },
+    media: '(prefers-reduced-motion: reduce)',
+    onchange: null,
+    addEventListener: vi.fn((type: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (type === 'change') listeners.add(listener)
+    }),
+    removeEventListener: vi.fn((type: string, listener: (event: MediaQueryListEvent) => void) => {
+      if (type === 'change') listeners.delete(listener)
+    }),
+  }
+
+  return {
+    query: query as unknown as MediaQueryList,
+    listenerCount: () => listeners.size,
+    setMatches(next: boolean): void {
+      matches = next
+      const event = { matches, media: query.media } as MediaQueryListEvent
+      for (const listener of [...listeners]) listener(event)
+    },
+  }
+}
+
 describe('canvas reduced-motion contract', () => {
   beforeAll(() => {
     Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 1200 })
@@ -22,18 +50,14 @@ describe('canvas reduced-motion contract', () => {
 
   afterEach(() => clearCanvasState())
 
-  it('removes canvas transition and animation classes and focuses the keyboard viewport instantly', async () => {
+  it('reacts to runtime preference changes, keeps keyboard viewport movement instant, and cleans up', async () => {
+    const motion = createMotionPreference()
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
-      value: vi.fn((query: string) => ({
-        matches: query === '(prefers-reduced-motion: reduce)',
-        media: query,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
+      value: vi.fn(() => motion.query),
     })
     const fixture = createLargeWorkflowFixture()
-    const { container, component } = render(GraphCanvas, {
+    const { container, component, unmount } = render(GraphCanvas, {
       commandSurface: commandRegistry,
       projection: fixture.projection,
       layout: fixture.layout,
@@ -42,9 +66,17 @@ describe('canvas reduced-motion contract', () => {
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     const viewport = canvas.querySelector<HTMLElement>('.svelte-flow__viewport')!
 
+    expect(canvas).toHaveAttribute('data-motion', 'full')
+    expect(canvas).toHaveClass('canvas-transitions')
+    expect(canvas).toHaveAttribute('data-keyboard-viewport-focus', 'instant')
+
+    motion.setMatches(true)
+    await tick()
+
     expect(canvas).toHaveAttribute('data-motion', 'reduced')
     expect(canvas).not.toHaveClass('canvas-transitions')
     expect(canvas.querySelector('.animated')).not.toBeInTheDocument()
+    expect(canvas).toHaveAttribute('data-keyboard-viewport-focus', 'instant')
 
     canvas.focus()
     component.fitGraph()
@@ -55,5 +87,22 @@ describe('canvas reduced-motion contract', () => {
     component.actualSize()
     await tick()
     expect(viewport.style.transform).toContain('scale(1)')
+
+    motion.setMatches(false)
+    await tick()
+
+    expect(canvas).toHaveAttribute('data-motion', 'full')
+    expect(canvas).toHaveClass('canvas-transitions')
+    expect(canvas).toHaveAttribute('data-keyboard-viewport-focus', 'instant')
+
+    const registeredListener = vi.mocked(motion.query.addEventListener).mock.calls[0]?.[1]
+    expect(motion.listenerCount()).toBe(1)
+    unmount()
+    expect(motion.query.removeEventListener).toHaveBeenCalledWith('change', registeredListener)
+    expect(motion.listenerCount()).toBe(0)
+
+    motion.setMatches(true)
+    await tick()
+    expect(canvas).toHaveAttribute('data-motion', 'full')
   })
 })
