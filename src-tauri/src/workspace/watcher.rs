@@ -93,11 +93,34 @@ fn start_with_optional_git_sink(
     git_metadata: Option<&Path>,
     sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
 ) -> WorkspaceResult<WorkspaceWatcher> {
+    start_with_optional_git_sink_and_registration(
+        root,
+        git_metadata,
+        |watcher, path, mode| watcher.watch(path, mode),
+        sink,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn start_with_git_metadata_sink_and_registration(
+    root: &Path,
+    git_metadata: &Path,
+    registration: impl FnMut(&mut RecommendedWatcher, &Path, RecursiveMode) -> notify::Result<()>,
+    sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
+) -> WorkspaceResult<WorkspaceWatcher> {
+    start_with_optional_git_sink_and_registration(root, Some(git_metadata), registration, sink)
+}
+
+fn start_with_optional_git_sink_and_registration(
+    root: &Path,
+    git_metadata: Option<&Path>,
+    mut registration: impl FnMut(&mut RecommendedWatcher, &Path, RecursiveMode) -> notify::Result<()>,
+    sink: impl Fn(WorkspaceChangedEvent) + Send + 'static,
+) -> WorkspaceResult<WorkspaceWatcher> {
     let root = paths::canonical_root(root)?;
     let callback_root = root.clone();
     let git_metadata = git_metadata
-        .map(paths::canonical_root)
-        .transpose()?
+        .and_then(|path| paths::canonical_root(path).ok())
         .filter(|path| !path.starts_with(&root));
     let callback_git_metadata = git_metadata.clone();
     let (sender, receiver) = mpsc::channel::<Event>();
@@ -107,13 +130,16 @@ fn start_with_optional_git_sink(
         }
     })
     .map_err(watch_error)?;
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(watch_error)?;
+    registration(&mut watcher, &root, RecursiveMode::Recursive).map_err(watch_error)?;
     if let Some(path) = &git_metadata {
-        watcher
-            .watch(path, RecursiveMode::Recursive)
-            .map_err(watch_error)?;
+        // Parent-repository observation is optional. Watching the metadata root
+        // non-recursively covers HEAD, index, and packed-refs replacements; refs
+        // is the only metadata subtree that needs recursive observation.
+        let _ = registration(&mut watcher, path, RecursiveMode::NonRecursive);
+        let refs = path.join("refs");
+        if refs.is_dir() {
+            let _ = registration(&mut watcher, &refs, RecursiveMode::Recursive);
+        }
     }
 
     let worker = std::thread::spawn(move || {
@@ -165,7 +191,7 @@ fn collect_event(
     for path in event.paths {
         let relative = paths::normalize_relative(root, &path).or_else(|| {
             git_metadata
-                .and_then(|metadata| paths::normalize_relative(metadata, &path))
+                .and_then(|metadata| git_metadata_relative(metadata, &path))
                 .map(|relative| format!("@git/{relative}"))
         });
         if let Some(relative) = relative {
@@ -174,6 +200,18 @@ fn collect_event(
                 .and_modify(|current| *current = merge_hint(current, hint))
                 .or_insert(hint);
         }
+    }
+}
+
+fn git_metadata_relative(metadata: &Path, path: &Path) -> Option<String> {
+    let relative = paths::normalize_relative(metadata, path)?;
+    if matches!(relative.as_str(), "HEAD" | "index" | "packed-refs")
+        || relative == "refs"
+        || relative.starts_with("refs/")
+    {
+        Some(relative)
+    } else {
+        None
     }
 }
 

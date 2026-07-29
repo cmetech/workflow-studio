@@ -1,8 +1,7 @@
 mod parse;
 mod runner;
 
-use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -82,24 +81,22 @@ pub struct GitPairSnapshot {
 
 #[derive(Default)]
 pub struct GitState {
-    history: Mutex<Option<HistoryAuthorization>>,
+    history: Mutex<VecDeque<HistoryAuthorization>>,
     generation: AtomicU64,
 }
 
+const HISTORY_AUTHORIZATION_LIMIT: usize = 16;
+
 impl GitState {
     pub(crate) fn clear(&self) {
-        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut history) = self.history.lock() {
-            *history = None;
+            history.clear();
         }
     }
 
     fn begin_history(&self) -> u64 {
-        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Ok(mut history) = self.history.lock() {
-            *history = None;
-        }
-        generation
+        self.generation.load(Ordering::SeqCst)
     }
 
     fn publish_history(
@@ -108,14 +105,47 @@ impl GitState {
         authorization: HistoryAuthorization,
     ) -> GitResult<()> {
         let mut history = self.history.lock().map_err(|_| state_error())?;
-        if self.generation.load(Ordering::Relaxed) != generation {
+        if self.generation.load(Ordering::SeqCst) != generation {
             return Err(GitError::new(
                 "git_context_changed",
                 "The selected Git context changed before history finished loading.",
             ));
         }
-        *history = Some(authorization);
+        if let Some(position) = history
+            .iter()
+            .position(|existing| existing.same_pair_as(&authorization))
+        {
+            history.remove(position);
+        }
+        history.push_back(authorization);
+        while history.len() > HISTORY_AUTHORIZATION_LIMIT {
+            history.pop_front();
+        }
         Ok(())
+    }
+
+    fn authorized_history(
+        &self,
+        workspace_root: &Path,
+        repository_root: &Path,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<HistoryAuthorization> {
+        self.history
+            .lock()
+            .map_err(|_| state_error())?
+            .iter()
+            .rev()
+            .find(|authorization| {
+                authorization.matches_pair(
+                    workspace_root,
+                    repository_root,
+                    definition_path,
+                    companion_path,
+                )
+            })
+            .cloned()
+            .ok_or_else(pair_not_authorized)
     }
 }
 
@@ -132,6 +162,30 @@ struct HistoryAuthorization {
     definition_path: String,
     companion_path: Option<String>,
     by_oid: HashMap<String, HistoricalPaths>,
+}
+
+impl HistoryAuthorization {
+    fn matches_pair(
+        &self,
+        workspace_root: &Path,
+        repository_root: &Path,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> bool {
+        self.workspace_root == workspace_root
+            && self.repository_root == repository_root
+            && self.definition_path == definition_path
+            && self.companion_path.as_deref() == companion_path
+    }
+
+    fn same_pair_as(&self, other: &Self) -> bool {
+        self.matches_pair(
+            &other.workspace_root,
+            &other.repository_root,
+            &other.definition_path,
+            other.companion_path.as_deref(),
+        )
+    }
 }
 
 pub(crate) struct AuthorizedGitContext {
@@ -775,9 +829,7 @@ pub(crate) fn detect_repository_metadata(workspace_root: &Path) -> GitResult<Opt
 #[tauri::command]
 pub fn git_detect(
     state: State<'_, crate::workspace::WorkspaceState>,
-    git_state: State<'_, GitState>,
 ) -> GitResult<Option<GitRepository>> {
-    git_state.clear();
     let binding = active_workspace_binding(&state)?;
     let result = detect_repository(&binding.root)?;
     verify_workspace_binding(&state, &binding)?;
@@ -838,12 +890,12 @@ pub fn git_show_pair(
 ) -> GitResult<GitPairSnapshot> {
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
-    let authorization = git_state
-        .history
-        .lock()
-        .map_err(|_| state_error())?
-        .clone()
-        .ok_or_else(pair_not_authorized)?;
+    let authorization = git_state.authorized_history(
+        &context.workspace_root,
+        &context.repository_root,
+        &definition_path,
+        companion_path.as_deref(),
+    )?;
     let snapshot = show_from_authorization(
         &context,
         &authorization,

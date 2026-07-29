@@ -920,6 +920,66 @@ fn nested_workspace_watcher_emits_parent_repository_metadata_changes_without_pol
     drop(watcher);
 }
 
+#[test]
+fn missing_external_git_metadata_does_not_block_primary_workspace_events() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let root = tempdir().unwrap();
+    let missing_metadata = root.path().join("missing-parent-git-metadata");
+    let (sender, receiver) = mpsc::channel();
+    let watcher = super::watcher::start_with_git_metadata_sink(
+        root.path(),
+        &missing_metadata,
+        move |event| sender.send(event).unwrap(),
+    )
+    .expect("optional metadata canonicalization must not block the workspace watcher");
+
+    fs::write(root.path().join("flow.yaml"), "name: primary\n").unwrap();
+    let event = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("primary workspace event");
+    assert!(event.paths.iter().any(|path| path == "flow.yaml"));
+    drop(watcher);
+}
+
+#[test]
+fn rejected_external_git_watch_registration_does_not_block_primary_workspace_events() {
+    use notify::Watcher;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("workspace");
+    let metadata = parent.path().join("parent.git");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&metadata).unwrap();
+    let canonical_metadata = metadata.canonicalize().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let watcher = super::watcher::start_with_git_metadata_sink_and_registration(
+        &root,
+        &metadata,
+        move |native, path, mode| {
+            if path.starts_with(&canonical_metadata) {
+                Err(notify::Error::generic(
+                    "injected optional Git watch failure",
+                ))
+            } else {
+                native.watch(path, mode)
+            }
+        },
+        move |event| sender.send(event).unwrap(),
+    )
+    .expect("optional metadata registration must not block the workspace watcher");
+
+    fs::write(root.join("flow.yaml"), "name: primary\n").unwrap();
+    let event = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("primary workspace event");
+    assert!(event.paths.iter().any(|path| path == "flow.yaml"));
+    drop(watcher);
+}
+
 pub(super) fn git_fixture(root: &std::path::Path, arguments: &[&str]) {
     let output = std::process::Command::new("git")
         .arg("-C")

@@ -8,7 +8,7 @@ use super::parse::{parse_history, parse_status};
 use super::runner::{build_read_command, ReadOperation};
 use super::{
     authorize_repository_root, detect_repository, diff_pair, history_pair, show_pair, status,
-    AuthorizedGitContext, GitState, HistoryAuthorization,
+    AuthorizedGitContext, GitState, HistoryAuthorization, HISTORY_AUTHORIZATION_LIMIT,
 };
 
 fn git(root: &Path, arguments: &[&str]) {
@@ -280,7 +280,107 @@ fn stale_native_history_authorization_cannot_publish_after_context_clear() {
         )
         .unwrap_err();
     assert_eq!(error.code, "git_context_changed");
-    assert!(state.history.lock().unwrap().is_none());
+    assert!(state.history.lock().unwrap().is_empty());
+}
+
+#[test]
+fn obsolete_pair_authorization_published_after_visible_pair_does_not_revoke_visible_pair() {
+    let state = GitState::default();
+    let workspace = Path::new("/workspace");
+    let repository = Path::new("/repo");
+
+    let visible_generation = state.begin_history();
+    state
+        .publish_history(
+            visible_generation,
+            HistoryAuthorization {
+                workspace_root: workspace.into(),
+                repository_root: repository.into(),
+                definition_path: "visible.yaml".to_owned(),
+                companion_path: None,
+                by_oid: Default::default(),
+            },
+        )
+        .unwrap();
+
+    // The renderer has already selected the visible pair, but an obsolete request
+    // only reaches the native command after that newer request has completed.
+    let obsolete_generation = state.begin_history();
+    state
+        .publish_history(
+            obsolete_generation,
+            HistoryAuthorization {
+                workspace_root: workspace.into(),
+                repository_root: repository.into(),
+                definition_path: "obsolete.yaml".to_owned(),
+                companion_path: None,
+                by_oid: Default::default(),
+            },
+        )
+        .unwrap();
+
+    assert!(state
+        .authorized_history(workspace, repository, "visible.yaml", None)
+        .is_ok());
+    assert!(state
+        .authorized_history(workspace, repository, "obsolete.yaml", None)
+        .is_ok());
+    assert_eq!(
+        state
+            .authorized_history(workspace, repository, "visible.yaml", Some("obsolete.yaml"))
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+
+    state.clear();
+    assert_eq!(
+        state
+            .authorized_history(workspace, repository, "visible.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[test]
+fn native_history_authorization_cache_evicts_oldest_pairs_at_its_bound() {
+    let state = GitState::default();
+    let workspace = Path::new("/workspace");
+    let repository = Path::new("/repo");
+
+    for index in 0..=HISTORY_AUTHORIZATION_LIMIT {
+        state
+            .publish_history(
+                state.begin_history(),
+                HistoryAuthorization {
+                    workspace_root: workspace.into(),
+                    repository_root: repository.into(),
+                    definition_path: format!("flow-{index}.yaml"),
+                    companion_path: None,
+                    by_oid: Default::default(),
+                },
+            )
+            .unwrap();
+    }
+
+    assert_eq!(
+        state.history.lock().unwrap().len(),
+        HISTORY_AUTHORIZATION_LIMIT
+    );
+    assert!(state
+        .authorized_history(workspace, repository, "flow-0.yaml", None)
+        .is_err());
+    assert!(state
+        .authorized_history(
+            workspace,
+            repository,
+            &format!("flow-{HISTORY_AUTHORIZATION_LIMIT}.yaml"),
+            None,
+        )
+        .is_ok());
 }
 
 #[test]
