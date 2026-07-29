@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildDocumentationIndex, searchDocumentation } from './build-index'
 import type { AuthoringContract } from '$src/lib/contract/types'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+import { collectContractFields } from '$src/lib/forms/widget-registry'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+
+const guideSources = import.meta.glob('../../../docs/app-guides/*.md', { eager: true, import: 'default', query: '?raw' }) as Readonly<Record<string, string>>
 
 const contract = {
   profile: 'archon-2026-07',
@@ -67,5 +72,35 @@ describe('buildDocumentationIndex', () => {
       new Set(['node:prompt', 'field:prompt.node.prompt']),
     )
     expect(searchDocumentation(index, 'maxBudgetUsd')[0]?.id).toBe('guide:guide')
+  })
+
+  it('covers every production form field from both bundled contracts without a second inventory', async () => {
+    for (const activeContract of await loadBundledAuthoringContracts()) {
+      const index = buildDocumentationIndex(activeContract)
+      for (const field of collectContractFields(activeContract)) {
+        expect(index.byId.get(`field:${field.id}`)).toEqual(
+          expect.objectContaining({ fieldPaths: [field.fieldPath], examples: field.examples }),
+        )
+      }
+    }
+  })
+
+  it('validates every bundled definition guide fence through the production contract and DAG analyzer', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    for (const [path, guide] of Object.entries(guideSources)) {
+      for (const [, definition] of guide.matchAll(/```yaml\n([\s\S]*?)```/g)) {
+        if (!definition?.includes('nodes:')) continue
+        const analysis = await analyzeWorkflowPair(
+          {
+            type: 'analyze', requestId: path, workflowId: path, pairGeneration: 0, profile: contract.profile,
+            reason: 'explicit-validate', contractDigest: contract.contract_digest,
+            definition: { path: `${path}.yaml`, text: definition, revision: 0 },
+            companion: { path: `${path}.hermes.yaml`, text: 'language_compatibility: archon-2026-07\n', revision: 0 },
+          },
+          contract,
+        )
+        expect(analysis.structurallyValid, path).toBe(true)
+      }
+    }
   })
 })

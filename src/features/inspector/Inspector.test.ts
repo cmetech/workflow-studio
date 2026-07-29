@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { FormField } from '$src/lib/forms/types'
+import type { DocumentationIndex } from '$src/lib/docs/types'
 import Inspector from './Inspector.svelte'
 
 const fields: readonly FormField[] = [
@@ -217,5 +218,43 @@ describe('Inspector', () => {
 
     expect(screen.getByText('Review ID issue.')).toBeVisible()
     expect(screen.queryByText('Collect ID issue.')).not.toBeInTheDocument()
+  })
+
+  it('opens only the requested canonical field topic when Docs is targeted', async () => {
+    const documentationIndex: DocumentationIndex = {
+      topics: [],
+      byId: new Map([
+        [
+          'field:prompt.node.when',
+          {
+            id: 'field:prompt.node.when',
+            kind: 'field' as const,
+            title: 'When',
+            description: 'When docs.',
+            body: '',
+            examples: [],
+            status: 'supported',
+            profile: 'archon-2026-07',
+            fieldPaths: ['nodes[].when'],
+          },
+        ],
+      ]),
+      searchText: new Map(),
+      tokenIndex: new Map(),
+    }
+    render(Inspector, {
+      fields: [
+        { ...fields[0]!, id: 'prompt.node.id@/nodes/0/id' },
+        { ...fields[1]!, id: 'prompt.node.when@/nodes/0/when' },
+      ],
+      values: {},
+      selectionLabel: 'review',
+      documentationIndex,
+      documentationTopicId: 'field:prompt.node.when',
+    })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Docs' }))
+
+    expect(screen.getByLabelText('When documentation')).toBeVisible()
+    expect(screen.queryByLabelText('Node ID documentation')).not.toBeInTheDocument()
   })
 })

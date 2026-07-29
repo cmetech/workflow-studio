@@ -8,13 +8,14 @@
   }
 
   let { field, index }: Props = $props()
-  const topic = $derived(field ? index?.byId.get(`field:${field.id}`) : undefined)
+  const canonicalFieldId = $derived(field?.id.split('@/')[0])
+  const topic = $derived(canonicalFieldId ? index?.byId.get(`field:${canonicalFieldId}`) : undefined)
 </script>
 
 {#if !field}
   <p>Select a node to view contract documentation.</p>
 {:else}
-  <article aria-label={`${field.label} documentation`} data-topic-id={`field:${field.id}`}>
+  <article aria-label={`${field.label} documentation`} data-topic-id={`field:${canonicalFieldId}`}>
     <h3>{topic?.title ?? field.label}</h3>
     <p>{topic?.description ?? field.description}</p>
     {#if topic?.body}<pre>{topic.body}</pre>{/if}

@@ -1,4 +1,4 @@
-export type ActivityId = 'explorer' | 'nodes' | 'examples' | 'git' | 'settings'
+export type ActivityId = 'explorer' | 'nodes' | 'examples' | 'git' | 'documentation' | 'settings'
 
 export type EditorMode = 'visual' | 'split' | 'yaml'
 

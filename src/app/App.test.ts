@@ -77,6 +77,14 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
 }
 
 describe('App', () => {
+  it('mounts the offline documentation activity from the active contract', async () => {
+    showActivity('documentation')
+    render(App)
+
+    expect(screen.getByRole('region', { name: 'Offline documentation' })).toBeVisible()
+    expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toBeVisible()
+  })
+
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,

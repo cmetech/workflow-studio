@@ -51,6 +51,7 @@ describe('command registry', () => {
       'document.save',
       'problems.focus',
       'workbench.command-palette',
+      'view.activity.documentation',
       'view.activity.examples',
       'view.activity.explorer',
       'view.activity.git',

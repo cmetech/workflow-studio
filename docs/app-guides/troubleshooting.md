@@ -3,6 +3,8 @@
 Start with the Problems panel: fix YAML syntax, required values, invalid profile fields, and graph topology before saving or exporting.
 
 ```yaml
+name: troubleshooting-start
+description: Start with a structurally valid bash node.
 nodes:
   - id: start
     bash: "printf 'ok\\n'"

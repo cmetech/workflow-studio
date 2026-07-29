@@ -3,6 +3,8 @@
 Set a trigger rule and, where your profile supports it, retry settings.
 
 ```yaml
+name: retry-review
+description: Review with a trigger rule and retry policy.
 nodes:
   - id: review
     prompt: Review the change.

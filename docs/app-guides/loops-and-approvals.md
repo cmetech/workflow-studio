@@ -3,6 +3,8 @@
 Use loop and approval nodes inside an otherwise acyclic workflow graph.
 
 ```yaml
+name: approval-gate
+description: Request an approval before continuing.
 nodes:
   - id: approve-review
     approval:

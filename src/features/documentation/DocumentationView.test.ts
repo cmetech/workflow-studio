@@ -42,8 +42,19 @@ const index: DocumentationIndex = {
     },
   ],
   byId: new Map(),
+  searchText: new Map(),
+  tokenIndex: new Map(),
 }
 index.byId = new Map(index.topics.map((topic) => [topic.id, topic]))
+index.searchText = new Map(
+  index.topics.map((topic) => [topic.id, `${topic.title} ${topic.id} ${topic.body}`.toLowerCase()]),
+)
+index.tokenIndex = new Map([
+  ['prompt', new Set(['node:prompt', 'field:prompt.node.prompt'])],
+  ['field', new Set(['field:prompt.node.prompt'])],
+  ['dag', new Set(['guide:dag'])],
+  ['dependencies', new Set(['guide:dag'])],
+])
 
 describe('DocumentationView', () => {
   it('filters and keyboard-navigates offline search results without using fetch, and records history', async () => {
@@ -58,7 +69,7 @@ describe('DocumentationView', () => {
     await fireEvent.keyDown(search, { key: 'ArrowDown' })
     await fireEvent.keyDown(search, { key: 'Enter' })
     expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
-    expect(screen.getByText(/History: Prompt/)).toBeVisible()
+    expect(screen.getByRole('navigation', { name: 'Documentation history' })).toBeVisible()
     expect(fetchStub).not.toHaveBeenCalled()
 
     await fireEvent.change(screen.getByRole('combobox', { name: 'Topic type' }), { target: { value: 'guide' } })
@@ -90,5 +101,29 @@ describe('DocumentationView', () => {
 
     expect(screen.getByLabelText('Prompt documentation')).toHaveAttribute('data-topic-id', 'field:prompt.node.prompt')
     expect(screen.getByText('Prompt field.')).toBeVisible()
+  })
+
+  it('keeps keyboard result navigation and history addressable by topic ID', async () => {
+    render(DocumentationView, { index })
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+
+    await fireEvent.input(search, { target: { value: 'Prompt' } })
+    await fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(search).toHaveAttribute('aria-activedescendant', 'documentation-result-field:prompt.node.prompt')
+    expect(document.getElementById('documentation-result-field:prompt.node.prompt')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    await fireEvent.keyDown(search, { key: 'Enter' })
+    await fireEvent.keyDown(search, { key: 'ArrowUp' })
+    await fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(screen.getByRole('button', { name: 'Prompt — field:prompt.node.prompt' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Prompt — node:prompt' })).toBeVisible()
+  })
+
+  it('opens a topic requested by contextual navigation', () => {
+    render(DocumentationView, { index, topicId: 'guide:dag' })
+    expect(screen.getByRole('heading', { name: 'DAG dependencies' })).toBeVisible()
   })
 })

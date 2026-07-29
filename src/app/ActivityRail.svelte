@@ -13,6 +13,7 @@
     { id: 'explorer', label: 'Explorer', symbol: '▤' },
     { id: 'nodes', label: 'Nodes', symbol: '◇' },
     { id: 'examples', label: 'Examples', symbol: '☆' },
+    { id: 'documentation', label: 'Documentation', symbol: 'ⓘ' },
     { id: 'git', label: 'Git', symbol: '⑂' },
     { id: 'settings', label: 'Settings', symbol: '⚙' },
   ]

@@ -10,6 +10,8 @@
   import type { CommandContext, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+  import { buildDocumentationIndex } from '$src/lib/docs/build-index'
+  import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import type { AuthoringContract } from '$src/lib/contract/types'
@@ -18,8 +20,7 @@
   import { applyWorkflowMutation } from '$src/lib/documents/transactions'
   import type { WorkflowMutation } from '$src/lib/yaml/mutations'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
-  import { activeEditorMode, showEditorMode } from '$src/stores/shell'
-  import { activeActivity, workspaceIntent } from '$src/stores/shell'
+  import { activeActivity, activeEditorMode, showActivity, showEditorMode, workspaceIntent } from '$src/stores/shell'
   import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
   import { getNativeBridge } from '$src/lib/native/bridge'
@@ -59,6 +60,7 @@
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
   import Inspector from '$src/features/inspector/Inspector.svelte'
+  import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
@@ -83,6 +85,18 @@
   }
 
   const brand = loadBundledBrand()
+  const bundledGuideSources = import.meta.glob('../../docs/app-guides/*.md', {
+    eager: true,
+    import: 'default',
+    query: '?raw',
+  }) as Readonly<Record<string, string>>
+  const bundledGuides: readonly DocumentationGuide[] = Object.entries(bundledGuideSources)
+    .map(([path, body]) => ({
+      id: path.split('/').at(-1)?.replace(/\.md$/, '') ?? path,
+      title: body.match(/^#\s+(.+)$/m)?.[1] ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? path,
+      body,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id))
   const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
   const native = getNativeBridge()
   const layoutStore = createLayoutStore(native)
@@ -124,6 +138,7 @@
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
   let exportBlockingIssues = $state<readonly string[]>([])
+  let documentationTopicId = $state<string | undefined>()
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
@@ -274,6 +289,12 @@
   })
   const inspectorBindingIdentity = $derived(formBindingIdentity(inspectorNodes[0]?.id ?? 'workflow'))
   const inspectorDisabledReason = $derived(inspectorMutationDisabledReason())
+  const documentationIndex = $derived.by<DocumentationIndex>(() => {
+    const contract = inspectorContract ?? contracts[0]
+    return contract
+      ? buildDocumentationIndex(contract, bundledGuides)
+      : { topics: [], byId: new Map(), searchText: new Map(), tokenIndex: new Map() }
+  })
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return executeCommand(id, context)
@@ -914,6 +935,12 @@
         {:else}
           <p>Loading bundled contracts…</p>
         {/if}
+      {:else if $activeActivity === 'documentation'}
+        <DocumentationView
+          index={documentationIndex}
+          topicId={documentationTopicId}
+          onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
+        />
       {/if}
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
@@ -1003,6 +1030,10 @@
             definition: $documentSessionStore.pair.definition.path,
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
+          onDocumentation={(id) => {
+            documentationTopicId = id
+            showActivity('documentation')
+          }}
         />
         {#if $documentWorkspaceState.analysisError}
           <p class="document-outcome" role="alert">{$documentWorkspaceState.analysisError}</p>
@@ -1058,6 +1089,8 @@
         bindingIdentity={inspectorBindingIdentity}
         issues={$documentSessionStore.analysis?.issues ?? []}
         disabledReason={inspectorDisabledReason}
+        {documentationIndex}
+        {documentationTopicId}
         onCommit={commitInspectorField}
       />
     </aside>

@@ -3,6 +3,8 @@
 Use `when` only with outputs from upstream nodes.
 
 ```yaml
+name: conditional-review
+description: Review only a ready upstream result.
 nodes:
   - id: prepare
     bash: "printf 'ok\\n'"

@@ -3,6 +3,8 @@
 Use `depends_on` to order node work without creating a cycle.
 
 ```yaml
+name: ordered-review
+description: Prepare a result before review.
 nodes:
   - id: prepare
     bash: "printf 'ok\\n'"

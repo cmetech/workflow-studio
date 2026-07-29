@@ -8,6 +8,7 @@
     issues: readonly ValidationIssue[]
     paths: Readonly<Record<DocumentKind, string | null>>
     execute?: (id: string, context: CommandContext) => Promise<void>
+    onDocumentation?: ((id: string) => void) | undefined
   }
 
   interface IssueGroup {
@@ -16,7 +17,7 @@
     readonly layers: readonly { readonly layer: IssueLayer; readonly issues: readonly ValidationIssue[] }[]
   }
 
-  let { issues, paths, execute = executeCommand }: Props = $props()
+  let { issues, paths, execute = executeCommand, onDocumentation }: Props = $props()
   const groups = $derived(groupIssues(issues, paths))
   const blockingCount = $derived(issues.filter((issue) => issue.blocking).length)
   const focusContext: CommandContext = { surface: 'global', canMutate: false, hasSelection: true }
@@ -48,6 +49,10 @@
   }
 
   function focusIssue(issue: ValidationIssue): void {
+    if (issue.documentationId) {
+      onDocumentation?.(issue.documentationId)
+      return
+    }
     selectProblem(issue)
     void execute('problems.focus', focusContext)
   }

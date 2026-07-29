@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import ProblemsPanel from './ProblemsPanel.svelte'
 import { $problemFocus } from '$src/stores/documents'
@@ -49,5 +49,17 @@ describe('ProblemsPanel', () => {
       issue: { code: 'required', document: 'definition', nodeId: 'build' },
       requested: true,
     })
+  })
+
+  it('routes a documentation ID to the documentation surface instead of only requesting editor focus', async () => {
+    const onDocumentation = vi.fn()
+    render(ProblemsPanel, {
+      issues: [{ ...issues[0]!, documentationId: 'field:prompt.node.prompt' }],
+      paths: { definition: 'flow.yaml', companion: null },
+      onDocumentation,
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /required node field/i }))
+    expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt')
   })
 })

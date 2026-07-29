@@ -5,10 +5,11 @@
 
   interface Props {
     index: DocumentationIndex
+    topicId?: string | undefined
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
-  let { index, onOpenExternal }: Props = $props()
+  let { index, topicId, onOpenExternal }: Props = $props()
   let query = $state('')
   let kind = $state<DocumentationTopicKind | 'all'>('all')
   let highlighted = $state(0)
@@ -16,10 +17,20 @@
   let history = $state<readonly string[]>([])
   const results = $derived(searchDocumentation(index, query, kind))
 
+  function activeResultId(): string | undefined {
+    const topic = results[highlighted]
+    return topic ? `documentation-result-${topic.id}` : undefined
+  }
+
   function select(topic: DocumentationTopic): void {
     selected = topic
-    history = [topic.title, ...history.filter((title) => title !== topic.title)].slice(0, 5)
+    history = [topic.id, ...history.filter((id) => id !== topic.id)].slice(0, 5)
   }
+
+  $effect(() => {
+    const topic = topicId ? index.byId.get(topicId) : undefined
+    if (topic && selected?.id !== topic.id) select(topic)
+  })
 
   function searchKeydown(event: KeyboardEvent): void {
     if (event.key === 'ArrowDown') {
@@ -60,7 +71,14 @@
 <section class="documentation" aria-label="Offline documentation">
   <label>
     Search documentation
-    <input type="search" bind:value={query} oninput={() => (highlighted = 0)} onkeydown={searchKeydown} />
+    <input
+      type="search"
+      bind:value={query}
+      aria-controls="documentation-results"
+      aria-activedescendant={activeResultId()}
+      oninput={() => (highlighted = 0)}
+      onkeydown={searchKeydown}
+    />
   </label>
   <label>
     Topic type
@@ -72,22 +90,39 @@
       <option value="contract">Contract</option>
     </select>
   </label>
-  <div role="listbox" aria-label="Documentation results">
+  <div id="documentation-results" role="listbox" aria-label="Documentation results">
     {#each results as topic, index (topic.id)}
       <button
         role="option"
-        aria-selected={selected?.id === topic.id}
+        id={`documentation-result-${topic.id}`}
+        aria-selected={index === highlighted}
         class:highlighted={index === highlighted}
-        onclick={() => select(topic)}
+        onclick={() => {
+          highlighted = index
+          select(topic)
+        }}
       >
         <strong>{topic.title}</strong><span>{topic.kind}</span>
       </button>
     {/each}
   </div>
-  {#if history.length > 0}<p aria-live="polite">History: {history.join(', ')}</p>{/if}
+  {#if history.length > 0}
+    <nav aria-label="Documentation history">
+      {#each history as id (id)}
+        {@const topic = index.byId.get(id)}
+        {#if topic}<button type="button" onclick={() => select(topic)}>{topic.title} — {topic.id}</button>{/if}
+      {/each}
+    </nav>
+  {/if}
   {#if selected}
     <article use:delegateExternal>
       <h2>{selected.title}</h2>
+      {#if selected.examples.length > 0}
+        <section aria-label="Examples">
+          <h3>Examples</h3>
+          <pre>{JSON.stringify(selected.examples[0], null, 2)}</pre>
+        </section>
+      {/if}
       <div class="markdown" use:renderSanitized={selected.body}></div>
     </article>
   {/if}

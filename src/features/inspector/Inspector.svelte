@@ -15,6 +15,7 @@
     issues?: readonly ValidationIssue[] | undefined
     disabledReason?: string | undefined
     documentationIndex?: DocumentationIndex | undefined
+    documentationTopicId?: string | undefined
     onCommit?: ((commit: FormFieldCommit) => void | Promise<void>) | undefined
   }
 
@@ -28,6 +29,7 @@
     issues = [],
     disabledReason,
     documentationIndex,
+    documentationTopicId,
     onCommit,
   }: Props = $props()
 
@@ -39,6 +41,10 @@
   const visibleFields = $derived(
     activeTab === 'Docs' ? [] : fields.filter(({ section }) => section.toLowerCase() === activeTab.toLowerCase()),
   )
+  const contextualDocField = $derived.by(() => {
+    if (!documentationTopicId) return fields[0]
+    return fields.find((field) => `field:${field.id.split('@/')[0]}` === documentationTopicId) ?? fields[0]
+  })
 
   function activateTab(index: number): void {
     const normalized = (index + tabs.length) % tabs.length
@@ -144,10 +150,7 @@
       {/each}
     {:else if activeTab === 'Docs'}
       <div class="docs">
-        {#if fields.length === 0}<p>Select a node to view contract documentation.</p>{/if}
-        {#each fields as field (field.id)}
-          <ContextDocs {field} index={documentationIndex} />
-        {/each}
+        <ContextDocs field={contextualDocField} index={documentationIndex} />
       </div>
     {:else if visibleFields.length === 0}
       <p class="empty">No {activeTab.toLowerCase()} fields apply to this selection.</p>
