@@ -1,10 +1,10 @@
-import type { CommandRegistry } from './registry'
+import type { CommandSurface } from './registry'
 import type { AppCommand, CommandContext } from './types'
 
 export type KeybindingPlatform = 'mac' | 'windows' | 'linux'
 
 export interface KeybindingDispatchOptions {
-  readonly registry: CommandRegistry
+  readonly registry: CommandSurface
   readonly context: CommandContext
   readonly platform?: KeybindingPlatform
   readonly target?: EventTarget | null
@@ -75,7 +75,7 @@ export function isEditableTarget(target: EventTarget | null | undefined): boolea
 }
 
 function matchingCommands(
-  registry: CommandRegistry,
+  registry: CommandSurface,
   binding: string,
   context: CommandContext,
   platform: KeybindingPlatform,
@@ -145,7 +145,12 @@ export async function dispatchKeybinding(
       ),
     )
     .sort((left, right) => left.id.localeCompare(right.id))[0]
-  if (disabled) return { status: 'disabled', commandId: disabled.id, reason: `${disabled.label} is unavailable.` }
+  if (disabled)
+    return {
+      status: 'disabled',
+      commandId: disabled.id,
+      reason: disabled.disabledReason?.(options.context) ?? `${disabled.label} is unavailable.`,
+    }
   return { status: 'unhandled' }
 }
 

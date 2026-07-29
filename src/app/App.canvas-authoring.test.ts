@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { parse } from 'yaml'
+import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 
@@ -208,7 +209,7 @@ vi.mock('$src/lib/contract/bundled-contracts', () => ({
   loadBundledAuthoringContracts: () => Promise.resolve([contract]),
 }))
 
-import { executeCommand } from '$src/lib/commands/registry'
+import { createCommandRegistry, executeCommand, listCommands, type CommandRegistry } from '$src/lib/commands/registry'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
@@ -219,9 +220,11 @@ import {
   receiveDocumentAnalysis,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
-import { clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
+import { $canvasPositions, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
+import { closeCommandPalette, closeKeyboardShortcuts, showEditorMode, showYamlDocument } from '$src/stores/shell'
+import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
 
 const source = `name: Flow
@@ -237,6 +240,14 @@ nodes:
       reviewer:
         description: Review the result.
 `
+
+interface AuthoringAppOptions {
+  readonly text?: string
+  readonly companionText?: string
+  readonly readOnly?: boolean
+  readonly missingEntry?: boolean
+  readonly commandSurface?: CommandRegistry
+}
 
 function projection(text = source) {
   const definition = parse(text) as { name: string; description: string; nodes: Record<string, unknown>[] }
@@ -268,10 +279,24 @@ function projection(text = source) {
   }
 }
 
-async function renderAuthoringApp() {
-  loadWorkspaceEntries('workspace', 'Workspace', [
-    { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
-  ])
+async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
+  const text = options.text ?? source
+  loadWorkspaceEntries(
+    'workspace',
+    'Workspace',
+    options.missingEntry
+      ? []
+      : [
+          {
+            relativePath: 'flow.yaml',
+            kind: 'file',
+            size: 1,
+            modifiedAt: '0',
+            symlink: 'none',
+            readOnly: options.readOnly ?? false,
+          },
+        ],
+  )
   openDocumentSession(
     {
       workflowId: 'workflow:workspace:flow.yaml',
@@ -281,29 +306,59 @@ async function renderAuthoringApp() {
         id: 'workflow:workspace:flow.yaml:definition',
         kind: 'definition',
         path: 'flow.yaml',
-        text: source,
+        text,
         revision: 0,
         savedRevision: 0,
         diskHash: 'a'.repeat(64),
       },
-      companion: null,
+      companion: options.companionText
+        ? {
+            id: 'workflow:workspace:flow.yaml:companion',
+            kind: 'companion',
+            path: 'flow.hermes.yaml',
+            text: options.companionText,
+            revision: 0,
+            savedRevision: 0,
+            diskHash: 'b'.repeat(64),
+          }
+        : null,
     },
     digest,
   )
   const revision = $documentSession.get().revision!
-  receiveDocumentAnalysis({ ...revision, structurallyValid: true, issues: [], projection: projection() })
+  const currentProjection = projection(text)
+  receiveDocumentAnalysis({ ...revision, structurallyValid: true, issues: [], projection: currentProjection })
+  if (options.missingEntry) {
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      missingChange: { kind: 'remove', paths: ['flow.yaml'], dirty: false },
+    })
+  }
   setActiveLayout({
     schemaVersion: 1,
     workspaceId: 'workspace',
     workflowPath: 'flow.yaml',
-    nodePositions: { collect: { x: 0, y: 0 }, review: { x: 320, y: 0 } },
+    nodePositions: Object.fromEntries(currentProjection.nodes.map(({ id }, index) => [id, { x: index * 320, y: 0 }])),
     viewport: { x: 0, y: 0, zoom: 1 },
     panels: { left: 280, right: 320, problems: 180 },
     editorMode: 'visual',
     updatedAt: '2026-07-25T00:00:00.000Z',
   })
-  const rendered = render(App)
+  const rendered = options.commandSurface
+    ? render(App, { props: { commandSurface: options.commandSurface } } as never)
+    : render(App)
   await screen.findByRole('region', { name: 'Workflow graph' })
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
+    ).toBe(true),
+  )
+  await waitFor(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F1', bubbles: true }))
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+  })
+  closeCommandPalette()
+  await tick()
   return rendered
 }
 
@@ -325,6 +380,15 @@ describe('App canvas authoring composition', () => {
         disconnect(): void {}
       },
     )
+    if (!Range.prototype.getClientRects) {
+      Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] })
+    }
+    if (!Range.prototype.getBoundingClientRect) {
+      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) }),
+      })
+    }
   })
 
   afterEach(() => {
@@ -335,6 +399,10 @@ describe('App canvas authoring composition', () => {
     clearWorkspace()
     closeDocumentSession()
     clearActiveLayout()
+    closeCommandPalette()
+    closeKeyboardShortcuts()
+    showEditorMode('visual')
+    showYamlDocument('definition')
     historyStore.set(createHistoryState())
     $documentWorkspace.set({
       conflict: null,
@@ -347,7 +415,7 @@ describe('App canvas authoring composition', () => {
 
   it('adds, connects, and duplicates through the production YAML transaction path', async () => {
     let rendered = await renderAuthoringApp()
-    await fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
     await fireEvent.click(screen.getByRole('option', { name: /command/i }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
     expect(historyStore.get().undo).toHaveLength(1)
@@ -366,22 +434,285 @@ describe('App canvas authoring composition', () => {
     historyStore.set(createHistoryState())
     rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
-    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate Selection' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: collect-2'))
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()
+  })
+
+  it('duplicates from a canvas keydown and exposes command collisions without changing YAML', async () => {
+    let rendered = await renderAuthoringApp()
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['collect'])
+    canvas.focus()
+    await fireEvent.keyDown(canvas, { key: 'd', ctrlKey: true })
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: collect-2'))
+    rendered.unmount()
+
+    historyStore.set(createHistoryState())
+    const registry = createCommandRegistry()
+    for (const command of listCommands()) registry.registerCommand(command)
+    registry.registerCommand({
+      id: 'canvas.shadow-duplicate',
+      label: 'Shadow Duplicate',
+      category: 'Canvas',
+      defaultBindings: ['Mod+D'],
+      enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+      run: () => undefined,
+    })
+    rendered = await renderAuthoringApp({ commandSurface: registry })
+    const collidingCanvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['collect'])
+    collidingCanvas.focus()
+    const before = $documentSession.get().pair?.definition.text
+    await fireEvent.keyDown(collidingCanvas, { key: 'd', ctrlKey: true })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /shortcut collision.*duplicate selection.*shadow duplicate/i,
+    )
+    expect($documentSession.get().pair?.definition.text).toBe(before)
+    expect(historyStore.get().undo).toHaveLength(0)
+    rendered.unmount()
+  })
+
+  it('cancels a pending node chord when focus moves to an actual in-app control', async () => {
+    const rendered = await renderAuthoringApp()
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    canvas.focus()
+    await fireEvent.keyDown(canvas, { key: 'n' })
+    expect(screen.getByText(/choose kind within 1.5 seconds/i)).toBeVisible()
+
+    screen.getByRole('button', { name: 'YAML' }).focus()
+    await tick()
+
+    expect(screen.queryByText(/choose kind within 1.5 seconds/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /add node/i })).not.toBeInTheDocument()
+    rendered.unmount()
+  })
+
+  it('opens Find in the active definition and companion CodeMirror editors with visual palette fallback', async () => {
+    const rendered = await renderAuthoringApp({
+      companionText: 'language_compatibility: hermes-legacy\n',
+    })
+    const yamlMode = screen.getByRole('button', { name: 'YAML' })
+    await fireEvent.click(yamlMode)
+    await fireEvent.keyDown(yamlMode, { key: 'f', ctrlKey: true })
+    const definitionPanel = screen.getByRole('tabpanel', { name: 'Definition YAML' })
+    await waitFor(() => expect(definitionPanel.querySelector('.cm-search')).not.toBeNull())
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Companion YAML' }))
+    await fireEvent.keyDown(yamlMode, { key: 'f', ctrlKey: true })
+    const companionPanel = screen.getByRole('tabpanel', { name: 'Companion YAML' })
+    await waitFor(() => expect(companionPanel.querySelector('.cm-search')).not.toBeNull())
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Visual' }))
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    canvas.focus()
+    await fireEvent.keyDown(canvas, { key: 'f', ctrlKey: true })
+    expect(await screen.findByRole('dialog', { name: 'Command palette' })).toBeVisible()
+    rendered.unmount()
+  })
+
+  it('applies canonical fit, actual-size, nudge, and larger nudge keyboard effects', async () => {
+    const rendered = await renderAuthoringApp()
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    const viewport = canvas.querySelector<HTMLElement>('.svelte-flow__viewport')!
+    Object.defineProperties(canvas, {
+      clientHeight: { configurable: true, value: 600 },
+      clientWidth: { configurable: true, value: 800 },
+    })
+    canvas.focus()
+
+    await fireEvent.keyDown(canvas, { key: 'f' })
+    await waitFor(() => expect(viewport.style.transform).toContain('scale(1.36986301369863)'))
+    await fireEvent.keyDown(canvas, { key: '0' })
+    await waitFor(() => expect(viewport.style.transform).toContain('scale(1)'))
+
+    setCanvasSelection(['collect'])
+    await tick()
+    await fireEvent.keyDown(canvas, { key: 'f', shiftKey: true })
+    await waitFor(() => expect(viewport.style.transform).toContain('scale(3.0303030303030303)'))
+    await fireEvent.keyDown(canvas, { key: 'ArrowRight' })
+    expect($canvasPositions.get().collect).toEqual({ x: 5, y: 0 })
+    await fireEvent.keyDown(canvas, { key: 'ArrowDown', shiftKey: true })
+    expect($canvasPositions.get().collect).toEqual({ x: 5, y: 20 })
+    rendered.unmount()
+  })
+
+  it('focuses the inspector from the canvas keyboard command', async () => {
+    const rendered = await renderAuthoringApp()
+    setCanvasSelection(['collect'])
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    canvas.focus()
+    await fireEvent.keyDown(canvas, { key: 'Enter' })
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus())
+    rendered.unmount()
+  })
+
+  it('traverses keyboard edge targets, commits through YAML, cancels, and announces invalid targets', async () => {
+    const threeNodes = `${source}  - id: publish\n    command: publish\n`
+    let rendered = await renderAuthoringApp({ text: threeNodes })
+    let canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['collect'])
+    canvas.focus()
+    await fireEvent.keyDown(canvas, { key: 'e' })
+    const targets = await screen.findByRole('listbox', { name: 'Valid edge targets' })
+    expect(targets).toBeVisible()
+    expect(screen.getByRole('option', { name: 'review' })).toHaveAttribute('aria-selected', 'true')
+    await fireEvent.keyDown(canvas, { key: 'Tab' })
+    expect(screen.getByRole('option', { name: 'publish' })).toHaveAttribute('aria-selected', 'true')
+    await fireEvent.keyDown(canvas, { key: 'Enter' })
+    await waitFor(() => {
+      const yaml = parse($documentSession.get().pair!.definition.text) as { nodes: Record<string, unknown>[] }
+      expect(yaml.nodes.find(({ id }) => id === 'publish')?.depends_on).toEqual(['collect'])
+    })
+    rendered.unmount()
+
+    historyStore.set(createHistoryState())
+    const noTargets = `name: Flow\ndescription: App authoring\nnodes:\n  - id: collect\n    command: collect\n  - id: review\n    prompt: review\n    depends_on:\n      - collect\n`
+    rendered = await renderAuthoringApp({ text: noTargets })
+    canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['review'])
+    canvas.focus()
+    const before = $documentSession.get().pair!.definition.text
+    await fireEvent.keyDown(canvas, { key: 'e' })
+    expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
+      'No valid dependency targets are available.',
+    )
+    await fireEvent.keyDown(canvas, { key: 'Enter' })
+    expect($documentSession.get().pair!.definition.text).toBe(before)
+    await fireEvent.keyDown(canvas, { key: 'Escape' })
+    expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
+      'Edge creation cancelled.',
+    )
+    expect(screen.queryByRole('listbox', { name: 'Valid edge targets' })).not.toBeInTheDocument()
+    rendered.unmount()
+  })
+
+  it('fails canvas mutations closed for read-only, missing-entry, and editable-target contexts', async () => {
+    let rendered = await renderAuthoringApp({ readOnly: true })
+    let canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['collect'])
+    canvas.focus()
+    const readOnlyText = $documentSession.get().pair!.definition.text
+    await fireEvent.keyDown(canvas, { key: 'd', ctrlKey: true })
+    expect(await screen.findByText(/duplicate selection is unavailable/i)).toHaveAttribute('role', 'alert')
+    expect($documentSession.get().pair!.definition.text).toBe(readOnlyText)
+    rendered.unmount()
+
+    rendered = await renderAuthoringApp({ missingEntry: true })
+    canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['collect'])
+    canvas.focus()
+    const missingText = $documentSession.get().pair!.definition.text
+    await fireEvent.keyDown(canvas, { key: 'd', ctrlKey: true })
+    expect(await screen.findByText(/duplicate selection is unavailable/i)).toHaveAttribute('role', 'alert')
+    expect($documentSession.get().pair!.definition.text).toBe(missingText)
+    rendered.unmount()
+
+    rendered = await renderAuthoringApp()
+    setCanvasSelection(['review'])
+    const prompt = await screen.findByRole('textbox', { name: 'Prompt' })
+    prompt.focus()
+    const editableText = $documentSession.get().pair!.definition.text
+    await fireEvent.keyDown(prompt, { key: 'n' })
+    await fireEvent.keyDown(prompt, { key: 'd', ctrlKey: true })
+    expect(screen.queryByText(/choose kind within 1.5 seconds/i)).not.toBeInTheDocument()
+    expect($documentSession.get().pair!.definition.text).toBe(editableText)
+    rendered.unmount()
+  })
+
+  it('schedules explicit validation for the current read-only revision without a text transaction', async () => {
+    const workers: CapturingWorker[] = []
+    class CapturingWorker {
+      readonly messages: DocumentWorkerRequest[] = []
+      private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+      constructor() {
+        workers.push(this)
+      }
+      postMessage(message: DocumentWorkerRequest): void {
+        this.messages.push(structuredClone(message))
+        if (message.type !== 'contract-register') return
+        queueMicrotask(() => {
+          for (const listener of this.listeners) {
+            listener({
+              data: {
+                type: 'contract-registered',
+                requestId: message.requestId,
+                contractDigest: message.contractDigest,
+                profile: message.profile,
+              },
+            } as MessageEvent<DocumentWorkerResponse>)
+          }
+        })
+      }
+      addEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+        this.listeners.add(listener)
+      }
+      removeEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+        this.listeners.delete(listener)
+      }
+      terminate(): void {}
+    }
+    const originalWorker = globalThis.Worker
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: CapturingWorker })
+    setNativeBridgeForTest({
+      workspaceRead: async (path) => ({
+        relativePath: path,
+        text: source,
+        sha256: 'a'.repeat(64),
+        size: source.length,
+        modifiedAt: 'now',
+        readOnly: true,
+      }),
+    })
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: true },
+    ])
+    try {
+      const rendered = render(App)
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow.yaml/i }))
+      await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('flow.yaml'))
+      const pair = $documentSession.get().pair!
+      const before = pair.definition.text
+      await fireEvent.keyDown(window, { key: 'F1' })
+      const search = await screen.findByRole('combobox', { name: 'Search commands' })
+      await fireEvent.input(search, { target: { value: 'Validate Workflow' } })
+      await fireEvent.keyDown(search, { key: 'Enter' })
+
+      await waitFor(() =>
+        expect(
+          workers
+            .flatMap(({ messages }) => messages)
+            .find((message) => message.type === 'analyze' && message.reason === 'explicit-validate'),
+        ).toMatchObject({
+          type: 'analyze',
+          workflowId: pair.workflowId,
+          definition: { path: pair.definition.path, text: before, revision: pair.definition.revision },
+          reason: 'explicit-validate',
+        }),
+      )
+      expect(screen.getByRole('alert')).toHaveTextContent('Validation scheduled for the current workflow.')
+      expect($documentSession.get().pair!.definition.text).toBe(before)
+      expect(historyStore.get().undo).toHaveLength(0)
+      rendered.unmount()
+    } finally {
+      if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+      else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
   })
 
   it('keeps deletion side-effect free on cancel and commits only after confirmation', async () => {
     const rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
     const before = $documentSession.get().pair?.definition.text
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect($documentSession.get().pair?.definition.text).toBe(before)
     expect(historyStore.get().undo).toHaveLength(0)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Delete nodes' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).not.toContain('id: collect'))
     expect(historyStore.get().undo).toHaveLength(1)

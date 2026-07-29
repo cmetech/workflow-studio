@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { CommandRegistry } from '$src/lib/commands/registry'
+  import type { CommandSurface } from '$src/lib/commands/registry'
   import { displayKeybindings, type KeybindingPlatform } from '$src/lib/commands/keybindings'
 
   interface Props {
-    registry: CommandRegistry
+    registry: CommandSurface
     platform?: KeybindingPlatform
   }
   let { registry, platform }: Props = $props()

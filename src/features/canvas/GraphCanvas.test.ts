@@ -3,9 +3,14 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
+import { commandRegistry, createCommandRegistry, listCommands } from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
+
+function renderCanvas(props: Record<string, unknown>) {
+  return render(GraphCanvas, { commandSurface: commandRegistry, ...props } as never)
+}
 
 const projection: WorkflowProjection = Object.freeze({
   name: 'Release',
@@ -87,7 +92,7 @@ describe('GraphCanvas', () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
     const before = structuredClone(projection)
-    const { container } = render(GraphCanvas, { projection, layout, onPersistLayout: persistLayout })
+    const { container } = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
 
     for (let move = 1; move <= 100; move += 1) {
@@ -123,10 +128,10 @@ describe('GraphCanvas', () => {
 
   it('renders read-only stale affordances, canvas controls, minimap toggle, and explicit Arrange', async () => {
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
-    render(GraphCanvas, { projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
+    renderCanvas({ projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
 
     expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Show minimap' })).toBeEnabled()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Show minimap' }))
@@ -137,7 +142,7 @@ describe('GraphCanvas', () => {
   it('suppresses synthetic drag, selection, and Arrange mutations while an activation transition is locked', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
-    const { container } = render(GraphCanvas, {
+    const { container } = renderCanvas({
       projection,
       layout,
       transitionLocked: true,
@@ -161,19 +166,19 @@ describe('GraphCanvas', () => {
       }),
     )
     await fireEvent.click(screen.getAllByLabelText('command node collect')[0]!)
-    await fireEvent.click(screen.getByRole('button', { name: 'Arrange graph' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Arrange Graph' }))
     await vi.advanceTimersByTimeAsync(300)
 
     expect($canvasPositions.get().collect).toEqual({ x: 0, y: 0 })
     expect($canvasSelection.get()).toEqual(['review'])
-    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeDisabled()
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
   it('flushes a pending drag-stop persistence before the canvas closes', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
-    const { component, container, unmount } = render(GraphCanvas, {
+    const { component, container, unmount } = renderCanvas({
       projection,
       layout,
       onPersistLayout: persistLayout,
@@ -209,7 +214,7 @@ describe('GraphCanvas', () => {
       workflowPath: 'deploy.yaml',
       viewport: { x: 210, y: 120, zoom: 1.4 },
     }
-    const { container, rerender } = render(GraphCanvas, {
+    const { container, rerender } = renderCanvas({
       projection,
       layout: firstLayout,
       workflowIdentity: 'workspace\0workflow:workspace:release.yaml',
@@ -227,7 +232,7 @@ describe('GraphCanvas', () => {
     await tick()
 
     expect(viewport.style.transform).toContain('translate(210px, 120px) scale(1.4)')
-    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
   })
 
   it('persists one pending A drag before an open-draft transition and one B drag under the new identity', async () => {
@@ -236,7 +241,7 @@ describe('GraphCanvas', () => {
     const persistLayout = vi.fn(async (next: LayoutRecordV1) => {
       persisted.push(structuredClone(next))
     })
-    const { component, container, rerender } = render(GraphCanvas, {
+    const { component, container, rerender } = renderCanvas({
       projection,
       layout,
       workflowIdentity: 'workspace\0workflow:workspace:release.yaml',
@@ -294,7 +299,7 @@ describe('GraphCanvas', () => {
   })
 
   it('exposes focusable 32px dependency ports for keyboard and touch users', async () => {
-    render(GraphCanvas, { projection, layout })
+    renderCanvas({ projection, layout })
     await tick()
 
     const incoming = screen.getByRole('button', { name: 'Dependencies entering collect' })
@@ -311,7 +316,7 @@ describe('GraphCanvas', () => {
       message: 'Connecting review to collect would create a cycle.',
     }))
     const persistLayout = vi.fn()
-    const { container } = render(GraphCanvas, { projection, layout, onConnect, onPersistLayout: persistLayout })
+    const { container } = renderCanvas({ projection, layout, onConnect, onPersistLayout: persistLayout })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     const before = structuredClone($canvasPositions.get())
 
@@ -332,25 +337,39 @@ describe('GraphCanvas', () => {
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
-  it('requests descriptor picking, duplication, and precise deletion for the current selection', async () => {
-    const onRequestAdd = vi.fn()
-    const onDuplicate = vi.fn()
-    const onRequestDelete = vi.fn()
-    render(GraphCanvas, { projection, layout, onRequestAdd, onDuplicate, onRequestDelete })
+  it('derives toolbar metadata, enablement, disabled reasons, and execution from its injected registry', async () => {
+    const registry = createCommandRegistry()
+    const runAdd = vi.fn()
+    for (const command of listCommands()) {
+      registry.registerCommand(
+        command.id === 'canvas.add-node'
+          ? { ...command, label: 'Registry Add', defaultBindings: ['A'], run: runAdd }
+          : command.id === 'canvas.delete-selection'
+            ? {
+                ...command,
+                label: 'Registry Remove',
+                enabled: () => false,
+                disabledReason: () => 'Registry selection required.',
+              }
+            : command,
+      )
+    }
+    render(GraphCanvas, { commandSurface: registry, projection, layout } as never)
     setCanvasSelection(['review'])
-    await fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate selection' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete selection' }))
 
-    expect(onRequestAdd).toHaveBeenCalledWith({ viewportCenter: { x: 400, y: 300 } })
-    expect(onDuplicate).toHaveBeenCalledWith(['review'])
-    expect(onRequestDelete).toHaveBeenCalledWith(['review'])
+    const add = screen.getByRole('button', { name: 'Registry Add' })
+    const remove = screen.getByRole('button', { name: 'Registry Remove' })
+    expect(add).toHaveAttribute('title', expect.stringMatching(/registry add.*a/i))
+    expect(remove).toBeDisabled()
+    expect(remove).toHaveAttribute('title', 'Registry selection required.')
+    await fireEvent.click(add)
+    expect(runAdd).toHaveBeenCalledOnce()
   })
 
   it('never disconnects incident edges while node deletion awaits resolution or confirmation', async () => {
     const onRequestDelete = vi.fn(async () => ({ status: 'resolution_required' as const }))
     const onDisconnect = vi.fn(async () => ({ status: 'committed' as const }))
-    const { container } = render(GraphCanvas, { projection, layout, onRequestDelete, onDisconnect })
+    const { container } = renderCanvas({ projection, layout, onRequestDelete, onDisconnect })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
 
     await fireEvent(
@@ -371,7 +390,7 @@ describe('GraphCanvas', () => {
   it('disconnects only an edge-only delete gesture', async () => {
     const onRequestDelete = vi.fn()
     const onDisconnect = vi.fn(async () => ({ status: 'committed' as const }))
-    const { container } = render(GraphCanvas, { projection, layout, onRequestDelete, onDisconnect })
+    const { container } = renderCanvas({ projection, layout, onRequestDelete, onDisconnect })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
 
     await fireEvent(

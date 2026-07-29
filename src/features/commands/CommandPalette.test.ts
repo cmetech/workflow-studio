@@ -37,4 +37,25 @@ describe('CommandPalette', () => {
     expect(run).toHaveBeenCalledOnce()
     expect(close).toHaveBeenCalledOnce()
   })
+
+  it('honors an executed command result that keeps the palette as a persistent search surface', async () => {
+    const registry = createCommandRegistry()
+    registry.registerCommand({
+      id: 'document.find',
+      label: 'Find',
+      category: 'Edit',
+      defaultBindings: ['Mod+F'],
+      enabled: () => true,
+      run: () => ({ commandPalette: 'keep-open' }),
+    })
+    const close = vi.fn()
+    render(CommandPalette, {
+      props: { registry, context: { surface: 'global', canMutate: false, hasSelection: false }, onClose: close },
+    })
+
+    await fireEvent.click(screen.getByRole('option', { name: /find/i }))
+
+    expect(close).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+  })
 })

@@ -144,7 +144,7 @@ describe.sequential('App cached contract boundary', () => {
 
     try {
       await screen.findByRole('region', { name: 'Workflow graph' })
-      await fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
       expect(await screen.findByRole('option', { name: /command/i })).toBeVisible()
     } finally {
       rendered.unmount()

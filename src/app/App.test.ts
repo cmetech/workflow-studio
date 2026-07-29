@@ -24,6 +24,7 @@ import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
+import { createCommandRegistry, listCommands } from '$src/lib/commands/registry'
 import App from './App.svelte'
 
 const contractResolverTestState = vi.hoisted(() => ({
@@ -572,6 +573,50 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('derives editor-mode labels, disabled reasons, and handlers from its injected command registry', async () => {
+    const registry = createCommandRegistry()
+    const runSplit = vi.fn(() => showEditorMode('yaml'))
+    for (const command of listCommands()) {
+      registry.registerCommand(
+        command.id === 'view.editor.split'
+          ? { ...command, label: 'Registry Split', run: runSplit }
+          : command.id === 'view.editor.yaml'
+            ? {
+                ...command,
+                label: 'Registry Source',
+                enabled: () => false,
+                disabledReason: () => 'Source mode is locked.',
+              }
+            : command,
+      )
+    }
+    render(App, { props: { commandSurface: registry } } as never)
+
+    const split = screen.getByRole('button', { name: 'Registry Split' })
+    const sourceMode = screen.getByRole('button', { name: 'Registry Source' })
+    expect(sourceMode).toBeDisabled()
+    expect(sourceMode).toHaveAttribute('title', 'Source mode is locked.')
+    await fireEvent.click(split)
+
+    expect(runSplit).toHaveBeenCalledOnce()
+    expect(sourceMode).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('keeps visual Find selected from an open command palette visibly open', async () => {
+    render(App)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New Workflow' })).toBeEnabled())
+    await waitFor(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F1', bubbles: true }))
+      expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+    })
+    const search = await screen.findByRole('combobox', { name: 'Search commands' })
+    await fireEvent.input(search, { target: { value: 'Find' } })
+    await fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Search commands' })).toHaveFocus()
+  })
+
   it('renders the current valid YAML projection in the visual canvas without replacing the document session', () => {
     loadWorkspaceEntries('workspace', 'Workspace', [
       { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
@@ -633,7 +678,7 @@ describe('App', () => {
     render(App)
 
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Arrange graph' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
     expect($documentSession.get().pair).toBe(before)
   })
 

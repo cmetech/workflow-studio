@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { executeCommand } from '$src/lib/commands/registry'
+  import { executeCommand, type CommandSurface } from '$src/lib/commands/registry'
   import type { CommandContext } from '$src/lib/commands/types'
   import type { DocumentKind, IssueLayer, ValidationIssue } from '$src/lib/documents/types'
   import { selectProblem } from '$src/stores/documents'
@@ -7,7 +7,7 @@
   interface Props {
     issues: readonly ValidationIssue[]
     paths: Readonly<Record<DocumentKind, string | null>>
-    execute?: (id: string, context: CommandContext) => Promise<void>
+    execute?: CommandSurface['executeCommand']
     onDocumentation?: ((id: string) => void) | undefined
   }
 

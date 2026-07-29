@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { executeCommand } from '$src/lib/commands/registry'
+  import type { CommandSurface } from '$src/lib/commands/registry'
+  import { resolveCommand } from '$src/lib/commands/surface'
   import type { ActivityId, CommandContext } from '$src/lib/commands/types'
   import { activeActivity } from '$src/stores/shell'
 
@@ -9,35 +10,40 @@
     hasSelection: false,
   }
 
-  const activities: readonly { id: ActivityId; label: string; symbol: string }[] = [
-    { id: 'explorer', label: 'Explorer', symbol: '▤' },
-    { id: 'nodes', label: 'Nodes', symbol: '◇' },
-    { id: 'examples', label: 'Examples', symbol: '☆' },
-    { id: 'documentation', label: 'Documentation', symbol: 'ⓘ' },
-    { id: 'git', label: 'Git', symbol: '⑂' },
-    { id: 'settings', label: 'Settings', symbol: '⚙' },
-  ]
-
-  function activateActivity(activity: ActivityId): void {
-    void executeCommand(`view.activity.${activity}`, activityContext)
+  interface Props {
+    commandSurface: CommandSurface
   }
+  let { commandSurface }: Props = $props()
+
+  const activities: readonly { id: ActivityId; symbol: string }[] = [
+    { id: 'explorer', symbol: '▤' },
+    { id: 'nodes', symbol: '◇' },
+    { id: 'examples', symbol: '☆' },
+    { id: 'documentation', symbol: 'ⓘ' },
+    { id: 'git', symbol: '⑂' },
+    { id: 'settings', symbol: '⚙' },
+  ]
 </script>
 
 <nav class="activity-rail" aria-label="Activities" style:background-color="var(--color-yaml-gutter)">
   {#each activities as activity (activity.id)}
+    {@const command = resolveCommand(commandSurface, `view.activity.${activity.id}`, activityContext)}
     {#if activity.id === 'settings'}
       <span class="spacer" aria-hidden="true"></span>
     {/if}
-    <button
-      type="button"
-      aria-label={activity.label}
-      aria-pressed={$activeActivity === activity.id}
-      class:active={$activeActivity === activity.id}
-      title={activity.label}
-      onclick={() => activateActivity(activity.id)}
-    >
-      <span aria-hidden="true">{activity.symbol}</span>
-    </button>
+    {#if command}
+      <button
+        type="button"
+        aria-label={command.label}
+        aria-pressed={$activeActivity === activity.id}
+        class:active={$activeActivity === activity.id}
+        title={command.title}
+        disabled={!command.enabled}
+        onclick={() => void commandSurface.executeCommand(command.id, activityContext)}
+      >
+        <span aria-hidden="true">{activity.symbol}</span>
+      </button>
+    {/if}
   {/each}
 </nav>
 

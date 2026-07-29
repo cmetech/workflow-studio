@@ -8,7 +8,14 @@ import {
   showEditorMode,
 } from '$src/stores/shell'
 import { requestProblemFocus } from '$src/stores/documents'
-import type { ActivityId, AppCommand, CommandContext, EditorMode } from './types'
+import type {
+  ActivityId,
+  AppCommand,
+  CommandContext,
+  CommandExecutionResult,
+  CommandHandlerResult,
+  EditorMode,
+} from './types'
 
 export interface BindingConflictDiagnostic {
   type: 'binding_conflict'
@@ -21,8 +28,10 @@ export interface CommandRegistry {
   registerCommand(command: AppCommand): void
   listCommands(): readonly AppCommand[]
   listBindingConflicts(): readonly BindingConflictDiagnostic[]
-  executeCommand(id: string, context: CommandContext): Promise<void>
+  executeCommand(id: string, context: CommandContext): Promise<CommandExecutionResult>
 }
+
+export type CommandSurface = Pick<CommandRegistry, 'listCommands' | 'executeCommand'>
 
 export class CommandDisabledError extends Error {
   constructor(id: string) {
@@ -42,7 +51,7 @@ const commandSurfaces: readonly CommandContext['surface'][] = ['global', 'canvas
 let documentSaveHandler: (() => void | Promise<void>) | null = null
 let documentUndoHandler: (() => void | Promise<void>) | null = null
 let documentRedoHandler: (() => void | Promise<void>) | null = null
-let documentFindHandler: (() => void | Promise<void>) | null = null
+let documentFindHandler: (() => CommandHandlerResult | Promise<CommandHandlerResult>) | null = null
 let workflowValidateHandler: (() => void | Promise<void>) | null = null
 
 export interface CanvasCommandHandlers {
@@ -87,7 +96,7 @@ export function setDocumentHistoryHandlers(handlers: {
 }
 
 export function setDocumentCommandHandlers(handlers: {
-  readonly find: () => void | Promise<void>
+  readonly find: () => CommandHandlerResult | Promise<CommandHandlerResult>
   readonly validate: () => void | Promise<void>
 }): () => void {
   documentFindHandler = handlers.find
@@ -210,7 +219,7 @@ export function createCommandRegistry(): CommandRegistry {
         throw new CommandDisabledError(id)
       }
 
-      await command.run(context)
+      return (await command.run(context)) ?? { commandPalette: 'close' }
     },
   }
 }
@@ -262,7 +271,12 @@ function workflowCommand(
 function canvasCommand(
   action: keyof CanvasCommandHandlers,
   label: string,
-  options: { readonly selection?: boolean; readonly mutating?: boolean; readonly binding?: string } = {},
+  options: {
+    readonly selection?: boolean
+    readonly singleSelection?: boolean
+    readonly mutating?: boolean
+    readonly binding?: string
+  } = {},
 ): AppCommand {
   return {
     id: `canvas.${action.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`,
@@ -272,6 +286,7 @@ function canvasCommand(
     enabled: (context) =>
       context.surface === 'canvas' &&
       (!options.selection || context.hasSelection) &&
+      (!options.singleSelection || context.selectionCount === undefined || context.selectionCount === 1) &&
       (!options.mutating || context.canMutate),
     run: () => (canvasCommandHandlers?.[action] as (() => void | Promise<void>) | undefined)?.(),
   }
@@ -300,7 +315,12 @@ const initialCommands: readonly AppCommand[] = [
   canvasCommand('fitSelection', 'Fit Selection', { selection: true, binding: 'Shift+F' }),
   canvasCommand('openInspector', 'Open Inspector', { selection: true, binding: 'Enter' }),
   canvasCommand('cancel', 'Cancel or Clear Selection', { binding: 'Escape' }),
-  canvasCommand('createEdge', 'Create Edge', { selection: true, mutating: true, binding: 'E' }),
+  canvasCommand('createEdge', 'Create Edge', {
+    selection: true,
+    singleSelection: true,
+    mutating: true,
+    binding: 'E',
+  }),
   {
     id: 'canvas.nudge-up',
     label: 'Nudge Up',

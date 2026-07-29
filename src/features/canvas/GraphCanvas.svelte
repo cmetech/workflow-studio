@@ -11,6 +11,9 @@
   } from '@xyflow/svelte'
   import { Copy, Link, Map, Network, Plus, Trash2 } from 'lucide-svelte'
   import '@xyflow/svelte/dist/style.css'
+  import type { CommandSurface } from '$src/lib/commands/registry'
+  import { resolveCommand } from '$src/lib/commands/surface'
+  import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
@@ -34,6 +37,7 @@
   }
 
   interface Props {
+    commandSurface: CommandSurface
     projection: WorkflowProjection
     layout: LayoutRecordV1
     workflowIdentity?: string
@@ -49,12 +53,12 @@
       readonly afterNodeId?: string
       readonly viewportCenter: { readonly x: number; readonly y: number }
     }) => void | Promise<void>
-    onDuplicate?: (nodeIds: readonly string[]) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
     onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
     onOpenInspector?: () => void
   }
 
   let {
+    commandSurface,
     projection,
     layout,
     workflowIdentity = `${layout.workspaceId}\0${layout.workflowPath}`,
@@ -67,7 +71,6 @@
     onConnect,
     onDisconnect,
     onRequestAdd,
-    onDuplicate,
     onRequestDelete,
     onOpenInspector,
   }: Props = $props()
@@ -88,6 +91,24 @@
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: LayoutRecordV1 | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
+  const canvasCommandContext = $derived.by<CommandContext>(() => ({
+    surface: 'canvas',
+    canMutate: canAuthor(),
+    hasSelection: selection.length > 0,
+    selectionCount: selection.length,
+  }))
+  const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', canvasCommandContext))
+  const edgeCommand = $derived(resolveCommand(commandSurface, 'canvas.create-edge', canvasCommandContext))
+  const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
+  const deleteCommand = $derived(resolveCommand(commandSurface, 'canvas.delete-selection', canvasCommandContext))
+  const arrangeCommand = $derived(resolveCommand(commandSurface, 'canvas.arrange', canvasCommandContext))
+
+  function executeToolbar(
+    command: { readonly id: string; readonly enabled: boolean } | undefined,
+  ): Promise<CommandExecutionResult> | undefined {
+    if (!command?.enabled) return undefined
+    return commandSurface.executeCommand(command.id, canvasCommandContext)
+  }
 
   function deriveCanvas() {
     return projectCanvas(projection, layout, { issues, stale, readOnly: readOnly || transitionLocked })
@@ -310,20 +331,6 @@
     void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenter() })
   }
 
-  function requestDuplicate(): void {
-    if (selection.length === 0) return
-    void handleAuthoringResult(
-      onDuplicate
-        ? () => onDuplicate(selection)
-        : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Duplicate is unavailable.' }),
-    )
-  }
-
-  function requestDelete(): void {
-    if (!canAuthor() || selection.length === 0) return
-    void onRequestDelete?.(selection)
-  }
-
   async function beforeDelete(
     nodes: readonly { readonly id: string }[],
     edges: readonly { readonly source: string; readonly target: string }[],
@@ -434,41 +441,66 @@
   bind:this={root}
 >
   <div class="canvas-toolbar" aria-label="Canvas tools">
-    <button type="button" aria-label="Add node" disabled={!canAuthor()} onclick={() => requestAdd()}>
-      <Plus size={15} aria-hidden="true" />
-      Add
-    </button>
-    <button
-      type="button"
-      aria-label="Create dependency edge"
-      disabled={!canAuthor() || selection.length !== 1}
-      onclick={requestEdge}
-    >
-      <Link size={15} aria-hidden="true" />
-      Edge
-    </button>
-    <button
-      type="button"
-      aria-label="Duplicate selection"
-      disabled={!canAuthor() || selection.length === 0}
-      onclick={requestDuplicate}
-    >
-      <Copy size={15} aria-hidden="true" />
-      Duplicate
-    </button>
-    <button
-      type="button"
-      aria-label="Delete selection"
-      disabled={!canAuthor() || selection.length === 0}
-      onclick={requestDelete}
-    >
-      <Trash2 size={15} aria-hidden="true" />
-      Delete
-    </button>
-    <button type="button" aria-label="Arrange graph" disabled={readOnly || stale || transitionLocked} onclick={arrange}>
-      <Network size={15} aria-hidden="true" />
-      Arrange
-    </button>
+    {#if addCommand}
+      <button
+        type="button"
+        aria-label={addCommand.label}
+        title={addCommand.title}
+        disabled={!addCommand.enabled}
+        onclick={() => void executeToolbar(addCommand)}
+      >
+        <Plus size={15} aria-hidden="true" />
+        {addCommand.label}
+      </button>
+    {/if}
+    {#if edgeCommand}
+      <button
+        type="button"
+        aria-label={edgeCommand.label}
+        title={edgeCommand.title}
+        disabled={!edgeCommand.enabled}
+        onclick={() => void executeToolbar(edgeCommand)}
+      >
+        <Link size={15} aria-hidden="true" />
+        {edgeCommand.label}
+      </button>
+    {/if}
+    {#if duplicateCommand}
+      <button
+        type="button"
+        aria-label={duplicateCommand.label}
+        title={duplicateCommand.title}
+        disabled={!duplicateCommand.enabled}
+        onclick={() => void executeToolbar(duplicateCommand)}
+      >
+        <Copy size={15} aria-hidden="true" />
+        {duplicateCommand.label}
+      </button>
+    {/if}
+    {#if deleteCommand}
+      <button
+        type="button"
+        aria-label={deleteCommand.label}
+        title={deleteCommand.title}
+        disabled={!deleteCommand.enabled}
+        onclick={() => void executeToolbar(deleteCommand)}
+      >
+        <Trash2 size={15} aria-hidden="true" />
+        {deleteCommand.label}
+      </button>
+    {/if}
+    {#if arrangeCommand}
+      <button
+        type="button"
+        aria-label={arrangeCommand.label}
+        title={arrangeCommand.title}
+        disabled={!arrangeCommand.enabled}
+        onclick={() => void executeToolbar(arrangeCommand)}
+      >
+        <Network size={15} aria-hidden="true" />
+        {arrangeCommand.label}
+      </button>
+    {/if}
     <button
       type="button"
       aria-label={minimapVisible ? 'Hide minimap' : 'Show minimap'}

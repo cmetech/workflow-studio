@@ -3,16 +3,16 @@
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import {
     commandRegistry,
-    executeCommand,
-    listCommands,
     setCanvasCommandHandlers,
     setDocumentCommandHandlers,
     setDocumentHistoryHandlers,
     setDocumentSaveHandler,
+    type CommandSurface,
   } from '$src/lib/commands/registry'
+  import { resolveCommand } from '$src/lib/commands/surface'
   import { dispatchKeybinding } from '$src/lib/commands/keybindings'
   import { NodeChordController, type NodeChordKind, type NodeChordState } from '$src/lib/commands/node-chords'
-  import type { CommandContext, EditorMode } from '$src/lib/commands/types'
+  import type { CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
   import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
@@ -103,6 +103,11 @@
     canMutate: false,
     hasSelection: false,
   }
+
+  interface Props {
+    commandSurface?: CommandSurface
+  }
+  let { commandSurface = commandRegistry }: Props = $props()
 
   const brand = loadBundledBrand()
   const bundledGuideSources = import.meta.glob('../../docs/app-guides/*.md', {
@@ -265,11 +270,7 @@
     },
   })
 
-  const editorModes: readonly { id: EditorMode; label: string }[] = [
-    { id: 'visual', label: 'Visual' },
-    { id: 'split', label: 'Split' },
-    { id: 'yaml', label: 'YAML' },
-  ]
+  const editorModes: readonly EditorMode[] = ['visual', 'split', 'yaml']
 
   const canvasActivationBarrier = createCanvasActivationBarrier({
     getCanvas: () => graphCanvas,
@@ -354,7 +355,7 @@
   )
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
-    return executeCommand(id, context)
+    return commandSurface.executeCommand(id, context).then(() => undefined)
   }
 
   function keyboardContext(target: EventTarget | null): CommandContext {
@@ -375,6 +376,7 @@
       canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
       canValidate: Boolean(pair),
       hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,
+      selectionCount: surface === 'canvas' ? canvasSelectionStore.get().length : 0,
     }
   }
 
@@ -402,9 +404,10 @@
     documentWorkspace.changed(result.pair, 'visual')
   }
 
-  function findInCurrentSurface(): void {
-    if (editorModesHost?.openFind()) return
+  function findInCurrentSurface(): CommandHandlerResult {
+    if (editorModesHost?.openFind()) return { commandPalette: 'close' }
     void runCommand('workbench.command-palette', globalContext)
+    return { commandPalette: 'keep-open' }
   }
 
   function validateCurrentWorkflow(): void {
@@ -1018,9 +1021,15 @@
           ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
           ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
         ]
-        void dispatchKeybinding(event, { registry: commandRegistry, context, escape })
+        void dispatchKeybinding(event, { registry: commandSurface, context, escape })
           .then((result) => {
             if (result.status === 'disabled') workspaceError = result.reason
+            else if (result.status === 'collision') {
+              const labels = result.commandIds.map(
+                (id) => commandSurface.listCommands().find((command) => command.id === id)?.label ?? id,
+              )
+              workspaceError = `Shortcut collision: ${labels.join(', ')}.`
+            }
           })
           .catch((error: unknown) => {
             workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
@@ -1116,7 +1125,7 @@
   {/if}
 
   <div class="workbench">
-    <ActivityRail />
+    <ActivityRail {commandSurface} />
     <aside class="panel left-panel" aria-label="Workspace panel">
       {#if $activeActivity === 'explorer' && $workspace.id !== null}
         <Explorer
@@ -1186,15 +1195,20 @@
     </aside>
     <section class="editor-column" aria-label="Workflow workspace">
       <div class="editor-tabs" role="group" aria-label="Editor mode">
-        {#each editorModes as mode (mode.id)}
-          <button
-            type="button"
-            aria-pressed={$activeEditorMode === mode.id}
-            class:active={$activeEditorMode === mode.id}
-            onclick={() => runCommand(`view.editor.${mode.id}`)}
-          >
-            {mode.label}
-          </button>
+        {#each editorModes as mode (mode)}
+          {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
+          {#if command}
+            <button
+              type="button"
+              aria-pressed={$activeEditorMode === mode}
+              class:active={$activeEditorMode === mode}
+              title={command.title}
+              disabled={!command.enabled}
+              onclick={() => void commandSurface.executeCommand(command.id, globalContext)}
+            >
+              {command.label}
+            </button>
+          {/if}
         {/each}
       </div>
       <section class="editor-region" aria-label="Workflow editor">
@@ -1215,6 +1229,7 @@
               <div class="canvas-pane">
                 <GraphCanvas
                   bind:this={graphCanvas}
+                  {commandSurface}
                   projection={canvasProjection}
                   layout={$activeLayoutStore}
                   workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
@@ -1228,7 +1243,6 @@
                   onConnect={(source, target) => canvasAuthoring.connect(source, target)}
                   onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}
                   onRequestAdd={requestCanvasAdd}
-                  onDuplicate={(nodeIds) => canvasAuthoring.duplicate(nodeIds)}
                   onRequestDelete={requestCanvasDelete}
                   onOpenInspector={focusInspector}
                 />
@@ -1383,7 +1397,7 @@
   {#if contextEntryId}
     <div class="context-layer">
       <WorkflowContextMenu
-        commands={listCommands()}
+        commands={commandSurface.listCommands()}
         opener={contextOpener}
         context={contextFor(contextEntryId)}
         onRun={async (id) => {
@@ -1477,7 +1491,7 @@
   {/if}
   {#if $commandPaletteOpen}
     <CommandPalette
-      registry={commandRegistry}
+      registry={commandSurface}
       context={keyboardContext(document.activeElement)}
       onClose={closeCommandPalette}
     />
@@ -1485,7 +1499,7 @@
   {#if $keyboardShortcutsOpen}
     <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
       <button type="button" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
-      <KeyboardShortcuts registry={commandRegistry} />
+      <KeyboardShortcuts registry={commandSurface} />
     </div>
   {/if}
   {#if deleteRequest}

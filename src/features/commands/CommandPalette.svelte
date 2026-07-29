@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
-  import type { CommandRegistry } from '$src/lib/commands/registry'
+  import type { CommandSurface } from '$src/lib/commands/registry'
   import { displayKeybindings } from '$src/lib/commands/keybindings'
   import type { CommandContext } from '$src/lib/commands/types'
 
   interface Props {
-    registry: CommandRegistry
+    registry: CommandSurface
     context: CommandContext
     onClose?: () => void
     opener?: HTMLElement | undefined
@@ -44,8 +44,8 @@
   }
   async function execute(): Promise<void> {
     if (!active || !active.enabled(context)) return
-    await registry.executeCommand(active.id, context)
-    close()
+    const result = await registry.executeCommand(active.id, context)
+    if (result.commandPalette === 'close') close()
   }
   function close(): void {
     onClose?.()

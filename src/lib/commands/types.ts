@@ -7,11 +7,18 @@ export interface CommandContext {
   canMutate: boolean
   canValidate?: boolean
   hasSelection: boolean
+  selectionCount?: number
   targetEntryId?: string | null
   contractAvailable?: boolean
   workflowProfile?: 'hermes-legacy' | 'archon-2026-07' | null
   hasCompanion?: boolean
 }
+
+export interface CommandExecutionResult {
+  readonly commandPalette: 'close' | 'keep-open'
+}
+
+export type CommandHandlerResult = void | CommandExecutionResult
 
 export interface AppCommand {
   id: string
@@ -20,5 +27,5 @@ export interface AppCommand {
   defaultBindings: readonly string[]
   enabled(context: CommandContext): boolean
   disabledReason?(context: CommandContext): string | undefined
-  run(context: CommandContext): void | Promise<void>
+  run(context: CommandContext): CommandHandlerResult | Promise<CommandHandlerResult>
 }
