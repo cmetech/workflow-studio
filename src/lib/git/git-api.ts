@@ -17,7 +17,7 @@ export async function inspectGitRepository(native: GitNativeBridge): Promise<Git
 export async function inspectGitPair(
   native: GitNativeBridge,
   pair: GitPairPaths,
-  activation: { readonly controllerEpoch: number; readonly requestGeneration: number },
+  acquireActivation: () => Promise<{ readonly controllerEpoch: number; readonly requestGeneration: number }>,
 ): Promise<GitInspection> {
   const repository = await native.gitDetect()
   if (!repository) return emptyGitInspection
@@ -25,6 +25,7 @@ export async function inspectGitPair(
     native.gitStatus(repository.root),
     native.gitDiffPair(repository.root, pair.definitionPath, pair.companionPath),
   ])
+  const activation = await acquireActivation()
   const history = await native.gitHistoryPair(
     repository.root,
     pair.definitionPath,

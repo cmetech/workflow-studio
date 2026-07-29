@@ -102,7 +102,7 @@
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
-  import { createApplicationDisposal } from './application-disposal'
+  import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
   const globalContext: CommandContext = {
@@ -296,8 +296,10 @@
     onPersistenceError: surfaceCanvasPersistenceError,
   })
   const applicationDisposal = createApplicationDisposal(async () => {
-    await gitController.dispose()
-    await withCanvasLayoutBarrier(() => documentWorkspace.dispose())
+    await disposeApplicationResources(
+      () => gitController.dispose(),
+      () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
+    )
   }, surfaceCanvasPersistenceError)
 
   const inspectorContract = $derived(

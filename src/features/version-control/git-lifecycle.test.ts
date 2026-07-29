@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitNativeBridge } from '$src/lib/native/types'
+import { NativeError, type GitNativeBridge } from '$src/lib/native/types'
 import { $gitState, createGitInspectionController, resetGitState, synchronizeGitLifecycle } from '$src/stores/git'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => (resolve = done))
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
 }
 
 function nativeFixture(): GitNativeBridge {
@@ -196,5 +200,156 @@ describe('Git inspection lifecycle', () => {
     expect(native.gitRetainHistoryAuthorization).toHaveBeenNthCalledWith(2, 'token-b', 1, 2)
     expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith('token-a')
     expect($gitState.get().inspection.historyAuthorizationToken).toBe('token-b')
+  })
+
+  it('retries session acquisition after an initial begin rejection', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitBeginHistorySession)
+      .mockRejectedValueOnce(new Error('session unavailable'))
+      .mockResolvedValueOnce(2)
+    const controller = createGitInspectionController(native)
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+
+    await controller.refreshPair(pair)
+    expect($gitState.get().phase).toBe('error')
+
+    await controller.refreshPair(pair)
+
+    expect($gitState.get().phase).toBe('ready')
+    expect($gitState.get().inspection.pair).toEqual(pair)
+    expect(native.gitBeginHistorySession).toHaveBeenCalledTimes(2)
+    expect(native.gitRetainHistoryAuthorization).toHaveBeenCalledWith('default-token', 2, 1)
+  })
+
+  it('never acquires a history session for repository-only inspection or disposal', async () => {
+    const native = nativeFixture()
+    const controller = createGitInspectionController(native)
+
+    await controller.refreshRepository()
+    await controller.dispose()
+
+    expect($gitState.get().phase).toBe('idle')
+    expect(native.gitBeginHistorySession).not.toHaveBeenCalled()
+    expect(native.gitDisposeHistorySession).not.toHaveBeenCalled()
+  })
+
+  it('recovers preview authority when an old controller session activates after the new controller', async () => {
+    const native = nativeFixture()
+    const oldBegin = deferred<number>()
+    vi.mocked(native.gitBeginHistorySession)
+      .mockReturnValueOnce(oldBegin.promise)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(3)
+    vi.mocked(native.gitHistoryPair)
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'new-token' })
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'recovered-token' })
+    vi.mocked(native.gitShowPair)
+      .mockRejectedValueOnce(new NativeError('git_context_changed', 'old controller activated later'))
+      .mockResolvedValueOnce({ oid: 'aaaaaaaa', definition: 'name: recovered\n', companion: null })
+
+    const oldController = createGitInspectionController(native)
+    const oldRefresh = oldController.refreshPair({ definitionPath: 'old.yaml', companionPath: null })
+    await vi.waitFor(() => expect(native.gitBeginHistorySession).toHaveBeenCalledTimes(1))
+
+    const newController = createGitInspectionController(native)
+    const pair = { definitionPath: 'new.yaml', companionPath: null }
+    await newController.refreshPair(pair)
+    oldBegin.resolve(2)
+    await oldRefresh
+
+    const snapshot = await newController.loadCommit('aaaaaaaa', pair)
+
+    expect(snapshot?.definition).toBe('name: recovered\n')
+    expect(native.gitBeginHistorySession).toHaveBeenCalledTimes(3)
+    expect(native.gitDisposeHistorySession).toHaveBeenCalledWith(2)
+    expect(native.gitRetainHistoryAuthorization).toHaveBeenCalledWith('recovered-token', 3, 2)
+    expect(native.gitShowPair).toHaveBeenNthCalledWith(2, '/repo', 'aaaaaaaa', 'recovered-token', 'new.yaml', null)
+    expect($gitState.get().inspection.historyAuthorizationToken).toBe('recovered-token')
+  })
+
+  it('does not revoke recovered preview authority when a restarted session reissues the token value', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitBeginHistorySession).mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    vi.mocked(native.gitShowPair)
+      .mockRejectedValueOnce(new NativeError('git_context_changed', 'session changed'))
+      .mockResolvedValueOnce({ oid: 'aaaaaaaa', definition: 'name: recovered\n', companion: null })
+    const controller = createGitInspectionController(native)
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+    await controller.refreshPair(pair)
+
+    const snapshot = await controller.loadCommit('aaaaaaaa', pair)
+
+    expect(snapshot?.definition).toBe('name: recovered\n')
+    expect(native.gitRevokeHistoryAuthorization).not.toHaveBeenCalledWith('default-token')
+  })
+
+  it('disposes a late session resolution without publishing or creating history authority', async () => {
+    const native = nativeFixture()
+    const begin = deferred<number>()
+    vi.mocked(native.gitBeginHistorySession).mockReturnValue(begin.promise)
+    const controller = createGitInspectionController(native)
+    const refresh = controller.refreshPair({ definitionPath: 'flow.yaml', companionPath: null })
+    await vi.waitFor(() => expect(native.gitBeginHistorySession).toHaveBeenCalledOnce())
+
+    const disposal = controller.dispose()
+    begin.resolve(7)
+    await Promise.all([refresh, disposal])
+
+    expect(native.gitDisposeHistorySession).toHaveBeenCalledOnce()
+    expect(native.gitDisposeHistorySession).toHaveBeenCalledWith(7)
+    expect(native.gitHistoryPair).not.toHaveBeenCalled()
+    expect(native.gitRetainHistoryAuthorization).not.toHaveBeenCalled()
+    expect($gitState.get().phase).toBe('idle')
+  })
+
+  it('does not turn a rejected in-flight begin into a disposal failure', async () => {
+    const native = nativeFixture()
+    const begin = deferred<number>()
+    vi.mocked(native.gitBeginHistorySession).mockReturnValue(begin.promise)
+    const controller = createGitInspectionController(native)
+    const refresh = controller.refreshPair({ definitionPath: 'flow.yaml', companionPath: null })
+    await vi.waitFor(() => expect(native.gitBeginHistorySession).toHaveBeenCalledOnce())
+
+    const disposal = controller.dispose()
+    begin.reject(new Error('begin failed'))
+
+    await expect(disposal).resolves.toBeUndefined()
+    await refresh
+    expect(native.gitDisposeHistorySession).not.toHaveBeenCalled()
+    expect($gitState.get().phase).toBe('idle')
+  })
+
+  it('shares one in-flight session acquisition across concurrent refreshes', async () => {
+    const native = nativeFixture()
+    const begin = deferred<number>()
+    vi.mocked(native.gitBeginHistorySession).mockReturnValue(begin.promise)
+    const controller = createGitInspectionController(native)
+
+    const first = controller.refreshPair({ definitionPath: 'first.yaml', companionPath: null })
+    const second = controller.refreshPair({ definitionPath: 'second.yaml', companionPath: null })
+    await vi.waitFor(() => expect(native.gitBeginHistorySession).toHaveBeenCalledOnce())
+    begin.resolve(9)
+    await Promise.all([first, second])
+
+    expect(native.gitBeginHistorySession).toHaveBeenCalledOnce()
+    expect(native.gitHistoryPair).toHaveBeenCalledOnce()
+    expect(native.gitHistoryPair).toHaveBeenCalledWith('/repo', 'second.yaml', null, 9, 1)
+    expect($gitState.get().inspection.pair?.definitionPath).toBe('second.yaml')
+  })
+
+  it('bounds current context-change recovery to one fresh session', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitBeginHistorySession).mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    vi.mocked(native.gitHistoryPair).mockRejectedValue(
+      new NativeError('git_context_changed', 'the native context keeps changing'),
+    )
+    const controller = createGitInspectionController(native)
+
+    await controller.refreshPair({ definitionPath: 'flow.yaml', companionPath: null })
+
+    expect(native.gitBeginHistorySession).toHaveBeenCalledTimes(2)
+    expect(native.gitHistoryPair).toHaveBeenCalledTimes(2)
+    expect($gitState.get().phase).toBe('error')
+    expect($gitState.get().error).toBe('the native context keeps changing')
   })
 })

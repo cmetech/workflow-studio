@@ -56,7 +56,7 @@ describe('Git inspection API', () => {
         definitionPath: 'flows/a b.yaml',
         companionPath: 'flows/a b.hermes.yaml',
       },
-      { controllerEpoch: 7, requestGeneration: 11 },
+      async () => ({ controllerEpoch: 7, requestGeneration: 11 }),
     )
 
     expect(result.repository?.branch).toBe('main')
@@ -79,13 +79,14 @@ describe('Git inspection API', () => {
         definitionPath: 'flow.yaml',
         companionPath: null,
       },
-      { controllerEpoch: 1, requestGeneration: 1 },
+      async () => ({ controllerEpoch: 1, requestGeneration: 1 }),
     )
 
     expect(result.repository).toBeNull()
     expect(result.status.entries).toEqual([])
     expect(result.history).toEqual([])
     expect(native.gitStatus).not.toHaveBeenCalled()
+    expect(native.gitBeginHistorySession).not.toHaveBeenCalled()
   })
 
   it('loads a historical pair using the selected validated commit OID', async () => {

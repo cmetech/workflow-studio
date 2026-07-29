@@ -3,6 +3,27 @@ export interface ApplicationDisposal {
   unmount(): void
 }
 
+export async function disposeApplicationResources(
+  disposeGitAuthority: () => Promise<void>,
+  disposeDocumentWorkspace: () => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = []
+  try {
+    await disposeGitAuthority()
+  } catch (error: unknown) {
+    failures.push(error)
+  }
+  try {
+    await disposeDocumentWorkspace()
+  } catch (error: unknown) {
+    failures.push(error)
+  }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) {
+    throw new AggregateError(failures, 'Git authority and document workspace disposal both failed.')
+  }
+}
+
 export function createApplicationDisposal(
   disposeResources: () => Promise<void>,
   onUnmountError: (error: unknown) => void,

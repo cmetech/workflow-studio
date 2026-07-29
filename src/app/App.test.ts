@@ -80,16 +80,19 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
 }
 
 describe('App', () => {
-  it('awaits Git controller authority disposal when the application unmounts', async () => {
+  it('does not acquire or dispose Git history authority when the application unmounts without history work', async () => {
+    const gitBeginHistorySession = vi.fn(async () => 41)
     const gitDisposeHistorySession = vi.fn(async () => undefined)
     setNativeBridgeForTest({
-      gitBeginHistorySession: async () => 41,
+      gitBeginHistorySession,
       gitDisposeHistorySession,
     })
     const app = render(App)
     app.unmount()
 
-    await vi.waitFor(() => expect(gitDisposeHistorySession).toHaveBeenCalledWith(41))
+    await Promise.resolve()
+    expect(gitBeginHistorySession).not.toHaveBeenCalled()
+    expect(gitDisposeHistorySession).not.toHaveBeenCalled()
   })
 
   it('mounts the offline documentation activity with an explicit unavailable state before a contract is active', async () => {

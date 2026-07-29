@@ -40,60 +40,178 @@ export function createGitInspectionController(native: GitNativeBridge) {
   resetGitState()
   let generation = 0
   let previewGeneration = 0
+  let nativeRequestGeneration = 0
   let disposed = false
   let activeToken: string | null = null
   let disposePromise: Promise<void> | null = null
-  const sessionPromise = native.gitBeginHistorySession()
-  void sessionPromise.catch(() => undefined)
+  let sessionAttempt: HistorySessionAttempt | null = null
+  let activeSession: HistorySession | null = null
 
   function ownsPublication(): boolean {
     return !disposed && activeControllerId === controllerId
   }
 
-  async function publish(
-    load: (controllerEpoch: number, requestGeneration: number) => Promise<GitInspection>,
-  ): Promise<void> {
+  function publicationIsCurrent(request: number): boolean {
+    return request === generation && ownsPublication()
+  }
+
+  async function publishRepository(): Promise<void> {
     const request = ++generation
     previewGeneration += 1
     const previousToken = activeToken
     activeToken = null
     if (ownsPublication()) setGitLoading(emptyGitInspection)
     await revoke(previousToken)
-    if (request !== generation || !ownsPublication()) return
-    let inspection: GitInspection | undefined
-    let controllerEpoch: number
+    if (!publicationIsCurrent(request)) return
     try {
-      controllerEpoch = await sessionPromise
-      if (request !== generation || !ownsPublication()) return
-      inspection = await load(controllerEpoch, request)
+      const inspection = await inspectGitRepository(native)
+      if (!publicationIsCurrent(request)) return
+      setGitInspection(inspection)
     } catch (error: unknown) {
-      if (request === generation && ownsPublication()) {
+      if (publicationIsCurrent(request)) {
         setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
       }
-      return
     }
-    const token = inspection.historyAuthorizationToken ?? null
-    if (request !== generation || !ownsPublication()) {
-      await revoke(token)
-      return
-    }
-    if (token) {
-      try {
-        await native.gitRetainHistoryAuthorization(token, controllerEpoch, request)
-      } catch (error: unknown) {
+  }
+
+  async function publishPair(pair: GitPairPaths): Promise<void> {
+    const request = ++generation
+    previewGeneration += 1
+    const previousToken = activeToken
+    activeToken = null
+    if (ownsPublication()) setGitLoading(emptyGitInspection)
+    await revoke(previousToken)
+    if (!publicationIsCurrent(request)) return
+    try {
+      const inspection = await loadPairInspection(pair, request, () => publicationIsCurrent(request), 1)
+      if (!inspection) return
+      const token = inspection.historyAuthorizationToken ?? null
+      if (!publicationIsCurrent(request)) {
         await revoke(token)
-        if (request === generation && ownsPublication()) {
-          setGitError(error instanceof Error ? error.message : 'Local Git history authorization failed.')
-        }
         return
       }
+      activeToken = token
+      setGitInspection(inspection)
+    } catch (error: unknown) {
+      if (error instanceof InactiveGitControllerError) return
+      if (publicationIsCurrent(request)) {
+        setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
+      }
     }
-    if (request !== generation || !ownsPublication()) {
+  }
+
+  async function loadPairInspection(
+    pair: GitPairPaths,
+    request: number,
+    isCurrent: () => boolean,
+    contextRetries: number,
+  ): Promise<GitInspection | null> {
+    let session: HistorySession | null = null
+    let token: string | null = null
+    let nativeRequest = 0
+    try {
+      const inspection = await inspectGitPair(native, pair, async () => {
+        if (!isCurrent()) throw new InactiveGitControllerError()
+        session = await acquireHistorySession()
+        if (!isCurrent()) throw new InactiveGitControllerError()
+        nativeRequest = ++nativeRequestGeneration
+        return { controllerEpoch: session.epoch, requestGeneration: nativeRequest }
+      })
+      token = inspection.historyAuthorizationToken ?? null
+      if (!isCurrent()) {
+        await revoke(token)
+        return null
+      }
+      if (token) {
+        await native.gitRetainHistoryAuthorization(token, session!.epoch, nativeRequest)
+        if (!isCurrent()) {
+          await revoke(token)
+          return null
+        }
+      }
+      return inspection
+    } catch (error: unknown) {
       await revoke(token)
-      return
+      if (!isCurrent()) return null
+      if (isContextChanged(error) && contextRetries > 0) {
+        if (session) await retireHistorySession(session)
+        if (!isCurrent()) return null
+        return loadPairInspection(pair, request, isCurrent, contextRetries - 1)
+      }
+      throw error
     }
+  }
+
+  async function acquireHistorySession(): Promise<HistorySession> {
+    if (activeSession) return activeSession
+    if (sessionAttempt) return sessionAttempt.adopted
+    const raw = native.gitBeginHistorySession()
+    const attempt = { raw, adopted: Promise.resolve(null as never), cleanup: null } as HistorySessionAttempt
+    attempt.adopted = raw.then(
+      async (epoch) => {
+        if (sessionAttempt === attempt) sessionAttempt = null
+        if (!ownsPublication()) {
+          await retireSessionAttempt(attempt)
+          throw new InactiveGitControllerError()
+        }
+        const session = { epoch, attempt }
+        activeSession = session
+        return session
+      },
+      (error: unknown) => {
+        if (sessionAttempt === attempt) sessionAttempt = null
+        throw error
+      },
+    )
+    sessionAttempt = attempt
+    return attempt.adopted
+  }
+
+  function retireSessionAttempt(attempt: HistorySessionAttempt): Promise<void> {
+    attempt.cleanup ??= attempt.raw.then(
+      (epoch) => native.gitDisposeHistorySession(epoch),
+      () => undefined,
+    )
+    return attempt.cleanup
+  }
+
+  function retireHistorySession(session: HistorySession): Promise<void> {
+    if (activeSession === session) activeSession = null
+    return retireSessionAttempt(session.attempt)
+  }
+
+  function previewIsCurrent(request: number, inspectionGeneration: number, root: string, pair: GitPairPaths): boolean {
+    if (request !== previewGeneration || inspectionGeneration !== generation || !ownsPublication()) return false
+    const current = $gitState.get().inspection
+    return current.repository?.root === root && samePair(current.pair, pair)
+  }
+
+  async function recoverPreviewAuthority(
+    request: number,
+    inspectionGeneration: number,
+    root: string,
+    pair: GitPairPaths,
+  ): Promise<string | null> {
+    const isCurrent = () => previewIsCurrent(request, inspectionGeneration, root, pair)
+    const session = activeSession
+    if (session) await retireHistorySession(session)
+    if (!isCurrent()) return null
+    const inspection = await loadPairInspection(pair, inspectionGeneration, isCurrent, 1)
+    if (!inspection) return null
+    const token = inspection.historyAuthorizationToken ?? null
+    if (!token || !isCurrent()) {
+      await revoke(token)
+      return null
+    }
+    const previousToken = activeToken
     activeToken = token
     setGitInspection(inspection)
+    if (previousToken !== token) await revoke(previousToken)
+    if (!isCurrent()) {
+      await revoke(token)
+      return null
+    }
+    return token
   }
 
   async function revoke(token: string | null): Promise<void> {
@@ -116,12 +234,10 @@ export function createGitInspectionController(native: GitNativeBridge) {
       void revoke(token)
     },
     refreshRepository(): Promise<void> {
-      return publish(() => inspectGitRepository(native))
+      return publishRepository()
     },
     refreshPair(pair: GitPairPaths): Promise<void> {
-      return publish((controllerEpoch, requestGeneration) =>
-        inspectGitPair(native, pair, { controllerEpoch, requestGeneration }),
-      )
+      return publishPair(pair)
     },
     async loadCommit(oid: string, pair: GitPairPaths): Promise<GitPairSnapshot | null> {
       if (!ownsPublication()) return Promise.reject(new Error('The Git inspection controller is no longer active.'))
@@ -133,16 +249,21 @@ export function createGitInspectionController(native: GitNativeBridge) {
       if (!authorizationToken) return Promise.reject(new Error('Reload workflow history before previewing a commit.'))
       const request = ++previewGeneration
       const inspectionGeneration = generation
-      const snapshot = await loadGitCommit(native, root, oid, authorizationToken, pair)
+      let token = authorizationToken
+      let snapshot: GitPairSnapshot
+      try {
+        snapshot = await loadGitCommit(native, root, oid, token, pair)
+      } catch (error: unknown) {
+        if (!isContextChanged(error) || !previewIsCurrent(request, inspectionGeneration, root, pair)) throw error
+        const recoveredToken = await recoverPreviewAuthority(request, inspectionGeneration, root, pair)
+        if (!recoveredToken) return null
+        token = recoveredToken
+        if (!previewIsCurrent(request, inspectionGeneration, root, pair)) return null
+        snapshot = await loadGitCommit(native, root, oid, token, pair)
+      }
+      if (!previewIsCurrent(request, inspectionGeneration, root, pair)) return null
       const current = $gitState.get().inspection
-      if (
-        request !== previewGeneration ||
-        inspectionGeneration !== generation ||
-        snapshot.oid !== oid ||
-        current.repository?.root !== root ||
-        current.historyAuthorizationToken !== authorizationToken ||
-        !samePair(current.pair, pair)
-      ) {
+      if (snapshot.oid !== oid || current.historyAuthorizationToken !== token) {
         return null
       }
       return snapshot
@@ -158,9 +279,12 @@ export function createGitInspectionController(native: GitNativeBridge) {
         activeControllerId = 0
         resetGitState()
       }
+      const attempt = activeSession?.attempt ?? sessionAttempt
+      activeSession = null
+      sessionAttempt = null
       disposePromise = Promise.allSettled([
         revoke(token),
-        sessionPromise.then((controllerEpoch) => native.gitDisposeHistorySession(controllerEpoch)),
+        attempt ? retireSessionAttempt(attempt) : Promise.resolve(),
       ]).then((results) => {
         const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
         if (rejected) throw rejected.reason
@@ -168,6 +292,28 @@ export function createGitInspectionController(native: GitNativeBridge) {
       return disposePromise
     },
   }
+}
+
+interface HistorySessionAttempt {
+  readonly raw: Promise<number>
+  adopted: Promise<HistorySession>
+  cleanup: Promise<void> | null
+}
+
+interface HistorySession {
+  readonly epoch: number
+  readonly attempt: HistorySessionAttempt
+}
+
+class InactiveGitControllerError extends Error {}
+
+function isContextChanged(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { readonly code?: unknown }).code === 'git_context_changed'
+  )
 }
 
 export interface GitLifecycleController {
