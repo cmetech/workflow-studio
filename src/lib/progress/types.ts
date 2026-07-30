@@ -1,4 +1,4 @@
-export type ProgressStageId = 'app-data' | 'resources' | 'git' | 'workspace' | 'ready'
+export type ProgressStageId = string
 export type ProgressStageStatus = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed'
 export type ProgressRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
 

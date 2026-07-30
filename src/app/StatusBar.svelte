@@ -1,5 +1,7 @@
 <script lang="ts">
   import { gitState } from '$src/stores/git'
+  import { updateState } from '$src/stores/updates'
+  import { formatBytes } from '$src/lib/updates/format'
 
   const gitLabel = $derived.by(() => {
     if ($gitState.phase === 'idle') return 'Git: no workspace'
@@ -12,6 +14,25 @@
     const scope = $gitState.inspection.pair ? 'pair' : 'workspace'
     return `Git: ${location}${changes === 0 ? '' : ` · ${changes} ${scope} ${changes === 1 ? 'change' : 'changes'}`}`
   })
+  const updateLabel = $derived.by(() => {
+    const update = $updateState
+    if (!update || update.phase === 'idle' || update.phase === 'current' || update.phase === 'offline') {
+      return 'Updates: Current'
+    }
+    if (update.phase === 'checking') return 'Updates: Checking…'
+    if (update.phase === 'available') return `Update Available: ${update.version}`
+    if (update.phase === 'downloading') {
+      const total = update.totalBytes === null ? 'unknown size' : formatBytes(update.totalBytes)
+      return `Updating: ${formatBytes(update.downloadedBytes)} / ${total}`
+    }
+    if (update.phase === 'verifying') return 'Update: Verifying'
+    if (update.phase === 'installing') return 'Update: Installing'
+    if (update.phase === 'restart-required') return 'Update: Restart Required'
+    if (update.phase === 'cancelling') return 'Update: Cancelling'
+    if (update.phase === 'recheck-required') return 'Update: Check Again'
+    if (update.phase === 'failed') return 'Update: Failed'
+    return 'Update: Later'
+  })
 </script>
 
 <footer
@@ -23,7 +44,7 @@
   <span>{gitLabel}</span>
   <span>YAML: pending</span>
   <span>DAG: pending</span>
-  <span class="update">Offline ready</span>
+  <span class="update">{updateLabel}</span>
 </footer>
 
 <style>

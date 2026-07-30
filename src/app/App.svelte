@@ -21,6 +21,7 @@
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
+  import AboutView from '$src/features/settings/AboutView.svelte'
   import BrandSettings from '$src/features/branding/BrandSettings.svelte'
   import BrandPreview from '$src/features/branding/BrandPreview.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
@@ -91,6 +92,11 @@
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
   import SetupOverlay from '$src/features/setup/SetupOverlay.svelte'
+  import UpdateOverlay from '$src/features/updates/UpdateOverlay.svelte'
+  import { createUpdateController } from '$src/lib/updates/update-api'
+  import type { UpdateState } from '$src/lib/updates/types'
+  import type { HostInfo } from '$src/lib/native/types'
+  import { publishUpdateState } from '$src/stores/updates'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
   import {
     createVersion,
@@ -154,6 +160,7 @@
     setupReady = true
     globalContext.setupReady = true
     resolveSetupReadiness()
+    void initializeUpdates()
   }
   const setupController = createSetupController(native, {
     onState: (state) => {
@@ -165,6 +172,37 @@
     },
   })
   setupProgress = setupController.state()
+  let updateProgress = $state.raw<UpdateState | null>(null)
+  let startupCheckEnabled = $state(true)
+  let hostInfo = $state.raw<HostInfo | null>(null)
+  let updateInitialization: Promise<void> | null = null
+  const updateController = createUpdateController(native, {
+    onState: (state) => {
+      updateProgress = state
+      publishUpdateState(state)
+    },
+    onPreference: (enabled) => {
+      startupCheckEnabled = enabled
+    },
+    onError: (error) => {
+      workspaceError = error instanceof Error ? error.message : 'The update operation could not be completed.'
+    },
+  })
+  updateProgress = updateController.state()
+  function initializeUpdates(): Promise<void> {
+    if (updateInitialization) return updateInitialization
+    updateInitialization = Promise.all([
+      native.hostHealth().then((value) => (hostInfo = value)),
+      updateController.start(),
+    ])
+      .then(() => {
+        if (updateController.startupCheckEnabled()) void updateController.check(true)
+      })
+      .catch((error: unknown) => {
+        workspaceError = error instanceof Error ? error.message : 'Application update status is unavailable.'
+      })
+    return updateInitialization
+  }
   const brandController = createBrandController(native)
   const brandState = brandController.state
   const gitController = createGitInspectionController(native)
@@ -336,6 +374,7 @@
   })
   const applicationDisposal = createApplicationDisposal(async () => {
     setupController.dispose()
+    updateController.dispose()
     await disposeApplicationResources(
       () => gitController.dispose(),
       () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
@@ -1451,6 +1490,23 @@
           {:else}
             <p>Loading bundled contracts…</p>
           {/if}
+          {#if hostInfo}
+            <AboutView
+              host={hostInfo}
+              contracts={contracts.map((contract) => ({
+                profile: contract.profile,
+                schemaVersion: contract.schema_version,
+                digest: contract.contract_digest,
+              }))}
+              {startupCheckEnabled}
+              updateState={updateProgress}
+              oncheck={() => updateController.check(false)}
+              onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
+              ondownload={(runId) => updateController.downloadInstall(runId)}
+              onopenlog={(runId) => updateController.openLog(runId)}
+              onrelaunch={() => updateController.relaunch()}
+            />
+          {/if}
         </div>
       {:else if $activeActivity === 'git'}
         <GitView
@@ -1848,6 +1904,19 @@
     oncancel={(runId) => setupController.cancel(runId)}
     onretry={() => setupController.retry()}
     onopenlog={(runId) => setupController.openLog(runId)}
+    copyText={(text) => navigator.clipboard.writeText(text)}
+  />
+{/if}
+
+{#if updateProgress && ['available', 'downloading', 'verifying', 'cancelling', 'installing', 'restart-required', 'recheck-required', 'failed'].includes(updateProgress.phase)}
+  <UpdateOverlay
+    state={updateProgress}
+    ondownload={(runId) => updateController.downloadInstall(runId)}
+    onlater={(runId) => updateController.defer(runId)}
+    oncancel={(runId) => updateController.cancel(runId)}
+    onretry={() => updateController.check(false)}
+    onopenlog={(runId) => updateController.openLog(runId)}
+    onrelaunch={() => updateController.relaunch()}
     copyText={(text) => navigator.clipboard.writeText(text)}
   />
 {/if}

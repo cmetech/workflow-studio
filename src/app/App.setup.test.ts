@@ -137,6 +137,36 @@ describe('App setup startup gate', () => {
     ).toBe(true)
     app.unmount()
   })
+
+  it('starts the optional update check after readiness without blocking workspace startup', async () => {
+    const backing = createBrowserBridge()
+    const updateCheckResult = deferred<Awaited<ReturnType<typeof backing.updateCheck>>>()
+    const order: string[] = []
+    const onWorkspaceChanged = vi.fn(backing.onWorkspaceChanged)
+    const updateCheck = vi.fn(() => updateCheckResult.promise)
+    setNativeBridgeForTest({
+      setupStatus: async () => ({ ready: true, snapshot: null }),
+      onUpdateEvent: async () => {
+        order.push('update-subscribe')
+        return () => undefined
+      },
+      updateStatus: async () => {
+        order.push('update-status')
+        return await backing.updateStatus()
+      },
+      updateCheck,
+      onWorkspaceChanged,
+    })
+    const { default: App } = await import('./App.svelte')
+    const app = render(App)
+
+    await vi.waitFor(() => {
+      expect(order).toEqual(['update-subscribe', 'update-status'])
+      expect(updateCheck).toHaveBeenCalledWith(true)
+      expect(onWorkspaceChanged).toHaveBeenCalledOnce()
+    })
+    app.unmount()
+  })
 })
 
 function setupSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapshot {

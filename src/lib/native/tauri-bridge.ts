@@ -4,6 +4,7 @@ import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
 import type { ContractCacheLoadResult } from '../contract/contract-cache'
 import type { ProgressEvent, ProgressSnapshot } from '../progress/types'
+import type { UpdateEvent, UpdateSnapshot, UpdateStatusResponse } from '../updates/types'
 import type {
   GitDiff,
   GitHistoryResult,
@@ -88,6 +89,23 @@ export const tauriBridge: WorkspaceNativeBridge = {
   onSetupEvent: async (handler) => {
     try {
       return await listen<ProgressEvent>('setup://event', ({ payload }) => {
+        void handler(payload)
+      })
+    } catch (error: unknown) {
+      throw mapNativeError(error)
+    }
+  },
+  updateStatus: () => invokeTyped<UpdateStatusResponse>('update_status'),
+  updateCheck: (startup) => invokeTyped<UpdateSnapshot>('update_check', { startup }),
+  updateDownloadInstall: (runId) => invokeTyped<UpdateSnapshot>('update_download_install', { runId }),
+  updateCancel: (runId) => invokeTyped<boolean>('update_cancel', { runId }),
+  updateDefer: (runId) => invokeTyped<UpdateSnapshot>('update_defer', { runId }),
+  updateOpenLog: (runId) => invokeTyped<void>('update_open_log', { runId }),
+  updateSetStartupCheck: (enabled) => invokeTyped<boolean>('update_set_startup_check', { enabled }),
+  updateRelaunch: () => invokeTyped<void>('update_relaunch'),
+  onUpdateEvent: async (handler) => {
+    try {
+      return await listen<UpdateEvent>('update://event', ({ payload }) => {
         void handler(payload)
       })
     } catch (error: unknown) {

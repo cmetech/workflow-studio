@@ -3,15 +3,16 @@
 
   interface Props {
     stages: readonly ProgressStage[]
+    label?: string
   }
 
-  let { stages }: Props = $props()
+  let { stages, label = 'Setup stages' }: Props = $props()
 
   const statusLabel = (status: ProgressStage['status']): string =>
     ({ pending: 'Pending', running: 'Running', succeeded: 'Complete', skipped: 'Skipped', failed: 'Failed' })[status]
 </script>
 
-<ol aria-label="Setup stages">
+<ol aria-label={label}>
   {#each stages as stage (stage.id)}
     <li class:active={stage.status === 'running'} class:failed={stage.status === 'failed'}>
       <span aria-hidden="true" class="indicator"></span>

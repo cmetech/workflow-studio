@@ -6,10 +6,16 @@ mod layout;
 mod recovery;
 mod setup;
 mod startup;
+mod updater;
+#[cfg(test)]
+mod updater_key;
 mod workspace;
 
 #[cfg(test)]
 mod setup_spec;
+
+#[cfg(test)]
+mod updater_spec;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,8 +28,11 @@ pub fn run() {
         .manage(layout::LayoutState::default())
         .manage(startup::RecentWorkspaceState::default())
         .manage(setup::SetupState::default())
+        .manage(updater::UpdateState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::health::host_health,
             workspace::workspace_set_root,
@@ -52,6 +61,14 @@ pub fn run() {
             setup::setup_start,
             setup::setup_cancel,
             setup::setup_open_log,
+            updater::update_status,
+            updater::update_check,
+            updater::update_download_install,
+            updater::update_cancel,
+            updater::update_defer,
+            updater::update_open_log,
+            updater::update_set_startup_check,
+            updater::update_relaunch,
             contracts::contract_read_file,
             contracts::contract_run_hermes_cli,
             contracts::contract_choose_file,

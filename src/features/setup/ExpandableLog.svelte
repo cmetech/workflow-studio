@@ -4,9 +4,11 @@
   interface Props {
     expanded: boolean
     lines: readonly string[]
+    label?: string
+    dataAttribute?: 'setup' | 'update'
   }
 
-  let { expanded, lines }: Props = $props()
+  let { expanded, lines, label = 'Setup output', dataAttribute = 'setup' }: Props = $props()
   let logElement = $state<HTMLElement>()
   let nearBottom = true
 
@@ -29,9 +31,10 @@
 {#if expanded}
   <textarea
     bind:this={logElement}
-    data-setup-log
+    data-setup-log={dataAttribute === 'setup' ? '' : undefined}
+    data-update-log={dataAttribute === 'update' ? '' : undefined}
     readonly
-    aria-label="Setup output"
+    aria-label={label}
     value={lines.join('\n')}
     onscroll={rememberPosition}></textarea>
 {/if}

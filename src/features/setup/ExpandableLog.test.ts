@@ -1,9 +1,14 @@
-import { fireEvent, render } from '@testing-library/svelte'
+import { fireEvent, render, screen } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import { tick } from 'svelte'
 import ExpandableLog from './ExpandableLog.svelte'
 
 describe('ExpandableLog', () => {
+  it('accepts a feature-specific accessible label for shared progress use', () => {
+    render(ExpandableLog, { props: { expanded: true, lines: ['verified'], label: 'Update output' } })
+    expect(screen.getByRole('textbox', { name: 'Update output' })).toHaveValue('verified')
+  })
+
   it('scrolls after rendering only when the user was already near the bottom', async () => {
     const { container, rerender } = render(ExpandableLog, { props: { expanded: true, lines: ['one'] } })
     const log = container.querySelector<HTMLElement>('[data-setup-log]')!

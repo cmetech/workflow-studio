@@ -34,6 +34,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   let cachedContracts: readonly ContractCacheStoredEntry[] = []
   let gitHistoryEpoch = 0
   let activeBrandId = 'loop24'
+  let startupCheckEnabled = true
   const brandPacks = new Map<
     string,
     {
@@ -69,6 +70,62 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     setupCancel: async () => false,
     setupOpenLog: async () => undefined,
     onSetupEvent: async () => () => undefined,
+    updateStatus: async () => ({
+      snapshot: {
+        runId: 'browser-update',
+        sequence: 0,
+        startedAt: Date.now(),
+        phase: 'current',
+        cancellable: false,
+        release: null,
+        downloadedBytes: 0,
+        totalBytes: null,
+        speedBytesPerSecond: null,
+        logs: [],
+        failure: null,
+        savedLogAvailable: false,
+        message: null,
+      },
+      startupCheckEnabled,
+    }),
+    updateCheck: async () => ({
+      runId: 'browser-update',
+      sequence: 1,
+      startedAt: Date.now(),
+      phase: 'current',
+      cancellable: false,
+      release: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      speedBytesPerSecond: null,
+      logs: [],
+      failure: null,
+      savedLogAvailable: false,
+      message: null,
+    }),
+    updateDownloadInstall: async () => {
+      throw new NativeError('update_not_available', 'No browser fixture update is available.')
+    },
+    updateCancel: async () => false,
+    updateDefer: async (runId) => ({
+      runId,
+      sequence: 2,
+      startedAt: Date.now(),
+      phase: 'deferred',
+      cancellable: false,
+      release: null,
+      downloadedBytes: 0,
+      totalBytes: null,
+      speedBytesPerSecond: null,
+      logs: [],
+      failure: null,
+      savedLogAvailable: false,
+      message: null,
+    }),
+    updateOpenLog: async () => undefined,
+    updateSetStartupCheck: async (enabled) => (startupCheckEnabled = enabled),
+    updateRelaunch: async () => undefined,
+    onUpdateEvent: async () => () => undefined,
     brandChooseSource: async () => null,
     brandReadSourceAssets: async () => [],
     brandRevokeSourceGrant: async () => undefined,

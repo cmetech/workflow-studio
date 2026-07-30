@@ -367,12 +367,24 @@ pub(crate) struct AppDataScope {
     root_name: OsString,
     root_identity: Handle,
     root: Dir,
+    logs_name: OsString,
     logs_identity: Handle,
     logs: Dir,
 }
 
 impl AppDataScope {
     pub(crate) fn bind(app_data: &Path) -> SetupResult<Arc<Self>> {
+        Self::bind_for_logs(app_data, "setup-logs")
+    }
+
+    pub(crate) fn bind_for_logs(app_data: &Path, logs_name: &str) -> SetupResult<Arc<Self>> {
+        if !matches!(logs_name, "setup-logs" | "update-logs") {
+            return Err(setup_error(
+                "setup_app_data_invalid",
+                "The private log namespace is invalid.",
+            ));
+        }
+        let logs_name = OsString::from(logs_name);
         ensure_private_directory(app_data)?;
         let root_path = app_data
             .canonicalize()
@@ -409,13 +421,13 @@ impl AppDataScope {
                 )
                 .map_err(|error| io_error("setup_app_data_failed", error))?;
         }
-        match root.symlink_metadata("setup-logs") {
+        match root.symlink_metadata(&logs_name) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
                 return Err(app_data_changed())
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => root
-                .create_dir("setup-logs")
+                .create_dir(&logs_name)
                 .map_err(|error| io_error("setup_app_data_failed", error))?,
             Err(error) => return Err(io_error("setup_app_data_failed", error)),
         }
@@ -424,13 +436,13 @@ impl AppDataScope {
             use cap_std::fs::Permissions;
             use std::os::unix::fs::PermissionsExt;
             root.set_permissions(
-                "setup-logs",
+                &logs_name,
                 Permissions::from_std(fs::Permissions::from_mode(0o700)),
             )
             .map_err(|error| io_error("setup_app_data_failed", error))?;
         }
         let logs = root
-            .open_dir("setup-logs")
+            .open_dir(&logs_name)
             .map_err(|error| io_error("setup_app_data_failed", error))?;
         let logs_identity = directory_identity(&logs, "setup_app_data_failed")?;
         let scope = Arc::new(Self {
@@ -441,6 +453,7 @@ impl AppDataScope {
             root_name,
             root_identity,
             root,
+            logs_name,
             logs_identity,
             logs,
         });
@@ -448,7 +461,7 @@ impl AppDataScope {
         Ok(scope)
     }
 
-    fn verify(&self) -> SetupResult<()> {
+    pub(crate) fn verify(&self) -> SetupResult<()> {
         let current_parent =
             Handle::from_path(&self.parent_path).map_err(|_| app_data_changed())?;
         if current_parent != self.parent_identity {
@@ -463,12 +476,16 @@ impl AppDataScope {
         }
         let current_logs = self
             .root
-            .open_dir("setup-logs")
+            .open_dir(&self.logs_name)
             .map_err(|_| app_data_changed())?;
         if directory_identity(&current_logs, "setup_app_data_changed")? != self.logs_identity {
             return Err(app_data_changed());
         }
         Ok(())
+    }
+
+    pub(crate) fn root_directory(&self) -> &Dir {
+        &self.root
     }
 
     pub(crate) fn create_log(
@@ -508,7 +525,7 @@ impl AppDataScope {
         };
         let log = BoundedSetupLog {
             #[cfg(test)]
-            path: self.root_path.join("setup-logs").join(&name),
+            path: self.root_path.join(&self.logs_name).join(&name),
             file,
             saved: saved.clone(),
             lines: VecDeque::new(),
@@ -861,7 +878,10 @@ impl SavedSetupLog {
         }
         Ok((
             file,
-            self.scope.root_path.join("setup-logs").join(&self.name),
+            self.scope
+                .root_path
+                .join(&self.scope.logs_name)
+                .join(&self.name),
         ))
     }
 
