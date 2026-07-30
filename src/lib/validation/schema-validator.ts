@@ -367,7 +367,7 @@ function resolveContractSchemaWithin(
       delete siblings.$ref
       const resolvedSiblings = resolveContractSchemaWithin(siblings, root, resolving, budget, depth + 1)
       if (!resolvedSiblings) return null
-      const conjunction = mergeInspectionSchemas(referenced, resolvedSiblings)
+      const conjunction = mergeInspectionSchemas(referenced, resolvedSiblings, root, resolving, budget, depth + 1)
       if (!conjunction) return null
       resolved = conjunction
     } finally {
@@ -382,7 +382,7 @@ function resolveContractSchemaWithin(
     for (const branch of resolved.allOf) {
       const branchSchema = resolveContractSchemaWithin(branch, root, resolving, budget, depth + 1)
       if (!branchSchema) return null
-      const conjunction = mergeInspectionSchemas(aggregate, branchSchema)
+      const conjunction = mergeInspectionSchemas(aggregate, branchSchema, root, resolving, budget, depth + 1)
       if (!conjunction) return null
       aggregate = conjunction
     }
@@ -394,7 +394,13 @@ function resolveContractSchemaWithin(
 function mergeInspectionSchemas(
   left: Record<string, unknown>,
   right: Record<string, unknown>,
+  root: Record<string, unknown>,
+  resolving: Set<string>,
+  budget: SchemaInspectionBudget,
+  depth: number,
 ): Record<string, unknown> | null {
+  if (depth > 64 || !consumeInspectionWork(budget)) return null
+  if (!conjunctionKeywordsAreInspectable(left, right)) return null
   const merged = { ...left, ...right }
   const type = intersectSchemaTypes(left.type, right.type)
   if (type === null) return null
@@ -413,6 +419,10 @@ function mergeInspectionSchemas(
   if (required.length > 0) merged.required = [...new Set(required)]
   const leftClosed = left.additionalProperties === false
   const rightClosed = right.additionalProperties === false
+  if (!validAdditionalProperties(left.additionalProperties) || !validAdditionalProperties(right.additionalProperties)) {
+    return null
+  }
+  let propertyKeys: string[] = []
   if (leftClosed || rightClosed) {
     if (hasPatternProperties(left) || hasPatternProperties(right)) return null
     const leftKeys = new Set(Object.keys(leftProperties ?? {}))
@@ -423,14 +433,183 @@ function mergeInspectionSchemas(
         : [...leftKeys]
       : [...rightKeys]
     if (required.some((key) => !allowedKeys.includes(key))) return null
-    merged.properties = Object.fromEntries(
-      allowedKeys.map((key) => [key, rightProperties?.[key] ?? leftProperties?.[key]]),
-    )
+    propertyKeys = allowedKeys
     merged.additionalProperties = false
   } else if (leftProperties || rightProperties) {
-    merged.properties = { ...(leftProperties ?? {}), ...(rightProperties ?? {}) }
+    propertyKeys = [...new Set([...Object.keys(leftProperties ?? {}), ...Object.keys(rightProperties ?? {})])]
   }
+  if (leftProperties || rightProperties) {
+    const properties: Record<string, unknown> = {}
+    for (const key of propertyKeys) {
+      const leftProperty = leftProperties?.[key]
+      const rightProperty = rightProperties?.[key]
+      if (leftProperty !== undefined && rightProperty !== undefined) {
+        const resolvedLeft = resolveContractSchemaWithin(leftProperty, root, resolving, budget, depth + 1)
+        const resolvedRight = resolveContractSchemaWithin(rightProperty, root, resolving, budget, depth + 1)
+        if (!resolvedLeft || !resolvedRight) return null
+        const conjunction = mergeInspectionSchemas(resolvedLeft, resolvedRight, root, resolving, budget, depth + 1)
+        if (!conjunction) return null
+        properties[key] = conjunction
+      } else {
+        properties[key] = rightProperty ?? leftProperty
+      }
+    }
+    merged.properties = properties
+  }
+
+  const valueIntersection = mergeConstAndEnum(merged, left, right)
+  if (!valueIntersection) return null
   return merged
+}
+
+const INSPECTION_HANDLED_ASSERTIONS = new Set([
+  'type',
+  'const',
+  'enum',
+  'minLength',
+  'maxLength',
+  'minItems',
+  'maxItems',
+  'minProperties',
+  'maxProperties',
+  'properties',
+  'required',
+  'additionalProperties',
+])
+
+const INSPECTION_NON_ASSERTIONS = new Set([
+  '$id',
+  '$schema',
+  '$anchor',
+  '$comment',
+  '$defs',
+  'definitions',
+  'title',
+  'description',
+  'default',
+  'examples',
+  'deprecated',
+  'readOnly',
+  'writeOnly',
+  ...CONTRACT_ANNOTATION_KEYWORDS,
+])
+
+function conjunctionKeywordsAreInspectable(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  const leftAssertions = assertionKeywords(left)
+  const rightAssertions = assertionKeywords(right)
+  if (leftAssertions.length === 0 || rightAssertions.length === 0) return true
+  return [...new Set([...leftAssertions, ...rightAssertions])].every((keyword) => {
+    if (INSPECTION_HANDLED_ASSERTIONS.has(keyword)) return true
+    return Object.hasOwn(left, keyword) && Object.hasOwn(right, keyword) && jsonEqual(left[keyword], right[keyword])
+  })
+}
+
+function assertionKeywords(schema: Record<string, unknown>): string[] {
+  return Object.keys(schema).filter((keyword) => !INSPECTION_NON_ASSERTIONS.has(keyword))
+}
+
+function validAdditionalProperties(value: unknown): boolean {
+  return value === undefined || typeof value === 'boolean'
+}
+
+function mergeConstAndEnum(
+  merged: Record<string, unknown>,
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): boolean {
+  const leftEnum = schemaEnum(left.enum)
+  const rightEnum = schemaEnum(right.enum)
+  if (leftEnum === null || rightEnum === null) return false
+  let values =
+    leftEnum === undefined
+      ? rightEnum
+      : rightEnum === undefined
+        ? leftEnum
+        : leftEnum.filter((candidate) => rightEnum.some((value) => jsonEqual(candidate, value)))
+
+  const hasLeftConst = Object.hasOwn(left, 'const')
+  const hasRightConst = Object.hasOwn(right, 'const')
+  if (hasLeftConst && hasRightConst && !jsonEqual(left.const, right.const)) return false
+  const hasConst = hasLeftConst || hasRightConst
+  const constant = hasRightConst ? right.const : left.const
+  if (hasConst) {
+    values = (values ?? [constant]).filter((value) => jsonEqual(value, constant))
+    if (values.length === 0) return false
+    merged.const = constant
+  }
+
+  if (values !== undefined) {
+    values = values.filter((value) => valueSatisfiesInspectionSchema(value, merged))
+    if (values.length === 0) return false
+    merged.enum = deduplicateJsonValues(values)
+  } else if (hasConst && !valueSatisfiesInspectionSchema(constant, merged)) {
+    return false
+  }
+  return true
+}
+
+function schemaEnum(value: unknown): readonly unknown[] | undefined | null {
+  if (value === undefined) return undefined
+  return Array.isArray(value) && value.length > 0 ? value : null
+}
+
+function deduplicateJsonValues(values: readonly unknown[]): unknown[] {
+  return values.filter((value, index) => values.findIndex((candidate) => jsonEqual(candidate, value)) === index)
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => jsonEqual(value, right[index]))
+  }
+  if (!isRecord(left) || !isRecord(right)) return false
+  const leftKeys = Object.keys(left).sort()
+  const rightKeys = Object.keys(right).sort()
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && jsonEqual(left[key], right[key]))
+  )
+}
+
+function valueSatisfiesInspectionSchema(value: unknown, schema: Record<string, unknown>): boolean {
+  const types = schemaTypes(schema.type)
+  if (types === null) return false
+  if (types && ![...types].some((type) => valueMatchesSchemaType(value, type))) return false
+  if (typeof value === 'string') {
+    if (typeof schema.minLength === 'number' && [...value].length < schema.minLength) return false
+    if (typeof schema.maxLength === 'number' && [...value].length > schema.maxLength) return false
+  }
+  if (Array.isArray(value)) {
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) return false
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) return false
+  }
+  if (isRecord(value)) {
+    const size = Object.keys(value).length
+    if (typeof schema.minProperties === 'number' && size < schema.minProperties) return false
+    if (typeof schema.maxProperties === 'number' && size > schema.maxProperties) return false
+  }
+  return true
+}
+
+function valueMatchesSchemaType(value: unknown, type: string): boolean {
+  switch (type) {
+    case 'null':
+      return value === null
+    case 'boolean':
+      return typeof value === 'boolean'
+    case 'object':
+      return isRecord(value)
+    case 'array':
+      return Array.isArray(value)
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value)
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value)
+    case 'string':
+      return typeof value === 'string'
+    default:
+      return false
+  }
 }
 
 function consumeInspectionWork(budget: SchemaInspectionBudget): boolean {
@@ -445,8 +624,15 @@ function localPointerTarget(
   budget: SchemaInspectionBudget,
 ): unknown | null {
   if (reference === '#') return root
+  let fragment: string
+  try {
+    fragment = decodeURIComponent(reference.slice(1))
+  } catch {
+    return null
+  }
+  if (!fragment.startsWith('/')) return null
   let target: unknown = root
-  for (const encoded of reference.slice(2).split('/')) {
+  for (const encoded of fragment.slice(1).split('/')) {
     if (!consumeInspectionWork(budget)) return null
     const segment = decodePointerSegment(encoded)
     if (segment === null) return null
@@ -475,9 +661,21 @@ function intersectSchemaTypes(left: unknown, right: unknown): string | readonly 
   if (leftTypes === null || rightTypes === null) return null
   if (leftTypes === undefined) return rightTypes === undefined ? undefined : schemaTypeValue(rightTypes)
   if (rightTypes === undefined) return schemaTypeValue(leftTypes)
-  const intersection = [...leftTypes].filter((type) => rightTypes.has(type))
-  if (intersection.length === 0) return null
-  return intersection.length === 1 ? intersection[0] : intersection
+  const intersection = new Set<string>()
+  for (const leftType of leftTypes) {
+    for (const rightType of rightTypes) {
+      if (leftType === rightType) intersection.add(leftType)
+      else if (
+        (leftType === 'number' && rightType === 'integer') ||
+        (leftType === 'integer' && rightType === 'number')
+      ) {
+        intersection.add('integer')
+      }
+    }
+  }
+  if (intersection.size === 0) return null
+  const values = [...intersection]
+  return values.length === 1 ? values[0] : values
 }
 
 function schemaTypeValue(types: ReadonlySet<string>): string | readonly string[] {

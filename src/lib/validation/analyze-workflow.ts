@@ -337,6 +337,15 @@ function schemaChild(
   key: string,
   root: Record<string, unknown>,
 ): Record<string, unknown> | null {
+  const directProperties = isRecord(schemaValue.properties) ? schemaValue.properties : null
+  if (directProperties && Object.hasOwn(directProperties, key)) {
+    const directChild = directProperties[key]
+    // A structured field can expose its own declared children without flattening
+    // unrelated conditional allOf branches. Scalar/composed leaves still go
+    // through the conservative resolver before they authorize a draft issue.
+    if (isRecord(directChild) && isRecord(directChild.properties)) return directChild
+    return resolveContractSchema(directChild, root)
+  }
   const schema = resolveContractSchema(schemaValue, root)
   if (!schema) return null
   if (isRecord(schema.properties) && Object.hasOwn(schema.properties, key)) {

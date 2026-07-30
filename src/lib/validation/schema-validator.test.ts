@@ -63,6 +63,111 @@ describe('contract schema validation', () => {
     expect(resolveContractSchema({ $ref: '#/$defs/cycle' }, cyclicRoot)).toBeNull()
   })
 
+  it('percent-decodes local URI fragments before decoding JSON Pointer tokens', () => {
+    const root = {
+      $defs: {
+        'non empty': { type: 'string', minLength: 1 },
+        'slash/name': { type: 'integer' },
+      },
+    }
+
+    expect(resolveContractSchema({ $ref: '#/$defs/non%20empty' }, root)).toEqual({
+      type: 'string',
+      minLength: 1,
+    })
+    expect(resolveContractSchema({ $ref: '#/$defs/slash%7E1name' }, root)).toEqual({ type: 'integer' })
+    for (const reference of ['#/$defs/non%', '#/$defs/non%2', '#/$defs/non%XZempty']) {
+      expect(() => resolveContractSchema({ $ref: reference }, root), reference).not.toThrow()
+      expect(resolveContractSchema({ $ref: reference }, root), reference).toBeNull()
+    }
+  })
+
+  it('fails closed for contradictory allOf assertions instead of overwriting a branch', () => {
+    expect(
+      resolveContractSchema(
+        {
+          allOf: [
+            { type: 'string', minLength: 1 },
+            { type: 'string', enum: [''] },
+          ],
+        },
+        {},
+      ),
+    ).toBeNull()
+    expect(
+      resolveContractSchema(
+        {
+          allOf: [
+            { type: 'string', const: 'a' },
+            { type: 'string', const: 'b' },
+          ],
+        },
+        {},
+      ),
+    ).toBeNull()
+    expect(
+      resolveContractSchema(
+        {
+          allOf: [
+            { type: 'object', properties: { command: { type: 'string', const: 'a' } } },
+            { type: 'object', properties: { command: { type: 'string', const: 'b' } } },
+          ],
+        },
+        {},
+      ),
+    ).toBeNull()
+  })
+
+  it('soundly intersects const, enum, annotations, and integer-as-number types', () => {
+    expect(
+      resolveContractSchema(
+        {
+          title: 'Imported numeric value',
+          allOf: [
+            { type: ['number', 'string'], enum: [1, 2, 'two'] },
+            { type: ['integer', 'boolean'], const: 2, description: 'Must be the supported integer.' },
+          ],
+        },
+        {},
+      ),
+    ).toEqual({
+      title: 'Imported numeric value',
+      type: 'integer',
+      enum: [2],
+      const: 2,
+      description: 'Must be the supported integer.',
+    })
+    expect(resolveContractSchema({ allOf: [{ type: 'number' }, { type: 'integer' }] }, {})).toEqual({
+      type: 'integer',
+    })
+  })
+
+  it.each([
+    [
+      { type: 'string', pattern: '^a' },
+      { type: 'string', minLength: 1 },
+    ],
+    [
+      { type: 'number', minimum: 1 },
+      { type: 'number', maximum: 2 },
+    ],
+    [
+      { type: 'array', contains: { type: 'string' } },
+      { type: 'array', minItems: 1 },
+    ],
+    [
+      { type: 'object', propertyNames: { pattern: '^safe$' } },
+      { type: 'object', minProperties: 1 },
+    ],
+    [
+      { type: 'object', not: { required: ['blocked'] } },
+      { type: 'object', required: ['value'] },
+    ],
+    [{ type: 'object', if: { required: ['flag'] }, then: { required: ['value'] } }, { type: 'object' }],
+  ])('fails closed when unsupported conjunction assertions cannot be proven compatible', (left, right) => {
+    expect(resolveContractSchema({ allOf: [left, right] }, {})).toBeNull()
+  })
+
   it('bounds local reference inspection while preserving ordinary nested references', () => {
     const ordinaryDefinitions: Record<string, Record<string, unknown>> = {}
     for (let index = 0; index < 32; index += 1) {
