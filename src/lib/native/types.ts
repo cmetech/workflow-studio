@@ -11,6 +11,7 @@ import type {
   GitVersionResult,
 } from '../git/types'
 import type { BrandManifest } from '../branding/types'
+import type { ProgressEventHandler, ProgressSnapshot, UnlistenProgress } from '../progress/types'
 
 export interface HostInfo {
   appVersion: string
@@ -97,6 +98,19 @@ export type UnlistenWorkspace = () => void
 
 export interface NativeBridge {
   hostHealth(): Promise<HostInfo>
+}
+
+export interface SetupStatusResponse {
+  readonly ready: boolean
+  readonly snapshot: ProgressSnapshot | null
+}
+
+export interface SetupNativeBridge extends NativeBridge {
+  setupStatus(): Promise<SetupStatusResponse>
+  setupStart(): Promise<ProgressSnapshot>
+  setupCancel(runId: string): Promise<boolean>
+  setupOpenLog(runId: string): Promise<void>
+  onSetupEvent(handler: ProgressEventHandler): Promise<UnlistenProgress>
 }
 
 export interface BrandSourceSelection {
@@ -238,7 +252,13 @@ export interface ContractNativeBridge extends NativeBridge {
 }
 
 export interface WorkspaceNativeBridge
-  extends LayoutNativeBridge, ContractNativeBridge, GitNativeBridge, GitMutationNativeBridge, BrandNativeBridge {
+  extends
+    LayoutNativeBridge,
+    ContractNativeBridge,
+    GitNativeBridge,
+    GitMutationNativeBridge,
+    BrandNativeBridge,
+    SetupNativeBridge {
   chooseWorkspaceFolder(): Promise<string | null>
   chooseImportDefinition(): Promise<string | null>
   chooseExportDirectory(): Promise<string | null>

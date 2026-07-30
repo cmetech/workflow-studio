@@ -43,6 +43,21 @@ impl GitError {
 
 type GitResult<T> = Result<T, GitError>;
 
+pub(crate) fn probe_version(root: &Path) -> Result<String, String> {
+    let output =
+        runner::run_read(root, runner::ReadOperation::Version).map_err(|error| error.message)?;
+    if !output.success() {
+        return Err(output.stderr_text());
+    }
+    let version = String::from_utf8(output.stdout)
+        .map_err(|_| "Git returned a non-Unicode version string.".to_owned())?;
+    let version = version.trim();
+    if !version.starts_with("git version ") || version.len() > 256 {
+        return Err("Git returned an invalid version string.".to_owned());
+    }
+    Ok(version.to_owned())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitRepository {

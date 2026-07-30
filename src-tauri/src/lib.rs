@@ -4,8 +4,12 @@ mod contracts;
 pub mod git;
 mod layout;
 mod recovery;
+mod setup;
 mod startup;
 mod workspace;
+
+#[cfg(test)]
+mod setup_spec;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +21,7 @@ pub fn run() {
         .manage(branding::BrandGrantState::default())
         .manage(layout::LayoutState::default())
         .manage(startup::RecentWorkspaceState::default())
+        .manage(setup::SetupState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +48,10 @@ pub fn run() {
             recovery::recovery_list,
             recovery::recovery_write,
             recovery::recovery_delete,
+            setup::setup_status,
+            setup::setup_start,
+            setup::setup_cancel,
+            setup::setup_open_log,
             contracts::contract_read_file,
             contracts::contract_run_hermes_cli,
             contracts::contract_choose_file,

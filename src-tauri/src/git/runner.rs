@@ -36,6 +36,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) enum ReadOperation<'a> {
+    Version,
     RepositoryRoot,
     GitDirectory,
     GitCommonDirectory,
@@ -524,6 +525,7 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Comm
 
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
+        ReadOperation::Version => strings(&["--version"]),
         ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
         ReadOperation::GitDirectory => strings(&["rev-parse", "--absolute-git-dir"]),
         ReadOperation::GitCommonDirectory => {

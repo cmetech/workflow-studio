@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
 import type { ContractCacheLoadResult } from '../contract/contract-cache'
+import type { ProgressEvent, ProgressSnapshot } from '../progress/types'
 import type {
   GitDiff,
   GitHistoryResult,
@@ -21,6 +22,7 @@ import {
   type StoredBrandPack,
   type PathOperationResult,
   type HostInfo,
+  type SetupStatusResponse,
   type WorkspaceNativeBridge,
   type WorkspaceChangedEvent,
   type WorkspaceReadResult,
@@ -79,6 +81,19 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
 
 export const tauriBridge: WorkspaceNativeBridge = {
   hostHealth: () => invokeTyped<HostInfo>('host_health'),
+  setupStatus: () => invokeTyped<SetupStatusResponse>('setup_status'),
+  setupStart: () => invokeTyped<ProgressSnapshot>('setup_start'),
+  setupCancel: (runId) => invokeTyped<boolean>('setup_cancel', { runId }),
+  setupOpenLog: (runId) => invokeTyped<void>('setup_open_log', { runId }),
+  onSetupEvent: async (handler) => {
+    try {
+      return await listen<ProgressEvent>('setup://event', ({ payload }) => {
+        void handler(payload)
+      })
+    } catch (error: unknown) {
+      throw mapNativeError(error)
+    }
+  },
   brandChooseSource: () => invokeTyped<BrandSourceSelection | null>('brand_choose_source'),
   brandReadSourceAssets: (grantToken, paths) =>
     invokeTyped('brand_read_source_assets', { grantToken, paths: [...paths] }),

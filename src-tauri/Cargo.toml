@@ -26,6 +26,7 @@ sha2 = "0.10.9"
 tauri = { version = "2.11.5", features = ["image-png"] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-log = "2.9.0"
+open = "5.4.0"
 tempfile = "3.27"
 wait-timeout = "0.2.1"
 trash = "=5.2.3"

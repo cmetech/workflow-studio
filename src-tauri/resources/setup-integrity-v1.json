@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "brands/loop24/brand.yaml",
+      "sha256": "07ce05cb542270963ab6918d8c90f2d4d63fa226198cca5ae46248107466fbaa",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "brands/loop24/logo.svg",
+      "sha256": "df824456faf8ceb84d3ffceb21cea10a7722415fbd30711a7bf287a578b9a2f6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "brands/loop24/mark.svg",
+      "sha256": "6ff53f97e228ae6e23cac497de667c451a70c0a75bc7160dc8d931947bcd78b3",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "brands/resource-root",
+      "sha256": "3a415fda7e5b1c4a8569d7b7a0b9724439e301628217e927ecd8dbb7e3d03190",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/README.md",
+      "sha256": "dfc77fc9220c7e73c80c31107fed235c2d5936617004fb597c8dd26c70c7b4f6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/archon-2026-07-v1.json",
+      "sha256": "a60fd3562bd74994661d29066ab958294192d3c951c4dce0dfecad28362aee09",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/hermes-legacy-v1.json",
+      "sha256": "d41e235640001689e5943292c83b457e29179f1849aedb94bc88e0f708476ad4",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/manifest.json",
+      "sha256": "bc32005b63743ac9dcd4831ec288d5f10ef4811684be15ea8e8607cf5c0e3f12",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/resource-root",
+      "sha256": "e4c55f41fdeb45d6ea40bf4022077d1db6d6c2a8aa750d5b73d881100f455a1b",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/README.md",
+      "sha256": "8aef9dc9fcae2d43d2159bc111fd673d33afa09b23efa8e79b02c329d08e5f22",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/advanced-reference/workflow.hermes.yaml",
+      "sha256": "53060b3d9f3828f032ea0247fbbc45cf67d65ef9ca4073e5c91c0f89849cb690",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/advanced-reference/workflow.yaml",
+      "sha256": "806742559bd515896d76b57906d1a216295b40691a06a5369f16b2d101f4bbb3",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/ai-tools/workflow.hermes.yaml",
+      "sha256": "6ddefde5d0bb27e33c3fc8879b8b7770cd4f4568757fd8e31912bb5cf672851c",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/ai-tools/workflow.yaml",
+      "sha256": "244923681b365cd9d9579e3d7e2342f490e139dcf1ba85f89c8cc59a6f883d34",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/approval/workflow.hermes.yaml",
+      "sha256": "ff78e6d636149089ec0b4836471b650a48e3695597ab0a535751ee68d0cfed65",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/approval/workflow.yaml",
+      "sha256": "a1c147aa411d50c13a03b67390133404a8884d2c0bc25e288da5ebd71834c82f",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/bash-script/workflow.hermes.yaml",
+      "sha256": "afcbdb65c088337b93c2955d85141812014a52431bfdbaebd7199054fffad549",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/bash-script/workflow.yaml",
+      "sha256": "ae77ed6b57b8937c449be2688fc39c58a3cdec7219c30791f723c2b413e732e9",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/bounded-loop/workflow.hermes.yaml",
+      "sha256": "0dffabff20d50582922af461d395116fff030dc048915853f692f1c15b6526f6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/bounded-loop/workflow.yaml",
+      "sha256": "5b6e0b454e8a7227a7872529f2b184ded52db49ae2496382885e53486da4f5b3",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/catalog.yaml",
+      "sha256": "f68ab15bb234d8a680dacf07acfc62569a290ed647399fe111f266f9fca8686b",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/conditional/workflow.hermes.yaml",
+      "sha256": "bda1da2dc78486654711341892f8f4e7de5145bf94817880bd58a7df25ebd8fb",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/conditional/workflow.yaml",
+      "sha256": "1b8e019d9e60e0cfd0a2ed601be525554a4863a179db2004efd7556e3e521a06",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/minimal/workflow.yaml",
+      "sha256": "48be7a6f6649c1342f2b4435312a94b6111d4934e32b364ab42f58e8889da394",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/parallel-fan-in/workflow.hermes.yaml",
+      "sha256": "9cbe7e78f4181c42300c3cbba02bbc5dc0834c44b17b719733365bd5184ca5e0",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/parallel-fan-in/workflow.yaml",
+      "sha256": "5c147f393abe3dacd2ea0abf4e7f19830eab9c708a2212539f6b941b95b28fb5",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/resource-root",
+      "sha256": "0e5430e8b29576467ebbe5ea226ca0ebd09e36cf4b80ed254ce84af1d9cbc843",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/retry-trigger/workflow.yaml",
+      "sha256": "79ba2e558f65b443c7c6d11f1dca0c23317e6e130eff7311aa9148baa13868bf",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/sequential/workflow.hermes.yaml",
+      "sha256": "c2e771587e6836d4357c0d8a306320c47473662c24e93fad1984ef220a7afaca",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/sequential/workflow.yaml",
+      "sha256": "871bbce181ad3e1ca89eb0df40a1c04ffde3cb5db9becc89375533fdbbb000d9",
+      "maxBytes": 2097152
+    }
+  ]
+}

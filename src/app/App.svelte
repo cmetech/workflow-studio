@@ -43,6 +43,8 @@
   import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
   import { getNativeBridge } from '$src/lib/native/bridge'
+  import { createSetupController } from '$src/lib/progress/setup-controller'
+  import type { ProgressState } from '$src/lib/progress/types'
   import { createBrandController, themePreference } from '$src/stores/branding'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
@@ -88,6 +90,7 @@
   import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
+  import SetupOverlay from '$src/features/setup/SetupOverlay.svelte'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
   import {
     createVersion,
@@ -139,6 +142,26 @@
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
   const native = getNativeBridge()
+  let setupProgress = $state.raw<ProgressState | null>(null)
+  let resolveSetupReadiness!: () => void
+  let setupReady = false
+  const setupReadiness = new Promise<void>((resolve) => {
+    resolveSetupReadiness = resolve
+  })
+  function markSetupReady(): void {
+    if (setupReady) return
+    setupReady = true
+    resolveSetupReadiness()
+  }
+  const setupController = createSetupController(native, {
+    onState: (state) => {
+      setupProgress = state
+    },
+    onReady: markSetupReady,
+    onError: (error) => {
+      workspaceError = error instanceof Error ? error.message : 'Application setup could not be completed.'
+    },
+  })
   const brandController = createBrandController(native)
   const brandState = brandController.state
   const gitController = createGitInspectionController(native)
@@ -308,6 +331,7 @@
     onPersistenceError: surfaceCanvasPersistenceError,
   })
   const applicationDisposal = createApplicationDisposal(async () => {
+    setupController.dispose()
     await disposeApplicationResources(
       () => gitController.dispose(),
       () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
@@ -1142,6 +1166,7 @@
   })
 
   onMount(() => {
+    void setupController.start()
     void brandController.initialize().catch((error: unknown) => {
       workspaceError = error instanceof Error ? error.message : 'The saved brand could not be loaded.'
     })
@@ -1202,6 +1227,8 @@
           disposeCanvas?.()
         }
       }
+      await setupReadiness
+      if (disposed) return
       await contractReadiness
       await examplesReadiness
       if (disposed) return
@@ -1802,6 +1829,16 @@
     />
   {/if}
 </main>
+
+{#if setupProgress && setupProgress.status !== 'succeeded'}
+  <SetupOverlay
+    state={setupProgress}
+    oncancel={(runId) => void setupController.cancel(runId)}
+    onretry={() => void setupController.retry()}
+    onopenlog={(runId) => void setupController.openLog(runId)}
+    copyText={(text) => navigator.clipboard.writeText(text)}
+  />
+{/if}
 
 <style>
   .application-shell {
