@@ -10,6 +10,12 @@ function Write-Status([string] $Message) {
   Write-Host "Workflow Studio: $Message"
 }
 
+if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    [System.Runtime.InteropServices.OSPlatform]::Windows
+  )) {
+  throw 'Unsupported operating system: this installer requires Windows'
+}
+
 $RuntimeArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 switch ($RuntimeArchitecture) {
   'X64' { $AssetSuffix = 'windows_x86_64-setup.exe' }

@@ -160,6 +160,60 @@ describe('release asset verification', () => {
     ).toHaveLength(13)
     expect(() => validateChecksumText(`${text}\n${'e'.repeat(64)}  ../outside`, [])).toThrow(/unknown checksum path/i)
   })
+
+  it('separates updater normalization from checksumming published bytes', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-release-assets-'))
+    try {
+      const updater = structuredClone(fixture.updater)
+      for (const platform of Object.values(updater.platforms)) {
+        platform.url = 'https://api.github.com/repos/cmetech/workflow-studio/releases/assets/12345'
+      }
+      for (const asset of fixture.assets) {
+        if (asset.name === 'SHA256SUMS') continue
+        writeFileSync(
+          join(directory, asset.name),
+          asset.name === 'latest.json' ? `${JSON.stringify(updater)}\n` : `bytes:${asset.name}\n`,
+        )
+      }
+
+      const unpublished = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--write-checksums'],
+        { encoding: 'utf8' },
+      )
+      expect(unpublished.status).toBe(1)
+      expect(unpublished.stderr).toContain('exact v0.1.0 release')
+      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('api.github.com')
+
+      const normalized = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--normalize-updater'],
+        { encoding: 'utf8' },
+      )
+      expect(normalized.status).toBe(0)
+      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('/releases/download/v0.1.0/')
+
+      const checksummed = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--write-checksums'],
+        { encoding: 'utf8' },
+      )
+      expect(checksummed.status).toBe(0)
+      const checksumBytes = readFileSync(join(directory, 'SHA256SUMS'), 'utf8')
+      const latestBytes = readFileSync(join(directory, 'latest.json'), 'utf8')
+
+      const finalValidation = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag],
+        { encoding: 'utf8' },
+      )
+      expect(finalValidation.status).toBe(0)
+      expect(readFileSync(join(directory, 'SHA256SUMS'), 'utf8')).toBe(checksumBytes)
+      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toBe(latestBytes)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('downloader static safety', () => {
@@ -200,6 +254,19 @@ describe('downloader static safety', () => {
     expect(script.indexOf('"$INSTALLED_APPIMAGE_PATH"')).toBeGreaterThan(script.indexOf('EXPECTED_CHECKSUM'))
   })
 
+  it('rejects non-Windows hosts before PowerShell performs network or architecture selection', () => {
+    if (process.platform === 'win32') return
+    const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    if (probe.error) return
+
+    const result = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', 'scripts/install.ps1'], {
+      encoding: 'utf8',
+    })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Unsupported operating system')
+    expect(result.stdout).not.toContain('checking the latest public release')
+  })
+
   it('rejects a non-semantic GitHub tag before any artifact is downloaded', () => {
     const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-installer-test-'))
     try {
@@ -226,7 +293,7 @@ describe('downloader static safety', () => {
 interface WorkflowJob {
   needs?: string | string[]
   permissions?: Record<string, string>
-  strategy?: { matrix?: { include?: Array<Record<string, unknown>> } }
+  strategy?: { 'max-parallel'?: number; matrix?: { include?: Array<Record<string, unknown>> } }
   steps?: Array<{ uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }>
 }
 
@@ -285,18 +352,46 @@ describe('release workflow contract', () => {
     expect(yaml).not.toMatch(/APPLE_CERTIFICATE|APPLE_SIGNING_IDENTITY|WINDOWS_CERTIFICATE|AZURE_TENANT/)
     expect(yaml).toContain('releaseDraft: true')
     expect(yaml).not.toMatch(/gh release edit[^\n]*--draft=false/)
+    const checkoutSteps = Object.values(release.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses === 'actions/checkout@v7')
+    expect(checkoutSteps.length).toBeGreaterThan(0)
+    for (const step of checkoutSteps) {
+      expect(step.with?.['persist-credentials']).toBe(false)
+    }
+    expect(yaml).not.toMatch(/env:\n\s+GH_TOKEN:[\s\S]{0,400}(?:npm ci|npm run)/)
   })
 
   it('checks the exact tag against base and verifies every draft asset before manual publication', () => {
     const yaml = readFileSync('.github/workflows/release.yml', 'utf8')
     expect(yaml).toContain('git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"')
-    expect(yaml).toContain('releaseCommitish: ${{ needs.validate.outputs.tag }}')
+    expect(yaml).toContain('commit: ${{ steps.release-ref.outputs.commit }}')
+    expect(yaml).toContain('ref: ${{ needs.validate.outputs.commit }}')
+    expect(yaml).toContain('releaseCommitish: ${{ needs.validate.outputs.commit }}')
+    expect(yaml).toContain('REMOTE_TAG_COMMIT')
+    expect(yaml).toContain('Tag moved after validation')
+    const normalize = yaml.indexOf('--normalize-updater')
+    const uploadLatest = yaml.indexOf('gh release upload "$TAG" "$ASSET_DIR/latest.json" --clobber')
+    const redownloadPublished = yaml.indexOf('Re-download published updater bytes')
+    const writeChecksums = yaml.indexOf('--write-checksums')
+    const uploadChecksums = yaml.indexOf('gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"')
+    const redownloadComplete = yaml.indexOf('Re-download completed draft')
+    const finalValidate = yaml.lastIndexOf(
+      'node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG"',
+    )
+    expect(normalize).toBeGreaterThan(-1)
+    expect(uploadLatest).toBeGreaterThan(normalize)
+    expect(redownloadPublished).toBeGreaterThan(uploadLatest)
+    expect(writeChecksums).toBeGreaterThan(redownloadPublished)
+    expect(uploadChecksums).toBeGreaterThan(writeChecksums)
+    expect(redownloadComplete).toBeGreaterThan(uploadChecksums)
+    expect(finalValidate).toBeGreaterThan(redownloadComplete)
     expect(yaml).toContain(
-      'node scripts/verify-release-assets.mjs --directory release-assets --tag "$TAG" --write-checksums',
+      'node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums',
     )
     expect(yaml).toContain('if [[ "$ASSET_NAME" == "SHA256SUMS" ]]')
     expect(yaml).toContain('releases/assets/$ASSET_ID" --method DELETE')
-    expect(yaml).toContain('gh release upload "$TAG" release-assets/SHA256SUMS')
+    expect(yaml).toContain('gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"')
     expect(yaml).toContain('Draft release verified; publish it manually after review.')
   })
 })
@@ -320,5 +415,7 @@ describe('release documentation contract', () => {
     expect(releasing).toContain('draft')
     expect(releasing).toContain('unsigned')
     expect(releasing).toContain('Never publish a release from this workflow automatically')
+    expect(releasing).toContain('re-downloads the published `latest.json` bytes before hashing')
+    expect(releasing).toContain('re-downloads and validates the completed draft')
   })
 })

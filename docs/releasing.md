@@ -35,14 +35,15 @@ For rotation, generate a new key outside the repository, update the two secrets,
 
 ## Draft verification and publication
 
-The release workflow uses the exact tag for every checkout. Tauri Action uploads product/version/platform/architecture-anchored assets and `latest.json` to a draft. Its final job:
+The release workflow resolves the tag once and uses that immutable commit SHA for every checkout and release target. It re-resolves the remote tag before release operations and stops if the tag moved. Tauri Action uploads product/version/platform/architecture-anchored assets and `latest.json` to a draft. Its final job:
 
-1. authenticates to GitHub and resolves the exact draft by tag;
+1. authenticates to GitHub and resolves the exact draft by tag and commit SHA;
 2. downloads every asset by its authenticated release-asset ID;
-3. rejects empty, unknown, duplicate, ambiguous, unsafe, or cross-release assets;
-4. verifies all four updater targets and their signature companions;
-5. generates `SHA256SUMS` locally over every public asset; and
-6. uploads that checksum manifest while leaving the release as a draft.
+3. normalizes updater URLs to the exact public tag and uploads `latest.json`;
+4. re-downloads the published `latest.json` bytes before hashing;
+5. rejects empty, unknown, duplicate, ambiguous, unsafe, or cross-release assets and verifies all updater targets/signatures;
+6. generates `SHA256SUMS` over only the re-downloaded public bytes and uploads it; and
+7. re-downloads and validates the completed draft while leaving publication manual.
 
 Review the workflow logs, `latest.json`, artifact names and byte sizes, `SHA256SUMS`, contract/example results, and the platform acceptance record. Download a clean copy of every artifact and independently compare its digest. Exercise a staged signed update. Only then use GitHub’s release UI to publish the draft manually.
 

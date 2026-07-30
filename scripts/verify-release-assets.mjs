@@ -111,9 +111,22 @@ function updaterAssetNameFromUrl(url, tag) {
 }
 
 export function normalizeUpdaterManifest(updater, tag) {
-  versionFromTag(tag)
+  const version = versionFromTag(tag)
   if (!updater || typeof updater !== 'object' || !updater.platforms || typeof updater.platforms !== 'object') {
     throw new Error('Updater platforms are missing')
+  }
+  if (updater.version !== version) {
+    throw new Error(`Updater version must match release version ${version}`)
+  }
+  if (typeof updater.notes !== 'string') {
+    throw new Error('Updater release notes must be a string')
+  }
+  if (
+    typeof updater.pub_date !== 'string' ||
+    !Number.isFinite(Date.parse(updater.pub_date)) ||
+    new Date(updater.pub_date).toISOString() !== updater.pub_date
+  ) {
+    throw new Error('Updater publication date must be an exact ISO-8601 timestamp')
   }
   const actualKeys = Object.keys(updater.platforms).sort()
   const expectedKeys = Object.keys(UPDATER_TARGETS).sort()
@@ -125,7 +138,6 @@ export function normalizeUpdaterManifest(updater, tag) {
     )
   }
   const platforms = {}
-  const version = versionFromTag(tag)
   for (const key of expectedKeys) {
     const platform = updater.platforms[key]
     if (!platform || typeof platform.signature !== 'string' || platform.signature.trim() === '') {
@@ -139,6 +151,15 @@ export function normalizeUpdaterManifest(updater, tag) {
     }
   }
   return { ...updater, platforms }
+}
+
+function assertCanonicalUpdaterManifest(updater, tag) {
+  const normalized = normalizeUpdaterManifest(updater, tag)
+  for (const target of Object.keys(normalized.platforms)) {
+    if (updater.platforms[target].url !== normalized.platforms[target].url) {
+      throw new Error(`Updater URL for ${target} must use the exact ${tag} release`)
+    }
+  }
 }
 
 export function validateReleaseManifest(manifest) {
@@ -273,12 +294,8 @@ async function fixtureFromDirectory(directory, tag, writeChecksums) {
   if (writeChecksums && names.includes('SHA256SUMS')) {
     throw new Error('Refusing to overwrite an existing SHA256SUMS')
   }
-  if (writeChecksums) {
-    const updaterPath = join(directory, 'latest.json')
-    const updater = JSON.parse(await readFile(updaterPath, 'utf8'))
-    const normalized = normalizeUpdaterManifest(updater, tag)
-    await writeFile(updaterPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
-  }
+  const updater = JSON.parse(await readFile(join(directory, 'latest.json'), 'utf8'))
+  assertCanonicalUpdaterManifest(updater, tag)
   const checksumNames = names.filter((name) => name !== 'SHA256SUMS')
   const checksumEntries = []
   for (const name of checksumNames) {
@@ -317,8 +334,18 @@ async function fixtureFromDirectory(directory, tag, writeChecksums) {
     const info = await stat(join(directory, name))
     assets.push({ name, size: info.size, ...(name === 'SHA256SUMS' ? {} : { sha256: checksums.get(name) }) })
   }
-  const updater = JSON.parse(await readFile(join(directory, 'latest.json'), 'utf8'))
   return { tag, assets, updater }
+}
+
+async function normalizeUpdaterInDirectory(directory, tag) {
+  const updaterPath = join(directory, 'latest.json')
+  const info = await stat(updaterPath)
+  if (!info.isFile() || info.size <= 0) {
+    throw new Error('latest.json must be a non-empty regular file')
+  }
+  const updater = JSON.parse(await readFile(updaterPath, 'utf8'))
+  const normalized = normalizeUpdaterManifest(updater, tag)
+  await writeFile(updaterPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
 }
 
 function readOption(args, name) {
@@ -341,6 +368,14 @@ async function main(args) {
   } else {
     const tag = readOption(args, '--tag')
     if (!tag) throw new Error('--directory requires --tag')
+    if (args.includes('--normalize-updater')) {
+      if (args.includes('--write-checksums')) {
+        throw new Error('--normalize-updater and --write-checksums are separate operations')
+      }
+      await normalizeUpdaterInDirectory(directory, tag)
+      process.stdout.write(`Normalized updater metadata for ${tag}\n`)
+      return
+    }
     fixture = await fixtureFromDirectory(directory, tag, args.includes('--write-checksums'))
   }
   const result = validateReleaseManifest(fixture)
