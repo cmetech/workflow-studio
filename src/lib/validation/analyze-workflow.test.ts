@@ -341,6 +341,56 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues.map(({ code }) => code)).toContain('schema_min_length')
   })
 
+  it.each([
+    ['enum', { type: 'string', minLength: 1, enum: [''] }],
+    ['const', { type: 'string', minLength: 1, const: '' }],
+  ])('fails closed when an imported inline command %s makes an empty draft impossible', async (_constraint, schema) => {
+    const activeContract = importedComposedContract()
+    const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>
+    const commandNode = definitions.commandNode
+    if (!commandNode) throw new Error('Expected the imported command node schema.')
+    const properties = commandNode.properties as Record<string, unknown>
+    properties.command = schema
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        activeContract,
+        'name: Imported\ndescription: Impossible inline command draft\nnodes:\n  - id: command\n    command: ""\n',
+      ),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it('fails closed when a structured child has an impossible inline required scalar', async () => {
+    const activeContract = importedComposedContract()
+    const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>
+    const loopNode = definitions.loopNode
+    if (!loopNode) throw new Error('Expected the imported loop node schema.')
+    const properties = loopNode.properties as Record<string, unknown>
+    properties.loop = {
+      type: 'object',
+      properties: { over: { type: 'string', minLength: 1, enum: [''] } },
+      required: ['over'],
+      additionalProperties: false,
+    }
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        activeContract,
+        'name: Imported\ndescription: Impossible loop draft\nnodes:\n  - id: loop\n    loop: {}\n',
+      ),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
   it('fails closed when an imported allOf object conjunction forbids its required kind field', async () => {
     const activeContract = importedComposedContract()
     const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>

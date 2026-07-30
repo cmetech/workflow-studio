@@ -118,6 +118,13 @@ describe('contract schema validation', () => {
     ).toBeNull()
   })
 
+  it.each([
+    ['enum', { type: 'string', minLength: 1, enum: [''] }],
+    ['const', { type: 'string', minLength: 1, const: '' }],
+  ])('fails closed for an impossible inline scalar %s constraint', (_constraint, schema) => {
+    expect(resolveContractSchema(schema, {})).toBeNull()
+  })
+
   it('soundly intersects const, enum, annotations, and integer-as-number types', () => {
     expect(
       resolveContractSchema(

@@ -5,7 +5,7 @@ import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import { validateDag } from './dag-validator'
-import { resolveContractSchema, validateContractDocument } from './schema-validator'
+import { isContractSchemaSelfConsistent, resolveContractSchema, validateContractDocument } from './schema-validator'
 
 export async function analyzeWorkflowPair(
   request: AnalyzeDocumentRequest,
@@ -343,7 +343,9 @@ function schemaChild(
     // A structured field can expose its own declared children without flattening
     // unrelated conditional allOf branches. Scalar/composed leaves still go
     // through the conservative resolver before they authorize a draft issue.
-    if (isRecord(directChild) && isRecord(directChild.properties)) return directChild
+    if (isRecord(directChild) && isRecord(directChild.properties)) {
+      return isContractSchemaSelfConsistent(directChild, root) ? directChild : null
+    }
     return resolveContractSchema(directChild, root)
   }
   const schema = resolveContractSchema(schemaValue, root)

@@ -340,6 +340,10 @@ export function resolveContractSchema(value: unknown, root: Record<string, unkno
   return resolveContractSchemaWithin(value, root, new Set(), { remainingWork: 512 }, 0)
 }
 
+export function isContractSchemaSelfConsistent(value: unknown, root: Record<string, unknown>): boolean {
+  return isRecord(value) && selfCheckInspectionSchema(value, root, new Set(), { remainingWork: 512 }, 0, true)
+}
+
 interface SchemaInspectionBudget {
   remainingWork: number
 }
@@ -388,7 +392,67 @@ function resolveContractSchemaWithin(
     }
     resolved = aggregate
   }
-  return resolved
+  return selfCheckInspectionSchema(resolved, root, resolving, budget, depth + 1, false) ? resolved : null
+}
+
+function selfCheckInspectionSchema(
+  schema: Record<string, unknown>,
+  root: Record<string, unknown>,
+  resolving: Set<string>,
+  budget: SchemaInspectionBudget,
+  depth: number,
+  checkRequiredChildren: boolean,
+): boolean {
+  if (depth > 64 || !consumeInspectionWork(budget)) return false
+  if (!validInspectionBounds(schema, 'minLength', 'maxLength')) return false
+  if (!validInspectionBounds(schema, 'minItems', 'maxItems')) return false
+  if (!validInspectionBounds(schema, 'minProperties', 'maxProperties')) return false
+  if (!selfConsistentConstAndEnum(schema)) return false
+
+  if (checkRequiredChildren && Array.isArray(schema.required)) {
+    const properties = recordValue(schema.properties)
+    if (!properties) return false
+    for (const key of schema.required) {
+      if (typeof key !== 'string' || !Object.hasOwn(properties, key)) return false
+      const child = properties[key]
+      if (child === false) return false
+      if (child === true) continue
+      if (!isRecord(child)) return false
+      const resolvedChild = resolveContractSchemaWithin(child, root, resolving, budget, depth + 1)
+      if (!resolvedChild || !selfCheckInspectionSchema(resolvedChild, root, resolving, budget, depth + 1, true))
+        return false
+    }
+  }
+  return true
+}
+
+function validInspectionBounds(
+  schema: Record<string, unknown>,
+  minimumKeyword: string,
+  maximumKeyword: string,
+): boolean {
+  const minimum = schema[minimumKeyword]
+  const maximum = schema[maximumKeyword]
+  if (
+    (minimum !== undefined && (typeof minimum !== 'number' || !Number.isSafeInteger(minimum) || minimum < 0)) ||
+    (maximum !== undefined && (typeof maximum !== 'number' || !Number.isSafeInteger(maximum) || maximum < 0))
+  ) {
+    return false
+  }
+  return !(typeof minimum === 'number' && typeof maximum === 'number' && minimum > maximum)
+}
+
+function selfConsistentConstAndEnum(schema: Record<string, unknown>): boolean {
+  const values = schemaEnum(schema.enum)
+  if (values === null) return false
+  const hasConst = Object.hasOwn(schema, 'const')
+  if (hasConst) {
+    return (
+      valueSatisfiesInspectionSchema(schema.const, schema) &&
+      (values === undefined || values.some((value) => jsonEqual(value, schema.const)))
+    )
+  }
+  return values === undefined || values.some((value) => valueSatisfiesInspectionSchema(value, schema))
 }
 
 function mergeInspectionSchemas(
