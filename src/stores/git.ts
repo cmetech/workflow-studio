@@ -254,7 +254,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
       try {
         snapshot = await loadGitCommit(native, root, oid, token, pair)
       } catch (error: unknown) {
-        if (!isContextChanged(error) || !previewIsCurrent(request, inspectionGeneration, root, pair)) throw error
+        if (!isPreviewAuthorityLoss(error) || !previewIsCurrent(request, inspectionGeneration, root, pair)) throw error
         const recoveredToken = await recoverPreviewAuthority(request, inspectionGeneration, root, pair)
         if (!recoveredToken) return null
         token = recoveredToken
@@ -314,6 +314,12 @@ function isContextChanged(error: unknown): boolean {
     'code' in error &&
     (error as { readonly code?: unknown }).code === 'git_context_changed'
   )
+}
+
+function isPreviewAuthorityLoss(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false
+  const code = (error as { readonly code?: unknown }).code
+  return code === 'git_context_changed' || code === 'git_pair_not_authorized'
 }
 
 export interface GitLifecycleController {

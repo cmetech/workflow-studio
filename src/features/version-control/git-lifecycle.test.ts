@@ -233,7 +233,7 @@ describe('Git inspection lifecycle', () => {
     expect(native.gitDisposeHistorySession).not.toHaveBeenCalled()
   })
 
-  it('recovers preview authority when an old controller session activates after the new controller', async () => {
+  it('recovers preview authority from the native error returned when an old controller session activates later', async () => {
     const native = nativeFixture()
     const oldBegin = deferred<number>()
     vi.mocked(native.gitBeginHistorySession)
@@ -244,7 +244,7 @@ describe('Git inspection lifecycle', () => {
       .mockResolvedValueOnce({ commits: [], authorizationToken: 'new-token' })
       .mockResolvedValueOnce({ commits: [], authorizationToken: 'recovered-token' })
     vi.mocked(native.gitShowPair)
-      .mockRejectedValueOnce(new NativeError('git_context_changed', 'old controller activated later'))
+      .mockRejectedValueOnce(new NativeError('git_pair_not_authorized', 'old controller activation revoked the token'))
       .mockResolvedValueOnce({ oid: 'aaaaaaaa', definition: 'name: recovered\n', companion: null })
 
     const oldController = createGitInspectionController(native)
@@ -265,6 +265,29 @@ describe('Git inspection lifecycle', () => {
     expect(native.gitRetainHistoryAuthorization).toHaveBeenCalledWith('recovered-token', 3, 2)
     expect(native.gitShowPair).toHaveBeenNthCalledWith(2, '/repo', 'aaaaaaaa', 'recovered-token', 'new.yaml', null)
     expect($gitState.get().inspection.historyAuthorizationToken).toBe('recovered-token')
+  })
+
+  it('bounds native pair-not-authorized preview recovery to one retry', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitBeginHistorySession).mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    vi.mocked(native.gitHistoryPair)
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'initial-token' })
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'recovered-token' })
+    vi.mocked(native.gitShowPair).mockRejectedValue(
+      new NativeError('git_pair_not_authorized', 'the preview capability remains unauthorized'),
+    )
+    const controller = createGitInspectionController(native)
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+    await controller.refreshPair(pair)
+
+    await expect(controller.loadCommit('aaaaaaaa', pair)).rejects.toMatchObject({
+      code: 'git_pair_not_authorized',
+    })
+
+    expect(native.gitBeginHistorySession).toHaveBeenCalledTimes(2)
+    expect(native.gitHistoryPair).toHaveBeenCalledTimes(2)
+    expect(native.gitShowPair).toHaveBeenCalledTimes(2)
+    expect(native.gitShowPair).toHaveBeenLastCalledWith('/repo', 'aaaaaaaa', 'recovered-token', 'flow.yaml', null)
   })
 
   it('does not revoke recovered preview authority when a restarted session reissues the token value', async () => {

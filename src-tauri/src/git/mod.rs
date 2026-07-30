@@ -828,6 +828,29 @@ fn show_from_authorization(
     Ok(snapshot)
 }
 
+fn show_authorized_pair(
+    state: &GitState,
+    context: &AuthorizedGitContext,
+    authorization_token: &str,
+    oid: &str,
+    definition_path: &str,
+    companion_path: Option<&str>,
+) -> GitResult<GitPairSnapshot> {
+    let authorization = state.authorized_history(
+        authorization_token,
+        context,
+        definition_path,
+        companion_path,
+    )?;
+    show_from_authorization(
+        context,
+        &authorization,
+        oid,
+        definition_path,
+        companion_path,
+    )
+}
+
 fn pair_not_authorized() -> GitError {
     GitError::new(
         "git_pair_not_authorized",
@@ -1144,15 +1167,10 @@ pub fn git_show_pair(
 ) -> GitResult<GitPairSnapshot> {
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
-    let authorization = git_state.authorized_history(
+    let snapshot = show_authorized_pair(
+        &git_state,
+        &context,
         &authorization_token,
-        &context,
-        &definition_path,
-        companion_path.as_deref(),
-    )?;
-    let snapshot = show_from_authorization(
-        &context,
-        &authorization,
         &oid,
         &definition_path,
         companion_path.as_deref(),

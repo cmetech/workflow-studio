@@ -8,9 +8,9 @@ use tempfile::tempdir;
 use super::parse::{parse_history, parse_status};
 use super::runner::{build_read_command, ReadOperation};
 use super::{
-    authorize_repository_root, detect_repository, diff_pair, history_pair, show_from_authorization,
-    show_pair, status, AuthorizedGitContext, GitState, HistoricalPaths, HistoryAuthorization,
-    HISTORY_AUTHORIZATION_LIMIT,
+    authorize_repository_root, detect_repository, diff_pair, history_pair, show_authorized_pair,
+    show_from_authorization, show_pair, status, AuthorizedGitContext, GitState, HistoricalPaths,
+    HistoryAuthorization, HISTORY_AUTHORIZATION_LIMIT,
 };
 
 fn git(root: &Path, arguments: &[&str]) {
@@ -584,6 +584,59 @@ fn old_controller_cannot_activate_or_dispose_after_a_new_controller_mounts() {
     assert!(state
         .authorized_history(&new_token, &context, "new.yaml", None)
         .is_ok());
+}
+
+#[test]
+fn replaced_session_reports_pair_not_authorized_for_a_formerly_retained_preview_token() {
+    let root = tempdir().unwrap();
+    git(root.path(), &["init", "-b", "main"]);
+    git(root.path(), &["config", "user.name", "Workflow Test"]);
+    git(
+        root.path(),
+        &["config", "user.email", "workflow@example.test"],
+    );
+    fs::write(root.path().join("flow.yaml"), "name: retained\n").unwrap();
+    commit_all(root.path(), "retained preview");
+
+    let context = AuthorizedGitContext::bind(root.path(), root.path()).unwrap();
+    let (commits, authorization) = context.history_pair_authorized("flow.yaml", None).unwrap();
+    let oid = commits[0].oid.clone();
+    let state = GitState::default();
+
+    let first_epoch = state.begin_history_session().unwrap();
+    let request = state.begin_history(first_epoch, 1).unwrap();
+    let token = state.issue_history(request, authorization).unwrap();
+    state.retain_history(first_epoch, 1, &token).unwrap();
+
+    // A later renderer controller activates after the first controller published
+    // its history. Activation revokes the old retained capability before preview.
+    let replacement_epoch = state.begin_history_session().unwrap();
+    let error =
+        show_authorized_pair(&state, &context, &token, &oid, "flow.yaml", None).unwrap_err();
+
+    assert_eq!(error.code, "git_pair_not_authorized");
+
+    let (_, replacement_authorization) =
+        context.history_pair_authorized("flow.yaml", None).unwrap();
+    let replacement_request = state.begin_history(replacement_epoch, 1).unwrap();
+    let revoked_token = state
+        .issue_history(replacement_request, replacement_authorization)
+        .unwrap();
+    state
+        .retain_history(replacement_epoch, 1, &revoked_token)
+        .unwrap();
+    state.revoke_history(&revoked_token).unwrap();
+    assert_eq!(
+        state
+            .authorized_history(&revoked_token, &context, "flow.yaml", None)
+            .err()
+            .expect("revoked token must not remain authorized")
+            .code,
+        "git_pair_not_authorized"
+    );
+    let history = state.history.lock().unwrap();
+    assert!(history.pending.is_empty());
+    assert!(history.retained.is_empty());
 }
 
 #[test]
