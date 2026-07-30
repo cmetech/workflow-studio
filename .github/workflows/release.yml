@@ -26,17 +26,8 @@ jobs:
       tag: ${{ steps.release-ref.outputs.tag }}
       commit: ${{ steps.release-ref.outputs.commit }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22.13.0
-          cache: npm
-      - name: Validate tag, version, and base ancestry
-        id: release-ref
+      - name: Validate requested tag syntax
+        id: requested-ref
         env:
           REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         shell: bash
@@ -47,6 +38,24 @@ jobs:
             echo "Invalid version tag: $TAG" >&2
             exit 1
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Validate tag, version, and base ancestry
+        id: release-ref
+        env:
+          REQUESTED_TAG: ${{ steps.requested-ref.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$REQUESTED_TAG"
           TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
           git fetch --no-tags origin base:refs/remotes/origin/base
           if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"; then
@@ -147,7 +156,8 @@ jobs:
           fi
       - name: Build and upload unsigned native bundle to a draft release
         id: tauri
-        uses: tauri-apps/tauri-action@v1
+        # tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -180,6 +190,8 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
+      - name: Build updater signature verifier
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
       - name: Assert tag still resolves to the validated commit
         env:
           TAG: ${{ needs.validate.outputs.tag }}
@@ -267,7 +279,8 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
-          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums
+          SIGNATURE_VERIFIER="src-tauri/target/debug/examples/verify_release_signature"
+          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
       - name: Upload checksum manifest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -303,5 +316,6 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
-          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG"
+          SIGNATURE_VERIFIER="src-tauri/target/debug/examples/verify_release_signature"
+          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
           echo 'Draft release verified; publish it manually after review.'

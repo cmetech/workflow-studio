@@ -20,14 +20,16 @@ These commands save the public installer script to a new temporary file before r
 macOS or Linux:
 
 ```sh
-p=$(mktemp) && curl --fail --location https://raw.githubusercontent.com/cmetech/workflow-studio/base/scripts/install.sh --output "$p" && sh "$p"; s=$?; rm -f "$p"; exit $s
+p=$(mktemp) && curl --fail --location https://raw.githubusercontent.com/cmetech/workflow-studio/2a0ec9f5c5bd95f693d8b97599653700d1471f0c/scripts/install.sh --output "$p" && sh "$p"; s=$?; rm -f "$p"; exit $s
 ```
 
 Windows PowerShell:
 
 ```powershell
-$p=Join-Path ([IO.Path]::GetTempPath()) "workflow-studio-install-$([Guid]::NewGuid().ToString('N')).ps1"; Invoke-RestMethod https://raw.githubusercontent.com/cmetech/workflow-studio/base/scripts/install.ps1 -OutFile $p; try { & $p } finally { Remove-Item -LiteralPath $p -Force }
+$p=Join-Path ([IO.Path]::GetTempPath()) "workflow-studio-install-$([Guid]::NewGuid().ToString('N')).ps1"; Invoke-RestMethod https://raw.githubusercontent.com/cmetech/workflow-studio/2a0ec9f5c5bd95f693d8b97599653700d1471f0c/scripts/install.ps1 -OutFile $p; try { & $p } finally { Remove-Item -LiteralPath $p -Force }
 ```
+
+Both commands pin the bootstrap script to an immutable, reviewed repository commit. That trust decision does not automatically adopt later bootstrap-script changes: maintainers must review the new script and update this documentation to a new commit. The pinned script still selects the latest published app release, whose installer checksum and updater signature are verified independently.
 
 Each script obtains the exact latest release tag from GitHub, chooses only an exact OS/architecture filename, downloads `SHA256SUMS` from that same tag, computes SHA-256 locally, and launches only after an exact match. A mismatch stops installation.
 

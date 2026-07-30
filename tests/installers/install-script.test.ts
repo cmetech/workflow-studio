@@ -1,9 +1,9 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import {
   SUPPORTED_TARGETS,
   normalizeUpdaterManifest,
@@ -31,6 +31,50 @@ interface ReleaseFixture {
 
 const fixture = JSON.parse(readFileSync('tests/fixtures/releases/valid-manifest.json', 'utf8')) as ReleaseFixture
 
+const TEST_UPDATER_PUBLIC_KEY = `untrusted comment: minisign public key E7620F1842B4E81F
+RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+`
+const TEST_UPDATER_SIGNATURE_DOCUMENT = `untrusted comment: signature from minisign secret key
+RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=
+trusted comment: timestamp:1556193335\tfile:test
+y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==`
+const TEST_UPDATER_SIGNATURE = Buffer.from(TEST_UPDATER_SIGNATURE_DOCUMENT).toString('base64')
+const signatureVerifierPath = join(
+  'src-tauri',
+  'target',
+  'debug',
+  'examples',
+  `verify_release_signature${process.platform === 'win32' ? '.exe' : ''}`,
+)
+
+function materializeCryptoRelease(useApiUrls = false) {
+  const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-assets-'))
+  const directory = join(root, 'assets')
+  const tauriConfig = join(root, 'tauri.conf.json')
+  mkdirSync(directory)
+
+  const updater = structuredClone(fixture.updater)
+  for (const platform of Object.values(updater.platforms)) {
+    platform.signature = TEST_UPDATER_SIGNATURE
+    if (useApiUrls) {
+      platform.url = 'https://api.github.com/repos/cmetech/workflow-studio/releases/assets/12345'
+    }
+  }
+  for (const asset of fixture.assets) {
+    if (asset.name === 'SHA256SUMS') continue
+    let bytes = `installer:${asset.name}\n`
+    if (asset.name === 'latest.json') bytes = `${JSON.stringify(updater)}\n`
+    if (asset.name.endsWith('.sig')) bytes = `${TEST_UPDATER_SIGNATURE}\n`
+    if (/\.(?:app|nsis|AppImage)\.(?:tar\.gz|zip)$/.test(asset.name)) bytes = 'test'
+    writeFileSync(join(directory, asset.name), bytes)
+  }
+  writeFileSync(
+    tauriConfig,
+    `${JSON.stringify({ plugins: { updater: { pubkey: Buffer.from(TEST_UPDATER_PUBLIC_KEY).toString('base64') } } })}\n`,
+  )
+  return { root, directory, tauriConfig }
+}
+
 function manifestWith(mutator: (copy: ReleaseFixture) => void): ReleaseFixture {
   const copy = structuredClone(fixture)
   mutator(copy)
@@ -38,6 +82,18 @@ function manifestWith(mutator: (copy: ReleaseFixture) => void): ReleaseFixture {
 }
 
 describe('release asset verification', () => {
+  beforeAll(() => {
+    const build = spawnSync('cargo', [
+      'build',
+      '--quiet',
+      '--locked',
+      '--manifest-path',
+      'src-tauri/Cargo.toml',
+      '--example',
+      'verify_release_signature',
+    ])
+    expect(build.status, build.stderr?.toString()).toBe(0)
+  })
   it.each([
     ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_0.1.0_macos_aarch64.dmg'],
     ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_0.1.0_macos_x86_64.dmg'],
@@ -162,23 +218,22 @@ describe('release asset verification', () => {
   })
 
   it('separates updater normalization from checksumming published bytes', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-release-assets-'))
+    const { root, directory, tauriConfig } = materializeCryptoRelease(true)
     try {
-      const updater = structuredClone(fixture.updater)
-      for (const platform of Object.values(updater.platforms)) {
-        platform.url = 'https://api.github.com/repos/cmetech/workflow-studio/releases/assets/12345'
-      }
-      for (const asset of fixture.assets) {
-        if (asset.name === 'SHA256SUMS') continue
-        writeFileSync(
-          join(directory, asset.name),
-          asset.name === 'latest.json' ? `${JSON.stringify(updater)}\n` : `bytes:${asset.name}\n`,
-        )
-      }
-
       const unpublished = spawnSync(
         process.execPath,
-        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--write-checksums'],
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--write-checksums',
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
         { encoding: 'utf8' },
       )
       expect(unpublished.status).toBe(1)
@@ -195,7 +250,18 @@ describe('release asset verification', () => {
 
       const checksummed = spawnSync(
         process.execPath,
-        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--write-checksums'],
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--write-checksums',
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
         { encoding: 'utf8' },
       )
       expect(checksummed.status).toBe(0)
@@ -204,14 +270,84 @@ describe('release asset verification', () => {
 
       const finalValidation = spawnSync(
         process.execPath,
-        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag],
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
         { encoding: 'utf8' },
       )
       expect(finalValidation.status).toBe(0)
       expect(readFileSync(join(directory, 'SHA256SUMS'), 'utf8')).toBe(checksumBytes)
       expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toBe(latestBytes)
     } finally {
-      rmSync(directory, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects updater metadata that does not exactly match its companion signature before checksumming', () => {
+    const { root, directory, tauriConfig } = materializeCryptoRelease()
+    try {
+      const updaterPath = join(directory, 'latest.json')
+      const updater = JSON.parse(readFileSync(updaterPath, 'utf8')) as ReleaseFixture['updater']
+      updater.platforms['linux-x86_64']!.signature = `${TEST_UPDATER_SIGNATURE}tampered`
+      writeFileSync(updaterPath, `${JSON.stringify(updater)}\n`)
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--write-checksums',
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('does not match its companion .sig')
+      expect(() => readFileSync(join(directory, 'SHA256SUMS'))).toThrow()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects updater bytes with an invalid cryptographic signature before checksumming', () => {
+    const { root, directory, tauriConfig } = materializeCryptoRelease()
+    try {
+      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz'), 'Test')
+      const result = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--write-checksums',
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('Cryptographic updater signature verification failed')
+      expect(() => readFileSync(join(directory, 'SHA256SUMS'))).toThrow()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
@@ -338,7 +474,10 @@ describe('release workflow contract', () => {
       .filter(Boolean)
     expect(allUses).toContain('actions/checkout@v7')
     expect(allUses).toContain('actions/setup-node@v6')
-    expect(allUses).toContain('tauri-apps/tauri-action@v1')
+    expect(allUses).toContain('tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f')
+    expect(readFileSync('.github/workflows/release.yml', 'utf8')).toContain(
+      '# tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f',
+    )
   })
 
   it('limits write permission to draft upload jobs and sources updater signing only from secrets', () => {
@@ -364,6 +503,8 @@ describe('release workflow contract', () => {
 
   it('checks the exact tag against base and verifies every draft asset before manual publication', () => {
     const yaml = readFileSync('.github/workflows/release.yml', 'utf8')
+    expect(yaml).toContain("ref: ${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}")
+    expect(yaml.indexOf('id: requested-ref')).toBeLessThan(yaml.indexOf('- uses: actions/checkout@v7'))
     expect(yaml).toContain('git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"')
     expect(yaml).toContain('commit: ${{ steps.release-ref.outputs.commit }}')
     expect(yaml).toContain('ref: ${{ needs.validate.outputs.commit }}')
@@ -386,6 +527,12 @@ describe('release workflow contract', () => {
     expect(uploadChecksums).toBeGreaterThan(writeChecksums)
     expect(redownloadComplete).toBeGreaterThan(uploadChecksums)
     expect(finalValidate).toBeGreaterThan(redownloadComplete)
+    expect(
+      yaml.indexOf('cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature'),
+    ).toBeLessThan(writeChecksums)
+    expect(
+      yaml.match(/--signature-verifier "\$SIGNATURE_VERIFIER" --tauri-config src-tauri\/tauri\.conf\.json/g),
+    ).toHaveLength(2)
     expect(yaml).toContain(
       'node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums',
     )
@@ -405,6 +552,9 @@ describe('release documentation contract', () => {
     expect(installing).toContain('SHA256SUMS')
     expect(installing).toContain('Right-click')
     expect(installing).toContain('More info')
+    expect(installing).not.toContain('/base/scripts/install')
+    expect(installing.match(/2a0ec9f5c5bd95f693d8b97599653700d1471f0c\/scripts\/install/g)).toHaveLength(2)
+    expect(installing).toContain('does not automatically adopt later bootstrap-script changes')
   })
 
   it('documents updater key custody, the base/tag invariant, draft verification, and no OS signing', () => {

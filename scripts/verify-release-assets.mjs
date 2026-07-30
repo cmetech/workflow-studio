@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -289,13 +290,46 @@ async function digestFile(path) {
   return hash.digest('hex')
 }
 
-async function fixtureFromDirectory(directory, tag, writeChecksums) {
+async function verifyUpdaterArtifacts(directory, tag, updater, signatureVerifier, tauriConfig) {
+  if (!signatureVerifier || !tauriConfig) {
+    throw new Error('Directory verification requires --signature-verifier and --tauri-config')
+  }
+  const version = versionFromTag(tag)
+  for (const [baseTarget, target] of Object.entries(TARGETS)) {
+    const updaterName = exactName(version, target.updaterSuffix)
+    const signatureName = `${updaterName}.sig`
+    const signaturePath = join(directory, signatureName)
+    const signatureInfo = await stat(signaturePath)
+    if (!signatureInfo.isFile() || signatureInfo.size <= 0 || signatureInfo.size > 16 * 1024) {
+      throw new Error(`Updater signature companion must be a bounded non-empty regular file: ${signatureName}`)
+    }
+    const companionSignature = (await readFile(signaturePath, 'utf8')).trimEnd()
+    for (const [platformKey, mappedTarget] of Object.entries(UPDATER_TARGETS)) {
+      if (mappedTarget !== baseTarget) continue
+      if (updater.platforms[platformKey].signature !== companionSignature) {
+        throw new Error(`Updater signature for ${platformKey} does not match its companion .sig: ${signatureName}`)
+      }
+    }
+
+    const verification = spawnSync(signatureVerifier, [tauriConfig, join(directory, updaterName), signaturePath], {
+      encoding: 'utf8',
+      shell: false,
+      maxBuffer: 64 * 1024,
+    })
+    if (verification.error || verification.status !== 0) {
+      throw new Error(`Cryptographic updater signature verification failed for ${updaterName}`)
+    }
+  }
+}
+
+async function fixtureFromDirectory(directory, tag, writeChecksums, signatureVerifier, tauriConfig) {
   const names = (await readdir(directory)).sort()
   if (writeChecksums && names.includes('SHA256SUMS')) {
     throw new Error('Refusing to overwrite an existing SHA256SUMS')
   }
   const updater = JSON.parse(await readFile(join(directory, 'latest.json'), 'utf8'))
   assertCanonicalUpdaterManifest(updater, tag)
+  await verifyUpdaterArtifacts(directory, tag, updater, signatureVerifier, tauriConfig)
   const checksumNames = names.filter((name) => name !== 'SHA256SUMS')
   const checksumEntries = []
   for (const name of checksumNames) {
@@ -376,7 +410,13 @@ async function main(args) {
       process.stdout.write(`Normalized updater metadata for ${tag}\n`)
       return
     }
-    fixture = await fixtureFromDirectory(directory, tag, args.includes('--write-checksums'))
+    fixture = await fixtureFromDirectory(
+      directory,
+      tag,
+      args.includes('--write-checksums'),
+      readOption(args, '--signature-verifier'),
+      readOption(args, '--tauri-config'),
+    )
   }
   const result = validateReleaseManifest(fixture)
   process.stdout.write(
