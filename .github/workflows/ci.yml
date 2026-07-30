@@ -84,4 +84,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
-      - run: npm run tauri -- build --debug
+      - run: npm run tauri -- build --debug --config src-tauri/tauri.ci.conf.json

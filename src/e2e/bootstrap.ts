@@ -3,7 +3,9 @@ import type { WorkspaceNativeBridge } from '$src/lib/native/types'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import type { ProgressSnapshot } from '$src/lib/progress/types'
-import type { UpdateSnapshot } from '$src/lib/updates/types'
+import type { GitPathStatus } from '$src/lib/git/types'
+import type { UpdateEvent, UpdateEventHandler, UpdateSnapshot } from '$src/lib/updates/types'
+import { $documentSession } from '$src/stores/documents'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
@@ -29,6 +31,18 @@ interface E2EState {
   readonly updateDeferred: boolean
   readonly pairVersioned: boolean
   readonly unrelatedChangePresent: boolean
+  readonly gitVersionRequest: {
+    readonly root: string
+    readonly definitionPath: string
+    readonly companionPath: string | null
+    readonly message: string
+    readonly authorizationToken: string
+  } | null
+  readonly gitStatusEntries: readonly GitPathStatus[]
+  readonly updateInstallRequests: number
+  readonly updateCancelled: boolean
+  readonly updateInstalled: boolean
+  readonly updateRelaunched: boolean
   readonly activeBrandId: string
   readonly definitionText: string
   readonly companionText: string
@@ -90,16 +104,16 @@ const UPDATE_RELEASE = {
   platform: 'macos-aarch64',
 } as const
 
-function updateSnapshot(phase: UpdateSnapshot['phase']): UpdateSnapshot {
+function updateSnapshot(phase: UpdateSnapshot['phase'], sequence?: number): UpdateSnapshot {
   const failed = phase === 'failed'
   return {
     runId: 'e2e-update',
-    sequence: failed ? 3 : phase === 'available' ? 4 : 5,
+    sequence: sequence ?? (failed ? 3 : phase === 'available' ? 4 : 5),
     startedAt: 1_753_441_202_000,
     phase,
-    cancellable: false,
+    cancellable: phase === 'downloading',
     release: UPDATE_RELEASE,
-    downloadedBytes: 0,
+    downloadedBytes: phase === 'downloading' ? UPDATE_RELEASE.size / 2 : 0,
     totalBytes: UPDATE_RELEASE.size,
     speedBytesPerSecond: null,
     logs: failed
@@ -123,7 +137,17 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateChecks = 0
   let updateDeferred = false
   let pairVersioned = false
-  const unrelatedChangePresent = true
+  let gitStatusEntries: GitPathStatus[] = [
+    { path: DEFINITION_PATH, index: ' ', worktree: 'M', untracked: false },
+    { path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false },
+  ]
+  let gitVersionRequest: E2EState['gitVersionRequest'] = null
+  let updateInstallRequests = 0
+  let updateCancelled = false
+  let updateInstalled = false
+  let updateRelaunched = false
+  let finishUpdateDownload: (() => void) | null = null
+  const updateHandlers = new Set<UpdateEventHandler>()
   let layout: string | null = null
   let brandSelection = 0
   let activeBrandId = 'loop24'
@@ -139,6 +163,13 @@ export async function installRuntimeBootstrap(): Promise<void> {
   const validManifestHash = await sha256(new TextEncoder().encode(validManifest))
   const maliciousManifestHash = await sha256(new TextEncoder().encode(maliciousManifest))
 
+  const emitUpdate = async (event: UpdateEvent): Promise<void> => {
+    await Promise.all([...updateHandlers].map((handler) => handler(event)))
+  }
+
+  const wait = (milliseconds: number): Promise<void> =>
+    new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+
   const bridge: WorkspaceNativeBridge = {
     ...base,
     setupStatus: async () =>
@@ -150,26 +181,96 @@ export async function installRuntimeBootstrap(): Promise<void> {
       return setupSuccess()
     },
     updateStatus: async () => ({
-      snapshot: scenario === 'setup-update' ? updateSnapshot('failed') : updateSnapshot('current'),
+      snapshot:
+        scenario === 'setup-update'
+          ? updateSnapshot('failed')
+          : scenario === 'setup-update-cancel'
+            ? updateSnapshot('available')
+            : updateSnapshot('current'),
       startupCheckEnabled: false,
     }),
     updateCheck: async () => {
       updateChecks += 1
       return updateSnapshot('available')
     },
+    updateDownloadInstall: async () => {
+      updateInstallRequests += 1
+      updateCancelled = false
+      await emitUpdate({
+        type: 'phase',
+        runId: 'e2e-update',
+        sequence: 5,
+        timestamp: 1_753_441_202_100,
+        phase: 'downloading',
+        cancellable: true,
+        release: UPDATE_RELEASE,
+      })
+      await emitUpdate({
+        type: 'download',
+        runId: 'e2e-update',
+        sequence: 6,
+        timestamp: 1_753_441_202_200,
+        downloadedBytes: UPDATE_RELEASE.size / 2,
+        totalBytes: UPDATE_RELEASE.size,
+        speedBytesPerSecond: 2_048,
+      })
+
+      if (scenario === 'setup-update-cancel') {
+        await new Promise<void>((resolve) => {
+          finishUpdateDownload = resolve
+        })
+        return updateSnapshot('recheck-required', 8)
+      }
+
+      await wait(250)
+      await emitUpdate({
+        type: 'phase',
+        runId: 'e2e-update',
+        sequence: 7,
+        timestamp: 1_753_441_202_300,
+        phase: 'verifying',
+        cancellable: false,
+      })
+      await wait(250)
+      await emitUpdate({
+        type: 'phase',
+        runId: 'e2e-update',
+        sequence: 8,
+        timestamp: 1_753_441_202_400,
+        phase: 'installing',
+        cancellable: false,
+      })
+      await wait(250)
+      updateInstalled = true
+      return updateSnapshot('restart-required', 9)
+    },
+    updateCancel: async () => {
+      updateCancelled = true
+      await emitUpdate({
+        type: 'phase',
+        runId: 'e2e-update',
+        sequence: 7,
+        timestamp: 1_753_441_202_300,
+        phase: 'cancelling',
+        cancellable: false,
+      })
+      finishUpdateDownload?.()
+      finishUpdateDownload = null
+      return true
+    },
+    updateRelaunch: async () => {
+      updateRelaunched = true
+    },
+    onUpdateEvent: async (handler) => {
+      updateHandlers.add(handler)
+      return () => updateHandlers.delete(handler)
+    },
     updateDefer: async () => {
       updateDeferred = true
       return updateSnapshot('deferred')
     },
     gitDetect: async () => ({ root: '/e2e/workspace', branch: 'base', detachedHead: null }),
-    gitStatus: async () => ({
-      entries: [
-        ...(pairVersioned ? [] : [{ path: DEFINITION_PATH, index: ' ', worktree: 'M', untracked: false }]),
-        ...(unrelatedChangePresent
-          ? [{ path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false }]
-          : []),
-      ],
-    }),
+    gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
     gitDiffPair: async () => ({
       working: pairVersioned ? '' : 'diff --git a/workflows/release-demo.yaml b/workflows/release-demo.yaml\n',
       index: '',
@@ -191,12 +292,24 @@ export async function installRuntimeBootstrap(): Promise<void> {
     }),
     gitRetainHistoryAuthorization: async () => undefined,
     gitRetainVersionAuthorization: async () => undefined,
-    gitCreatePairVersion: async () => {
+    gitCreatePairVersion: async (root, definitionPath, companionPath, message, authorizationToken) => {
+      gitVersionRequest = { root, definitionPath, companionPath, message, authorizationToken }
+      if (
+        root !== '/e2e/workspace' ||
+        definitionPath !== DEFINITION_PATH ||
+        companionPath !== COMPANION_PATH ||
+        message !== 'Verify release workflow' ||
+        authorizationToken !== 'e2e-version-authorization'
+      ) {
+        throw new Error('The E2E version request escaped the exact workflow-pair authorization.')
+      }
       pairVersioned = true
+      const pairPaths = new Set([definitionPath, ...(companionPath ? [companionPath] : [])])
+      gitStatusEntries = gitStatusEntries.filter(({ path }) => !pairPaths.has(path))
       return {
         outcome: 'committed',
         oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        status: { entries: [{ path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false }] },
+        status: { entries: gitStatusEntries.map((entry) => ({ ...entry })) },
         warnings: [],
       }
     },
@@ -227,8 +340,9 @@ export async function installRuntimeBootstrap(): Promise<void> {
   setNativeBridgeForTest(bridge)
   window.__WORKFLOW_STUDIO_E2E__ = {
     async snapshot(): Promise<E2EState> {
-      const definition = await bridge.workspaceRead(DEFINITION_PATH)
-      const companion = await bridge.workspaceRead(COMPANION_PATH)
+      const openPair = $documentSession.get().pair
+      const definitionText = openPair?.definition.text ?? (await bridge.workspaceRead(DEFINITION_PATH)).text
+      const companionText = openPair?.companion?.text ?? (await bridge.workspaceRead(COMPANION_PATH)).text
       const workspacePaths = (await bridge.workspaceScan())
         .filter((entry) => entry.kind === 'file')
         .map((entry) => entry.relativePath)
@@ -239,10 +353,16 @@ export async function installRuntimeBootstrap(): Promise<void> {
         updateChecks,
         updateDeferred,
         pairVersioned,
-        unrelatedChangePresent,
+        unrelatedChangePresent: gitStatusEntries.some(({ path }) => path === 'notes/unrelated.txt'),
+        gitVersionRequest,
+        gitStatusEntries: gitStatusEntries.map((entry) => ({ ...entry })),
+        updateInstallRequests,
+        updateCancelled,
+        updateInstalled,
+        updateRelaunched,
         activeBrandId,
-        definitionText: definition.text,
-        companionText: companion.text,
+        definitionText,
+        companionText,
         workspacePaths,
         layout,
       }

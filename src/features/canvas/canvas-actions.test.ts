@@ -240,6 +240,24 @@ describe('canvas YAML actions', () => {
     expect(fixture.commitPositions).toHaveBeenCalledWith({ 'prompt-2': { x: 900, y: 420 } })
   })
 
+  it('uses the contract schema example when a required node field has no default', async () => {
+    const fixture = actionContext()
+    const definitionSchema = structuredClone(contract.definition_schema)
+    const root = definitionSchema as { properties?: Record<string, unknown> }
+    const nodes = root.properties?.nodes as { items?: { properties?: Record<string, unknown> } }
+    if (!nodes.items?.properties) throw new Error('Expected the test node schema.')
+    nodes.items.properties.command = { type: 'string', examples: ['/review'] }
+    const exampleContract = { ...contract, definition_schema: definitionSchema }
+
+    const result = await addNode({ ...fixture.context, contract: exampleContract }, contract.node_kinds[0]!, {
+      viewportCenter: { x: 900, y: 420 },
+    })
+
+    expect(result).toMatchObject({ status: 'committed', nodeId: 'command' })
+    const added = parsedNodes(fixture.current().definition.text).find(({ id }) => id === 'command')
+    expect(added).toEqual({ id: 'command', command: '/review' })
+  })
+
   it('adds after selection to the right with one dependency and one YAML transaction', async () => {
     const fixture = actionContext()
 

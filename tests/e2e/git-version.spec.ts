@@ -12,4 +12,12 @@ test('creates a pair-only local version and preserves an unrelated staged change
   await expect.poll(async () => (await e2eSnapshot(page)).pairVersioned).toBe(true)
   const state = await e2eSnapshot(page)
   expect(state.unrelatedChangePresent).toBe(true)
+  expect(state.gitVersionRequest).toEqual({
+    root: '/e2e/workspace',
+    definitionPath: 'workflows/release-demo.yaml',
+    companionPath: 'workflows/release-demo.hermes.yaml',
+    message: 'Verify release workflow',
+    authorizationToken: 'e2e-version-authorization',
+  })
+  expect(state.gitStatusEntries).toEqual([{ path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false }])
 })

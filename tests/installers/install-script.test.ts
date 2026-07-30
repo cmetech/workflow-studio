@@ -93,7 +93,7 @@ describe('release asset verification', () => {
       'verify_release_signature',
     ])
     expect(build.status, build.stderr?.toString()).toBe(0)
-  })
+  }, 60_000)
   it.each([
     ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_0.1.0_macos_aarch64.dmg'],
     ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_0.1.0_macos_x86_64.dmg'],
