@@ -604,6 +604,16 @@ describe('release workflow contract', () => {
     expect(yaml).toContain('Draft release verified; publish it manually after review.')
   })
 
+  it('distinguishes an absent release from an existing published release', () => {
+    const check = workflow().jobs?.validate?.steps?.find((step) => step.name === 'Check existing release state')?.run
+
+    expect(check).toContain('RELEASE_STATUS=$(gh api --include')
+    expect(check).toContain('if [[ "$RELEASE_STATUS" == "404" ]]')
+    expect(check).toContain('elif [[ "$RELEASE_STATUS" == "200" ]]')
+    expect(check).toContain('Unexpected GitHub release lookup status')
+    expect(check).not.toMatch(/EXISTING_DRAFT=.*\|\| true/)
+  })
+
   it('installs the complete Linux native dependency set before compiling the release verifier', () => {
     const steps = workflow().jobs?.verify?.steps ?? []
     const dependencies = steps.findIndex((step) => step.name === 'Install Linux bundle dependencies')

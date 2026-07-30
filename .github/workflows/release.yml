@@ -76,9 +76,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          EXISTING_DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq .draft 2>/dev/null || true)
-          if [[ -n "$EXISTING_DRAFT" && "$EXISTING_DRAFT" != "true" ]]; then
-            echo "Release $TAG already exists and is not a draft" >&2
+          RELEASE_STATUS=$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" 2>/dev/null \
+            | sed -n '1s/^HTTP\/[^ ]* \([0-9][0-9][0-9]\).*/\1/p' || true)
+          if [[ "$RELEASE_STATUS" == "404" ]]; then
+            : # No release exists yet; the build job may create its draft.
+          elif [[ "$RELEASE_STATUS" == "200" ]]; then
+            EXISTING_DRAFT=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq .draft)
+            if [[ "$EXISTING_DRAFT" != "true" ]]; then
+              echo "Release $TAG already exists and is not a draft" >&2
+              exit 1
+            fi
+          else
+            echo "Unexpected GitHub release lookup status for $TAG: ${RELEASE_STATUS:-missing}" >&2
             exit 1
           fi
 
