@@ -43,6 +43,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
   let nativeRequestGeneration = 0
   let disposed = false
   let activeToken: string | null = null
+  let activeVersionToken: string | null = null
   let disposePromise: Promise<void> | null = null
   let sessionAttempt: HistorySessionAttempt | null = null
   let activeSession: HistorySession | null = null
@@ -59,9 +60,11 @@ export function createGitInspectionController(native: GitNativeBridge) {
     const request = ++generation
     previewGeneration += 1
     const previousToken = activeToken
+    const previousVersionToken = activeVersionToken
     activeToken = null
+    activeVersionToken = null
     if (ownsPublication()) setGitLoading(emptyGitInspection)
-    await revoke(previousToken)
+    await Promise.all([revoke(previousToken), revokeVersion(previousVersionToken)])
     if (!publicationIsCurrent(request)) return
     try {
       const inspection = await inspectGitRepository(native)
@@ -78,19 +81,24 @@ export function createGitInspectionController(native: GitNativeBridge) {
     const request = ++generation
     previewGeneration += 1
     const previousToken = activeToken
+    const previousVersionToken = activeVersionToken
     activeToken = null
+    activeVersionToken = null
     if (ownsPublication()) setGitLoading(emptyGitInspection)
-    await revoke(previousToken)
+    await Promise.all([revoke(previousToken), revokeVersion(previousVersionToken)])
     if (!publicationIsCurrent(request)) return
     try {
       const inspection = await loadPairInspection(pair, request, () => publicationIsCurrent(request), 1)
       if (!inspection) return
       const token = inspection.historyAuthorizationToken ?? null
+      const versionToken = inspection.diff.authorizationToken ?? null
       if (!publicationIsCurrent(request)) {
         await revoke(token)
+        await revokeVersion(versionToken)
         return
       }
       activeToken = token
+      activeVersionToken = versionToken
       setGitInspection(inspection)
     } catch (error: unknown) {
       if (error instanceof InactiveGitControllerError) return
@@ -108,6 +116,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
   ): Promise<GitInspection | null> {
     let session: HistorySession | null = null
     let token: string | null = null
+    let versionToken: string | null = null
     let nativeRequest = 0
     try {
       const inspection = await inspectGitPair(native, pair, async () => {
@@ -118,20 +127,32 @@ export function createGitInspectionController(native: GitNativeBridge) {
         return { controllerEpoch: session.epoch, requestGeneration: nativeRequest }
       })
       token = inspection.historyAuthorizationToken ?? null
+      versionToken = inspection.diff.authorizationToken ?? null
       if (!isCurrent()) {
         await revoke(token)
+        await revokeVersion(versionToken)
+        return null
+      }
+      if (!inspection.repository) return inspection
+      if (!versionToken) throw new Error('The native pair version preview did not return an authorization token.')
+      await native.gitRetainVersionAuthorization(versionToken, session!.epoch, nativeRequest)
+      if (!isCurrent()) {
+        await revoke(token)
+        await revokeVersion(versionToken)
         return null
       }
       if (token) {
         await native.gitRetainHistoryAuthorization(token, session!.epoch, nativeRequest)
         if (!isCurrent()) {
           await revoke(token)
+          await revokeVersion(versionToken)
           return null
         }
       }
       return inspection
     } catch (error: unknown) {
       await revoke(token)
+      await revokeVersion(versionToken)
       if (!isCurrent()) return null
       if (isContextChanged(error) && contextRetries > 0) {
         if (session) await retireHistorySession(session)
@@ -199,16 +220,22 @@ export function createGitInspectionController(native: GitNativeBridge) {
     const inspection = await loadPairInspection(pair, inspectionGeneration, isCurrent, 1)
     if (!inspection) return null
     const token = inspection.historyAuthorizationToken ?? null
-    if (!token || !isCurrent()) {
+    const versionToken = inspection.diff.authorizationToken ?? null
+    if (!token || !versionToken || !isCurrent()) {
       await revoke(token)
+      await revokeVersion(versionToken)
       return null
     }
     const previousToken = activeToken
+    const previousVersionToken = activeVersionToken
     activeToken = token
+    activeVersionToken = versionToken
     setGitInspection(inspection)
     if (previousToken !== token) await revoke(previousToken)
+    if (previousVersionToken !== versionToken) await revokeVersion(previousVersionToken)
     if (!isCurrent()) {
       await revoke(token)
+      await revokeVersion(versionToken)
       return null
     }
     return token
@@ -224,14 +251,26 @@ export function createGitInspectionController(native: GitNativeBridge) {
     }
   }
 
+  async function revokeVersion(token: string | null): Promise<void> {
+    if (!token) return
+    try {
+      await native.gitRevokeVersionAuthorization(token)
+    } catch {
+      // Native preview authorization is bounded and also cleared by workspace/session disposal.
+    }
+  }
+
   return {
     reset(): void {
       const token = activeToken
+      const versionToken = activeVersionToken
       activeToken = null
+      activeVersionToken = null
       generation += 1
       previewGeneration += 1
       if (ownsPublication()) resetGitState()
       void revoke(token)
+      void revokeVersion(versionToken)
     },
     refreshRepository(): Promise<void> {
       return publishRepository()
@@ -274,7 +313,9 @@ export function createGitInspectionController(native: GitNativeBridge) {
       generation += 1
       previewGeneration += 1
       const token = activeToken
+      const versionToken = activeVersionToken
       activeToken = null
+      activeVersionToken = null
       if (activeControllerId === controllerId) {
         activeControllerId = 0
         resetGitState()
@@ -284,6 +325,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
       sessionAttempt = null
       disposePromise = Promise.allSettled([
         revoke(token),
+        revokeVersion(versionToken),
         attempt ? retireSessionAttempt(attempt) : Promise.resolve(),
       ]).then((results) => {
         const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')

@@ -128,8 +128,14 @@ export const tauriBridge: WorkspaceNativeBridge = {
   gitDetect: () => invokeTyped<GitRepository | null>('git_detect'),
   gitBeginHistorySession: () => invokeTyped<number>('git_begin_history_session'),
   gitStatus: (root) => invokeTyped<GitStatus>('git_status', { root }),
-  gitDiffPair: (root, definitionPath, companionPath) =>
-    invokeTyped<GitDiff>('git_diff_pair', { root, definitionPath, companionPath }),
+  gitDiffPair: (root, definitionPath, companionPath, controllerEpoch, requestGeneration) =>
+    invokeTyped<GitDiff>('git_diff_pair', {
+      root,
+      definitionPath,
+      companionPath,
+      controllerEpoch,
+      requestGeneration,
+    }),
   gitHistoryPair: (root, definitionPath, companionPath, controllerEpoch, requestGeneration) =>
     invokeTyped<GitHistoryResult>('git_history_pair', {
       root,
@@ -146,6 +152,14 @@ export const tauriBridge: WorkspaceNativeBridge = {
     }),
   gitRevokeHistoryAuthorization: (authorizationToken) =>
     invokeTyped<void>('git_revoke_history_authorization', { authorizationToken }),
+  gitRetainVersionAuthorization: (authorizationToken, controllerEpoch, requestGeneration) =>
+    invokeTyped<void>('git_retain_version_authorization', {
+      authorizationToken,
+      controllerEpoch,
+      requestGeneration,
+    }),
+  gitRevokeVersionAuthorization: (authorizationToken) =>
+    invokeTyped<void>('git_revoke_version_authorization', { authorizationToken }),
   gitDisposeHistorySession: (controllerEpoch) => invokeTyped<void>('git_dispose_history_session', { controllerEpoch }),
   gitShowPair: (root, oid, authorizationToken, definitionPath, companionPath) =>
     invokeTyped<GitPairSnapshot>('git_show_pair', {

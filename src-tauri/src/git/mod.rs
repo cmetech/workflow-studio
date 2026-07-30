@@ -8,10 +8,12 @@ pub use mutate::{
 };
 use mutate::{
     create_pair_version_with_guard, init_repository_with_guard, move_tracked_path_with_guard,
-    move_tracked_paths_with_guard, preview_pair_version, set_local_identity_with_guard,
+    preview_pair_version_authorized, set_local_identity_with_guard,
 };
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,6 +56,142 @@ pub(crate) struct GitRepositoryMetadata {
     pub(crate) common_dir: PathBuf,
     pub(crate) worktree_identity: Arc<Handle>,
     pub(crate) common_identity: Arc<Handle>,
+}
+
+#[derive(Clone, Debug)]
+struct GitMetadataBinding {
+    metadata: GitRepositoryMetadata,
+    indirection: Option<GitIndirectionBinding>,
+}
+
+#[derive(Clone, Debug)]
+struct GitIndirectionBinding {
+    path: PathBuf,
+    identity: Arc<Handle>,
+    content: Vec<u8>,
+}
+
+impl GitMetadataBinding {
+    fn capture(repository_root: &Path, probe_root: &Path) -> GitResult<Self> {
+        let metadata = detect_repository_metadata(probe_root)?.ok_or_else(|| {
+            GitError::new(
+                "git_repository_unavailable",
+                "Git metadata is no longer available.",
+            )
+        })?;
+        let indirection_path = repository_root.join(".git");
+        let indirection = match fs::symlink_metadata(&indirection_path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let content = read_git_indirection(&indirection_path)?;
+                Some(GitIndirectionBinding {
+                    path: indirection_path,
+                    identity: Arc::new(Handle::from_path(repository_root.join(".git")).map_err(
+                        |_| {
+                            GitError::new(
+                                "git_repository_unavailable",
+                                "The linked-worktree Git indirection could not be identified.",
+                            )
+                        },
+                    )?),
+                    content,
+                })
+            }
+            Ok(metadata) if metadata.file_type().is_dir() => None,
+            Ok(_) => {
+                return Err(GitError::new(
+                    "git_repository_unavailable",
+                    "The repository Git metadata entry has an unsupported type.",
+                ))
+            }
+            Err(_) => {
+                return Err(GitError::new(
+                    "git_repository_unavailable",
+                    "The repository Git metadata entry is unavailable.",
+                ))
+            }
+        };
+        Ok(Self {
+            metadata,
+            indirection,
+        })
+    }
+
+    fn verify(&self, probe_root: &Path) -> GitResult<()> {
+        if Handle::from_path(&self.metadata.worktree_dir).ok().as_ref()
+            != Some(self.metadata.worktree_identity.as_ref())
+            || Handle::from_path(&self.metadata.common_dir).ok().as_ref()
+                != Some(self.metadata.common_identity.as_ref())
+        {
+            return Err(GitError::new(
+                "git_repository_changed",
+                "Git metadata was replaced while the operation was running.",
+            ));
+        }
+        if let Some(indirection) = &self.indirection {
+            if Handle::from_path(&indirection.path).ok().as_ref()
+                != Some(indirection.identity.as_ref())
+                || read_git_indirection(&indirection.path).ok().as_deref()
+                    != Some(indirection.content.as_slice())
+            {
+                return Err(GitError::new(
+                    "git_repository_changed",
+                    "The linked-worktree Git indirection changed while the operation was running.",
+                ));
+            }
+        }
+        let current = detect_repository_metadata(probe_root)?.ok_or_else(|| {
+            GitError::new(
+                "git_repository_changed",
+                "Git metadata is no longer available.",
+            )
+        })?;
+        if current.worktree_dir != self.metadata.worktree_dir
+            || current.common_dir != self.metadata.common_dir
+            || current.worktree_identity.as_ref() != self.metadata.worktree_identity.as_ref()
+            || current.common_identity.as_ref() != self.metadata.common_identity.as_ref()
+        {
+            return Err(GitError::new(
+                "git_repository_changed",
+                "Git metadata changed while the operation was running.",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn read_git_indirection(path: &Path) -> GitResult<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "The linked-worktree Git indirection could not be read.",
+        )
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() > 4096 {
+        return Err(GitError::new(
+            "git_repository_unavailable",
+            "The linked-worktree Git indirection exceeds its safety limit.",
+        ));
+    }
+    let file = File::open(path).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "The linked-worktree Git indirection could not be read.",
+        )
+    })?;
+    let mut content = Vec::new();
+    file.take(4097).read_to_end(&mut content).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "The linked-worktree Git indirection could not be read.",
+        )
+    })?;
+    if content.len() > 4096 {
+        return Err(GitError::new(
+            "git_repository_unavailable",
+            "The linked-worktree Git indirection exceeds its safety limit.",
+        ));
+    }
+    Ok(content)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -117,9 +255,18 @@ struct HistoryAuthorizationState {
 }
 
 #[derive(Default)]
+struct VersionAuthorizationState {
+    active_controller_epoch: Option<u64>,
+    latest_controller_epoch: u64,
+    latest_request_generation: u64,
+    pending: VecDeque<VersionTokenAuthorization>,
+    retained: VecDeque<VersionTokenAuthorization>,
+}
+
+#[derive(Default)]
 pub struct GitState {
     history: Mutex<HistoryAuthorizationState>,
-    version: Mutex<Option<VersionAuthorization>>,
+    version: Mutex<VersionAuthorizationState>,
     context_generation: AtomicU64,
     next_controller_epoch: AtomicU64,
 }
@@ -134,18 +281,101 @@ impl GitState {
             history.retained.clear();
         }
         if let Ok(mut version) = self.version.lock() {
-            *version = None;
+            version.active_controller_epoch = None;
+            version.latest_request_generation = 0;
+            version.pending.clear();
+            version.retained.clear();
         }
     }
 
-    fn issue_version(&self, authorization: VersionAuthorization) -> GitResult<String> {
+    fn begin_version(
+        &self,
+        controller_epoch: u64,
+        request_generation: u64,
+    ) -> GitResult<VersionRequest> {
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        if version.active_controller_epoch != Some(controller_epoch)
+            || request_generation <= version.latest_request_generation
+        {
+            return Err(context_changed(
+                "The selected pair version preview request is no longer current.",
+            ));
+        }
+        version.latest_request_generation = request_generation;
+        version.pending.clear();
+        version.retained.clear();
+        Ok(VersionRequest {
+            controller_epoch,
+            request_generation,
+            context_generation: self.context_generation.load(Ordering::SeqCst),
+        })
+    }
+
+    fn issue_version(
+        &self,
+        request: VersionRequest,
+        authorization: VersionAuthorization,
+    ) -> GitResult<String> {
         let token = history_token()?;
         let mut version = self.version.lock().map_err(|_| state_error())?;
-        *version = Some(VersionAuthorization {
+        if !self.version_request_is_current(&version, request) {
+            return Err(context_changed(
+                "A newer pair version preview completed first.",
+            ));
+        }
+        version.pending.push_back(VersionTokenAuthorization {
             token: token.clone(),
-            ..authorization
+            request,
+            authorization,
         });
+        while version.pending.len() > HISTORY_AUTHORIZATION_LIMIT {
+            version.pending.pop_front();
+        }
         Ok(token)
+    }
+
+    fn retain_version(
+        &self,
+        controller_epoch: u64,
+        request_generation: u64,
+        token: &str,
+    ) -> GitResult<()> {
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        if version.active_controller_epoch != Some(controller_epoch)
+            || version.latest_request_generation != request_generation
+        {
+            return Err(context_changed(
+                "The selected pair version preview is no longer current.",
+            ));
+        }
+        let position = version
+            .pending
+            .iter()
+            .position(|entry| {
+                entry.token == token
+                    && entry.request.controller_epoch == controller_epoch
+                    && entry.request.request_generation == request_generation
+            })
+            .ok_or_else(pair_not_authorized)?;
+        let entry = version
+            .pending
+            .remove(position)
+            .expect("pending version token exists");
+        if !self.version_request_is_current(&version, entry.request) {
+            return Err(context_changed(
+                "The selected pair version preview is no longer current.",
+            ));
+        }
+        version.retained.clear();
+        version.retained.push_back(entry);
+        Ok(())
+    }
+
+    fn revoke_version(&self, token: &str) -> GitResult<()> {
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        version.pending.retain(|entry| entry.token != token);
+        version.retained.retain(|entry| entry.token != token);
+        Ok(())
     }
 
     fn consume_version(
@@ -155,19 +385,35 @@ impl GitState {
         definition_path: &str,
         companion_path: Option<&str>,
     ) -> GitResult<VersionAuthorization> {
-        let authorization = self
-            .version
-            .lock()
-            .map_err(|_| state_error())?
-            .take()
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        let position = version
+            .retained
+            .iter()
+            .position(|entry| {
+                entry.token == token && self.version_request_is_current(&version, entry.request)
+            })
             .ok_or_else(pair_not_authorized)?;
-        if authorization.token != token
-            || !authorization.matches_context(context, definition_path, companion_path)
-        {
+        let authorization = version
+            .retained
+            .remove(position)
+            .expect("retained version token exists")
+            .authorization;
+        if !authorization.matches_context(context, definition_path, companion_path) {
             return Err(pair_not_authorized());
         }
         authorization.binding.verify()?;
+        authorization.base.verify(&context.repository_root)?;
         Ok(authorization)
+    }
+
+    fn version_request_is_current(
+        &self,
+        version: &VersionAuthorizationState,
+        request: VersionRequest,
+    ) -> bool {
+        version.active_controller_epoch == Some(request.controller_epoch)
+            && version.latest_request_generation == request.request_generation
+            && self.context_generation.load(Ordering::SeqCst) == request.context_generation
     }
 
     fn begin_history_session(&self) -> GitResult<u64> {
@@ -188,6 +434,18 @@ impl GitState {
         history.latest_request_generation = 0;
         history.pending.clear();
         history.retained.clear();
+        drop(history);
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        if epoch <= version.latest_controller_epoch {
+            return Err(context_changed(
+                "A newer pair version preview controller session is already active.",
+            ));
+        }
+        version.latest_controller_epoch = epoch;
+        version.active_controller_epoch = Some(epoch);
+        version.latest_request_generation = 0;
+        version.pending.clear();
+        version.retained.clear();
         Ok(())
     }
 
@@ -321,6 +579,14 @@ impl GitState {
             history.pending.clear();
             history.retained.clear();
         }
+        drop(history);
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        if version.active_controller_epoch == Some(controller_epoch) {
+            version.active_controller_epoch = None;
+            version.latest_request_generation = 0;
+            version.pending.clear();
+            version.retained.clear();
+        }
         Ok(())
     }
 
@@ -359,7 +625,6 @@ impl GitState {
 }
 
 struct VersionAuthorization {
-    token: String,
     workspace_root: PathBuf,
     workspace_identity: Arc<Handle>,
     repository_root: PathBuf,
@@ -367,6 +632,7 @@ struct VersionAuthorization {
     definition_path: String,
     companion_path: Option<String>,
     binding: mutate::PairPathBinding,
+    base: mutate::GitBase,
 }
 
 impl VersionAuthorization {
@@ -375,9 +641,9 @@ impl VersionAuthorization {
         definition_path: String,
         companion_path: Option<String>,
         binding: mutate::PairPathBinding,
+        base: mutate::GitBase,
     ) -> Self {
         Self {
-            token: String::new(),
             workspace_root: context.workspace_root.clone(),
             workspace_identity: context.workspace_identity.clone(),
             repository_root: context.repository_root.clone(),
@@ -385,6 +651,7 @@ impl VersionAuthorization {
             definition_path,
             companion_path,
             binding,
+            base,
         }
     }
 
@@ -401,6 +668,19 @@ impl VersionAuthorization {
             && self.definition_path == definition_path
             && self.companion_path.as_deref() == companion_path
     }
+}
+
+#[derive(Clone, Copy)]
+struct VersionRequest {
+    controller_epoch: u64,
+    request_generation: u64,
+    context_generation: u64,
+}
+
+struct VersionTokenAuthorization {
+    token: String,
+    request: VersionRequest,
+    authorization: VersionAuthorization,
 }
 
 #[derive(Clone, Copy)]
@@ -455,6 +735,7 @@ pub(crate) struct AuthorizedGitContext {
     workspace_identity: Arc<Handle>,
     repository_root: PathBuf,
     repository_identity: Arc<Handle>,
+    git_metadata: GitMetadataBinding,
     workspace_prefix: String,
     #[cfg(test)]
     history: Mutex<Option<HistoryAuthorization>>,
@@ -501,6 +782,7 @@ impl AuthorizedGitContext {
                 )
             })
             .and_then(git_relative_path)?;
+        let git_metadata = GitMetadataBinding::capture(&repository_root, &workspace_root)?;
         Ok(Self {
             workspace_identity: Arc::new(Handle::from_path(&workspace_root).map_err(|_| {
                 GitError::new(
@@ -514,6 +796,7 @@ impl AuthorizedGitContext {
                     "The Git repository is no longer available.",
                 )
             })?),
+            git_metadata,
             workspace_root,
             repository_root,
             workspace_prefix,
@@ -543,6 +826,7 @@ impl AuthorizedGitContext {
                 "The selected workspace was replaced while Git was running.",
             ));
         }
+        self.git_metadata.verify(&self.workspace_root)?;
         Ok(())
     }
 
@@ -1189,9 +1473,12 @@ pub fn git_diff_pair(
     root: String,
     definition_path: String,
     companion_path: Option<String>,
+    controller_epoch: u64,
+    request_generation: u64,
     state: State<'_, crate::workspace::WorkspaceState>,
     git_state: State<'_, GitState>,
 ) -> GitResult<GitDiff> {
+    let version_request = git_state.begin_version(controller_epoch, request_generation)?;
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
     let definition = context.translate(&definition_path)?;
@@ -1199,22 +1486,41 @@ pub fn git_diff_pair(
         .as_deref()
         .map(|path| context.translate(path))
         .transpose()?;
-    let (prospective, pair_binding) =
-        preview_pair_version(&context.repository_root, &definition, companion.as_deref())?;
+    let (prospective, pair_binding, base) = preview_pair_version_authorized(
+        &context.repository_root,
+        &definition,
+        companion.as_deref(),
+    )?;
     verify_workspace_binding(&state, &binding)?;
     context.verify()?;
     pair_binding.verify()?;
-    let authorization_token = git_state.issue_version(VersionAuthorization::from_preview(
-        &context,
-        definition,
-        companion,
-        pair_binding,
-    ))?;
+    let authorization_token = git_state.issue_version(
+        version_request,
+        VersionAuthorization::from_preview(&context, definition, companion, pair_binding, base),
+    )?;
     Ok(GitDiff {
         working: prospective,
         index: String::new(),
         authorization_token: Some(authorization_token),
     })
+}
+
+#[tauri::command]
+pub fn git_retain_version_authorization(
+    authorization_token: String,
+    controller_epoch: u64,
+    request_generation: u64,
+    git_state: State<'_, GitState>,
+) -> GitResult<()> {
+    git_state.retain_version(controller_epoch, request_generation, &authorization_token)
+}
+
+#[tauri::command]
+pub fn git_revoke_version_authorization(
+    authorization_token: String,
+    git_state: State<'_, GitState>,
+) -> GitResult<()> {
+    git_state.revoke_version(&authorization_token)
 }
 
 #[tauri::command]
@@ -1367,7 +1673,8 @@ pub fn git_create_pair_version(
         || {
             verify_workspace_binding(&state, &binding)?;
             context.verify()?;
-            authorization.binding.verify()
+            authorization.binding.verify()?;
+            authorization.base.verify(&context.repository_root)
         },
     )?;
     verify_workspace_binding(&state, &binding)?;
@@ -1438,10 +1745,15 @@ pub fn git_move_paths(
         .iter()
         .map(|(source, destination)| (source.as_str(), destination.as_str()))
         .collect::<Vec<_>>();
-    move_tracked_paths_with_guard(&context.repository_root, &borrowed, || {
-        verify_workspace_binding(&state, &binding)?;
-        context.verify()
-    })?;
+    mutate::move_tracked_paths_in_git_dir_with_guard(
+        &context.repository_root,
+        &context.git_metadata.metadata.worktree_dir,
+        &borrowed,
+        || {
+            verify_workspace_binding(&state, &binding)?;
+            context.verify()
+        },
+    )?;
     verify_workspace_binding(&state, &binding)?;
     context.verify()
 }

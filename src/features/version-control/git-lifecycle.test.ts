@@ -18,10 +18,12 @@ function nativeFixture(): GitNativeBridge {
     gitBeginHistorySession: vi.fn(async () => 1),
     gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
     gitStatus: vi.fn(async () => ({ entries: [] })),
-    gitDiffPair: vi.fn(async () => ({ working: '', index: '' })),
+    gitDiffPair: vi.fn(async () => ({ working: '', index: '', authorizationToken: 'default-version-token' })),
     gitHistoryPair: vi.fn(async () => ({ commits: [], authorizationToken: 'default-token' })),
     gitRetainHistoryAuthorization: vi.fn(async () => undefined),
     gitRevokeHistoryAuthorization: vi.fn(async () => undefined),
+    gitRetainVersionAuthorization: vi.fn(async () => undefined),
+    gitRevokeVersionAuthorization: vi.fn(async () => undefined),
     gitDisposeHistorySession: vi.fn(async () => undefined),
     gitShowPair: vi.fn(),
   }
@@ -29,6 +31,29 @@ function nativeFixture(): GitNativeBridge {
 
 describe('Git inspection lifecycle', () => {
   afterEach(resetGitState)
+
+  it('retains the new-fast version preview and revokes an old-slow completion', async () => {
+    const native = nativeFixture()
+    const slow = deferred<{ working: string; index: string; authorizationToken: string }>()
+    vi.mocked(native.gitDiffPair)
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce({ working: 'new diff', index: '', authorizationToken: 'version-new' })
+    vi.mocked(native.gitHistoryPair)
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'history-old' })
+      .mockResolvedValueOnce({ commits: [], authorizationToken: 'history-new' })
+    const controller = createGitInspectionController(native)
+    const oldRefresh = controller.refreshPair({ definitionPath: 'old.yaml', companionPath: null })
+    await vi.waitFor(() => expect(native.gitDiffPair).toHaveBeenCalledTimes(1))
+    await controller.refreshPair({ definitionPath: 'new.yaml', companionPath: null })
+    slow.resolve({ working: 'old diff', index: '', authorizationToken: 'version-old' })
+    await oldRefresh
+
+    expect($gitState.get().inspection.pair?.definitionPath).toBe('new.yaml')
+    expect($gitState.get().inspection.diff.authorizationToken).toBe('version-new')
+    expect(native.gitRetainVersionAuthorization).toHaveBeenCalledWith('version-new', 1, 2)
+    expect(native.gitRetainVersionAuthorization).not.toHaveBeenCalledWith('version-old', 1, 1)
+    expect(native.gitRevokeVersionAuthorization).toHaveBeenCalledWith('version-old')
+  })
 
   it('publishes only the latest historical OID when deferred previews resolve in reverse order', async () => {
     const native = nativeFixture()
@@ -231,6 +256,19 @@ describe('Git inspection lifecycle', () => {
     expect($gitState.get().phase).toBe('idle')
     expect(native.gitBeginHistorySession).not.toHaveBeenCalled()
     expect(native.gitDisposeHistorySession).not.toHaveBeenCalled()
+  })
+
+  it('keeps a selected pair outside Git ready without demanding preview authority', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitDetect).mockResolvedValue(null)
+    const controller = createGitInspectionController(native)
+
+    await controller.refreshPair({ definitionPath: 'flow.yaml', companionPath: null })
+
+    expect($gitState.get().phase).toBe('ready')
+    expect($gitState.get().inspection.repository).toBeNull()
+    expect(native.gitBeginHistorySession).not.toHaveBeenCalled()
+    expect(native.gitRetainVersionAuthorization).not.toHaveBeenCalled()
   })
 
   it('recovers preview authority from the native error returned when an old controller session activates later', async () => {

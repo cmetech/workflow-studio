@@ -11,8 +11,8 @@ use super::runner::{
     run_mutation, run_mutation_with_index, run_read, MutationOperation, ReadOperation,
 };
 use super::{
-    command_error, detect_repository, ensure_success, output_text, pair_paths, status,
-    validate_path, GitError, GitRepository, GitResult, GitStatus,
+    command_error, detect_repository, detect_repository_metadata, ensure_success, output_text,
+    pair_paths, status, validate_path, GitError, GitRepository, GitResult, GitStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -89,20 +89,46 @@ pub fn create_pair_version(
     create_pair_version_with_guard(root, definition_path, companion_path, message, || Ok(()))
 }
 
+#[cfg(test)]
 pub(crate) fn preview_pair_version(
     root: &Path,
     definition_path: &str,
     companion_path: Option<&str>,
 ) -> GitResult<(String, PairPathBinding)> {
+    let (diff, binding, _) =
+        preview_pair_version_authorized(root, definition_path, companion_path)?;
+    Ok((diff, binding))
+}
+
+pub(crate) fn preview_pair_version_authorized(
+    root: &Path,
+    definition_path: &str,
+    companion_path: Option<&str>,
+) -> GitResult<(String, PairPathBinding, GitBase)> {
     let paths = pair_paths(definition_path, companion_path)?;
     let binding = PairPathBinding::capture(root, &paths)?;
+    let base = GitBase::capture(root)?;
     let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
     ensure_success("git_status_failed", &pair_status)?;
     if pair_status.stdout.is_empty() {
         binding.verify()?;
-        return Ok((String::new(), binding));
+        return Ok((String::new(), binding, base));
     }
-    let combined = run_read(root, ReadOperation::HeadDiff { paths: &paths })?;
+    let diff_base = match &base {
+        GitBase::Head(oid) => oid.clone(),
+        GitBase::Unborn => {
+            let empty = run_read(root, ReadOperation::EmptyTree)?;
+            ensure_success("git_preview_failed", &empty)?;
+            output_text(&empty.stdout)?.trim().to_owned()
+        }
+    };
+    let combined = run_read(
+        root,
+        ReadOperation::HeadDiff {
+            base: &diff_base,
+            paths: &paths,
+        },
+    )?;
     let mut diff = if combined.success() {
         output_text(&combined.stdout)?.to_owned()
     } else {
@@ -127,7 +153,51 @@ pub(crate) fn preview_pair_version(
         ));
     }
     binding.verify()?;
-    Ok((diff, binding))
+    base.verify(root)?;
+    Ok((diff, binding, base))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GitBase {
+    Head(String),
+    Unborn,
+}
+
+impl GitBase {
+    pub(crate) fn capture(root: &Path) -> GitResult<Self> {
+        let head = run_read(root, ReadOperation::FullHead)?;
+        if head.success() {
+            let oid = output_text(&head.stdout)?.trim().to_owned();
+            if !(7..=64).contains(&oid.len()) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(GitError::new(
+                    "git_head_unavailable",
+                    "Git returned an invalid HEAD object ID.",
+                ));
+            }
+            Ok(Self::Head(oid))
+        } else {
+            let branch = run_read(root, ReadOperation::Branch)?;
+            if branch.success() && !output_text(&branch.stdout)?.trim().is_empty() {
+                Ok(Self::Unborn)
+            } else {
+                Err(GitError::new(
+                    "git_head_unavailable",
+                    "Repository HEAD could not be resolved as a commit or unborn branch.",
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn verify(&self, root: &Path) -> GitResult<()> {
+        if &Self::capture(root)? == self {
+            Ok(())
+        } else {
+            Err(GitError::new(
+                "git_base_changed",
+                "Repository HEAD changed after the pair version preview.",
+            ))
+        }
+    }
 }
 
 pub(crate) fn create_pair_version_with_guard(
@@ -140,6 +210,8 @@ pub(crate) fn create_pair_version_with_guard(
     let message = required_value(message, "git_message_required", "Enter a version message.")?;
     let paths = pair_paths(definition_path, companion_path)?;
     let path_binding = PairPathBinding::capture(root, &paths)?;
+    before_mutation()?;
+    path_binding.verify()?;
     require_identity(root)?;
     let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
     ensure_success("git_status_failed", &pair_status)?;
@@ -194,11 +266,33 @@ pub fn move_tracked_path(root: &Path, source: &str, destination: &str) -> GitRes
 }
 
 pub fn move_tracked_paths(root: &Path, moves: &[(&str, &str)]) -> GitResult<()> {
-    move_tracked_paths_with_guard(root, moves, || Ok(()))
+    let metadata = detect_repository_metadata(root)?.ok_or_else(|| {
+        GitError::new(
+            "git_repository_unavailable",
+            "Git metadata is no longer available.",
+        )
+    })?;
+    move_tracked_paths_in_git_dir_with_guard(root, &metadata.worktree_dir, moves, || Ok(()))
 }
 
+#[cfg(test)]
 pub(crate) fn move_tracked_paths_with_guard(
     root: &Path,
+    moves: &[(&str, &str)],
+    before_mutation: impl FnMut() -> GitResult<()>,
+) -> GitResult<()> {
+    let metadata = detect_repository_metadata(root)?.ok_or_else(|| {
+        GitError::new(
+            "git_repository_unavailable",
+            "Git metadata is no longer available.",
+        )
+    })?;
+    move_tracked_paths_in_git_dir_with_guard(root, &metadata.worktree_dir, moves, before_mutation)
+}
+
+pub(crate) fn move_tracked_paths_in_git_dir_with_guard(
+    root: &Path,
+    git_dir: &Path,
     moves: &[(&str, &str)],
     mut before_mutation: impl FnMut() -> GitResult<()>,
 ) -> GitResult<()> {
@@ -218,9 +312,6 @@ pub(crate) fn move_tracked_paths_with_guard(
         }
     }
 
-    let git_dir_output = run_read(root, ReadOperation::GitDirectory)?;
-    ensure_success("git_repository_unavailable", &git_dir_output)?;
-    let git_dir = PathBuf::from(output_text(&git_dir_output.stdout)?.trim());
     let index_path = git_dir.join("index");
     let original_index = read_bounded_file(
         &index_path,
@@ -230,7 +321,7 @@ pub(crate) fn move_tracked_paths_with_guard(
         "git_index_too_large",
         "The repository index exceeds the 16 MiB rename safety limit.",
     )?;
-    let temporary_index = temporary_index_path(&git_dir);
+    let temporary_index = temporary_index_path(git_dir);
     let mut temporary = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -269,7 +360,9 @@ pub(crate) fn move_tracked_paths_with_guard(
             completed += 1;
         }
         before_mutation()?;
-        publish_temporary_index(&index_path, &temporary_index, &original_index)
+        publish_temporary_index(&index_path, &temporary_index, &original_index, || {
+            before_mutation()
+        })
     })();
 
     if let Err(error) = operation {
@@ -301,6 +394,7 @@ fn publish_temporary_index(
     index_path: &Path,
     temporary_index: &Path,
     original: &[u8],
+    mut before_publish: impl FnMut() -> GitResult<()>,
 ) -> GitResult<()> {
     let lock_path = index_path.with_extension("lock");
     let result = (|| {
@@ -343,6 +437,7 @@ fn publish_temporary_index(
                 "The updated Git index could not be synchronized.",
             )
         })?;
+        before_publish()?;
         drop(lock);
         fs::rename(&lock_path, index_path).map_err(|_| {
             GitError::new(

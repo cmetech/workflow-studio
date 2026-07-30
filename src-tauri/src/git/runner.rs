@@ -49,8 +49,10 @@ pub(crate) enum ReadOperation<'a> {
         paths: &'a [&'a str],
     },
     HeadDiff {
+        base: &'a str,
         paths: &'a [&'a str],
     },
+    EmptyTree,
     UntrackedDiff {
         path: &'a str,
     },
@@ -490,10 +492,10 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.extend(paths.iter().map(OsString::from));
             values
         }
-        ReadOperation::HeadDiff { paths } => {
+        ReadOperation::HeadDiff { base, paths } => {
             let mut values = strings(&[
                 "diff",
-                "HEAD",
+                base,
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
@@ -502,6 +504,7 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.extend(paths.iter().map(OsString::from));
             values
         }
+        ReadOperation::EmptyTree => strings(&["hash-object", "-t", "tree", "--stdin"]),
         ReadOperation::UntrackedDiff { path } => {
             let mut values = strings(&[
                 "diff",

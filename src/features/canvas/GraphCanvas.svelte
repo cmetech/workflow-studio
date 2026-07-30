@@ -9,7 +9,12 @@
     SvelteFlow,
     type Viewport,
   } from '@xyflow/svelte'
-  import { Copy, Link, Map, Network, Plus, Trash2 } from 'lucide-svelte'
+  import Copy from 'lucide-svelte/icons/copy'
+  import Link from 'lucide-svelte/icons/link'
+  import Map from 'lucide-svelte/icons/map'
+  import Network from 'lucide-svelte/icons/network'
+  import Plus from 'lucide-svelte/icons/plus'
+  import Trash2 from 'lucide-svelte/icons/trash-2'
   import '@xyflow/svelte/dist/style.css'
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand } from '$src/lib/commands/surface'

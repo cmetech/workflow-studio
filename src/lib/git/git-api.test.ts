@@ -10,7 +10,11 @@ function nativeFixture(): GitNativeBridge {
     gitStatus: vi.fn(async () => ({
       entries: [{ path: 'flows/a b.yaml', index: '.', worktree: 'M', untracked: false }],
     })),
-    gitDiffPair: vi.fn(async () => ({ working: 'working diff', index: 'index diff' })),
+    gitDiffPair: vi.fn(async () => ({
+      working: 'working diff',
+      index: 'index diff',
+      authorizationToken: 'version-token',
+    })),
     gitHistoryPair: vi.fn(async () => ({
       authorizationToken: 'history-token',
       commits: [
@@ -25,6 +29,8 @@ function nativeFixture(): GitNativeBridge {
     })),
     gitRetainHistoryAuthorization: vi.fn(async () => undefined),
     gitRevokeHistoryAuthorization: vi.fn(async () => undefined),
+    gitRetainVersionAuthorization: vi.fn(async () => undefined),
+    gitRevokeVersionAuthorization: vi.fn(async () => undefined),
     gitDisposeHistorySession: vi.fn(async () => undefined),
     gitShowPair: vi.fn(async () => ({
       oid: '0123456789abcdef',
@@ -65,7 +71,7 @@ describe('Git inspection API', () => {
     expect(result.history[0]?.subject).toBe('pair update')
     expect(native.gitDetect).toHaveBeenCalledWith()
     expect(native.gitStatus).toHaveBeenCalledWith('/repo')
-    expect(native.gitDiffPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml')
+    expect(native.gitDiffPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml', 7, 11)
     expect(native.gitHistoryPair).toHaveBeenCalledWith('/repo', 'flows/a b.yaml', 'flows/a b.hermes.yaml', 7, 11)
   })
 
@@ -87,6 +93,22 @@ describe('Git inspection API', () => {
     expect(result.history).toEqual([])
     expect(native.gitStatus).not.toHaveBeenCalled()
     expect(native.gitBeginHistorySession).not.toHaveBeenCalled()
+  })
+
+  it('preserves the inspection failure when provisional authority cleanup also fails', async () => {
+    const native = nativeFixture()
+    const previewFailure = new Error('preview failed')
+    vi.mocked(native.gitDiffPair).mockRejectedValue(previewFailure)
+    vi.mocked(native.gitRevokeHistoryAuthorization).mockRejectedValue(new Error('cleanup failed'))
+
+    await expect(
+      inspectGitPair(native, { definitionPath: 'flow.yaml', companionPath: null }, async () => ({
+        controllerEpoch: 1,
+        requestGeneration: 1,
+      })),
+    ).rejects.toBe(previewFailure)
+
+    expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith('history-token')
   })
 
   it('loads a historical pair using the selected validated commit OID', async () => {

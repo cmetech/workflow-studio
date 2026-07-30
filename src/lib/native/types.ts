@@ -107,7 +107,13 @@ export interface GitNativeBridge extends NativeBridge {
   gitBeginHistorySession(): Promise<number>
   gitDetect(): Promise<GitRepository | null>
   gitStatus(root: string): Promise<GitStatus>
-  gitDiffPair(root: string, definitionPath: string, companionPath: string | null): Promise<GitDiff>
+  gitDiffPair(
+    root: string,
+    definitionPath: string,
+    companionPath: string | null,
+    controllerEpoch: number,
+    requestGeneration: number,
+  ): Promise<GitDiff>
   gitHistoryPair(
     root: string,
     definitionPath: string,
@@ -121,6 +127,12 @@ export interface GitNativeBridge extends NativeBridge {
     requestGeneration: number,
   ): Promise<void>
   gitRevokeHistoryAuthorization(authorizationToken: string): Promise<void>
+  gitRetainVersionAuthorization(
+    authorizationToken: string,
+    controllerEpoch: number,
+    requestGeneration: number,
+  ): Promise<void>
+  gitRevokeVersionAuthorization(authorizationToken: string): Promise<void>
   gitDisposeHistorySession(controllerEpoch: number): Promise<void>
   gitShowPair(
     root: string,

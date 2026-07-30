@@ -27,6 +27,21 @@ fn git(root: &Path, arguments: &[&str]) {
     );
 }
 
+fn git_output(root: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(arguments)
+        .output()
+        .expect("git fixture command should start");
+    assert!(
+        output.status.success(),
+        "git fixture command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 fn commit_all(root: &Path, message: &str) {
     git(root, &["add", "--all"]);
     git(root, &["commit", "-m", message]);
@@ -113,6 +128,123 @@ fn pair_move_failure_restores_two_tracked_paths_without_changing_index_or_worktr
 }
 
 #[test]
+fn tracked_pair_move_succeeds_in_main_and_linked_worktrees() {
+    let directory = tempdir().unwrap();
+    let main = directory.path().join("main");
+    let linked = directory.path().join("linked");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-b", "main"]);
+    git(&main, &["config", "user.name", "Workflow Test"]);
+    git(&main, &["config", "user.email", "workflow@example.test"]);
+    for path in ["flow.yaml", "flow.hermes.yaml"] {
+        fs::write(main.join(path), format!("path: {path}\n")).unwrap();
+    }
+    commit_all(&main, "initial pair");
+    git(
+        &main,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+
+    super::mutate::move_tracked_paths(
+        &main,
+        &[
+            ("flow.yaml", "main.yaml"),
+            ("flow.hermes.yaml", "main.hermes.yaml"),
+        ],
+    )
+    .unwrap();
+    assert!(main.join("main.yaml").exists());
+    assert!(main.join("main.hermes.yaml").exists());
+
+    let context = super::AuthorizedGitContext::bind(&linked, &linked).unwrap();
+    super::mutate::move_tracked_paths_in_git_dir_with_guard(
+        &linked,
+        &context.git_metadata.metadata.worktree_dir,
+        &[
+            ("flow.yaml", "linked.yaml"),
+            ("flow.hermes.yaml", "linked.hermes.yaml"),
+        ],
+        || context.verify(),
+    )
+    .unwrap();
+    assert!(linked.join("linked.yaml").exists());
+    assert!(linked.join("linked.hermes.yaml").exists());
+    assert!(git_output(&linked, &["status", "--porcelain"]).contains("linked.yaml"));
+}
+
+#[test]
+fn linked_worktree_metadata_repoint_rolls_back_before_move_and_before_index_publication() {
+    for swap_at in [1, 4] {
+        let directory = tempdir().unwrap();
+        let main = directory.path().join("main");
+        let linked = directory.path().join("linked");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.name", "Workflow Test"]);
+        git(&main, &["config", "user.email", "workflow@example.test"]);
+        fs::write(main.join("flow.yaml"), "name: flow\n").unwrap();
+        fs::write(main.join("flow.hermes.yaml"), "profile: flow\n").unwrap();
+        commit_all(&main, "initial pair");
+        git(
+            &main,
+            &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+        );
+        fs::write(linked.join("flow.yaml"), "name: unstaged\n").unwrap();
+        let context = super::AuthorizedGitContext::bind(&linked, &linked).unwrap();
+        let original_indirection = fs::read(linked.join(".git")).unwrap();
+        let linked_index = context.git_metadata.metadata.worktree_dir.join("index");
+        let main_index = main.join(".git/index");
+        let before_linked_index = fs::read(&linked_index).unwrap();
+        let before_main_index = fs::read(&main_index).unwrap();
+        let mut guard_calls = 0;
+
+        let error = super::mutate::move_tracked_paths_in_git_dir_with_guard(
+            &linked,
+            &context.git_metadata.metadata.worktree_dir,
+            &[
+                ("flow.yaml", "renamed.yaml"),
+                ("flow.hermes.yaml", "renamed.hermes.yaml"),
+            ],
+            || {
+                guard_calls += 1;
+                if guard_calls == swap_at {
+                    fs::write(
+                        linked.join(".git"),
+                        format!("gitdir: {}\n", main.join(".git").display()),
+                    )
+                    .unwrap();
+                }
+                context.verify()
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "git_repository_changed");
+        assert_eq!(fs::read(&linked_index).unwrap(), before_linked_index);
+        assert_eq!(fs::read(&main_index).unwrap(), before_main_index);
+        assert!(linked.join("flow.yaml").exists());
+        assert!(linked.join("flow.hermes.yaml").exists());
+        assert!(!linked.join("renamed.yaml").exists());
+        assert!(!linked.join("renamed.hermes.yaml").exists());
+        assert!(!context
+            .git_metadata
+            .metadata
+            .worktree_dir
+            .join("index.lock")
+            .exists());
+        assert!(fs::read_dir(&context.git_metadata.metadata.worktree_dir)
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("workflow-studio-index-")));
+        fs::write(linked.join(".git"), original_indirection).unwrap();
+        assert!(git_output(&linked, &["status", "--porcelain"]).contains("flow.yaml"));
+    }
+}
+
+#[test]
 fn pair_version_preview_includes_untracked_bytes_and_rejects_in_place_changes() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -138,16 +270,23 @@ fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
     fs::write(root.join("other.yaml"), "name: other\n").unwrap();
     let context = super::AuthorizedGitContext::bind(root, root).unwrap();
     let state = super::GitState::default();
+    state.activate_history_session(1).unwrap();
 
     let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let request = state.begin_version(1, 1).unwrap();
     let token = state
-        .issue_version(super::VersionAuthorization::from_preview(
-            &context,
-            "flow.yaml".to_owned(),
-            None,
-            binding,
-        ))
+        .issue_version(
+            request,
+            super::VersionAuthorization::from_preview(
+                &context,
+                "flow.yaml".to_owned(),
+                None,
+                binding,
+                super::mutate::GitBase::capture(root).unwrap(),
+            ),
+        )
         .unwrap();
+    state.retain_version(1, 1, &token).unwrap();
     assert_eq!(
         state
             .consume_version(&token, &context, "other.yaml", None)
@@ -166,14 +305,20 @@ fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
     );
 
     let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let request = state.begin_version(1, 2).unwrap();
     let token = state
-        .issue_version(super::VersionAuthorization::from_preview(
-            &context,
-            "flow.yaml".to_owned(),
-            None,
-            binding,
-        ))
+        .issue_version(
+            request,
+            super::VersionAuthorization::from_preview(
+                &context,
+                "flow.yaml".to_owned(),
+                None,
+                binding,
+                super::mutate::GitBase::capture(root).unwrap(),
+            ),
+        )
         .unwrap();
+    state.retain_version(1, 2, &token).unwrap();
     fs::rename(root.join("flow.yaml"), root.join("parked.yaml")).unwrap();
     fs::write(root.join("flow.yaml"), "name: replacement\n").unwrap();
     assert_eq!(
@@ -190,14 +335,20 @@ fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
     fs::write(other.path().join("flow.yaml"), "name: other root\n").unwrap();
     let other_context = super::AuthorizedGitContext::bind(other.path(), other.path()).unwrap();
     let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let request = state.begin_version(1, 3).unwrap();
     let token = state
-        .issue_version(super::VersionAuthorization::from_preview(
-            &context,
-            "flow.yaml".to_owned(),
-            None,
-            binding,
-        ))
+        .issue_version(
+            request,
+            super::VersionAuthorization::from_preview(
+                &context,
+                "flow.yaml".to_owned(),
+                None,
+                binding,
+                super::mutate::GitBase::capture(root).unwrap(),
+            ),
+        )
         .unwrap();
+    state.retain_version(1, 3, &token).unwrap();
     assert_eq!(
         state
             .consume_version(&token, &other_context, "flow.yaml", None)
@@ -206,6 +357,111 @@ fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
             .code,
         "git_pair_not_authorized"
     );
+}
+
+#[test]
+fn newer_version_request_retains_the_winner_despite_stale_retain_and_late_issue() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("old.yaml"), "name: old\n").unwrap();
+    fs::write(root.join("new.yaml"), "name: new\n").unwrap();
+    let context = super::AuthorizedGitContext::bind(root, root).unwrap();
+    let state = super::GitState::default();
+    state.activate_history_session(7).unwrap();
+
+    let old_request = state.begin_version(7, 1).unwrap();
+    let (_, old_binding, old_base) =
+        super::mutate::preview_pair_version_authorized(root, "old.yaml", None).unwrap();
+    let old_authorization = super::VersionAuthorization::from_preview(
+        &context,
+        "old.yaml".to_owned(),
+        None,
+        old_binding,
+        old_base,
+    );
+    let old_token = state.issue_version(old_request, old_authorization).unwrap();
+
+    let new_request = state.begin_version(7, 2).unwrap();
+    let (_, new_binding, new_base) =
+        super::mutate::preview_pair_version_authorized(root, "new.yaml", None).unwrap();
+    let new_authorization = super::VersionAuthorization::from_preview(
+        &context,
+        "new.yaml".to_owned(),
+        None,
+        new_binding,
+        new_base,
+    );
+    let new_token = state.issue_version(new_request, new_authorization).unwrap();
+    state.retain_version(7, 2, &new_token).unwrap();
+
+    assert_eq!(
+        state.retain_version(7, 1, &old_token).unwrap_err().code,
+        "git_context_changed"
+    );
+    let (_, late_binding, late_base) =
+        super::mutate::preview_pair_version_authorized(root, "old.yaml", None).unwrap();
+    let late = super::VersionAuthorization::from_preview(
+        &context,
+        "old.yaml".to_owned(),
+        None,
+        late_binding,
+        late_base,
+    );
+    assert_eq!(
+        state.issue_version(old_request, late).unwrap_err().code,
+        "git_context_changed"
+    );
+    assert!(state
+        .consume_version(&new_token, &context, "new.yaml", None)
+        .is_ok());
+    assert_eq!(
+        state
+            .consume_version(&new_token, &context, "new.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[test]
+fn disposing_version_session_revokes_pending_and_retained_authority() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: flow\n").unwrap();
+    let context = super::AuthorizedGitContext::bind(root, root).unwrap();
+    let state = super::GitState::default();
+    state.activate_history_session(9).unwrap();
+    let request = state.begin_version(9, 1).unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let token = state
+        .issue_version(
+            request,
+            super::VersionAuthorization::from_preview(
+                &context,
+                "flow.yaml".to_owned(),
+                None,
+                binding,
+                base,
+            ),
+        )
+        .unwrap();
+    state.retain_version(9, 1, &token).unwrap();
+    state.dispose_history_session(9).unwrap();
+
+    assert_eq!(
+        state
+            .consume_version(&token, &context, "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+    assert!(state.version.lock().unwrap().pending.is_empty());
+    assert!(state.version.lock().unwrap().retained.is_empty());
 }
 
 #[test]
@@ -232,6 +488,159 @@ fn prospective_pair_preview_combines_staged_unstaged_and_deletion_without_unrela
     assert!(diff.contains("profile: original"));
     assert!(!diff.contains("secret changed"));
     assert!(!diff.contains("unrelated.txt"));
+}
+
+#[test]
+fn unborn_pair_preview_recovers_after_rejected_hook_left_intent_to_add_entries() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: unborn\n").unwrap();
+    fs::write(root.join("flow.hermes.yaml"), "profile: unborn\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "leave untracked\n").unwrap();
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\necho rejected >&2\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (first_diff, _) =
+        super::mutate::preview_pair_version(root, "flow.yaml", Some("flow.hermes.yaml")).unwrap();
+    assert!(first_diff.contains("+name: unborn"));
+    assert!(first_diff.contains("+profile: unborn"));
+    assert_eq!(
+        super::mutate::create_pair_version(
+            root,
+            "flow.yaml",
+            Some("flow.hermes.yaml"),
+            "rejected",
+        )
+        .unwrap_err()
+        .code,
+        "git_commit_rejected"
+    );
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .status()
+        .unwrap()
+        .success());
+
+    fs::remove_file(&hook).unwrap();
+    let (retry_diff, _) =
+        super::mutate::preview_pair_version(root, "flow.yaml", Some("flow.hermes.yaml")).unwrap();
+    assert!(retry_diff.contains("+name: unborn"));
+    assert!(retry_diff.contains("+profile: unborn"));
+    let version =
+        super::mutate::create_pair_version(root, "flow.yaml", Some("flow.hermes.yaml"), "retry")
+            .unwrap();
+    assert_eq!(version.oid, git_output(root, &["rev-parse", "HEAD"]).trim());
+    assert_eq!(
+        git_output(root, &["show", "HEAD:flow.yaml"]),
+        "name: unborn\n"
+    );
+    assert!(root.join("unrelated.txt").exists());
+    assert!(!git_output(root, &["status", "--porcelain", "--", "unrelated.txt"]).is_empty());
+}
+
+#[test]
+fn pair_version_rejects_head_advances_before_index_or_commit_mutation() {
+    for advance_pair in [false, true] {
+        let directory = tempdir().unwrap();
+        let root = directory.path();
+        git(root, &["init", "-b", "main"]);
+        git(root, &["config", "user.name", "Workflow Test"]);
+        git(root, &["config", "user.email", "workflow@example.test"]);
+        fs::write(root.join("flow.yaml"), "name: initial\n").unwrap();
+        fs::write(root.join("unrelated.txt"), "initial\n").unwrap();
+        commit_all(root, "initial");
+        fs::write(root.join("flow.yaml"), "name: authorized\n").unwrap();
+        let (_, binding, base) =
+            super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+
+        if advance_pair {
+            git(root, &["add", "flow.yaml"]);
+            git(root, &["commit", "-m", "advance pair"]);
+        } else {
+            fs::write(root.join("unrelated.txt"), "advanced\n").unwrap();
+            git(root, &["add", "unrelated.txt"]);
+            git(root, &["commit", "-m", "advance unrelated"]);
+        }
+        let git_dir = git_output(root, &["rev-parse", "--absolute-git-dir"]);
+        let index_path = Path::new(git_dir.trim()).join("index");
+        let before_index = fs::read(&index_path).unwrap();
+        let before_status =
+            git_output(root, &["status", "--porcelain=v2", "--untracked-files=all"]);
+        let before_pair = fs::read(root.join("flow.yaml")).unwrap();
+
+        let error = super::mutate::create_pair_version_with_guard(
+            root,
+            "flow.yaml",
+            None,
+            "must reject",
+            || {
+                binding.verify()?;
+                base.verify(root)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "git_base_changed");
+        assert_eq!(fs::read(&index_path).unwrap(), before_index);
+        assert_eq!(
+            git_output(root, &["status", "--porcelain=v2", "--untracked-files=all"]),
+            before_status
+        );
+        assert_eq!(fs::read(root.join("flow.yaml")).unwrap(), before_pair);
+    }
+}
+
+#[test]
+fn pair_version_rejects_unborn_to_born_transition_and_accepts_unchanged_head() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: unborn authorized\n").unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    fs::write(root.join("unrelated.txt"), "born\n").unwrap();
+    git(root, &["add", "unrelated.txt"]);
+    git(root, &["commit", "-m", "birth"]);
+    let before_status = git_output(root, &["status", "--porcelain=v2", "--untracked-files=all"]);
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        "flow.yaml",
+        None,
+        "must reject birth",
+        || {
+            binding.verify()?;
+            base.verify(root)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "git_base_changed");
+    assert_eq!(
+        git_output(root, &["status", "--porcelain=v2", "--untracked-files=all"]),
+        before_status
+    );
+
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let version =
+        super::mutate::create_pair_version_with_guard(root, "flow.yaml", None, "same head", || {
+            binding.verify()?;
+            base.verify(root)
+        })
+        .unwrap();
+    assert_eq!(version.oid, git_output(root, &["rev-parse", "HEAD"]).trim());
 }
 
 fn authorization(
