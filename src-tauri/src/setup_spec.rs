@@ -10,8 +10,8 @@ use crate::setup::ResourceScope;
 use crate::setup::{
     atomic_persist_readiness, initialize_setup_status, is_ready, load_remembered_workspace,
     redact_log_line, run_setup, verify_resource_tree, AppDataScope, BoundedSetupLog,
-    IntegrityEntry, IntegrityManifest, SetupEvent, SetupPaths, SetupRunStatus, SetupServices,
-    SetupState,
+    IntegrityEntry, IntegrityManifest, SetupError, SetupEvent, SetupPaths, SetupRunStatus,
+    SetupServices, SetupState,
 };
 
 fn digest(bytes: &[u8]) -> String {
@@ -280,6 +280,10 @@ fn redaction_is_case_insensitive_and_bounds_event_payloads() {
         "https://host/path?[REDACTED]"
     );
     assert_eq!(redact_log_line("ToKeN=ABCDEF"), "ToKeN=[REDACTED]");
+    assert_eq!(
+        redact_log_line("token=first-secret Authorization=second-secret"),
+        "token=[REDACTED]"
+    );
 }
 
 #[test]
@@ -330,6 +334,118 @@ fn setup_runs_real_stages_and_missing_git_is_a_non_blocking_advisory() {
 }
 
 #[test]
+fn setup_sanitizes_external_stage_messages_before_events_snapshots_and_logs() {
+    let app_data = tempdir().unwrap();
+    let (resources, manifest) = resource_fixture();
+    let events = std::sync::Mutex::new(Vec::new());
+    let snapshot = run_setup(
+        &SetupPaths {
+            app_data: app_data.path().to_path_buf(),
+            resource_root: resources.path().to_path_buf(),
+        },
+        "sanitized-stage",
+        "0.1.0",
+        &manifest,
+        &AtomicBool::new(false),
+        &SetupServices::new(|| {
+            Ok(
+                "Authorization=Bearer stage-secret https://example.test/git?token=url-secret"
+                    .to_owned(),
+            )
+        }),
+        &|event| events.lock().unwrap().push(event.clone()),
+    )
+    .unwrap();
+
+    let git_message = snapshot.stages[2].message.as_deref().unwrap();
+    let serialized_events = serde_json::to_string(&*events.lock().unwrap()).unwrap();
+    let serialized_snapshot = serde_json::to_string(&snapshot).unwrap();
+    let saved_log = fs::read_to_string(
+        fs::read_dir(app_data.path().join("setup-logs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+
+    for surface in [&serialized_events, &serialized_snapshot, &saved_log] {
+        assert!(!surface.contains("stage-secret"));
+        assert!(!surface.contains("url-secret"));
+    }
+    assert!(git_message.len() <= 1_024);
+    assert!(saved_log.lines().any(|line| line == git_message));
+}
+
+#[test]
+fn setup_sanitizes_external_failure_once_for_stage_terminal_error_and_log() {
+    let app_data = tempdir().unwrap();
+    let (resources, manifest) = resource_fixture();
+    let events = std::sync::Mutex::new(Vec::new());
+    let result = run_setup(
+        &SetupPaths {
+            app_data: app_data.path().to_path_buf(),
+            resource_root: resources.path().to_path_buf(),
+        },
+        "sanitized-failure",
+        "0.1.0",
+        &manifest,
+        &AtomicBool::new(false),
+        &SetupServices::new(|| Ok("git version 2.50".to_owned())).with_log_registry(|_| {
+            Err(SetupError {
+                code: "setup_registry_failed",
+                message: format!(
+                    "Authorization=Bearer failure-secret https://example.test/setup?token=query-secret {}",
+                    "x".repeat(2_000)
+                ),
+            })
+        }),
+        &|event| events.lock().unwrap().push(event.clone()),
+    );
+
+    let error = result.unwrap_err();
+    let events = events.lock().unwrap();
+    let stage_message = events
+        .iter()
+        .find_map(|event| match event {
+            SetupEvent::Stage {
+                status: crate::setup::SetupStageStatus::Failed,
+                message: Some(message),
+                ..
+            } => Some(message),
+            _ => None,
+        })
+        .unwrap();
+    let terminal_message = events
+        .iter()
+        .find_map(|event| match event {
+            SetupEvent::Failed { message, .. } => Some(message),
+            _ => None,
+        })
+        .unwrap();
+    let serialized_events = serde_json::to_string(&*events).unwrap();
+    let saved_log = fs::read_to_string(
+        fs::read_dir(app_data.path().join("setup-logs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+
+    assert_eq!(stage_message, terminal_message);
+    assert_eq!(terminal_message, &error.message);
+    assert!(error.message.len() <= 1_024);
+    for surface in [&serialized_events, &error.message, &saved_log] {
+        assert!(!surface.contains("failure-secret"));
+        assert!(!surface.contains("query-secret"));
+    }
+    assert!(saved_log.lines().any(|line| line == error.message));
+}
+
+#[test]
 fn readiness_is_atomic_and_keyed_by_schema_and_app_version() {
     let root = tempdir().unwrap();
     atomic_persist_readiness(root.path(), 1, "0.1.0").unwrap();
@@ -365,6 +481,13 @@ fn remembered_workspace_reads_only_app_owned_state_without_granting_capability()
     fs::write(
         app_data.path().join("recent-workspaces-v1.json"),
         "not json",
+    )
+    .unwrap();
+    assert_eq!(load_remembered_workspace(app_data.path()).unwrap(), None);
+
+    fs::write(
+        app_data.path().join("recent-workspaces-v1.json"),
+        [0xff, 0xfe, 0xfd],
     )
     .unwrap();
     assert_eq!(load_remembered_workspace(app_data.path()).unwrap(), None);
@@ -446,6 +569,155 @@ fn cancellation_after_readiness_commit_cannot_disagree_with_terminal_status() {
         events.lock().unwrap().last(),
         Some(SetupEvent::Complete { .. })
     ));
+}
+
+#[test]
+fn setup_cancel_acknowledged_before_readiness_prevents_the_commit() {
+    let app_data = tempdir().unwrap();
+    let app_data_path = app_data.path().to_path_buf();
+    let (resources, manifest) = resource_fixture();
+    let resource_root = resources.path().to_path_buf();
+    let state = SetupState::default();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .claim_active_run("cancel-before-ready", cancellation.clone())
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let worker_state = state.clone();
+    let worker_barrier = barrier.clone();
+    let worker = std::thread::spawn(move || {
+        run_setup(
+            &SetupPaths {
+                app_data: app_data_path,
+                resource_root,
+            },
+            "cancel-before-ready",
+            "0.1.0",
+            &manifest,
+            &cancellation,
+            &SetupServices::new(|| Ok("git version 2.50".to_owned())),
+            &|event| {
+                worker_state.record(event).unwrap();
+                if matches!(
+                    event,
+                    SetupEvent::Stage {
+                        stage_id: "workspace",
+                        status: crate::setup::SetupStageStatus::Succeeded
+                            | crate::setup::SetupStageStatus::Skipped,
+                        ..
+                    }
+                ) {
+                    worker_barrier.wait();
+                    worker_barrier.wait();
+                }
+            },
+        )
+        .unwrap()
+    });
+
+    barrier.wait();
+    assert!(state.cancel("cancel-before-ready").unwrap());
+    barrier.wait();
+    let snapshot = worker.join().unwrap();
+
+    assert_eq!(snapshot.status, SetupRunStatus::Cancelled);
+    assert!(!is_ready(app_data.path(), "0.1.0"));
+}
+
+#[test]
+fn setup_cancel_is_rejected_while_readiness_commit_is_in_progress() {
+    let app_data = tempdir().unwrap();
+    let app_data_path = app_data.path().to_path_buf();
+    let (resources, manifest) = resource_fixture();
+    let resource_root = resources.path().to_path_buf();
+    let state = SetupState::default();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .claim_active_run("cancel-during-ready", cancellation.clone())
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let hook_barrier = barrier.clone();
+    let worker_state = state.clone();
+    let worker = std::thread::spawn(move || {
+        run_setup(
+            &SetupPaths {
+                app_data: app_data_path,
+                resource_root,
+            },
+            "cancel-during-ready",
+            "0.1.0",
+            &manifest,
+            &cancellation,
+            &SetupServices::new(|| Ok("git version 2.50".to_owned())).with_readiness_commit_hook(
+                move || {
+                    hook_barrier.wait();
+                    hook_barrier.wait();
+                },
+            ),
+            &|event| worker_state.record(event).unwrap(),
+        )
+        .unwrap()
+    });
+
+    barrier.wait();
+    assert!(!state.cancel("cancel-during-ready").unwrap());
+    barrier.wait();
+    let snapshot = worker.join().unwrap();
+
+    assert_eq!(snapshot.status, SetupRunStatus::Succeeded);
+    assert!(is_ready(app_data.path(), "0.1.0"));
+}
+
+#[test]
+fn setup_cancel_is_rejected_after_ready_stage_success_before_complete() {
+    let app_data = tempdir().unwrap();
+    let app_data_path = app_data.path().to_path_buf();
+    let (resources, manifest) = resource_fixture();
+    let resource_root = resources.path().to_path_buf();
+    let state = SetupState::default();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .claim_active_run("cancel-after-ready", cancellation.clone())
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let worker_barrier = barrier.clone();
+    let worker_state = state.clone();
+    let worker = std::thread::spawn(move || {
+        run_setup(
+            &SetupPaths {
+                app_data: app_data_path,
+                resource_root,
+            },
+            "cancel-after-ready",
+            "0.1.0",
+            &manifest,
+            &cancellation,
+            &SetupServices::new(|| Ok("git version 2.50".to_owned())),
+            &|event| {
+                worker_state.record(event).unwrap();
+                if matches!(
+                    event,
+                    SetupEvent::Stage {
+                        stage_id: "ready",
+                        status: crate::setup::SetupStageStatus::Succeeded,
+                        ..
+                    }
+                ) {
+                    worker_barrier.wait();
+                    worker_barrier.wait();
+                }
+            },
+        )
+        .unwrap()
+    });
+
+    barrier.wait();
+    assert!(!state.cancel("cancel-after-ready").unwrap());
+    barrier.wait();
+    let snapshot = worker.join().unwrap();
+
+    assert_eq!(snapshot.status, SetupRunStatus::Succeeded);
+    assert!(is_ready(app_data.path(), "0.1.0"));
 }
 
 #[test]

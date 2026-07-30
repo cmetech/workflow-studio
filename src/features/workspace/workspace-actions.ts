@@ -78,6 +78,7 @@ export interface WorkspaceActionsNative {
 
 export interface WorkspaceActionsDependencies {
   readonly native: WorkspaceActionsNative
+  readonly setupReady?: () => boolean
   readonly contracts: readonly AuthoringContract[]
   readonly activeContract?: (profile: WorkflowProfile) => AuthoringContract | undefined
   readonly analyze: (input: {
@@ -129,14 +130,22 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   let rootGeneration = 0
   let rootQueue: Promise<void> = Promise.resolve()
 
+  function requireSetupReady(): void {
+    if (dependencies.setupReady?.() === false) {
+      throw new WorkspaceActionError('setup_not_ready', 'Workspace access is unavailable until setup succeeds.')
+    }
+  }
+
   async function selectRoot(
     rootPath: string,
     generation: number,
     relativePath?: string,
   ): Promise<WorkspaceRootInfo | null> {
+    requireSetupReady()
     let result: WorkspaceRootInfo | null = null
     const operation = rootQueue.then(async () => {
       if (generation !== rootGeneration) return
+      requireSetupReady()
       await dependencies.closeWorkspace()
       if (generation !== rootGeneration) return
       clearWorkspace()
@@ -177,6 +186,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 
   async function openWorkspace(rootPath?: string): Promise<WorkspaceRootInfo | null> {
+    requireSetupReady()
     const generation = ++rootGeneration
     const selectedPath = rootPath ?? (await dependencies.native.chooseWorkspaceFolder())
     if (selectedPath === null || generation !== rootGeneration) return null
@@ -531,12 +541,14 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
   }
 
   async function handleStartupPaths(): Promise<void> {
+    requireSetupReady()
     await Promise.all(
       (await dependencies.native.startupPaths()).map((startup) => handleExternalPath(startup.path, startup)),
     )
   }
 
   async function handleExternalPath(path: string, classified?: StartupPath): Promise<void> {
+    requireSetupReady()
     const isYaml = classified?.kind === 'yaml' || /\.(?:yaml|yml)$/i.test(path)
     if (!isYaml) {
       await openWorkspace(path)

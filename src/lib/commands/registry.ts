@@ -446,7 +446,7 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Open Folder',
     category: 'File',
     defaultBindings: ['Mod+O'],
-    enabled: () => true,
+    enabled: (context) => context.setupReady !== false,
     run: openFolder,
   },
   {
@@ -454,7 +454,7 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Quick Open',
     category: 'File',
     defaultBindings: ['Mod+P'],
-    enabled: () => true,
+    enabled: (context) => context.setupReady !== false,
     run: openQuickOpen,
   },
   {

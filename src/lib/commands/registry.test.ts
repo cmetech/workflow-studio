@@ -174,6 +174,13 @@ describe('command registry', () => {
     expect(executions).toBe(0)
   })
 
+  it('disables workspace-opening commands while setup is not ready', async () => {
+    const blockedContext: CommandContext = { ...globalContext, setupReady: false }
+
+    await expect(executeCommand('workspace.open-folder', blockedContext)).rejects.toBeInstanceOf(CommandDisabledError)
+    await expect(executeCommand('workspace.quick-open', blockedContext)).rejects.toBeInstanceOf(CommandDisabledError)
+  })
+
   it('runs an enabled command with its command context', async () => {
     let receivedContext: CommandContext | undefined
     const registry = registryWith(

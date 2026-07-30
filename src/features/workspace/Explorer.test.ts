@@ -197,9 +197,7 @@ describe('Explorer', () => {
     ])
 
     render(App)
-    await tick()
-
-    expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
+    expect(await screen.findByRole('complementary', { name: 'Workspace panel' })).toContainElement(
       screen.getByRole('tree', { name: 'Workspace workflows' }),
     )
     expect(screen.getByRole('treeitem', { name: 'release.yaml, legacy workflow' })).toBeVisible()

@@ -41,6 +41,8 @@ describe('App setup startup gate', () => {
     const status = deferred<{ ready: boolean; snapshot: null }>()
     const order: string[] = []
     const onWorkspaceChanged = vi.fn(backing.onWorkspaceChanged)
+    const chooseWorkspaceFolder = vi.fn(async () => null)
+    const workspaceSetRoot = vi.fn(backing.workspaceSetRoot)
     setNativeBridgeForTest({
       onSetupEvent: async () => {
         order.push('subscribe')
@@ -51,14 +53,42 @@ describe('App setup startup gate', () => {
         return status.promise
       },
       onWorkspaceChanged,
+      chooseWorkspaceFolder,
+      workspaceSetRoot,
     })
     const { default: App } = await import('./App.svelte')
     const app = render(App)
 
     await vi.waitFor(() => expect(order).toEqual(['subscribe', 'status']))
     expect(onWorkspaceChanged).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).toHaveAttribute(
+      'aria-modal',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Cancel setup' })).toBeDisabled()
+    const openButtons = screen
+      .getAllByText('Open Folder')
+      .map((element) => element.closest('button'))
+      .filter((button): button is HTMLButtonElement => button !== null)
+    expect(openButtons.every((button) => button.hasAttribute('disabled'))).toBe(true)
+    await fireEvent.click(openButtons[0]!)
+    const dropped = Object.assign(new File([''], 'workspace', { type: 'application/octet-stream' }), {
+      path: '/blocked-drop',
+    })
+    await fireEvent.drop(document.querySelector('[aria-label="Open workspace drop zone"]')!, {
+      dataTransfer: { files: [dropped] },
+    })
+    expect(chooseWorkspaceFolder).not.toHaveBeenCalled()
+    expect(workspaceSetRoot).not.toHaveBeenCalled()
+
     status.resolve({ ready: true, snapshot: null })
     await vi.waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledOnce())
+    expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument()
+    expect(
+      screen.getAllByRole('button', { name: 'Open Folder' }).every((button) => !button.hasAttribute('disabled')),
+    ).toBe(true)
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Open Folder' })[0]!)
+    expect(chooseWorkspaceFolder).toHaveBeenCalledOnce()
     app.unmount()
   })
 
@@ -67,7 +97,11 @@ describe('App setup startup gate', () => {
     const retryResult = deferred<ProgressSnapshot>()
     const setupStatus = vi
       .fn()
-      .mockRejectedValueOnce(new Error('Setup status is temporarily unavailable.'))
+      .mockRejectedValueOnce(
+        new Error(
+          'Setup status is temporarily unavailable. Authorization=Bearer ui-secret https://example.test?token=query-secret',
+        ),
+      )
       .mockResolvedValueOnce({ ready: false, snapshot: null })
     const onWorkspaceChanged = vi.fn(backing.onWorkspaceChanged)
     setNativeBridgeForTest({
@@ -81,7 +115,16 @@ describe('App setup startup gate', () => {
 
     const retry = await screen.findByRole('button', { name: 'Retry' })
     expect(screen.getByRole('alert')).toHaveTextContent('Setup status is temporarily unavailable.')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('ui-secret')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('query-secret')
     expect(onWorkspaceChanged).not.toHaveBeenCalled()
+    expect(
+      screen
+        .getAllByText('Open Folder')
+        .map((element) => element.closest('button'))
+        .filter((button): button is HTMLButtonElement => button !== null)
+        .every((button) => button.disabled),
+    ).toBe(true)
 
     await fireEvent.click(retry)
 
@@ -89,6 +132,9 @@ describe('App setup startup gate', () => {
     retryResult.resolve(setupSnapshot({ status: 'succeeded', cancellable: false }))
     await vi.waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledOnce())
     expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument()
+    expect(
+      screen.getAllByRole('button', { name: 'Open Folder' }).every((button) => !button.hasAttribute('disabled')),
+    ).toBe(true)
     app.unmount()
   })
 })

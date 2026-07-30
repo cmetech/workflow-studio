@@ -30,6 +30,7 @@ export type ProgressEvent =
       readonly type: 'stage'
       readonly stageId: ProgressStageId
       readonly status: ProgressStageStatus
+      readonly cancellable?: boolean
       readonly durationMs?: number
       readonly message?: string
     })

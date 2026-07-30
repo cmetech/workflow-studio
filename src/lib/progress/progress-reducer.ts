@@ -60,6 +60,7 @@ export function applyProgressEvent(current: ProgressState | null, event: Progres
       ...current,
       sequence: event.sequence,
       stages,
+      cancellable: event.cancellable ?? current.cancellable,
       currentStageId: event.status === 'running' ? event.stageId : null,
     })
   }

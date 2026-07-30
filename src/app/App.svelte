@@ -120,6 +120,7 @@
 
   const globalContext: CommandContext = {
     surface: 'global',
+    setupReady: false,
     canMutate: false,
     hasSelection: false,
   }
@@ -144,13 +145,14 @@
   const native = getNativeBridge()
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void
-  let setupReady = false
+  let setupReady = $state(false)
   const setupReadiness = new Promise<void>((resolve) => {
     resolveSetupReadiness = resolve
   })
   function markSetupReady(): void {
     if (setupReady) return
     setupReady = true
+    globalContext.setupReady = true
     resolveSetupReadiness()
   }
   const setupController = createSetupController(native, {
@@ -162,6 +164,7 @@
       workspaceError = error instanceof Error ? error.message : 'Application setup could not be completed.'
     },
   })
+  setupProgress = setupController.state()
   const brandController = createBrandController(native)
   const brandState = brandController.state
   const gitController = createGitInspectionController(native)
@@ -294,6 +297,7 @@
   })
   const actions = createWorkspaceActions({
     native,
+    setupReady: () => setupReady,
     contracts: availableContracts,
     activeContract: activeContractForProfile,
     analyze: analyzeCandidateInWorker,
@@ -435,6 +439,7 @@
     const documentCanMutate = Boolean(pair && activeEntry?.readOnly === false)
     return {
       surface,
+      setupReady,
       canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
       canValidate: Boolean(pair),
       hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,
@@ -1103,6 +1108,7 @@
     const intent = $workspaceIntent
     if (intent.revision === 0 || intent.revision === handledIntent) return
     handledIntent = intent.revision
+    if (!setupReady) return
     if (intent.kind === 'open-folder') runWorkspaceOperation(openWorkspace())
     else if (intent.kind === 'quick-open') {
       quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
@@ -1361,7 +1367,12 @@
           newDialogVisible = true
         }}>New Workflow</button
       >
-      <button type="button" class="open-folder" onclick={() => runCommand('workspace.open-folder')}>Open Folder</button>
+      <button
+        type="button"
+        class="open-folder"
+        disabled={!setupReady}
+        onclick={() => setupReady && void runCommand('workspace.open-folder')}>Open Folder</button
+      >
     </div>
   </header>
 
@@ -1515,6 +1526,7 @@
         {#if $workspace.id === null}
           <OpenWorkspace
             {recent}
+            disabled={!setupReady}
             onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
             onDropPath={(path) => runWorkspaceOperation(handleExternalWorkspacePath(path))}
           />

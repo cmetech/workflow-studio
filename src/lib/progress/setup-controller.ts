@@ -21,7 +21,7 @@ export function createSetupController(
   native: SetupNativeBridge,
   callbacks: SetupControllerCallbacks = {},
 ): SetupController {
-  let current: ProgressState | null = null
+  let current: ProgressState | null = initializingState()
   let disposed = false
   let unlisten: (() => void) | null = null
   let reconciling = false
@@ -65,9 +65,8 @@ export function createSetupController(
 
   function publishTransportFailure(error: unknown): void {
     if (disposed) return
-    const message = (error instanceof Error ? error.message : 'Application setup could not be completed.').slice(
-      0,
-      1_024,
+    const message = sanitizeSetupMessage(
+      error instanceof Error ? error.message : 'Application setup could not be completed.',
     )
     const previous = current
     publish(
@@ -181,6 +180,46 @@ export function createSetupController(
       buffered = []
       unlisten?.()
       unlisten = null
+      current = null
     },
   }
+}
+
+function initializingState(): ProgressState {
+  return replaceProgressSnapshot(null, {
+    runId: 'setup-initializing',
+    sequence: 0,
+    startedAt: Date.now(),
+    status: 'running',
+    cancellable: false,
+    currentStageId: 'app-data',
+    stages: [{ id: 'app-data', label: 'Checking setup readiness', status: 'running' }],
+    logs: [],
+    failure: null,
+    savedLogAvailable: false,
+  })!
+}
+
+function sanitizeSetupMessage(input: string): string {
+  const firstLine = input.split(/\r?\n/, 1)[0] ?? ''
+  const lower = firstLine.toLowerCase()
+  if (['prompt:', 'command:', 'nodes:', 'workflow:'].some((marker) => lower.includes(marker))) {
+    return '[workflow content redacted]'
+  }
+  let value = firstLine
+  const query = value.indexOf('?')
+  if (query >= 0 && value.slice(0, query).includes('://')) value = `${value.slice(0, query)}?[REDACTED]`
+  const redactionTarget = value.toLowerCase()
+  const sensitive = ['authorization', 'access_token', 'refresh_token', 'token', 'api_key', 'apikey']
+    .map((key) => ({ key, index: redactionTarget.indexOf(key) }))
+    .filter(({ index }) => index >= 0)
+    .sort((left, right) => left.index - right.index)[0]
+  if (sensitive) {
+    const { index, key } = sensitive
+    const suffix = value.slice(index)
+    const delimiterOffset = suffix.search(/[:=]/)
+    const end = delimiterOffset < 0 ? index + key.length : index + delimiterOffset + 1
+    value = `${value.slice(0, end)}[REDACTED]`
+  }
+  return value.slice(0, 1_024)
 }

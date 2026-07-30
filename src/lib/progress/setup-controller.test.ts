@@ -18,6 +18,28 @@ const snapshot = (overrides: Partial<ProgressSnapshot> = {}): ProgressSnapshot =
 })
 
 describe('setup controller', () => {
+  it('exposes a non-cancellable initializing state while native status is pending and disposes safely', async () => {
+    const status = deferred<{ ready: boolean; snapshot: ProgressSnapshot | null }>()
+    const setupStatus = vi.fn(() => status.promise)
+    const controller = createSetupController(bridge({ setupStatus }))
+
+    expect(controller.state()).toMatchObject({
+      runId: 'setup-initializing',
+      status: 'running',
+      cancellable: false,
+      currentStageId: 'app-data',
+    })
+
+    const starting = controller.start()
+    await vi.waitFor(() => expect(setupStatus).toHaveBeenCalledOnce())
+    expect(controller.state()?.runId).toBe('setup-initializing')
+    controller.dispose()
+    status.resolve({ ready: true, snapshot: null })
+    await starting
+
+    expect(controller.state()).toBeNull()
+  })
+
   it('subscribes before status/start and reconciles an event delivered during start', async () => {
     const order: string[] = []
     let handler: ProgressEventHandler = () => undefined
@@ -153,7 +175,7 @@ describe('setup controller', () => {
   })
 
   it('publishes a bounded retryable failure when initial status cannot be read, then recovers', async () => {
-    const oversized = `status unavailable ${'x'.repeat(2_000)}`
+    const oversized = `status unavailable token=transport-secret Authorization=Bearer auth-secret https://example.test?token=query-secret ${'x'.repeat(2_000)}`
     const setupStatus = vi
       .fn<SetupNativeBridge['setupStatus']>()
       .mockRejectedValueOnce(new Error(oversized))
@@ -167,6 +189,9 @@ describe('setup controller', () => {
     expect(controller.state()?.status).toBe('failed')
     expect(controller.state()?.failure?.message).toContain('status unavailable')
     expect(controller.state()?.failure?.message.length).toBeLessThanOrEqual(1_024)
+    expect(controller.state()?.failure?.message).not.toContain('transport-secret')
+    expect(controller.state()?.failure?.message).not.toContain('auth-secret')
+    expect(controller.state()?.failure?.message).not.toContain('query-secret')
 
     await controller.retry()
 

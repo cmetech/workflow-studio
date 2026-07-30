@@ -23,6 +23,7 @@ const MAX_RESOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_RESOURCE_DEPTH: usize = 16;
 const MAX_RESOURCE_DIRECTORIES: usize = 256;
 const MAX_RESOURCE_ENTRIES: usize = 1_024;
+const MAX_SETUP_MESSAGE_BYTES: usize = 1_024;
 const MAX_LOG_LINE_BYTES: usize = 4 * 1024;
 const MAX_LOG_BYTES: usize = 256 * 1024;
 const MAX_RENDERER_LINES: usize = 500;
@@ -148,6 +149,8 @@ pub enum SetupEvent {
         stage_id: &'static str,
         status: SetupStageStatus,
         #[serde(skip_serializing_if = "Option::is_none")]
+        cancellable: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
@@ -197,10 +200,12 @@ const STAGES: [(&str, &str); 5] = [
 
 type GitProbe = dyn Fn() -> Result<String, String> + Send + Sync;
 type LogRegistry = dyn Fn(Vec<SavedSetupLog>) -> SetupResult<()> + Send + Sync;
+type ReadinessCommitHook = dyn Fn() + Send + Sync;
 
 pub(crate) struct SetupServices {
     git_probe: Box<GitProbe>,
     log_registry: Box<LogRegistry>,
+    readiness_commit_hook: Box<ReadinessCommitHook>,
 }
 
 impl SetupServices {
@@ -208,6 +213,7 @@ impl SetupServices {
         Self {
             git_probe: Box::new(probe),
             log_registry: Box::new(|_| Ok(())),
+            readiness_commit_hook: Box::new(|| {}),
         }
     }
 
@@ -216,6 +222,15 @@ impl SetupServices {
         registry: impl Fn(Vec<SavedSetupLog>) -> SetupResult<()> + Send + Sync + 'static,
     ) -> Self {
         self.log_registry = Box::new(registry);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_readiness_commit_hook(
+        mut self,
+        hook: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.readiness_commit_hook = Box::new(hook);
         self
     }
 }
@@ -287,7 +302,7 @@ impl SetupState {
             .map(|active| active.snapshot.clone()))
     }
 
-    fn record(&self, event: &SetupEvent) -> SetupResult<()> {
+    pub(crate) fn record(&self, event: &SetupEvent) -> SetupResult<()> {
         let mut active = self.lock_active()?;
         let Some(active) = active.as_mut() else {
             return Ok(());
@@ -536,9 +551,9 @@ impl AppDataScope {
                 "The app-owned remembered workspace record changed while it was read.",
             ));
         }
-        let mut text = String::new();
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.take(MAX_RECENT_BYTES + 1)
-            .read_to_string(&mut text)
+            .read_to_end(&mut bytes)
             .map_err(|error| io_error("setup_workspace_record_failed", error))?;
         self.verify()?;
         if !named_file_identity_matches(
@@ -552,7 +567,7 @@ impl AppDataScope {
                 "The app-owned remembered workspace record changed while it was read.",
             ));
         }
-        let records: Vec<RecentWorkspace> = match serde_json::from_str(&text) {
+        let records: Vec<RecentWorkspace> = match serde_json::from_slice(&bytes) {
             Ok(records) => records,
             Err(_) => return Ok(None),
         };
@@ -568,6 +583,7 @@ impl AppDataScope {
         Ok(None)
     }
 
+    #[cfg(test)]
     pub(crate) fn persist_readiness(
         &self,
         schema_version: u32,
@@ -576,7 +592,6 @@ impl AppDataScope {
         self.persist_readiness_impl(schema_version, app_version, || {})
     }
 
-    #[cfg(all(test, unix))]
     pub(crate) fn persist_readiness_with_commit_hook(
         &self,
         schema_version: u32,
@@ -913,23 +928,24 @@ pub(crate) fn redact_log_line(input: &str) -> String {
         }
     }
     let lower = value.to_ascii_lowercase();
-    for key in [
+    let sensitive = [
         "authorization",
         "access_token",
         "refresh_token",
         "token",
         "api_key",
         "apikey",
-    ] {
-        if let Some(index) = lower.find(key) {
-            let end = value[index..]
-                .find([':', '='])
-                .map(|offset| index + offset)
-                .unwrap_or(index + key.len());
-            value.truncate(end + usize::from(end < value.len()));
-            value.push_str("[REDACTED]");
-            break;
-        }
+    ]
+    .into_iter()
+    .filter_map(|key| lower.find(key).map(|index| (index, key)))
+    .min_by_key(|(index, _)| *index);
+    if let Some((index, key)) = sensitive {
+        let end = value[index..]
+            .find([':', '='])
+            .map(|offset| index + offset)
+            .unwrap_or(index + key.len());
+        value.truncate(end + usize::from(end < value.len()));
+        value.push_str("[REDACTED]");
     }
     truncate_utf8(value, MAX_LOG_LINE_BYTES)
 }
@@ -1365,9 +1381,9 @@ pub(crate) fn run_setup(
             "app-data" => (|| {
                 let scope = AppDataScope::bind(&paths.app_data)?;
                 let (created, saved) = scope.create_log(run_id, started_at)?;
+                log = Some(created);
                 let retained = scope.prune_setup_logs(Some(&saved.name))?;
                 (services.log_registry)(retained)?;
-                log = Some(created);
                 app_scope = Some(scope);
                 Ok((
                     SetupStageStatus::Succeeded,
@@ -1411,7 +1427,11 @@ pub(crate) fn run_setup(
                 app_scope
                     .as_ref()
                     .ok_or_else(app_data_changed)?
-                    .persist_readiness(SETUP_SCHEMA_VERSION, app_version)?;
+                    .persist_readiness_with_commit_hook(
+                        SETUP_SCHEMA_VERSION,
+                        app_version,
+                        || (services.readiness_commit_hook)(),
+                    )?;
                 Ok((
                     SetupStageStatus::Succeeded,
                     "Setup readiness was persisted atomically.".to_owned(),
@@ -1420,8 +1440,9 @@ pub(crate) fn run_setup(
             _ => unreachable!(),
         };
         let (status, message) = match outcome {
-            Ok(outcome) => outcome,
+            Ok((status, message)) => (status, sanitize_setup_message(message)),
             Err(error) => {
+                let error = sanitize_setup_error(error);
                 sequence += 1;
                 emit_and_apply(
                     &mut snapshot,
@@ -1538,6 +1559,7 @@ fn apply_event_to_snapshot(snapshot: &mut SetupSnapshot, event: &SetupEvent) {
         SetupEvent::Stage {
             stage_id,
             status,
+            cancellable,
             duration_ms,
             message,
             ..
@@ -1550,6 +1572,9 @@ fn apply_event_to_snapshot(snapshot: &mut SetupSnapshot, event: &SetupEvent) {
                 stage.status = *status;
                 stage.duration_ms = *duration_ms;
                 stage.message.clone_from(message);
+            }
+            if let Some(cancellable) = cancellable {
+                snapshot.cancellable = *cancellable;
             }
             snapshot.current_stage_id = (*status == SetupStageStatus::Running).then_some(*stage_id);
         }
@@ -1657,6 +1682,7 @@ fn stage_event(
         timestamp: now_ms(),
         stage_id,
         status,
+        cancellable: (stage_id == "ready").then_some(false),
         duration_ms,
         message,
     }
@@ -2114,8 +2140,17 @@ fn sync_cap_directory(_directory: &Dir, _code: &'static str) -> SetupResult<()> 
 fn setup_error(code: &'static str, message: impl Into<String>) -> SetupError {
     SetupError {
         code,
-        message: message.into(),
+        message: sanitize_setup_message(message.into()),
     }
+}
+
+fn sanitize_setup_error(mut error: SetupError) -> SetupError {
+    error.message = sanitize_setup_message(error.message);
+    error
+}
+
+fn sanitize_setup_message(message: impl AsRef<str>) -> String {
+    truncate_utf8(redact_log_line(message.as_ref()), MAX_SETUP_MESSAGE_BYTES)
 }
 
 fn io_error(code: &'static str, error: std::io::Error) -> SetupError {

@@ -771,6 +771,9 @@ describe('App canvas authoring composition', () => {
     ])
     try {
       const rendered = render(App)
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument(),
+      )
       await fireEvent.click(screen.getByRole('treeitem', { name: /flow.yaml/i }))
       await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('flow.yaml'))
       const pair = $documentSession.get().pair!

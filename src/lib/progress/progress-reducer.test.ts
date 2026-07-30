@@ -117,6 +117,20 @@ describe('progress reducer', () => {
     expect(state?.progressPercent).toBe(60)
   })
 
+  it('publishes the irreversible ready stage as non-cancellable before completion', () => {
+    const state = applyProgressEvent(applyProgressEvent(null, manifest()), {
+      type: 'stage',
+      runId: 'run-a',
+      sequence: 2,
+      timestamp: 110,
+      stageId: 'ready',
+      status: 'running',
+      cancellable: false,
+    })
+
+    expect(state).toMatchObject({ status: 'running', cancellable: false, currentStageId: 'ready' })
+  })
+
   it('keeps only the newest 500 renderer log lines', () => {
     let state = applyProgressEvent(null, manifest())
     for (let index = 0; index < 503; index += 1) {

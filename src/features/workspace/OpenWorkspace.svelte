@@ -3,14 +3,16 @@
 
   interface Props {
     recent?: readonly RecentWorkspace[]
+    disabled?: boolean
     onOpen?: (rootPath?: string) => void | Promise<void>
     onDropPath?: (path: string) => void | Promise<void>
   }
 
-  let { recent = [], onOpen, onDropPath }: Props = $props()
+  let { recent = [], disabled = false, onOpen, onDropPath }: Props = $props()
 
   function droppedPath(event: DragEvent): string | null {
     event.preventDefault()
+    if (disabled) return null
     const first = event.dataTransfer?.files[0] as (File & { path?: string }) | undefined
     return first?.path ?? null
   }
@@ -29,7 +31,7 @@
     <p class="eyebrow">LOCAL WORKFLOWS</p>
     <h2 id="open-workspace-heading">Open a workspace folder</h2>
     <p>Choose or drop a folder. Workflow Studio keeps YAML as the only workflow authority.</p>
-    <button type="button" onclick={() => void onOpen?.(undefined)}>Open Folder</button>
+    <button type="button" {disabled} onclick={() => !disabled && void onOpen?.(undefined)}>Open Folder</button>
   </div>
 
   {#if recent.length > 0}
@@ -38,9 +40,9 @@
       {#each recent as item (item.rootPath)}
         <button
           type="button"
-          disabled={!item.available}
+          disabled={disabled || !item.available}
           aria-label={`${item.rootPath}${item.available ? '' : ' unavailable'}`}
-          onclick={() => void onOpen?.(item.rootPath)}
+          onclick={() => !disabled && void onOpen?.(item.rootPath)}
         >
           <span>{item.rootPath}</span>
           <small>{item.available ? 'Open' : 'Unavailable'}</small>

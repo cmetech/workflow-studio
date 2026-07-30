@@ -210,9 +210,10 @@ describe('workspace actions', () => {
     recoverDraft = vi.fn<(pair: WorkflowPairText) => Promise<void>>(async () => undefined)
   })
 
-  function actions() {
+  function actions(setupReady?: () => boolean) {
     return createWorkspaceActions({
       native,
+      ...(setupReady ? { setupReady } : {}),
       contracts: [contract],
       analyze: vi.fn(async () => validAnalysis()),
       activate,
@@ -228,6 +229,25 @@ describe('workspace actions', () => {
       now: () => '2026-07-25T12:00:00.000Z',
     })
   }
+
+  it('blocks every workspace authority path until setup succeeds without invoking native grants', async () => {
+    let ready = false
+    const api = actions(() => ready)
+
+    await expect(api.openWorkspace()).rejects.toMatchObject({ code: 'setup_not_ready' })
+    await expect(api.handleExternalPath('/blocked')).rejects.toMatchObject({ code: 'setup_not_ready' })
+    await expect(api.handleExternalPath('/blocked.yaml')).rejects.toMatchObject({ code: 'setup_not_ready' })
+    await expect(api.handleStartupPaths()).rejects.toMatchObject({ code: 'setup_not_ready' })
+
+    expect(native.chooseWorkspaceFolder).not.toHaveBeenCalled()
+    expect(native.workspaceSetRoot).not.toHaveBeenCalled()
+    expect(native.startupPaths).not.toHaveBeenCalled()
+
+    ready = true
+    await expect(api.openWorkspace()).resolves.toMatchObject({ rootPath: '/selected' })
+    expect(native.chooseWorkspaceFolder).toHaveBeenCalledOnce()
+    expect(native.workspaceSetRoot).toHaveBeenCalledWith('/selected')
+  })
 
   it('changes the scoped root only after selection and leaves it unchanged when cancelled', async () => {
     const api = actions()

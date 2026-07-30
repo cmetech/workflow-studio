@@ -79,6 +79,12 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
   }
 }
 
+async function waitForSetupReady(): Promise<void> {
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument()
+  })
+}
+
 describe('App', () => {
   it('mounts runtime brand management in Settings', async () => {
     showActivity('settings')
@@ -274,8 +280,9 @@ describe('App', () => {
     document.documentElement.removeAttribute('style')
   })
 
-  it('offers a workspace action without requiring Hermes', () => {
+  it('offers a workspace action without requiring Hermes', async () => {
     const { container } = render(App)
+    await waitForSetupReady()
     expect(screen.getByRole('heading', { name: 'LOOP24 Workflow Studio' })).toBeVisible()
     expect(container.querySelector('.brand-lockup img')).toHaveAttribute('alt', '')
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
@@ -427,6 +434,7 @@ describe('App', () => {
     contractResolverTestState.missingActiveProfile = 'archon-2026-07'
     setNativeBridgeForTest({ contractCacheLoad: async () => [await cachedArchonEntry()] })
     render(App)
+    await waitForSetupReady()
 
     const openDialog = screen.getByRole('button', { name: 'New Workflow' })
     await waitFor(() => expect(openDialog).toBeEnabled())
@@ -442,6 +450,7 @@ describe('App', () => {
     setNativeBridgeForTest({ contractCacheLoad: async () => [await cachedArchonEntry()] })
     loadWorkspaceEntries('ambiguous-contracts', 'Ambiguous contracts', [])
     render(App)
+    await waitForSetupReady()
 
     const importButton = screen.getByRole('button', { name: 'Import' })
     await waitFor(() => expect(importButton).toBeEnabled())
@@ -490,6 +499,7 @@ describe('App', () => {
       { relativePath: 'examples/hello.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
     ])
     render(App)
+    await waitForSetupReady()
     await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
 
     await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('examples/hello.yaml'))
@@ -501,6 +511,7 @@ describe('App', () => {
       { relativePath: 'examples/hello.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
     ])
     render(App)
+    await waitForSetupReady()
     await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
     await waitFor(() => expect($documentSession.get().pair).not.toBeNull())
     const activePair = $documentSession.get().pair
@@ -547,15 +558,17 @@ describe('App', () => {
       missingChange: { kind: 'remove', paths: ['flow.yaml'], dirty: true },
     })
     render(App)
+    await waitForSetupReady()
 
     expect(screen.getByText(/unsaved workflow file missing after external remove: flow.yaml/i)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Keep Mine / Recreate' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Close and Recover Later' })).toBeEnabled()
   })
 
-  it('keeps the Explorer header and import affordance visible for an opened empty workspace', () => {
+  it('keeps the Explorer header and import affordance visible for an opened empty workspace', async () => {
     loadWorkspaceEntries('empty', 'Empty', [])
     render(App)
+    await waitForSetupReady()
 
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
       screen.getByRole('heading', { name: 'Explorer' }),
@@ -576,6 +589,7 @@ describe('App', () => {
       },
     ])
     render(App)
+    await waitForSetupReady()
 
     await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /readonly.yaml, legacy workflow, read only/i }))
     expect(screen.getByRole('menuitem', { name: 'Open' })).toBeEnabled()
@@ -585,6 +599,7 @@ describe('App', () => {
 
   it('renders the approved five-region workbench and updates the active activity accessibly', async () => {
     render(App)
+    await waitForSetupReady()
 
     expect(screen.getByRole('navigation', { name: 'Activities' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
@@ -619,6 +634,7 @@ describe('App', () => {
       },
     })
     render(App)
+    await waitForSetupReady()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Git' }))
 
@@ -632,6 +648,7 @@ describe('App', () => {
 
   it('uses an accessible button group to select the editor mode', async () => {
     render(App)
+    await waitForSetupReady()
 
     expect(screen.getByRole('group', { name: 'Editor mode' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Visual' })).toHaveAttribute('aria-pressed', 'true')
@@ -662,6 +679,7 @@ describe('App', () => {
       )
     }
     render(App, { props: { commandSurface: registry } } as never)
+    await waitForSetupReady()
 
     const split = screen.getByRole('button', { name: 'Registry Split' })
     const sourceMode = screen.getByRole('button', { name: 'Registry Source' })
@@ -688,7 +706,7 @@ describe('App', () => {
     expect(screen.getByRole('combobox', { name: 'Search commands' })).toHaveFocus()
   })
 
-  it('renders the current valid YAML projection in the visual canvas without replacing the document session', () => {
+  it('renders the current valid YAML projection in the visual canvas without replacing the document session', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [
       { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
     ])
@@ -747,6 +765,7 @@ describe('App', () => {
     const before = $documentSession.get().pair
 
     render(App)
+    await waitForSetupReady()
 
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
@@ -809,6 +828,7 @@ describe('App', () => {
       updatedAt: '2026-07-25T00:00:00.000Z',
     })
     render(App)
+    await waitForSetupReady()
 
     const graph = screen.getByRole('region', { name: 'Workflow graph' })
     await fireEvent.click(screen.getByRole('button', { name: 'YAML' }))
@@ -891,6 +911,7 @@ describe('App', () => {
     })
     showEditorMode('visual')
     render(App)
+    await waitForSetupReady()
 
     await fireEvent.click(screen.getByRole('button', { name: /add at least one node/i }))
     await tick()
@@ -927,7 +948,7 @@ describe('App', () => {
     )
     showEditorMode('yaml')
     render(App)
-    await tick()
+    await waitForSetupReady()
     const view = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'Definition YAML' }))!
     view.dispatch({ changes: { from: 6, to: 10, insert: 'Release' } })
     const release = $documentSession.get().pair!
@@ -969,9 +990,10 @@ describe('App', () => {
     unsubscribe()
   })
 
-  it('applies the selected light theme across the shell chrome', () => {
+  it('applies the selected light theme across the shell chrome', async () => {
     applyBrandTheme(loadBundledBrand(), 'light')
     render(App)
+    await waitForSetupReady()
 
     expect(document.documentElement.style.getPropertyValue('--color-yaml-gutter')).toBe('#ECE8D7')
     expect(document.documentElement.style.getPropertyValue('--color-node-selected')).toBe('#FFF4B8')
