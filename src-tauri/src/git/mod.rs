@@ -8,7 +8,7 @@ pub use mutate::{
 };
 use mutate::{
     create_pair_version_with_guard, init_repository_with_guard, move_tracked_path_with_guard,
-    preview_pair_version_authorized, set_local_identity_with_guard,
+    preview_pair_version_authorized_with_binding, set_local_identity_with_guard,
 };
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -1486,10 +1486,19 @@ pub fn git_diff_pair(
         .as_deref()
         .map(|path| context.translate(path))
         .transpose()?;
-    let (prospective, pair_binding, base) = preview_pair_version_authorized(
+    let workspace_paths = pair_paths(&definition_path, companion_path.as_deref())?;
+    let base = mutate::GitBase::capture(&context.repository_root)?;
+    let pair_binding = mutate::PairPathBinding::capture_in_workspace(
+        &context.repository_root,
+        &context.workspace_root,
+        &workspace_paths,
+    )?;
+    let (prospective, pair_binding, base) = preview_pair_version_authorized_with_binding(
         &context.repository_root,
         &definition,
         companion.as_deref(),
+        pair_binding,
+        base,
     )?;
     verify_workspace_binding(&state, &binding)?;
     context.verify()?;

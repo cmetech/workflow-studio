@@ -422,6 +422,349 @@ fn pair_version_preview_includes_untracked_bytes_and_rejects_in_place_changes() 
     assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
 }
 
+#[cfg(unix)]
+#[test]
+fn pair_version_rejects_chmod_after_the_authorized_preview() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    git(root, &["config", "core.fileMode", "true"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    let mut permissions = fs::metadata(root.join("flow.yaml")).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(root.join("flow.yaml"), permissions).unwrap();
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            binding.verify()?;
+            base.verify(root)
+        },
+    )
+    .err()
+    .expect("chmod after preview must invalidate pair authorization");
+
+    assert_eq!(error.code, "git_pair_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn pair_version_rejects_chmod_performed_by_a_commit_hook() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    git(root, &["config", "core.fileMode", "true"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nchmod +x flow.yaml\n").unwrap();
+    let mut hook_permissions = fs::metadata(&hook).unwrap().permissions();
+    hook_permissions.set_mode(0o755);
+    fs::set_permissions(&hook, hook_permissions).unwrap();
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            binding.verify()?;
+            base.verify(root)
+        },
+    )
+    .err()
+    .expect("hook chmod must invalidate the accepted pair entry");
+
+    assert_eq!(error.code, "git_pair_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn authorized_pair_rejects_core_filemode_drift_before_candidate_staging() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    git(root, &["config", "core.fileMode", "false"]);
+    let mut permissions = fs::metadata(root.join("flow.yaml")).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(root.join("flow.yaml"), permissions).unwrap();
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    git(root, &["config", "core.fileMode", "true"]);
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            binding.verify()?;
+            base.verify(root)
+        },
+    )
+    .err()
+    .expect("effective Git mode semantics changed after authorization");
+
+    assert_eq!(error.code, "git_pair_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn safe_symlink_binding_tracks_link_and_target_identity_but_not_target_content() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::create_dir(root.join("targets")).unwrap();
+    fs::write(root.join("targets/one.yaml"), "name: one\n").unwrap();
+    symlink("targets/one.yaml", root.join("flow.yaml")).unwrap();
+    let binding = super::mutate::PairPathBinding::capture(root, &["flow.yaml"]).unwrap();
+
+    fs::write(root.join("targets/one.yaml"), "name: edited in place\n").unwrap();
+    binding
+        .verify()
+        .expect("Git symlink entries do not include resolved target content");
+
+    fs::remove_file(root.join("flow.yaml")).unwrap();
+    symlink("targets/one.yaml", root.join("flow.yaml")).unwrap();
+    assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
+
+    let binding = super::mutate::PairPathBinding::capture(root, &["flow.yaml"]).unwrap();
+    fs::remove_file(root.join("targets/one.yaml")).unwrap();
+    fs::write(root.join("targets/one.yaml"), "name: replacement\n").unwrap();
+    assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
+}
+
+#[test]
+fn pair_binding_rejects_a_replaced_capability_root_even_with_the_same_file_inode() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: retained\n").unwrap();
+    let binding = super::mutate::PairPathBinding::capture(&root, &["flow.yaml"]).unwrap();
+
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::hard_link(parked.join("flow.yaml"), root.join("flow.yaml")).unwrap();
+
+    assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
+}
+
+#[cfg(unix)]
+#[test]
+fn untracked_safe_symlink_preview_uses_link_mode_and_target_bytes() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::create_dir(root.join("targets")).unwrap();
+    fs::write(
+        root.join("targets/definition.yaml"),
+        "name: resolved target\n",
+    )
+    .unwrap();
+    symlink("targets/definition.yaml", root.join("flow.yaml")).unwrap();
+
+    let (diff, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+
+    assert!(diff.contains("new file mode 120000"));
+    assert!(diff.contains("+targets/definition.yaml"));
+    assert!(!diff.contains("+name: resolved target"));
+    binding.verify().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_binding_rejects_escape_directory_broken_and_nested_workspace_escape() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let workspace = root.join("workspace");
+    let outside = tempdir().unwrap();
+    fs::create_dir(&workspace).unwrap();
+    fs::write(root.join("elsewhere.yaml"), "name: elsewhere\n").unwrap();
+    fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
+    git(root, &["init", "-b", "main"]);
+
+    symlink("../elsewhere.yaml", workspace.join("flow.yaml")).unwrap();
+    assert_eq!(
+        super::mutate::PairPathBinding::capture_in_workspace(root, &workspace, &["flow.yaml"],)
+            .err()
+            .expect("a link outside the selected nested workspace must reject")
+            .code,
+        "git_pair_unavailable"
+    );
+    fs::remove_file(workspace.join("flow.yaml")).unwrap();
+
+    for target in [
+        outside.path().join("outside.yaml"),
+        workspace.join("missing.yaml"),
+        workspace.clone(),
+    ] {
+        symlink(&target, workspace.join("flow.yaml")).unwrap();
+        assert_eq!(
+            super::mutate::PairPathBinding::capture_in_workspace(root, &workspace, &["flow.yaml"],)
+                .err()
+                .expect("unsafe, broken, and directory links must reject")
+                .code,
+            "git_pair_unavailable"
+        );
+        fs::remove_file(workspace.join("flow.yaml")).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn authorized_pair_rejects_a_safe_symlink_swapped_to_escape_before_staging() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let outside = tempdir().unwrap();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("target.yaml"), "name: contained\n").unwrap();
+    fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
+    symlink("target.yaml", root.join("flow.yaml")).unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_index = fs::read(root.join(".git/index")).ok();
+    fs::remove_file(root.join("flow.yaml")).unwrap();
+    symlink(outside.path().join("outside.yaml"), root.join("flow.yaml")).unwrap();
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || binding.verify(),
+    )
+    .err()
+    .expect("unsafe replacement must reject before candidate staging");
+
+    assert_eq!(error.code, "git_pair_unavailable");
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(fs::read(root.join(".git/index")).ok(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn candidate_staging_never_hashes_a_path_swapped_through_an_escaping_parent_link() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    let outside = tempdir().unwrap();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::create_dir(root.join("flows")).unwrap();
+    fs::write(root.join("flows/flow.yaml"), "name: accepted inside\n").unwrap();
+    fs::write(
+        outside.path().join("flow.yaml"),
+        "name: must never be hashed\n",
+    )
+    .unwrap();
+    let outside_oid = git_output(
+        outside.path(),
+        &[
+            "hash-object",
+            outside.path().join("flow.yaml").to_str().unwrap(),
+        ],
+    );
+    let base = super::mutate::GitBase::capture(root).unwrap();
+
+    let error = super::mutate::create_pair_version_with_stage_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flows/flow.yaml",
+        None,
+        "version",
+        || {
+            fs::rename(root.join("flows"), root.join("accepted-flows")).unwrap();
+            symlink(outside.path(), root.join("flows")).unwrap();
+            Ok(())
+        },
+    )
+    .err()
+    .expect("the swapped path must reject before publication");
+
+    assert!(!error.code.is_empty());
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-e", outside_oid.trim()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .status()
+        .unwrap()
+        .success());
+}
+
 #[test]
 fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
     let directory = tempdir().unwrap();
@@ -867,6 +1210,203 @@ fn ref_update_failure_is_classified_from_the_exact_bound_ref() {
 }
 
 #[test]
+fn normalized_index_lock_observes_a_publisher_immediately_before_acquisition() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("unrelated.txt"), "newly staged\n").unwrap();
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+
+    let error = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || {
+            git(root, &["add", "unrelated.txt"]);
+            Ok(())
+        },
+        || Ok(()),
+    )
+    .err()
+    .expect("a publisher before lock acquisition must invalidate the captured index");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert!(git_output(root, &["diff", "--cached", "--name-only"]).contains("unrelated.txt"));
+    assert!(!root.join(".git/index.lock").exists());
+}
+
+#[test]
+fn normalized_index_lock_blocks_a_publisher_after_acquisition() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("unrelated.txt"), "must remain unstaged\n").unwrap();
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+    let mut publisher_was_blocked = false;
+
+    let prepared = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || Ok(()),
+        || {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["add", "unrelated.txt"])
+                .output()
+                .unwrap();
+            publisher_was_blocked = !output.status.success();
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(publisher_was_blocked);
+    assert_eq!(fs::read(&index_path).unwrap(), original);
+    assert!(root.join(".git/index.lock").exists());
+    drop(prepared);
+    assert!(!root.join(".git/index.lock").exists());
+    assert!(git_output(root, &["diff", "--cached", "--name-only"]).is_empty());
+}
+
+#[test]
+fn normalized_index_lock_preserves_contended_locks_it_does_not_own() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    git(root, &["add", "flow.yaml"]);
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+    let lock_path = root.join(".git/index.lock");
+    fs::write(&lock_path, b"other publisher").unwrap();
+
+    let error = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || Ok(()),
+        || panic!("a contended lock must never run the held-lock hook"),
+    )
+    .err()
+    .expect("an index lock owned by another publisher must reject publication");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(fs::read(&lock_path).unwrap(), b"other publisher");
+}
+
+#[test]
+fn pair_version_rejects_a_real_index_publish_immediately_before_its_lock() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "newly staged\n").unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(root).unwrap();
+
+    let error = super::mutate::create_pair_version_with_index_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            git(root, &["add", "unrelated.txt"]);
+            Ok(())
+        },
+        || Ok(()),
+    )
+    .err()
+    .expect("a newer real index must reject pair version publication");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert!(git_output(root, &["diff", "--cached", "--name-only"]).contains("unrelated.txt"));
+    assert!(!root.join(".git/index.lock").exists());
+}
+
+#[test]
+fn linked_pair_version_holds_only_its_bound_index_lock_before_ref_publication() {
+    let directory = tempdir().unwrap();
+    let main = directory.path().join("main");
+    let linked = directory.path().join("linked");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-b", "main"]);
+    git(&main, &["config", "user.name", "Workflow Test"]);
+    git(&main, &["config", "user.email", "workflow@example.test"]);
+    fs::write(main.join("flow.yaml"), "name: base\n").unwrap();
+    fs::write(main.join("unrelated.txt"), "base\n").unwrap();
+    commit_all(&main, "base");
+    git(
+        &main,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    fs::write(linked.join("flow.yaml"), "name: accepted\n").unwrap();
+    fs::write(linked.join("unrelated.txt"), "must remain unstaged\n").unwrap();
+    let metadata = super::detect_repository_metadata(&linked)
+        .unwrap()
+        .expect("linked repository metadata");
+    let linked_index = metadata.worktree_dir.join("index");
+    let main_index = main.join(".git/index");
+    let before_main_index = fs::read(&main_index).unwrap();
+    let before_head = git_output(&linked, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(&linked).unwrap();
+    let mut publisher_was_blocked = false;
+
+    let version = super::mutate::create_pair_version_with_index_interleave_for_test(
+        &linked,
+        &metadata.worktree_dir,
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || Ok(()),
+        || {
+            assert!(linked_index.with_extension("lock").exists());
+            assert!(!main_index.with_extension("lock").exists());
+            assert_eq!(git_output(&linked, &["rev-parse", "HEAD"]), before_head);
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&linked)
+                .args(["add", "unrelated.txt"])
+                .output()
+                .unwrap();
+            publisher_was_blocked = !output.status.success();
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(publisher_was_blocked);
+    assert!(version.committed_oid().is_some());
+    assert_ne!(git_output(&linked, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&main_index).unwrap(), before_main_index);
+    assert!(!linked_index.with_extension("lock").exists());
+    assert!(git_output(&linked, &["diff", "--cached", "--name-only"]).is_empty());
+    assert!(git_output(&linked, &["diff", "--name-only"]).contains("unrelated.txt"));
+}
+
+#[test]
 fn post_publication_guard_failure_returns_committed_with_warning() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -982,6 +1522,30 @@ fn rejects_malformed_or_non_ascii_porcelain_status_bytes_without_panicking() {
         assert!(result.is_ok(), "malformed porcelain must never panic");
         assert_eq!(result.unwrap().unwrap_err().code, "git_output_invalid");
     }
+}
+
+#[test]
+fn exact_pair_tree_entry_parser_rejects_unsupported_mode_type_and_path() {
+    let oid = "a".repeat(40);
+    for raw in [
+        format!("160000 commit {oid}\tflow.yaml\0"),
+        format!("040000 tree {oid}\tflow.yaml\0"),
+        format!("100644 blob {oid}\tother.yaml\0"),
+    ] {
+        let error = super::mutate::parse_tree_entry(raw.as_bytes(), "flow.yaml")
+            .err()
+            .expect("unsupported tree semantics must reject the candidate");
+        assert_eq!(error.code, "git_commit_candidate_changed");
+    }
+
+    let executable = super::mutate::parse_tree_entry(
+        format!("100755 blob {oid}\tflow.yaml\0").as_bytes(),
+        "flow.yaml",
+    )
+    .unwrap()
+    .expect("exact executable blob entry");
+    assert_eq!(executable.mode, "100755");
+    assert_eq!(executable.oid, oid);
 }
 
 #[test]

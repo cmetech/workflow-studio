@@ -505,6 +505,272 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn commits_untracked_contained_pair_symlinks_as_exact_link_blobs() {
+    use std::os::unix::fs::symlink;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    fs::create_dir(root.path().join("targets")).unwrap();
+    fs::write(
+        root.path().join("targets/definition.yaml"),
+        "name: target\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("targets/companion.yaml"),
+        "language_compatibility: target\n",
+    )
+    .unwrap();
+    symlink("targets/definition.yaml", root.path().join("flow.yaml")).unwrap();
+    symlink(
+        "targets/companion.yaml",
+        root.path().join("flow.hermes.yaml"),
+    )
+    .unwrap();
+
+    let version = create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "link pair",
+    )
+    .unwrap();
+
+    assert!(version.committed_oid().is_some());
+    assert_eq!(
+        assert_git(root.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("120000")
+    );
+    assert_eq!(
+        assert_git(root.path(), &["ls-tree", "HEAD", "--", "flow.hermes.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("120000")
+    );
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.yaml"]),
+        "targets/definition.yaml"
+    );
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.hermes.yaml"]),
+        "targets/companion.yaml"
+    );
+    assert!(assert_git(root.path(), &["diff", "--cached", "--name-only"]).is_empty());
+    let untracked = assert_git(root.path(), &["ls-files", "--others", "--exclude-standard"]);
+    assert!(untracked.contains("targets/definition.yaml"));
+    assert!(untracked.contains("targets/companion.yaml"));
+}
+
+#[cfg(unix)]
+#[test]
+fn commits_existing_executable_and_mode_only_pair_entries_without_drift() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+
+    let executable = repository();
+    write_pair(executable.path());
+    for path in ["flow.yaml", "flow.hermes.yaml"] {
+        let mut permissions = fs::metadata(executable.path().join(path))
+            .unwrap()
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(executable.path().join(path), permissions).unwrap();
+    }
+    create_pair_version(
+        executable.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "executable pair",
+    )
+    .unwrap();
+    for path in ["flow.yaml", "flow.hermes.yaml"] {
+        assert_eq!(
+            assert_git(executable.path(), &["ls-tree", "HEAD", "--", path])
+                .split_whitespace()
+                .next(),
+            Some("100755")
+        );
+    }
+
+    let mode_only = repository();
+    write_pair(mode_only.path());
+    assert_git(mode_only.path(), &["add", "flow.yaml", "flow.hermes.yaml"]);
+    assert_git(mode_only.path(), &["commit", "-m", "base"]);
+    let mut permissions = fs::metadata(mode_only.path().join("flow.yaml"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(mode_only.path().join("flow.yaml"), permissions).unwrap();
+    create_pair_version(
+        mode_only.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "mode only",
+    )
+    .unwrap();
+    assert_eq!(
+        assert_git(mode_only.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("100755")
+    );
+    assert_eq!(
+        assert_git(
+            mode_only.path(),
+            &["ls-tree", "HEAD", "--", "flow.hermes.yaml"]
+        )
+        .split_whitespace()
+        .next(),
+        Some("100644")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn core_filemode_false_preserves_the_base_mode_during_content_commit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    write_pair(root.path());
+    assert_git(root.path(), &["add", "flow.yaml", "flow.hermes.yaml"]);
+    assert_git(root.path(), &["commit", "-m", "base"]);
+    assert_git(root.path(), &["config", "core.fileMode", "false"]);
+    let mut permissions = fs::metadata(root.path().join("flow.yaml"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(root.path().join("flow.yaml"), permissions).unwrap();
+    fs::write(root.path().join("flow.yaml"), "name: content changed\n").unwrap();
+
+    create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "content only mode ignored",
+    )
+    .unwrap();
+
+    assert_eq!(
+        assert_git(root.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("100644")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn tracked_symlink_retarget_commits_link_bytes_and_target_content_only_is_not_pair_change() {
+    use std::os::unix::fs::symlink;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
+    fs::write(root.path().join("two.yaml"), "name: two\n").unwrap();
+    symlink("one.yaml", root.path().join("flow.yaml")).unwrap();
+    assert_git(root.path(), &["add", "flow.yaml"]);
+    assert_git(root.path(), &["commit", "-m", "base link"]);
+
+    fs::write(root.path().join("one.yaml"), "name: edited target only\n").unwrap();
+    assert_code(
+        create_pair_version(root.path(), "flow.yaml", None, "target content"),
+        "git_nothing_to_commit",
+    );
+
+    fs::remove_file(root.path().join("flow.yaml")).unwrap();
+    symlink("two.yaml", root.path().join("flow.yaml")).unwrap();
+    create_pair_version(root.path(), "flow.yaml", None, "retarget link").unwrap();
+
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.yaml"]),
+        "two.yaml"
+    );
+    assert_eq!(
+        assert_git(root.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("120000")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_escaping_symlink_before_candidate_index_staging() {
+    use std::os::unix::fs::symlink;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
+    symlink(
+        outside.path().join("outside.yaml"),
+        root.path().join("flow.yaml"),
+    )
+    .unwrap();
+
+    assert_code(
+        create_pair_version(root.path(), "flow.yaml", None, "unsafe link"),
+        "git_pair_unavailable",
+    );
+
+    assert!(!git(root.path(), &["rev-parse", "--verify", "HEAD"])
+        .status
+        .success());
+    assert!(!root.path().join(".git/index").exists());
+    assert!(fs::read_dir(root.path().join(".git"))
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("workflow-studio-")));
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_symlink_escape_rejects_without_ref_or_real_index_publication() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    let outside = tempdir().unwrap();
+    fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
+    fs::write(root.path().join("two.yaml"), "name: two\n").unwrap();
+    fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
+    symlink("one.yaml", root.path().join("flow.yaml")).unwrap();
+    assert_git(root.path(), &["add", "flow.yaml"]);
+    assert_git(root.path(), &["commit", "-m", "base link"]);
+    fs::remove_file(root.path().join("flow.yaml")).unwrap();
+    symlink("two.yaml", root.path().join("flow.yaml")).unwrap();
+    symlink(
+        outside.path().join("outside.yaml"),
+        root.path().join("escape-link"),
+    )
+    .unwrap();
+    let hook = root.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nrm flow.yaml\nmv escape-link flow.yaml\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let before_head = assert_git(root.path(), &["rev-parse", "HEAD"]);
+    let index_path = root.path().join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+
+    let error = create_pair_version(root.path(), "flow.yaml", None, "retarget link")
+        .err()
+        .expect("hook escape must reject the accepted pair");
+
+    assert_eq!(error.code, "git_pair_changed");
+    assert!(error.message.contains("worktree side effects may remain"));
+    assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert!(!root.path().join(".git/index.lock").exists());
+}
+
 #[test]
 fn init_honors_configured_default_branch_and_local_identity_leaves_global_config_unchanged() {
     let _environment = ENVIRONMENT.lock().unwrap();

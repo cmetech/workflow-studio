@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use same_file::Handle;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -134,14 +136,35 @@ pub(crate) fn preview_pair_version(
     Ok((diff, binding))
 }
 
+#[cfg(test)]
 pub(crate) fn preview_pair_version_authorized(
     root: &Path,
     definition_path: &str,
     companion_path: Option<&str>,
 ) -> GitResult<(String, PairPathBinding, GitBase)> {
     let paths = pair_paths(definition_path, companion_path)?;
-    let binding = PairPathBinding::capture(root, &paths)?;
     let base = GitBase::capture(root)?;
+    let binding = PairPathBinding::capture(root, &paths)?;
+    preview_pair_version_with_binding(root, &paths, binding, base)
+}
+
+pub(crate) fn preview_pair_version_authorized_with_binding(
+    root: &Path,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    binding: PairPathBinding,
+    base: GitBase,
+) -> GitResult<(String, PairPathBinding, GitBase)> {
+    let paths = pair_paths(definition_path, companion_path)?;
+    preview_pair_version_with_binding(root, &paths, binding, base)
+}
+
+fn preview_pair_version_with_binding(
+    root: &Path,
+    paths: &[&str],
+    binding: PairPathBinding,
+    base: GitBase,
+) -> GitResult<(String, PairPathBinding, GitBase)> {
     let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
     ensure_success("git_status_failed", &pair_status)?;
     if pair_status.stdout.is_empty() {
@@ -168,8 +191,8 @@ pub(crate) fn preview_pair_version_authorized(
     } else {
         String::new()
     };
-    for path in paths {
-        if !is_tracked(root, path)? && root.join(path).is_file() {
+    for (index, path) in paths.iter().copied().enumerate() {
+        if !is_tracked(root, path)? && binding.is_present(index) {
             let untracked = run_read(root, ReadOperation::UntrackedDiff { path })?;
             if untracked.stdout.is_empty() {
                 return Err(GitError::new(
@@ -270,7 +293,82 @@ pub(crate) fn create_pair_version_with_guard(
     definition_path: &str,
     companion_path: Option<&str>,
     message: &str,
+    before_mutation: impl FnMut() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_pair_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        definition_path,
+        companion_path,
+        message,
+        before_mutation,
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn create_pair_version_with_index_interleave_for_test(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    message: &str,
+    before_index_lock: impl FnOnce() -> GitResult<()>,
+    after_index_lock: impl FnOnce() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_pair_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        definition_path,
+        companion_path,
+        message,
+        || Ok(()),
+        || Ok(()),
+        before_index_lock,
+        after_index_lock,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn create_pair_version_with_stage_interleave_for_test(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    message: &str,
+    before_candidate_stage: impl FnOnce() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_pair_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        definition_path,
+        companion_path,
+        message,
+        || Ok(()),
+        before_candidate_stage,
+        || Ok(()),
+        || Ok(()),
+    )
+}
+
+fn create_pair_version_with_interleave(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    message: &str,
     mut before_mutation: impl FnMut() -> GitResult<()>,
+    before_candidate_stage: impl FnOnce() -> GitResult<()>,
+    before_index_lock: impl FnOnce() -> GitResult<()>,
+    after_index_lock: impl FnOnce() -> GitResult<()>,
 ) -> GitResult<GitVersionResult> {
     let message = required_value(message, "git_message_required", "Enter a version message.")?;
     if message.len() > 64 * 1024 {
@@ -310,9 +408,10 @@ pub(crate) fn create_pair_version_with_guard(
     let mut artifacts = TemporaryArtifacts::default();
     let candidate_index = artifacts.create(git_dir, "candidate-index")?;
     initialize_index(root, &candidate_index, base_treeish)?;
+    before_candidate_stage()?;
     stage_exact_paths(root, &candidate_index, &paths)?;
     let accepted_tree = write_tree(root, &candidate_index)?;
-    verify_tree_pair_bytes(root, &accepted_tree, &paths)?;
+    let accepted_entries = verify_tree_pair_entries(root, &accepted_tree, &paths, &path_binding)?;
 
     let normalized_index = artifacts.create(git_dir, "normalized-index")?;
     if let Some(bytes) = &original_index {
@@ -361,7 +460,9 @@ pub(crate) fn create_pair_version_with_guard(
         .map_err(with_hook_side_effect_warning)?;
     base.verify(root).map_err(with_hook_side_effect_warning)?;
     let final_tree = write_tree(root, &candidate_index).map_err(with_hook_side_effect_warning)?;
-    if final_tree != accepted_tree {
+    let final_entries =
+        pair_tree_entries(root, &final_tree, &paths).map_err(with_hook_side_effect_warning)?;
+    if final_tree != accepted_tree || final_entries != accepted_entries {
         return Err(GitError::new(
             "git_commit_candidate_changed",
             "A Git hook changed the accepted pair-only commit candidate. Git hook worktree side effects may remain.",
@@ -396,9 +497,24 @@ pub(crate) fn create_pair_version_with_guard(
         "The normalized Git index exceeds the 16 MiB safety limit.",
     )
     .map_err(with_hook_side_effect_warning)?;
-    let prepared_index =
-        PreparedIndexLock::prepare(&index_path, original_index.as_deref(), &normalized_bytes)
-            .map_err(with_hook_side_effect_warning)?;
+    let normalized_tree =
+        write_tree(root, &normalized_index).map_err(with_hook_side_effect_warning)?;
+    let normalized_entries =
+        pair_tree_entries(root, &normalized_tree, &paths).map_err(with_hook_side_effect_warning)?;
+    if normalized_entries != accepted_entries {
+        return Err(with_hook_side_effect_warning(GitError::new(
+            "git_commit_candidate_changed",
+            "The normalized Git index no longer contains the exact accepted pair entries.",
+        )));
+    }
+    let prepared_index = PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        original_index.as_deref(),
+        &normalized_bytes,
+        before_index_lock,
+        after_index_lock,
+    )
+    .map_err(with_hook_side_effect_warning)?;
     before_mutation().map_err(with_hook_side_effect_warning)?;
     path_binding
         .verify()
@@ -514,47 +630,123 @@ fn write_tree(root: &Path, index_path: &Path) -> GitResult<String> {
     oid_text(&output.stdout, "git_commit_candidate_changed")
 }
 
-fn verify_tree_pair_bytes(root: &Path, tree: &str, paths: &[&str]) -> GitResult<()> {
+fn verify_tree_pair_entries(
+    root: &Path,
+    tree: &str,
+    paths: &[&str],
+    binding: &PairPathBinding,
+) -> GitResult<Vec<Option<GitTreeEntry>>> {
+    let mut entries = Vec::with_capacity(paths.len());
     for path in paths {
         let entry = run_read(root, ReadOperation::TreeEntry { tree, path })?;
         ensure_success("git_commit_candidate_changed", &entry)?;
-        let tree_oid = tree_entry_oid(&entry.stdout)?;
-        match fs::symlink_metadata(root.join(path)) {
-            Ok(metadata) if metadata.file_type().is_file() => {
-                let raw = run_read(root, ReadOperation::HashFile { path })?;
-                ensure_success("git_commit_candidate_changed", &raw)?;
-                let raw_oid = oid_text(&raw.stdout, "git_commit_candidate_changed")?;
-                if tree_oid.as_deref() != Some(&raw_oid) {
+        let tree_entry = parse_tree_entry(&entry.stdout, path)?;
+        match binding.state(entries.len())? {
+            PairPathState::Regular { digest, .. } => {
+                let Some(tree_entry) = tree_entry.as_ref() else {
+                    return Err(GitError::new(
+                        "git_commit_candidate_changed",
+                        "The accepted workflow file is missing from the commit candidate.",
+                    ));
+                };
+                if !matches!(tree_entry.mode.as_str(), "100644" | "100755") {
+                    return Err(GitError::new(
+                        "git_commit_candidate_changed",
+                        "The accepted workflow file has an invalid Git mode.",
+                    ));
+                }
+                let blob = run_read(
+                    root,
+                    ReadOperation::Blob {
+                        oid: &tree_entry.oid,
+                    },
+                )?;
+                ensure_success("git_commit_candidate_changed", &blob)?;
+                if <[u8; 32]>::from(Sha256::digest(&blob.stdout)) != *digest {
                     return Err(GitError::new(
                         "git_commit_candidate_changed",
                         "Git attributes or filters changed the accepted workflow bytes.",
                     ));
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if tree_oid.is_some() {
+            PairPathState::SafeSymlink { target_bytes, .. } => {
+                let Some(tree_entry) = tree_entry.as_ref() else {
+                    return Err(GitError::new(
+                        "git_commit_candidate_changed",
+                        "The accepted workflow link is missing from the commit candidate.",
+                    ));
+                };
+                if tree_entry.mode != "120000" {
+                    return Err(GitError::new(
+                        "git_commit_candidate_changed",
+                        "The accepted workflow link does not have Git symlink mode 120000.",
+                    ));
+                }
+                let blob = run_read(
+                    root,
+                    ReadOperation::Blob {
+                        oid: &tree_entry.oid,
+                    },
+                )?;
+                ensure_success("git_commit_candidate_changed", &blob)?;
+                if blob.stdout != *target_bytes {
+                    return Err(GitError::new(
+                        "git_commit_candidate_changed",
+                        "The accepted workflow link target bytes differ from the commit candidate.",
+                    ));
+                }
+            }
+            PairPathState::Missing => {
+                if tree_entry.is_some() {
                     return Err(GitError::new(
                         "git_commit_candidate_changed",
                         "The accepted workflow deletion was not preserved in the commit candidate.",
                     ));
                 }
             }
-            _ => {
-                return Err(GitError::new(
-                    "git_pair_changed",
-                    "A selected workflow path is no longer a regular file.",
-                ))
-            }
         }
+        entries.push(tree_entry);
     }
-    Ok(())
+    Ok(entries)
 }
 
-fn tree_entry_oid(bytes: &[u8]) -> GitResult<Option<String>> {
+fn pair_tree_entries(
+    root: &Path,
+    tree: &str,
+    paths: &[&str],
+) -> GitResult<Vec<Option<GitTreeEntry>>> {
+    paths
+        .iter()
+        .map(|path| {
+            let output = run_read(root, ReadOperation::TreeEntry { tree, path })?;
+            ensure_success("git_commit_candidate_changed", &output)?;
+            parse_tree_entry(&output.stdout, path)
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitTreeEntry {
+    pub(crate) mode: String,
+    pub(crate) oid: String,
+    path: String,
+}
+
+pub(crate) fn parse_tree_entry(
+    bytes: &[u8],
+    expected_path: &str,
+) -> GitResult<Option<GitTreeEntry>> {
     if bytes.is_empty() {
         return Ok(None);
     }
-    let header_end = bytes
+    if bytes.last() != Some(&0) || bytes[..bytes.len() - 1].contains(&0) {
+        return Err(GitError::new(
+            "git_commit_candidate_changed",
+            "Git returned a malformed tree entry for the selected workflow pair.",
+        ));
+    }
+    let record = &bytes[..bytes.len() - 1];
+    let header_end = record
         .iter()
         .position(|byte| *byte == b'\t')
         .ok_or_else(|| {
@@ -563,26 +755,46 @@ fn tree_entry_oid(bytes: &[u8]) -> GitResult<Option<String>> {
                 "Git returned an invalid tree entry for the selected workflow pair.",
             )
         })?;
-    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|_| {
+    let header = std::str::from_utf8(&record[..header_end]).map_err(|_| {
         GitError::new(
             "git_commit_candidate_changed",
             "Git returned a non-UTF-8 tree entry header.",
         )
     })?;
-    let oid = header.split_whitespace().nth(2).ok_or_else(|| {
-        GitError::new(
+    let fields = header.split_whitespace().collect::<Vec<_>>();
+    if fields.len() != 3
+        || !matches!(fields[0], "100644" | "100755" | "120000")
+        || fields[1] != "blob"
+    {
+        return Err(GitError::new(
             "git_commit_candidate_changed",
-            "Git returned an incomplete tree entry for the selected workflow pair.",
-        )
-    })?;
-    if (7..=64).contains(&oid.len()) && oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(Some(oid.to_owned()))
-    } else {
-        Err(GitError::new(
+            "Git returned an unsupported workflow tree entry mode or type.",
+        ));
+    }
+    let oid = fields[2];
+    if record[header_end + 1..] != *expected_path.as_bytes() {
+        return Err(GitError::new(
+            "git_commit_candidate_changed",
+            "Git returned a tree entry for a different workflow path.",
+        ));
+    }
+    if !((7..=64).contains(&oid.len()) && oid.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Err(GitError::new(
             "git_commit_candidate_changed",
             "Git returned an invalid workflow blob ID.",
-        ))
+        ));
     }
+    let path = std::str::from_utf8(&record[header_end + 1..]).map_err(|_| {
+        GitError::new(
+            "git_commit_candidate_changed",
+            "Git returned a non-UTF-8 workflow path.",
+        )
+    })?;
+    Ok(Some(GitTreeEntry {
+        mode: fields[0].to_owned(),
+        oid: oid.to_owned(),
+        path: path.to_owned(),
+    }))
 }
 
 fn run_commit_hook(
@@ -708,14 +920,38 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> GitResult<()> {
     })
 }
 
-struct PreparedIndexLock {
+pub(crate) struct PreparedIndexLock {
     lock_path: PathBuf,
     index_path: PathBuf,
     published: bool,
 }
 
 impl PreparedIndexLock {
-    fn prepare(index_path: &Path, original: Option<&[u8]>, updated: &[u8]) -> GitResult<Self> {
+    pub(crate) fn prepare_with_interleave(
+        index_path: &Path,
+        original: Option<&[u8]>,
+        updated: &[u8],
+        before_lock: impl FnOnce() -> GitResult<()>,
+        after_lock: impl FnOnce() -> GitResult<()>,
+    ) -> GitResult<Self> {
+        before_lock()?;
+        let lock_path = index_path.with_extension("lock");
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut lock = options
+            .open(&lock_path)
+            .map_err(|_| GitError::new("git_index_changed", "The repository index is busy."))?;
+        let prepared = Self {
+            lock_path,
+            index_path: index_path.to_owned(),
+            published: false,
+        };
+        after_lock()?;
         let current = read_optional_bounded_file(
             index_path,
             16 * 1024 * 1024,
@@ -730,30 +966,15 @@ impl PreparedIndexLock {
                 "The repository index changed during version creation.",
             ));
         }
-        let lock_path = index_path.with_extension("lock");
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut lock = options
-            .open(&lock_path)
-            .map_err(|_| GitError::new("git_index_changed", "The repository index is busy."))?;
         if let Err(error) = lock.write_all(updated).and_then(|_| lock.sync_all()) {
             drop(lock);
-            let _ = fs::remove_file(&lock_path);
             return Err(GitError::new(
                 "git_index_unavailable",
                 format!("The updated Git index could not be prepared: {error}"),
             ));
         }
-        Ok(Self {
-            lock_path,
-            index_path: index_path.to_owned(),
-            published: false,
-        })
+        drop(lock);
+        Ok(prepared)
     }
 
     fn publish(mut self) -> GitResult<()> {
@@ -1201,75 +1422,390 @@ pub(crate) fn move_tracked_path_with_guard(
 }
 
 pub(crate) struct PairPathBinding {
-    paths: Vec<(PathBuf, Option<Handle>, Option<[u8; 32]>)>,
+    repository_root: PathBuf,
+    capability_root: PathBuf,
+    capability_root_identity: Handle,
+    capability: Dir,
+    core_file_mode: Option<bool>,
+    paths: Vec<(PathBuf, PairPathState)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PairPathState {
+    Missing,
+    Regular {
+        identity: Handle,
+        digest: [u8; 32],
+        #[cfg(unix)]
+        executable: bool,
+    },
+    SafeSymlink {
+        link_identity: LinkIdentity,
+        target_bytes: Vec<u8>,
+        resolved_target_identity: Handle,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LinkIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
 }
 
 impl PairPathBinding {
-    fn capture(root: &Path, paths: &[&str]) -> GitResult<Self> {
+    pub(crate) fn capture(root: &Path, paths: &[&str]) -> GitResult<Self> {
+        Self::capture_in_workspace(root, root, paths)
+    }
+
+    pub(crate) fn capture_in_workspace(
+        repository_root: &Path,
+        workspace_root: &Path,
+        paths: &[&str],
+    ) -> GitResult<Self> {
+        let capability_root = workspace_root.canonicalize().map_err(|_| {
+            GitError::new(
+                "git_pair_unavailable",
+                "The selected workspace root is no longer available.",
+            )
+        })?;
+        let capability_root_identity = Handle::from_path(&capability_root).map_err(|_| {
+            GitError::new(
+                "git_pair_unavailable",
+                "The selected workspace root could not be identified.",
+            )
+        })?;
+        let capability =
+            Dir::open_ambient_dir(&capability_root, ambient_authority()).map_err(|_| {
+                GitError::new(
+                    "git_pair_unavailable",
+                    "The selected workspace capability could not be retained.",
+                )
+            })?;
+        let core_file_mode = effective_core_file_mode(repository_root)?;
         let paths = paths
             .iter()
             .map(|path| {
-                let absolute = root.join(path);
-                let identity = match Handle::from_path(&absolute) {
-                    Ok(identity) => Some(identity),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(_) => {
-                        return Err(GitError::new(
-                            "git_pair_unavailable",
-                            "A selected workflow path could not be identified.",
-                        ))
-                    }
-                };
-                let digest = if identity.is_some() {
-                    let bytes = read_bounded_file(
-                        &absolute,
-                        16 * 1024 * 1024,
-                        "git_pair_unavailable",
-                        "A selected workflow path could not be read.",
-                        "git_pair_too_large",
-                        "A selected workflow path exceeds the 16 MiB Git safety limit.",
-                    )?;
-                    Some(Sha256::digest(bytes).into())
-                } else {
-                    None
-                };
-                Ok((absolute, identity, digest))
+                validate_path(path)?;
+                let relative = PathBuf::from(path);
+                let state = capture_pair_path(&capability, &relative)?;
+                Ok((relative, state))
             })
             .collect::<GitResult<Vec<_>>>()?;
-        Ok(Self { paths })
+        Ok(Self {
+            repository_root: repository_root.to_owned(),
+            capability_root,
+            capability_root_identity,
+            capability,
+            core_file_mode,
+            paths,
+        })
+    }
+
+    fn is_present(&self, index: usize) -> bool {
+        self.paths
+            .get(index)
+            .is_some_and(|(_, state)| !matches!(state, PairPathState::Missing))
+    }
+
+    fn state(&self, index: usize) -> GitResult<&PairPathState> {
+        self.paths
+            .get(index)
+            .map(|(_, state)| state)
+            .ok_or_else(|| {
+                GitError::new(
+                    "git_commit_candidate_changed",
+                    "The accepted pair binding no longer matches its Git paths.",
+                )
+            })
     }
 
     pub(crate) fn verify(&self) -> GitResult<()> {
-        for (path, expected, expected_digest) in &self.paths {
-            let current = Handle::from_path(path).ok();
-            if current.as_ref() != expected.as_ref() {
+        let canonical_root = self.capability_root.canonicalize().map_err(|_| {
+            GitError::new(
+                "git_pair_changed",
+                "The retained workspace capability root is no longer available.",
+            )
+        })?;
+        let current_root_identity = Handle::from_path(&canonical_root).map_err(|_| {
+            GitError::new(
+                "git_pair_changed",
+                "The retained workspace capability root could not be identified again.",
+            )
+        })?;
+        if canonical_root != self.capability_root
+            || current_root_identity != self.capability_root_identity
+        {
+            return Err(GitError::new(
+                "git_pair_changed",
+                "The retained workspace capability root changed after the pair preview.",
+            ));
+        }
+        if effective_core_file_mode(&self.repository_root).map_err(|_| {
+            GitError::new(
+                "git_pair_changed",
+                "Git file-mode semantics could not be verified again.",
+            )
+        })? != self.core_file_mode
+        {
+            return Err(GitError::new(
+                "git_pair_changed",
+                "Git file-mode semantics changed after the pair preview.",
+            ));
+        }
+        for (path, expected) in &self.paths {
+            let current = capture_pair_path(&self.capability, path).map_err(|_| {
+                GitError::new(
+                    "git_pair_changed",
+                    "A selected workflow path is no longer the exact safe file entry from its Git preview.",
+                )
+            })?;
+            if &current != expected {
                 return Err(GitError::new(
                     "git_pair_changed",
-                    "A selected workflow path was replaced before Git could mutate it.",
-                ));
-            }
-            let current_digest = if current.is_some() {
-                let bytes = read_bounded_file(
-                    path,
-                    16 * 1024 * 1024,
-                    "git_pair_changed",
-                    "A selected workflow path could not be read again.",
-                    "git_pair_changed",
-                    "A selected workflow path grew after its Git preview.",
-                )?;
-                Some(<[u8; 32]>::from(Sha256::digest(bytes)))
-            } else {
-                None
-            };
-            if &current_digest != expected_digest {
-                return Err(GitError::new(
-                    "git_pair_changed",
-                    "A selected workflow path changed after its Git preview.",
+                    "A selected workflow path identity, type, mode, or content changed after its Git preview.",
                 ));
             }
         }
         Ok(())
     }
+}
+
+fn effective_core_file_mode(root: &Path) -> GitResult<Option<bool>> {
+    let output = run_read(
+        root,
+        ReadOperation::ConfigBool {
+            key: "core.fileMode",
+        },
+    )?;
+    if !output.success() {
+        return Ok(None);
+    }
+    match output_text(&output.stdout)?.trim() {
+        "true" => Ok(Some(true)),
+        "false" => Ok(Some(false)),
+        _ => Err(GitError::new(
+            "git_output_invalid",
+            "Git returned an invalid core.fileMode value.",
+        )),
+    }
+}
+
+fn capture_pair_path(directory: &Dir, relative: &Path) -> GitResult<PairPathState> {
+    let metadata = match directory.symlink_metadata(relative) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PairPathState::Missing)
+        }
+        Err(_) => {
+            return Err(GitError::new(
+                "git_pair_unavailable",
+                "A selected workflow path type or mode could not be inspected.",
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return capture_safe_symlink(directory, relative, &metadata);
+    }
+    if !metadata.file_type().is_file() {
+        return Err(GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow path is not a supported file entry.",
+        ));
+    }
+    let mut file = directory.open(relative).map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow file could not be opened safely.",
+        )
+    })?;
+    let identity = Handle::from_file(
+        file.try_clone()
+            .map_err(|_| {
+                GitError::new(
+                    "git_pair_unavailable",
+                    "A selected workflow file handle could not be retained.",
+                )
+            })?
+            .into_std(),
+    )
+    .map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow file could not be identified.",
+        )
+    })?;
+    let rebound = directory.open(relative).ok().and_then(|file| {
+        file.try_clone()
+            .ok()
+            .and_then(|clone| Handle::from_file(clone.into_std()).ok())
+    });
+    if rebound.as_ref() != Some(&identity) {
+        return Err(GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow file was replaced while it was being bound.",
+        ));
+    }
+    let bytes = read_bounded(
+        &mut file,
+        16 * 1024 * 1024,
+        "git_pair_unavailable",
+        "A selected workflow file could not be read safely.",
+        "git_pair_too_large",
+        "A selected workflow file exceeds the 16 MiB Git safety limit.",
+    )?;
+    let file_metadata = file.metadata().map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow file mode could not be read.",
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        Ok(PairPathState::Regular {
+            identity,
+            digest: Sha256::digest(bytes).into(),
+            executable: file_metadata.mode() & 0o111 != 0,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PairPathState::Regular {
+            identity,
+            digest: Sha256::digest(bytes).into(),
+        })
+    }
+}
+
+fn capture_safe_symlink(
+    directory: &Dir,
+    relative: &Path,
+    metadata: &cap_std::fs::Metadata,
+) -> GitResult<PairPathState> {
+    let expected_link_identity = link_identity(metadata);
+    let target = directory.read_link_contents(relative).map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link target could not be read.",
+        )
+    })?;
+    let target_bytes = path_bytes(&target)?;
+    if target_bytes.len() > 16 * 1024 * 1024 {
+        return Err(GitError::new(
+            "git_pair_too_large",
+            "A selected workflow link target exceeds the 16 MiB Git safety limit.",
+        ));
+    }
+    let resolved_file = directory.open(relative).map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link is broken, escaping, or unavailable.",
+        )
+    })?;
+    let resolved_metadata = resolved_file.metadata().map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link target could not be inspected.",
+        )
+    })?;
+    if !resolved_metadata.is_file() {
+        return Err(GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link must resolve to a contained workspace file.",
+        ));
+    }
+    let resolved_target_identity = Handle::from_file(
+        resolved_file
+            .try_clone()
+            .map_err(|_| {
+                GitError::new(
+                    "git_pair_unavailable",
+                    "A selected workflow link target handle could not be retained.",
+                )
+            })?
+            .into_std(),
+    )
+    .map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link target could not be identified.",
+        )
+    })?;
+    let final_metadata = directory.symlink_metadata(relative).map_err(|_| {
+        GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link changed while it was being bound.",
+        )
+    })?;
+    if !final_metadata.file_type().is_symlink()
+        || link_identity(&final_metadata) != expected_link_identity
+        || directory.read_link_contents(relative).ok().as_ref() != Some(&target)
+    {
+        return Err(GitError::new(
+            "git_pair_unavailable",
+            "A selected workflow link changed while it was being bound.",
+        ));
+    }
+    Ok(PairPathState::SafeSymlink {
+        link_identity: expected_link_identity,
+        target_bytes,
+        resolved_target_identity,
+    })
+}
+
+fn link_identity(metadata: &cap_std::fs::Metadata) -> LinkIdentity {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        LinkIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        LinkIdentity {}
+    }
+}
+
+fn path_bytes(path: &Path) -> GitResult<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Ok(path.as_os_str().as_bytes().to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_str()
+            .map(|value| value.as_bytes().to_vec())
+            .ok_or_else(|| {
+                GitError::new(
+                    "git_pair_unavailable",
+                    "A selected workflow link target is not valid Unicode.",
+                )
+            })
+    }
+}
+
+fn read_bounded(
+    reader: &mut impl Read,
+    limit: usize,
+    read_code: &'static str,
+    read_message: &'static str,
+    large_code: &'static str,
+    large_message: &'static str,
+) -> GitResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| GitError::new(read_code, read_message))?;
+    if bytes.len() > limit {
+        return Err(GitError::new(large_code, large_message));
+    }
+    Ok(bytes)
 }
 
 fn read_bounded_file(
@@ -1280,15 +1816,15 @@ fn read_bounded_file(
     large_code: &'static str,
     large_message: &'static str,
 ) -> GitResult<Vec<u8>> {
-    let file = File::open(path).map_err(|_| GitError::new(read_code, read_message))?;
-    let mut bytes = Vec::new();
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| GitError::new(read_code, read_message))?;
-    if bytes.len() > limit {
-        return Err(GitError::new(large_code, large_message));
-    }
-    Ok(bytes)
+    let mut file = File::open(path).map_err(|_| GitError::new(read_code, read_message))?;
+    read_bounded(
+        &mut file,
+        limit,
+        read_code,
+        read_message,
+        large_code,
+        large_message,
+    )
 }
 
 fn read_optional_bounded_file(

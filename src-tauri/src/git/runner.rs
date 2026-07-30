@@ -68,6 +68,9 @@ pub(crate) enum ReadOperation<'a> {
     LocalConfig {
         key: &'a str,
     },
+    ConfigBool {
+        key: &'a str,
+    },
     PairStatus {
         paths: &'a [&'a str],
     },
@@ -77,12 +80,12 @@ pub(crate) enum ReadOperation<'a> {
     ResolveRef {
         reference: &'a str,
     },
-    HashFile {
-        path: &'a str,
-    },
     TreeEntry {
         tree: &'a str,
         path: &'a str,
+    },
+    Blob {
+        oid: &'a str,
     },
 }
 
@@ -585,6 +588,11 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.push(key.into());
             values
         }
+        ReadOperation::ConfigBool { key } => {
+            let mut values = strings(&["config", "--bool", "--get"]);
+            values.push(key.into());
+            values
+        }
         ReadOperation::PairStatus { paths } => {
             let mut values = strings(&[
                 "status",
@@ -606,16 +614,16 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.push(reference.into());
             values
         }
-        ReadOperation::HashFile { path } => {
-            let mut values = strings(&["hash-object", "--no-filters", "--"]);
-            values.push(path.into());
-            values
-        }
         ReadOperation::TreeEntry { tree, path } => {
             let mut values = strings(&["ls-tree", "-z"]);
             values.push(tree.into());
             values.push("--".into());
             values.push(path.into());
+            values
+        }
+        ReadOperation::Blob { oid } => {
+            let mut values = strings(&["cat-file", "blob"]);
+            values.push(oid.into());
             values
         }
     }
