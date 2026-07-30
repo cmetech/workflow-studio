@@ -15,30 +15,27 @@ fail() {
   exit 1
 }
 
-command -v curl >/dev/null 2>&1 || fail "curl is required"
-
 OS_NAME=$(uname -s)
 ARCH_NAME=$(uname -m)
 case "$OS_NAME/$ARCH_NAME" in
   Darwin/arm64 | Darwin/aarch64)
     ASSET_SUFFIX="macos_aarch64.dmg"
-    LAUNCH_MODE="dmg"
     ;;
   Darwin/x86_64)
     ASSET_SUFFIX="macos_x86_64.dmg"
-    LAUNCH_MODE="dmg"
     ;;
-  Linux/x86_64 | Linux/amd64)
-    ASSET_SUFFIX="linux_x86_64.AppImage"
-    LAUNCH_MODE="appimage"
+  Linux/*)
+    fail "This installer supports macOS only; download the Windows installer from GitHub Releases"
     ;;
-  Darwin/* | Linux/*)
+  Darwin/*)
     fail "Unsupported architecture: $ARCH_NAME on $OS_NAME"
     ;;
   *)
     fail "Unsupported operating system: $OS_NAME"
     ;;
 esac
+
+command -v curl >/dev/null 2>&1 || fail "curl is required"
 
 status "checking the latest public release"
 RELEASE_JSON=$(curl --fail --silent --show-error --location \
@@ -84,13 +81,8 @@ case "$TEMP_DIR" in
 esac
 INSTALLER_PATH="$TEMP_DIR/$INSTALLER_NAME"
 CHECKSUM_PATH="$TEMP_DIR/SHA256SUMS"
-STAGED_APPIMAGE_PATH=""
-
 cleanup() {
   rm -f -- "$INSTALLER_PATH" "$CHECKSUM_PATH"
-  if [ -n "$STAGED_APPIMAGE_PATH" ]; then
-    rm -f -- "$STAGED_APPIMAGE_PATH"
-  fi
   rmdir -- "$TEMP_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
@@ -116,32 +108,7 @@ fi
 [ "$EXPECTED_CHECKSUM" = "$ACTUAL_CHECKSUM" ] || fail "SHA-256 verification failed"
 status "SHA-256 verified"
 
-case "$LAUNCH_MODE" in
-  dmg)
-    status "opening the unsigned DMG; use right-click > Open if macOS blocks first launch"
-    open "$INSTALLER_PATH"
-    trap - EXIT HUP INT TERM
-    status "the verified DMG remains at $INSTALLER_PATH while it is open"
-    ;;
-  appimage)
-    if [ -n "${XDG_BIN_HOME:-}" ]; then
-      INSTALL_ROOT=$XDG_BIN_HOME
-    else
-      INSTALL_ROOT="$HOME/.local/bin"
-    fi
-    case "$INSTALL_ROOT" in
-      /*) ;;
-      *) fail "AppImage install directory must be absolute" ;;
-    esac
-    mkdir -p -- "$INSTALL_ROOT"
-    INSTALLED_APPIMAGE_PATH="$INSTALL_ROOT/loop24-workflow-studio.AppImage"
-    STAGED_APPIMAGE_PATH=$(mktemp "$INSTALL_ROOT/.loop24-workflow-studio.XXXXXX") || \
-      fail "could not stage the AppImage in $INSTALL_ROOT"
-    cp -- "$INSTALLER_PATH" "$STAGED_APPIMAGE_PATH"
-    chmod 700 "$STAGED_APPIMAGE_PATH"
-    mv -f -- "$STAGED_APPIMAGE_PATH" "$INSTALLED_APPIMAGE_PATH"
-    STAGED_APPIMAGE_PATH=""
-    status "installed and launching $INSTALLED_APPIMAGE_PATH"
-    "$INSTALLED_APPIMAGE_PATH"
-    ;;
-esac
+status "opening the unsigned DMG; use right-click > Open if macOS blocks first launch"
+open "$INSTALLER_PATH"
+trap - EXIT HUP INT TERM
+status "the verified DMG remains at $INSTALLER_PATH while it is open"

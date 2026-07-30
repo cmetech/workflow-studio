@@ -78,10 +78,6 @@ const TARGETS = Object.freeze({
     installerSuffix: 'windows_x86_64-setup.exe',
     updaterSuffix: 'windows_x86_64.nsis.zip',
   }),
-  'linux-x86_64': Object.freeze({
-    installerSuffix: 'linux_x86_64.AppImage',
-    updaterSuffix: 'linux_x86_64.AppImage.tar.gz',
-  }),
 })
 
 export const SUPPORTED_TARGETS = Object.freeze(Object.keys(TARGETS))
@@ -93,8 +89,6 @@ const UPDATER_TARGETS = Object.freeze({
   'darwin-x86_64-app': 'darwin-x86_64',
   'windows-x86_64': 'windows-x86_64',
   'windows-x86_64-nsis': 'windows-x86_64',
-  'linux-x86_64': 'linux-x86_64',
-  'linux-x86_64-appimage': 'linux-x86_64',
 })
 
 function versionFromTag(tag) {
@@ -240,6 +234,9 @@ export function validateReleaseManifest(manifest) {
     if (!allowedNames.has(name)) {
       throw new Error(`Unknown product, version, platform, or architecture asset: ${name}`)
     }
+    if (byName.has(name)) {
+      throw new Error(`Duplicate release asset: ${name}`)
+    }
     if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
       throw new Error(`Release asset is empty or has an invalid size: ${name}`)
     }
@@ -254,6 +251,9 @@ export function validateReleaseManifest(manifest) {
       const kind = requiredName.endsWith('.sig') ? 'updater signature companion' : 'required release asset'
       throw new Error(`Missing ${kind}: ${requiredName}`)
     }
+  }
+  if (assets.length !== allowedNames.size) {
+    throw new Error(`Release asset inventory must contain exactly ${allowedNames.size} assets; found ${assets.length}`)
   }
 
   const platforms = manifest.updater?.platforms
@@ -335,6 +335,23 @@ export function validateChecksumText(text, knownAssetNames) {
     entries.push({ name, sha256 })
   }
   return entries
+}
+
+function assertExactDirectoryInventory(names, tag, checksumRequired) {
+  const expected = expectedNames(tag)
+  if (!checksumRequired) expected.delete('SHA256SUMS')
+  for (const name of names) {
+    if (!SAFE_ASSET_PATTERN.test(name) || name !== basename(name)) {
+      throw new Error(`Unsafe release asset name: ${name}`)
+    }
+    if (!expected.has(name)) {
+      throw new Error(`Unknown product, version, platform, or architecture asset: ${name}`)
+    }
+  }
+  if (names.length !== expected.size) {
+    const missing = [...expected].find((name) => !names.includes(name))
+    throw new Error(`Missing required release asset: ${missing ?? 'unknown'}`)
+  }
 }
 
 async function digestFile(path) {
@@ -576,6 +593,7 @@ async function verifyUpdaterArtifacts(directory, tag, updater, signatureVerifier
 
 async function fixtureFromDirectory(directory, tag, writeChecksums, signatureVerifier, tauriConfig) {
   const names = (await readdir(directory)).sort()
+  assertExactDirectoryInventory(names, tag, !writeChecksums)
   if (writeChecksums && names.includes('SHA256SUMS')) {
     throw new Error('Refusing to overwrite an existing SHA256SUMS')
   }
@@ -624,6 +642,8 @@ async function fixtureFromDirectory(directory, tag, writeChecksums, signatureVer
 }
 
 async function normalizeUpdaterInDirectory(directory, tag) {
+  const names = (await readdir(directory)).sort()
+  assertExactDirectoryInventory(names, tag, false)
   const updaterPath = join(directory, 'latest.json')
   const info = await stat(updaterPath)
   if (!info.isFile() || info.size <= 0) {

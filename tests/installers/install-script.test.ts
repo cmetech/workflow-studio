@@ -82,6 +82,12 @@ function manifestWith(mutator: (copy: ReleaseFixture) => void): ReleaseFixture {
   return copy
 }
 
+function fixtureAsset(copy: ReleaseFixture, name: string): FixtureAsset {
+  const asset = copy.assets.find((candidate) => candidate.name === name)
+  if (!asset) throw new Error(`Fixture is missing ${name}`)
+  return asset
+}
+
 describe('release asset verification', () => {
   beforeAll(() => {
     const build = spawnSync('cargo', [
@@ -96,16 +102,16 @@ describe('release asset verification', () => {
     expect(build.status, build.stderr?.toString()).toBe(0)
   }, 60_000)
   it.each([
-    ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_0.1.0_macos_aarch64.dmg'],
-    ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_0.1.0_macos_x86_64.dmg'],
-    ['windows', 'x86_64', 'LOOP24-Workflow-Studio_0.1.0_windows_x86_64-setup.exe'],
-    ['linux', 'x86_64', 'LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage'],
+    ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_1.0.1_macos_aarch64.dmg'],
+    ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_1.0.1_macos_x86_64.dmg'],
+    ['windows', 'x86_64', 'LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.exe'],
   ])('selects exactly one %s/%s installer', (os, arch, expected) => {
     expect(selectInstallerAsset(fixture.assets, fixture.tag, os, arch).name).toBe(expected)
   })
 
   it.each([
     ['windows', 'aarch64'],
+    ['linux', 'x86_64'],
     ['linux', 'aarch64'],
     ['freebsd', 'x86_64'],
     ['darwin', 'arm64'],
@@ -116,14 +122,14 @@ describe('release asset verification', () => {
   })
 
   it('declares only native targets proven by the release matrix', () => {
-    expect(SUPPORTED_TARGETS).toEqual(['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64', 'linux-x86_64'])
+    expect(SUPPORTED_TARGETS).toEqual(['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'])
   })
 
-  it('accepts complete branded assets, checksums, signatures, and updater coverage', () => {
+  it('accepts exactly the v1.0.1 macOS and Windows public inventory', () => {
     expect(validateReleaseManifest(fixture)).toEqual({
-      tag: 'v0.1.0',
-      version: '0.1.0',
-      assetCount: 14,
+      tag: 'v1.0.1',
+      version: '1.0.1',
+      assetCount: 11,
       updaterTargets: SUPPORTED_TARGETS,
     })
   })
@@ -135,48 +141,72 @@ describe('release asset verification', () => {
     }
     const normalized = normalizeUpdaterManifest(updater, fixture.tag)
     expect(normalized.platforms['darwin-aarch64-app']).toEqual({
-      url: 'https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_macos_aarch64.app.tar.gz',
+      url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz',
       signature: 'signed-darwin-arm',
     })
     expect(normalized.platforms['windows-x86_64'].url).toContain(
-      '/v0.1.0/LOOP24-Workflow-Studio_0.1.0_windows_x86_64.nsis.zip',
+      '/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip',
     )
     expect(updater.platforms['windows-x86_64']!.url).toContain('api.github.com')
   })
 
   it.each([
-    'Other-Workflow-Studio_0.1.0_linux_x86_64.AppImage',
+    'Other-Workflow-Studio_1.0.1_linux_x86_64.AppImage',
     'LOOP24-Workflow-Studio_9.9.9_linux_x86_64.AppImage',
-    '../LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage',
-    'LOOP24-Workflow-Studio_0.1.0_linux_x86_64/app.AppImage',
-    'loop24-workflow-studio_0.1.0_linux_x86_64.AppImage',
-    'LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage\nsecond',
+    '../LOOP24-Workflow-Studio_1.0.1_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.1_linux_x86_64/app.AppImage',
+    'loop24-workflow-studio_1.0.1_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.1_linux_x86_64.AppImage\nsecond',
   ])('rejects a wrong-brand/version or unsafe asset name: %s', (name) => {
     const invalid = manifestWith((copy) => {
-      copy.assets[9] = { ...copy.assets[9]!, name }
+      const existing = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.exe')
+      Object.assign(existing, { name })
     })
     expect(() => validateReleaseManifest(invalid)).toThrow()
   })
 
   it('rejects case-folded collisions and duplicate installers', () => {
     const invalid = manifestWith((copy) => {
-      copy.assets.push({ ...copy.assets[9]!, name: copy.assets[9]!.name.toLowerCase() })
+      const installer = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.exe')
+      copy.assets.push({ ...installer, name: installer.name.toLowerCase() })
     })
     expect(() => validateReleaseManifest(invalid)).toThrow(/collision/i)
   })
 
+  it.each([
+    'LOOP24-Workflow-Studio_1.0.1_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.1_linux_x86_64.deb',
+    'LOOP24-Workflow-Studio_1.0.1_linux_x86_64.rpm',
+    'unexpected-release-note.txt',
+  ])('rejects stale Linux or unknown release assets: %s', (name) => {
+    const invalid = manifestWith((copy) => {
+      copy.assets.push({ name, size: 115, sha256: 'e'.repeat(64) })
+    })
+    expect(() => validateReleaseManifest(invalid)).toThrow(/unknown/i)
+  })
+
+  it('rejects stale Linux updater keys', () => {
+    const invalid = manifestWith((copy) => {
+      copy.updater.platforms['linux-x86_64'] = {
+        url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_linux_x86_64.AppImage.tar.gz',
+        signature: 'signed-linux',
+      }
+    })
+    expect(() => validateReleaseManifest(invalid)).toThrow(/updater target/i)
+  })
+
   it('rejects missing checksums, signature companions, updater targets, and empty bytes', () => {
     const noChecksum = manifestWith((copy) => {
-      copy.assets[0]!.sha256 = undefined
+      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.1_macos_aarch64.dmg').sha256 = undefined
     })
     const noSignature = manifestWith((copy) => {
       copy.assets = copy.assets.filter((asset) => !asset.name.endsWith('macos_aarch64.app.tar.gz.sig'))
     })
     const noUpdaterTarget = manifestWith((copy) => {
-      delete copy.updater.platforms['linux-x86_64']
+      delete copy.updater.platforms['windows-x86_64']
     })
     const zeroBytes = manifestWith((copy) => {
-      copy.assets[0]!.size = 0
+      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.1_macos_aarch64.dmg').size = 0
     })
 
     expect(() => validateReleaseManifest(noChecksum)).toThrow(/checksum/i)
@@ -187,8 +217,8 @@ describe('release asset verification', () => {
 
   it('rejects updater URLs for unknown or cross-release assets', () => {
     const invalid = manifestWith((copy) => {
-      copy.updater.platforms['linux-x86_64']!.url =
-        'https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/not-uploaded.tar.gz'
+      copy.updater.platforms['windows-x86_64']!.url =
+        'https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/not-uploaded.tar.gz'
     })
     expect(() => validateReleaseManifest(invalid)).toThrow(/not present/i)
   })
@@ -214,7 +244,7 @@ describe('release asset verification', () => {
         text,
         fixture.assets.map((asset) => asset.name),
       ),
-    ).toHaveLength(13)
+    ).toHaveLength(10)
     expect(() => validateChecksumText(`${text}\n${'e'.repeat(64)}  ../outside`, [])).toThrow(/unknown checksum path/i)
   })
 
@@ -238,7 +268,7 @@ describe('release asset verification', () => {
         { encoding: 'utf8' },
       )
       expect(unpublished.status).toBe(1)
-      expect(unpublished.stderr).toContain('exact v0.1.0 release')
+      expect(unpublished.stderr).toContain('exact v1.0.1 release')
       expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('api.github.com')
 
       const normalized = spawnSync(
@@ -247,7 +277,7 @@ describe('release asset verification', () => {
         { encoding: 'utf8' },
       )
       expect(normalized.status).toBe(0)
-      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('/releases/download/v0.1.0/')
+      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('/releases/download/v1.0.1/')
 
       const checksummed = spawnSync(
         process.execPath,
@@ -292,12 +322,52 @@ describe('release asset verification', () => {
     }
   })
 
+  it('rejects a stale Linux artifact before updater normalization or checksum generation', () => {
+    const { root, directory, tauriConfig } = materializeCryptoRelease(true)
+    const updaterPath = join(directory, 'latest.json')
+    const updaterBytes = readFileSync(updaterPath, 'utf8')
+    try {
+      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.1_linux_x86_64.AppImage'), 'stale')
+
+      const normalization = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--normalize-updater'],
+        { encoding: 'utf8' },
+      )
+      expect(normalization.status).toBe(1)
+      expect(normalization.stderr).toContain('Unknown product, version, platform, or architecture asset')
+      expect(readFileSync(updaterPath, 'utf8')).toBe(updaterBytes)
+
+      const checksumming = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-assets.mjs',
+          '--directory',
+          directory,
+          '--tag',
+          fixture.tag,
+          '--write-checksums',
+          '--signature-verifier',
+          signatureVerifierPath,
+          '--tauri-config',
+          tauriConfig,
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(checksumming.status).toBe(1)
+      expect(checksumming.stderr).toContain('Unknown product, version, platform, or architecture asset')
+      expect(() => readFileSync(join(directory, 'SHA256SUMS'))).toThrow()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects updater metadata that does not exactly match its companion signature before checksumming', () => {
     const { root, directory, tauriConfig } = materializeCryptoRelease()
     try {
       const updaterPath = join(directory, 'latest.json')
       const updater = JSON.parse(readFileSync(updaterPath, 'utf8')) as ReleaseFixture['updater']
-      updater.platforms['linux-x86_64']!.signature = `${TEST_UPDATER_SIGNATURE}tampered`
+      updater.platforms['darwin-aarch64']!.signature = `${TEST_UPDATER_SIGNATURE}tampered`
       writeFileSync(updaterPath, `${JSON.stringify(updater)}\n`)
 
       const result = spawnSync(
@@ -327,7 +397,7 @@ describe('release asset verification', () => {
   it('rejects updater bytes with an invalid cryptographic signature before checksumming', () => {
     const { root, directory, tauriConfig } = materializeCryptoRelease()
     try {
-      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz'), 'Test')
+      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz'), 'Test')
       const result = spawnSync(
         process.execPath,
         [
@@ -474,12 +544,29 @@ Get-WindowsArchitecture
     }
   })
 
-  it('installs a verified Linux AppImage to a durable user path before launching it', () => {
-    const script = shell()
-    expect(script).toContain('INSTALL_ROOT=')
-    expect(script).toContain('INSTALLED_APPIMAGE_PATH=')
-    expect(script).toContain('mv -f -- "$STAGED_APPIMAGE_PATH" "$INSTALLED_APPIMAGE_PATH"')
-    expect(script.indexOf('"$INSTALLED_APPIMAGE_PATH"')).toBeGreaterThan(script.indexOf('EXPECTED_CHECKSUM'))
+  it('rejects Linux before calling curl or querying release metadata', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-linux-installer-'))
+    const curlSentinel = join(directory, 'curl-called')
+    try {
+      const uname = join(directory, 'uname')
+      const curl = join(directory, 'curl')
+      writeFileSync(uname, '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n')
+      writeFileSync(curl, `#!/bin/sh\nprintf 'called\\n' > '${curlSentinel}'\nexit 99\n`)
+      chmodSync(uname, 0o700)
+      chmodSync(curl, 0o700)
+
+      const result = spawnSync('sh', ['scripts/install.sh'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}` },
+      })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('macOS only')
+      expect(result.stdout).not.toContain('checking the latest public release')
+      expect(() => readFileSync(curlSentinel)).toThrow()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('rejects non-Windows hosts before PowerShell performs network or architecture selection', () => {

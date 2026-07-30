@@ -1,109 +1,86 @@
 {
-  "tag": "v0.1.0",
+  "tag": "v1.0.1",
   "assets": [
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_aarch64.dmg",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_aarch64.dmg",
       "size": 101,
       "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_aarch64.app.tar.gz",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz",
       "size": 102,
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_aarch64.app.tar.gz.sig",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz.sig",
       "size": 103,
       "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_x86_64.dmg",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_x86_64.dmg",
       "size": 104,
       "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_x86_64.app.tar.gz",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_x86_64.app.tar.gz",
       "size": 105,
       "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_macos_x86_64.app.tar.gz.sig",
+      "name": "LOOP24-Workflow-Studio_1.0.1_macos_x86_64.app.tar.gz.sig",
       "size": 106,
       "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_windows_x86_64-setup.exe",
+      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.exe",
       "size": 107,
       "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_windows_x86_64.nsis.zip",
+      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
       "size": 108,
       "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_windows_x86_64.nsis.zip.sig",
+      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip.sig",
       "size": 109,
       "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
     },
     {
-      "name": "LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage",
+      "name": "latest.json",
       "size": 110,
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
-    {
-      "name": "LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz",
-      "size": 111,
-      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    },
-    {
-      "name": "LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz.sig",
-      "size": 112,
-      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    },
-    {
-      "name": "latest.json",
-      "size": 113,
-      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    },
-    { "name": "SHA256SUMS", "size": 114 }
+    { "name": "SHA256SUMS", "size": 111 }
   ],
   "updater": {
-    "version": "0.1.0",
-    "notes": "Workflow Studio 0.1.0",
+    "version": "1.0.1",
+    "notes": "Workflow Studio 1.0.1",
     "pub_date": "2026-07-30T10:00:00.000Z",
     "platforms": {
       "darwin-aarch64": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_macos_aarch64.app.tar.gz",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz",
         "signature": "signed-darwin-arm"
       },
       "darwin-aarch64-app": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_macos_aarch64.app.tar.gz",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_macos_aarch64.app.tar.gz",
         "signature": "signed-darwin-arm"
       },
       "darwin-x86_64": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_macos_x86_64.app.tar.gz",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_macos_x86_64.app.tar.gz",
         "signature": "signed-darwin-intel"
       },
       "darwin-x86_64-app": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_macos_x86_64.app.tar.gz",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_macos_x86_64.app.tar.gz",
         "signature": "signed-darwin-intel"
       },
       "windows-x86_64": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_windows_x86_64.nsis.zip",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
         "signature": "signed-windows"
       },
       "windows-x86_64-nsis": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_windows_x86_64.nsis.zip",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
         "signature": "signed-windows"
-      },
-      "linux-x86_64": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz",
-        "signature": "signed-linux"
-      },
-      "linux-x86_64-appimage": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v0.1.0/LOOP24-Workflow-Studio_0.1.0_linux_x86_64.AppImage.tar.gz",
-        "signature": "signed-linux"
       }
     }
   }
