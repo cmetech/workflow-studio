@@ -54,6 +54,10 @@ export interface WorkspaceActionsNative {
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
   workspaceRenamePair(request: WorkspaceRenameRequest): Promise<WorkspaceRenameResult>
+  workspaceRenamePath?(source: string, destination: string): Promise<WorkspaceRenameResult>
+  gitDetect?(): Promise<{ readonly root: string } | null>
+  gitIsTracked?(root: string, path: string): Promise<boolean>
+  gitMovePath?(root: string, source: string, destination: string): Promise<void>
   workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
   externalReadYaml(path: string): Promise<ExternalYamlReadResult>
   externalExportYamlPair(request: {
@@ -244,11 +248,11 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     definitionPath: string
     destinationDefinition: string
   }): Promise<WorkspaceRenameActionResult> {
-    const result = await dependencies.native.workspaceRenamePair({
-      sourceDefinition: input.definitionPath,
-      destinationDefinition: input.destinationDefinition,
-    })
+    const result = await renamePairTrackedAware(input.definitionPath, input.destinationDefinition)
     const destinationCompanion = companionPathFor(input.destinationDefinition)
+    if (!result.paths.includes(input.destinationDefinition)) {
+      return { ...result, status: 'partial' }
+    }
     try {
       await dependencies.renameDocument(
         input.workspaceId,
@@ -271,6 +275,74 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
           },
         ],
       }
+    }
+  }
+
+  async function renamePairTrackedAware(
+    sourceDefinition: string,
+    destinationDefinition: string,
+  ): Promise<WorkspaceRenameResult> {
+    const { gitDetect, gitIsTracked, gitMovePath, workspaceRenamePath } = dependencies.native
+    if (!gitDetect || !gitIsTracked || !gitMovePath || !workspaceRenamePath) {
+      return dependencies.native.workspaceRenamePair({ sourceDefinition, destinationDefinition })
+    }
+    const repository = await gitDetect()
+    if (!repository) return dependencies.native.workspaceRenamePair({ sourceDefinition, destinationDefinition })
+    const sourceCompanion = companionPathFor(sourceDefinition)
+    const destinationCompanion = companionPathFor(destinationDefinition)
+    const companionExists = (await dependencies.native.workspaceScan()).some(
+      ({ relativePath, kind }) => relativePath === sourceCompanion && kind === 'file',
+    )
+    const moves = [
+      { source: sourceDefinition, destination: destinationDefinition },
+      ...(companionExists ? [{ source: sourceCompanion, destination: destinationCompanion }] : []),
+    ]
+    const tracked = await Promise.all(moves.map(({ source }) => gitIsTracked(repository.root, source)))
+    if (!tracked.some(Boolean)) {
+      return dependencies.native.workspaceRenamePair({ sourceDefinition, destinationDefinition })
+    }
+
+    const completed: { source: string; destination: string; tracked: boolean }[] = []
+    const results: WorkspaceRenameResult['results'][number][] = []
+    try {
+      for (const [index, move] of moves.entries()) {
+        if (tracked[index]) {
+          await gitMovePath(repository.root, move.source, move.destination)
+          results.push({ relativePath: move.source, destinationPath: move.destination, status: 'moved' })
+        } else {
+          const moved = await workspaceRenamePath(move.source, move.destination)
+          results.push(...moved.results)
+        }
+        completed.push({ ...move, tracked: tracked[index] ?? false })
+      }
+      return { paths: moves.map(({ destination }) => destination), results }
+    } catch (error: unknown) {
+      const failedIndex = completed.length
+      const rollbackResults = [...results]
+      for (const move of completed.reverse()) {
+        try {
+          if (move.tracked) await gitMovePath(repository.root, move.destination, move.source)
+          else await workspaceRenamePath(move.destination, move.source)
+          const prior = rollbackResults.find((result) => result.relativePath === move.source)
+          if (prior) Object.assign(prior, { status: 'rolledBack' as const })
+        } catch (rollbackError: unknown) {
+          rollbackResults.push({
+            relativePath: move.destination,
+            destinationPath: move.source,
+            status: 'partial',
+            errorCode: errorCode(rollbackError),
+            message: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          })
+        }
+      }
+      rollbackResults.push({
+        relativePath: moves[failedIndex]?.source ?? sourceDefinition,
+        destinationPath: moves[failedIndex]?.destination ?? destinationDefinition,
+        status: 'failed',
+        errorCode: errorCode(error),
+        message: error instanceof Error ? error.message : String(error),
+      })
+      return { paths: [], results: rollbackResults }
     }
   }
 

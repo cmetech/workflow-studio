@@ -130,6 +130,9 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       })
       return { paths, results }
     },
+    workspaceRenamePath: async () => {
+      throw new NativeError('native_unavailable', 'Exact filesystem rename requires the desktop application.')
+    },
     workspaceTrashPaths: async (requests) => {
       if (requests.length < 1 || requests.length > 2) {
         throw new NativeError('invalid_trash_request', 'Move to Trash accepts one or two exact workspace file paths.')
@@ -219,6 +222,19 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     gitDisposeHistorySession: async () => undefined,
     gitShowPair: async () => {
       throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitInit: async () => {
+      throw new NativeError('git_unavailable', 'Repository initialization requires the desktop application.')
+    },
+    gitSetLocalIdentity: async () => {
+      throw new NativeError('git_unavailable', 'Repository identity requires the desktop application.')
+    },
+    gitCreatePairVersion: async () => {
+      throw new NativeError('git_unavailable', 'Creating a Git version requires the desktop application.')
+    },
+    gitIsTracked: async () => false,
+    gitMovePath: async () => {
+      throw new NativeError('git_unavailable', 'Moving a tracked Git path requires the desktop application.')
     },
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)

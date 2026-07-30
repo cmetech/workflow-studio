@@ -5,8 +5,9 @@
     history: readonly GitCommitSummary[]
     selectedOid: string | undefined
     onSelect: (oid: string) => void | Promise<void>
+    onRestore?: ((oid: string) => void | Promise<void>) | undefined
   }
-  let { history, selectedOid, onSelect }: Props = $props()
+  let { history, selectedOid, onSelect, onRestore }: Props = $props()
 </script>
 
 <section aria-labelledby="git-history-title">
@@ -22,6 +23,9 @@
             <span>{commit.shortOid} · {commit.authorName}</span>
             <time datetime={commit.authoredAt}>{commit.authoredAt}</time>
           </button>
+          {#if selectedOid === commit.oid && onRestore}
+            <button class="restore" type="button" onclick={() => onRestore?.(commit.oid)}>Load as unsaved draft</button>
+          {/if}
         </li>
       {/each}
     </ol>
@@ -51,6 +55,10 @@
     text-align: left;
   }
   button[aria-pressed='true'] {
+    border-color: var(--color-focus);
+  }
+  .restore {
+    margin-top: 0.25rem;
     border-color: var(--color-focus);
   }
   span,

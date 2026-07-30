@@ -3,7 +3,14 @@ import { listen } from '@tauri-apps/api/event'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob } from '../recovery/types'
 import type { ContractCacheLoadResult } from '../contract/contract-cache'
-import type { GitDiff, GitHistoryResult, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
+import type {
+  GitDiff,
+  GitHistoryResult,
+  GitPairSnapshot,
+  GitRepository,
+  GitStatus,
+  GitVersionResult,
+} from '../git/types'
 import {
   NativeError,
   type PathOperationResult,
@@ -87,6 +94,8 @@ export const tauriBridge: WorkspaceNativeBridge = {
   workspaceRead: (relativePath) => invokeTyped<WorkspaceReadResult>('workspace_read', { relativePath }),
   workspaceWrite: (request) => invokeTyped<WorkspaceWriteResult>('workspace_write', { ...request }),
   workspaceRenamePair: (request) => invokeTyped<WorkspaceRenameResult>('workspace_rename_pair', { ...request }),
+  workspaceRenamePath: (source, destination) =>
+    invokeTyped<WorkspaceRenameResult>('workspace_rename_path', { source, destination }),
   workspaceTrashPaths: (requests) =>
     invokeTyped<WorkspaceTrashResult>('workspace_trash_paths', {
       requests: requests.map((request) => ({ ...request })),
@@ -146,6 +155,18 @@ export const tauriBridge: WorkspaceNativeBridge = {
       definitionPath,
       companionPath,
     }),
+  gitInit: (root) => invokeTyped<GitRepository>('git_init', { root }),
+  gitSetLocalIdentity: (root, userName, userEmail) =>
+    invokeTyped<void>('git_set_local_identity', { root, userName, userEmail }),
+  gitCreatePairVersion: (root, definitionPath, companionPath, message) =>
+    invokeTyped<GitVersionResult>('git_create_pair_version', {
+      root,
+      definitionPath,
+      companionPath,
+      message,
+    }),
+  gitIsTracked: (root, path) => invokeTyped<boolean>('git_is_tracked', { root, path }),
+  gitMovePath: (root, source, destination) => invokeTyped<void>('git_move_path', { root, source, destination }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

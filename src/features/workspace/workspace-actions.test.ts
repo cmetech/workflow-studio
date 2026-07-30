@@ -476,6 +476,78 @@ describe('workspace actions', () => {
     expect(renameDocument).toHaveBeenCalledWith('workspace', 'flow.yaml', 'archive/renamed.yaml', true)
   })
 
+  it('uses exact Git and filesystem moves for a mixed tracked pair before migrating identity', async () => {
+    const mixedNative = Object.assign(native, {
+      gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
+      gitIsTracked: vi.fn(async (_root: string, path: string) => path === 'flow.yaml'),
+      gitMovePath: vi.fn(async () => undefined),
+      workspaceRenamePath: vi.fn(async (source: string, destination: string) => ({
+        paths: [destination],
+        results: [{ relativePath: source, destinationPath: destination, status: 'moved' as const }],
+      })),
+    })
+
+    const outcome = await createWorkspaceActions({
+      native: mixedNative,
+      contracts: [contract],
+      analyze: vi.fn(async () => validAnalysis()),
+      activate,
+      openDraft,
+      closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
+      renameDocument,
+      companionCreated,
+      companionRemoved,
+      recoverDraft,
+    }).renameWorkflow({
+      workspaceId: 'workspace',
+      definitionPath: 'flow.yaml',
+      destinationDefinition: 'renamed.yaml',
+    })
+
+    expect(mixedNative.gitMovePath).toHaveBeenCalledWith('/repo', 'flow.yaml', 'renamed.yaml')
+    expect(mixedNative.workspaceRenamePath).toHaveBeenCalledWith('flow.hermes.yaml', 'renamed.hermes.yaml')
+    expect(renameDocument).toHaveBeenCalledWith('workspace', 'flow.yaml', 'renamed.yaml', true)
+    expect(outcome.status).toBe('completed')
+  })
+
+  it('rolls back completed Git moves and skips identity migration when a mixed rename fails', async () => {
+    const mixedNative = Object.assign(native, {
+      gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
+      gitIsTracked: vi.fn(async (_root: string, path: string) => path === 'flow.yaml'),
+      gitMovePath: vi.fn(async () => undefined),
+      workspaceRenamePath: vi.fn(async () => {
+        throw Object.assign(new Error('companion move failed'), { code: 'workspace_rename_failed' })
+      }),
+    })
+
+    const outcome = await createWorkspaceActions({
+      native: mixedNative,
+      contracts: [contract],
+      analyze: vi.fn(async () => validAnalysis()),
+      activate,
+      openDraft,
+      closeDocument,
+      currentDocument,
+      flushRecovery,
+      closeWorkspace,
+      renameDocument,
+      companionCreated,
+      companionRemoved,
+      recoverDraft,
+    }).renameWorkflow({
+      workspaceId: 'workspace',
+      definitionPath: 'flow.yaml',
+      destinationDefinition: 'renamed.yaml',
+    })
+
+    expect(mixedNative.gitMovePath).toHaveBeenNthCalledWith(2, '/repo', 'renamed.yaml', 'flow.yaml')
+    expect(renameDocument).not.toHaveBeenCalled()
+    expect(outcome.status).toBe('partial')
+  })
+
   it('returns a structured partial rename outcome when post-native lifecycle migration fails', async () => {
     renameDocument.mockRejectedValueOnce(new Error('layout flush failed'))
 

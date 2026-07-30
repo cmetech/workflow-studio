@@ -40,6 +40,11 @@ export interface GitPairSnapshot {
   readonly companion: string | null
 }
 
+export interface GitVersionResult {
+  readonly oid: string
+  readonly status: GitStatus
+}
+
 export interface GitPairPaths {
   readonly definitionPath: string
   readonly companionPath: string | null

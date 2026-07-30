@@ -66,6 +66,45 @@ describe('GitView', () => {
     expect(onSelectCommit).toHaveBeenCalledWith('0123456789abcdef')
   })
 
+  it('compares current text and loads the accepted historical pair only through the draft callback', async () => {
+    const snapshot = {
+      oid: '0123456789abcdef',
+      definition: 'name: historical\n',
+      companion: 'profile: historical\n',
+    }
+    const onRestoreDraft = vi.fn(async () => undefined)
+    setGitInspection({
+      pair: { definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' },
+      repository: { root: '/repo', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: '', index: '' },
+      history: [
+        {
+          oid: snapshot.oid,
+          shortOid: '0123456789ab',
+          authorName: 'Ada',
+          authoredAt: '2026-07-29T10:00:00Z',
+          subject: 'Historical pair',
+        },
+      ],
+    })
+    render(GitView, {
+      props: {
+        onSelectCommit: vi.fn(async () => snapshot),
+        currentDefinition: 'name: current\n',
+        currentCompanion: 'profile: current\n',
+        onRestoreDraft,
+      },
+    } as never)
+
+    await fireEvent.click(screen.getByRole('button', { name: /Historical pair/ }))
+    expect(await screen.findByLabelText('Current definition')).toHaveTextContent('name: current')
+    expect(screen.getByLabelText('Historical definition')).toHaveTextContent('name: historical')
+    await fireEvent.click(screen.getByRole('button', { name: 'Load as unsaved draft' }))
+
+    expect(onRestoreDraft).toHaveBeenCalledWith(snapshot)
+  })
+
   it('clears and generation-gates historical preview when the pair changes', async () => {
     const onSelectCommit = vi.fn(async () => ({
       oid: 'aaaaaaaa',
@@ -112,5 +151,45 @@ describe('GitView', () => {
     render(GitView, { props: { onSelectCommit: vi.fn() } } as never)
 
     expect(screen.getByText('This workspace is not a Git repository.')).toBeVisible()
+  })
+
+  it('requires the exact-root dialog before repository initialization', async () => {
+    const onInitialize = vi.fn(async () => undefined)
+    setGitInspection({ repository: null, status: { entries: [] }, diff: { working: '', index: '' }, history: [] })
+    render(GitView, {
+      props: { onSelectCommit: vi.fn(), workspaceRoot: '/selected/workspace', onInitialize },
+    } as never)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Initialize Git repository' }))
+    expect(screen.getByText('/selected/workspace')).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Initialize repository' }))
+    expect(onInitialize).toHaveBeenCalledOnce()
+  })
+
+  it('opens create-version confirmation with the exact current pair and readiness', async () => {
+    const onCreateVersion = vi.fn(async () => undefined)
+    setGitInspection({
+      pair: { definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' },
+      repository: { root: '/repo', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: 'working pair diff', index: 'index pair diff' },
+      history: [],
+    })
+    render(GitView, {
+      props: {
+        onSelectCommit: vi.fn(),
+        versionReady: true,
+        findings: ['Provider unavailable'],
+        onCreateVersion,
+        onSetIdentity: vi.fn(),
+      },
+    } as never)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version…' }))
+    expect(screen.getByText('flow.hermes.yaml')).toBeVisible()
+    expect(screen.getByText('Provider unavailable')).toBeVisible()
+    await fireEvent.input(screen.getByLabelText('Version message'), { target: { value: 'Checkpoint' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version' }))
+    expect(onCreateVersion).toHaveBeenCalledWith('Checkpoint')
   })
 })

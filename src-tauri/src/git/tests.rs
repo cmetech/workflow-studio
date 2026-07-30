@@ -839,6 +839,50 @@ fn rejects_a_repository_root_that_was_not_detected_from_the_selected_workspace()
 }
 
 #[test]
+fn pair_version_rejects_a_file_replaced_after_preflight_before_index_mutation() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "--local", "user.name", "Fixture"]);
+    git(
+        root,
+        &["config", "--local", "user.email", "fixture@example.test"],
+    );
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    let context = AuthorizedGitContext::bind(root, root).unwrap();
+    let mut replaced = false;
+
+    let error =
+        super::mutate::create_pair_version_with_guard(root, "flow.yaml", None, "version", || {
+            context.verify()?;
+            if !replaced {
+                fs::rename(root.join("flow.yaml"), root.join("original.yaml")).unwrap();
+                fs::write(root.join("flow.yaml"), "name: attacker\n").unwrap();
+                replaced = true;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+    assert_eq!(error.code, "git_pair_changed");
+    let index = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert!(index.status.success());
+    assert!(index.stdout.is_empty());
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
 fn builds_a_fixed_noninteractive_literal_diff_command() {
     let root = Path::new("/selected workspace");
     let paths = ["flows/a b.yaml"];

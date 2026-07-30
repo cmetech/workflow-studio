@@ -2,7 +2,14 @@ import type { WorkspaceFileEntry } from '../workspace/types'
 import type { RecoveryBlob, RecoveryWriteRequest } from '../recovery/types'
 import type { ContractCacheLoadResult, ContractCacheStoredEntry } from '../contract/contract-cache'
 import type { WorkflowProfile } from '../contract/types'
-import type { GitDiff, GitHistoryResult, GitPairSnapshot, GitRepository, GitStatus } from '../git/types'
+import type {
+  GitDiff,
+  GitHistoryResult,
+  GitPairSnapshot,
+  GitRepository,
+  GitStatus,
+  GitVersionResult,
+} from '../git/types'
 
 export interface HostInfo {
   appVersion: string
@@ -124,6 +131,19 @@ export interface GitNativeBridge extends NativeBridge {
   ): Promise<GitPairSnapshot>
 }
 
+export interface GitMutationNativeBridge extends NativeBridge {
+  gitInit(root: string): Promise<GitRepository>
+  gitSetLocalIdentity(root: string, userName: string, userEmail: string): Promise<void>
+  gitCreatePairVersion(
+    root: string,
+    definitionPath: string,
+    companionPath: string | null,
+    message: string,
+  ): Promise<GitVersionResult>
+  gitIsTracked(root: string, path: string): Promise<boolean>
+  gitMovePath(root: string, source: string, destination: string): Promise<void>
+}
+
 export interface ContractNativeBridge extends NativeBridge {
   chooseContractFile(): Promise<string | null>
   chooseHermesExecutable(): Promise<string | null>
@@ -136,7 +156,8 @@ export interface ContractNativeBridge extends NativeBridge {
   contractCacheWrite(entries: readonly ContractCacheStoredEntry[]): Promise<void>
 }
 
-export interface WorkspaceNativeBridge extends LayoutNativeBridge, ContractNativeBridge, GitNativeBridge {
+export interface WorkspaceNativeBridge
+  extends LayoutNativeBridge, ContractNativeBridge, GitNativeBridge, GitMutationNativeBridge {
   chooseWorkspaceFolder(): Promise<string | null>
   chooseImportDefinition(): Promise<string | null>
   chooseExportDirectory(): Promise<string | null>
@@ -145,6 +166,7 @@ export interface WorkspaceNativeBridge extends LayoutNativeBridge, ContractNativ
   workspaceRead(relativePath: string): Promise<WorkspaceReadResult>
   workspaceWrite(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
   workspaceRenamePair(request: WorkspaceRenameRequest): Promise<WorkspaceRenameResult>
+  workspaceRenamePath(source: string, destination: string): Promise<WorkspaceRenameResult>
   workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
   externalReadYaml(path: string): Promise<{ readonly path: string; readonly text: string }>
   externalExportYamlPair(request: {

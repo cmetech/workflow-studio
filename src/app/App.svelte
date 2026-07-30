@@ -86,6 +86,7 @@
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
+  import { createVersion, loadHistoricalPairAsDraft, pairIsSavedCurrentValid } from '$src/lib/git/version-actions'
   import { createGitInspectionController, synchronizeGitLifecycle } from '$src/stores/git'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
@@ -174,6 +175,7 @@
   })
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
+  let selectedWorkspaceRoot = $state<string | null>(null)
   let quickOpenVisible = $state(false)
   let quickOpenOpener = $state<HTMLElement | undefined>()
   let contextEntryId = $state<string | null>(null)
@@ -750,10 +752,44 @@
   async function openWorkspace(rootPath?: string): Promise<void> {
     const selected = await actions.openWorkspace(rootPath)
     if (selected) {
+      selectedWorkspaceRoot = selected.rootPath
       gitController.reset()
       void refreshGitRepository()
     }
     await refreshRecent()
+  }
+
+  async function initializeGitRepository(): Promise<void> {
+    if (!selectedWorkspaceRoot) throw new Error('Select a workspace before initializing Git.')
+    await native.gitInit(selectedWorkspaceRoot)
+    await refreshGit()
+  }
+
+  async function setRepositoryIdentity(identity: { userName: string; userEmail: string }): Promise<void> {
+    const repository = await native.gitDetect()
+    if (!repository) throw new Error('Initialize or open a Git repository first.')
+    await native.gitSetLocalIdentity(repository.root, identity.userName, identity.userEmail)
+    await refreshGit()
+  }
+
+  async function createCurrentPairVersion(message: string): Promise<void> {
+    const session = documentSessionStore.get()
+    const repository = await native.gitDetect()
+    if (!session.pair || !repository) throw new Error('Open a workflow in a Git repository first.')
+    const result = await createVersion(native, {
+      root: repository.root,
+      pair: session.pair,
+      analysis: session.analysis,
+      message,
+    })
+    if (result.status !== 'created') {
+      throw new Error(
+        result.reason === 'message_required'
+          ? 'Enter a version message.'
+          : 'Save the current structurally valid YAML before creating a version.',
+      )
+    }
+    await refreshGit()
   }
 
   async function refreshWorkspace(): Promise<void> {
@@ -784,6 +820,27 @@
       if (!snapshot) throw new Error('The selected historical preview changed before it loaded.')
       return snapshot
     })
+  }
+
+  async function restoreHistoricalGitPair(snapshot: GitPairSnapshot): Promise<void> {
+    const session = documentSessionStore.get()
+    if (!session.pair || !session.revision) return
+    const contract = contracts.find((candidate) => candidate.contract_digest === session.revision?.contractDigest)
+    if (!contract) {
+      workspaceError = 'The active authoring contract is unavailable for historical restore.'
+      return
+    }
+    const restored = await loadHistoricalPairAsDraft({
+      pair: session.pair,
+      snapshot,
+      apply: async (pair, mutation) => {
+        const result = await applyWorkflowMutation(pair, mutation, contract)
+        if (!result.ok) throw new Error(result.message)
+        historyStore.set(recordTransaction(historyStore.get(), result.transaction))
+        return result.pair
+      },
+    })
+    documentWorkspace.changed(restored, 'user')
   }
 
   async function handleExternalWorkspacePath(path: string): Promise<void> {
@@ -1300,7 +1357,21 @@
           <p>Loading bundled contracts…</p>
         {/if}
       {:else if $activeActivity === 'git'}
-        <GitView onSelectCommit={loadHistoricalGitPair} />
+        <GitView
+          onSelectCommit={loadHistoricalGitPair}
+          currentDefinition={$documentSessionStore.pair?.definition.text}
+          currentCompanion={$documentSessionStore.pair?.companion?.text}
+          onRestoreDraft={restoreHistoricalGitPair}
+          workspaceRoot={selectedWorkspaceRoot ?? undefined}
+          versionReady={Boolean(
+            $documentSessionStore.pair &&
+            pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
+          )}
+          findings={$documentSessionStore.analysis?.issues.map(({ message }) => message) ?? []}
+          onInitialize={initializeGitRepository}
+          onSetIdentity={setRepositoryIdentity}
+          onCreateVersion={createCurrentPairVersion}
+        />
       {:else if $activeActivity === 'documentation'}
         {#if documentationIndex}
           <DocumentationView

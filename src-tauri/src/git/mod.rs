@@ -1,5 +1,15 @@
+mod mutate;
 mod parse;
 mod runner;
+
+pub use mutate::{
+    create_pair_version, init_repository, is_tracked, move_tracked_path, set_local_identity,
+    GitVersionResult,
+};
+use mutate::{
+    create_pair_version_with_guard, init_repository_with_guard, move_tracked_path_with_guard,
+    set_local_identity_with_guard,
+};
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
@@ -20,7 +30,7 @@ pub struct GitError {
 }
 
 impl GitError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -1177,6 +1187,112 @@ pub fn git_show_pair(
     )?;
     verify_workspace_binding(&state, &binding)?;
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn git_init(
+    root: String,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<GitRepository> {
+    let binding = active_workspace_binding(&state)?;
+    let requested = Path::new(&root).canonicalize().map_err(|_| {
+        GitError::new(
+            "git_workspace_changed",
+            "The confirmed workspace root is no longer available.",
+        )
+    })?;
+    if requested != binding.root {
+        return Err(GitError::new(
+            "git_repository_not_authorized",
+            "Repository initialization is limited to the selected workspace root.",
+        ));
+    }
+    let result =
+        init_repository_with_guard(&binding.root, || verify_workspace_binding(&state, &binding))?;
+    verify_workspace_binding(&state, &binding)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn git_set_local_identity(
+    root: String,
+    user_name: String,
+    user_email: String,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<()> {
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    set_local_identity_with_guard(&context.repository_root, &user_name, &user_email, || {
+        verify_workspace_binding(&state, &binding)?;
+        context.verify()
+    })?;
+    verify_workspace_binding(&state, &binding)?;
+    context.verify()
+}
+
+#[tauri::command]
+pub fn git_create_pair_version(
+    root: String,
+    definition_path: String,
+    companion_path: Option<String>,
+    message: String,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<GitVersionResult> {
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let definition = context.translate(&definition_path)?;
+    let companion = companion_path
+        .as_deref()
+        .map(|path| context.translate(path))
+        .transpose()?;
+    let mut result = create_pair_version_with_guard(
+        &context.repository_root,
+        &definition,
+        companion.as_deref(),
+        &message,
+        || {
+            verify_workspace_binding(&state, &binding)?;
+            context.verify()
+        },
+    )?;
+    verify_workspace_binding(&state, &binding)?;
+    context.verify()?;
+    result.status = context.status()?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn git_is_tracked(
+    root: String,
+    path: String,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<bool> {
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let path = context.translate(&path)?;
+    let result = is_tracked(&context.repository_root, &path)?;
+    verify_workspace_binding(&state, &binding)?;
+    context.verify()?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn git_move_path(
+    root: String,
+    source: String,
+    destination: String,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<()> {
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let source = context.translate(&source)?;
+    let destination = context.translate(&destination)?;
+    move_tracked_path_with_guard(&context.repository_root, &source, &destination, || {
+        verify_workspace_binding(&state, &binding)?;
+        context.verify()
+    })?;
+    verify_workspace_binding(&state, &binding)?;
+    context.verify()
 }
 
 #[cfg(test)]

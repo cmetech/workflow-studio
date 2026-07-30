@@ -33,6 +33,7 @@ use super::{GitError, GitResult};
 
 const MAX_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) enum ReadOperation<'a> {
     RepositoryRoot,
@@ -40,10 +41,35 @@ pub(crate) enum ReadOperation<'a> {
     GitCommonDirectory,
     Branch,
     ShortHead,
+    FullHead,
     Status,
     Diff { cached: bool, paths: &'a [&'a str] },
     History { follow: bool, paths: &'a [&'a str] },
     Show { oid: &'a str, path: &'a str },
+    LocalConfig { key: &'a str },
+    PairStatus { paths: &'a [&'a str] },
+    IsTracked { path: &'a str },
+}
+
+pub(crate) enum MutationOperation<'a> {
+    Init {
+        workspace_root: &'a Path,
+    },
+    SetLocalConfig {
+        key: &'a str,
+        value: &'a str,
+    },
+    IntentToAdd {
+        paths: &'a [&'a str],
+    },
+    CommitOnly {
+        message: &'a str,
+        paths: &'a [&'a str],
+    },
+    Move {
+        source: &'a str,
+        destination: &'a str,
+    },
 }
 
 #[derive(Debug)]
@@ -65,6 +91,17 @@ impl CommandOutput {
 
 pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<CommandOutput> {
     run_command(build_read_command(root, operation), READ_TIMEOUT, None)
+}
+
+pub(crate) fn run_mutation(
+    root: &Path,
+    operation: MutationOperation<'_>,
+) -> GitResult<CommandOutput> {
+    run_command(
+        build_mutation_command(root, operation),
+        MUTATION_TIMEOUT,
+        None,
+    )
 }
 
 fn run_command(
@@ -351,6 +388,48 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
     command
 }
 
+fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Command {
+    let mut command = Command::new("git");
+    command.arg("--literal-pathspecs");
+    match operation {
+        MutationOperation::Init { workspace_root } => {
+            command.arg("init").arg(workspace_root);
+        }
+        operation => {
+            command
+                .arg("-C")
+                .arg(root)
+                .args(mutation_arguments(operation));
+        }
+    }
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_PAGER",
+        "GIT_OPTIONAL_LOCKS",
+        "EDITOR",
+        "VISUAL",
+    ] {
+        command.env_remove(key);
+    }
+    command
+        .env("GIT_PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C");
+    command
+}
+
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
@@ -360,6 +439,7 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
         }
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
+        ReadOperation::FullHead => strings(&["rev-parse", "HEAD"]),
         ReadOperation::Status => {
             strings(&["status", "--porcelain=v2", "-z", "--untracked-files=all"])
         }
@@ -394,6 +474,58 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
         ReadOperation::Show { oid, path } => {
             let mut values = strings(&["show", "--no-ext-diff", "--no-color"]);
             values.push(format!("{oid}:{path}").into());
+            values
+        }
+        ReadOperation::LocalConfig { key } => {
+            let mut values = strings(&["config", "--local", "--get"]);
+            values.push(key.into());
+            values
+        }
+        ReadOperation::PairStatus { paths } => {
+            let mut values = strings(&[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+                "--",
+            ]);
+            values.extend(paths.iter().map(OsString::from));
+            values
+        }
+        ReadOperation::IsTracked { path } => {
+            let mut values = strings(&["ls-files", "--error-unmatch", "--"]);
+            values.push(path.into());
+            values
+        }
+    }
+}
+
+fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
+    match operation {
+        MutationOperation::Init { .. } => unreachable!("init does not use -C arguments"),
+        MutationOperation::SetLocalConfig { key, value } => {
+            let mut values = strings(&["config", "--local"]);
+            values.extend([OsString::from(key), OsString::from(value)]);
+            values
+        }
+        MutationOperation::IntentToAdd { paths } => {
+            let mut values = strings(&["add", "--intent-to-add", "--"]);
+            values.extend(paths.iter().map(OsString::from));
+            values
+        }
+        MutationOperation::CommitOnly { message, paths } => {
+            let mut values = strings(&["commit", "--only", "-m"]);
+            values.push(message.into());
+            values.push("--".into());
+            values.extend(paths.iter().map(OsString::from));
+            values
+        }
+        MutationOperation::Move {
+            source,
+            destination,
+        } => {
+            let mut values = strings(&["mv", "--"]);
+            values.extend([OsString::from(source), OsString::from(destination)]);
             values
         }
     }

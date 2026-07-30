@@ -247,6 +247,17 @@ pub fn workspace_rename_pair(
 }
 
 #[tauri::command]
+pub fn workspace_rename_path(
+    source: String,
+    destination: String,
+    state: State<'_, WorkspaceState>,
+) -> WorkspaceResult<files::WorkspaceRenameResult> {
+    with_scope(&state, |scope| {
+        files::rename_path(scope, &source, &destination)
+    })
+}
+
+#[tauri::command]
 pub fn workspace_trash_paths(
     requests: Vec<files::TrashPathRequest>,
     state: State<'_, WorkspaceState>,

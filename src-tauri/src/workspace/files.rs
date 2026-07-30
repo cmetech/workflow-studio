@@ -837,6 +837,48 @@ pub fn rename_pair(
     )
 }
 
+pub fn rename_path(
+    scope: &WorkspaceScope,
+    source_relative: &str,
+    destination_relative: &str,
+) -> WorkspaceResult<WorkspaceRenameResult> {
+    require_yaml(source_relative)?;
+    require_yaml(destination_relative)?;
+    let source = bind_path(scope, source_relative)?;
+    let destination = bind_path(scope, destination_relative)?;
+    let source_identity = named_identity(&source, "path_not_found")
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
+    scope.verify()?;
+    ensure_bound_file(&source)?;
+    ensure_bound_missing(&destination, "The rename destination already exists.")?;
+    let outcome =
+        move_noclobber_with_expected(&source, &destination, &source_identity, || {}, || {});
+    if !matches!(outcome, MoveNoClobberOutcome::Moved) {
+        let (status, message) = move_failure_details(&outcome);
+        return Err(WorkspaceError::new(
+            move_error_code(&outcome, "workspace_rename_failed"),
+            &message,
+        )
+        .with_path_results(vec![path_result(
+            source_relative,
+            Some(destination_relative),
+            status,
+            Some(move_error_code(&outcome, "workspace_rename_failed")),
+            Some(message),
+        )]));
+    }
+    Ok(WorkspaceRenameResult {
+        paths: vec![destination_relative.to_owned()],
+        results: vec![path_result(
+            source_relative,
+            Some(destination_relative),
+            "moved",
+            None,
+            None,
+        )],
+    })
+}
+
 #[cfg(test)]
 pub fn rename_pair_with_second_step_hook(
     scope: &WorkspaceScope,

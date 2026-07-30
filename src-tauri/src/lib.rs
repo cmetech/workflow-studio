@@ -1,6 +1,6 @@
 mod commands;
 mod contracts;
-mod git;
+pub mod git;
 mod layout;
 mod recovery;
 mod startup;
@@ -24,6 +24,7 @@ pub fn run() {
             workspace::workspace_read,
             workspace::workspace_write,
             workspace::workspace_rename_pair,
+            workspace::workspace_rename_path,
             workspace::workspace_trash_paths,
             workspace::dialogs::dialog_choose_workspace,
             workspace::dialogs::dialog_choose_import_definition,
@@ -55,6 +56,11 @@ pub fn run() {
             git::git_revoke_history_authorization,
             git::git_dispose_history_session,
             git::git_show_pair,
+            git::git_init,
+            git::git_set_local_identity,
+            git::git_create_pair_version,
+            git::git_is_tracked,
+            git::git_move_path,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Workflow Studio");

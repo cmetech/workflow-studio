@@ -3,16 +3,40 @@
   import { gitState } from '$src/stores/git'
   import DiffView from './DiffView.svelte'
   import HistoryView from './HistoryView.svelte'
+  import CreateVersionDialog from './CreateVersionDialog.svelte'
+  import InitializeRepositoryDialog from './InitializeRepositoryDialog.svelte'
+  import RepositoryIdentityDialog from './RepositoryIdentityDialog.svelte'
 
   interface Props {
     onSelectCommit: (oid: string) => Promise<GitPairSnapshot | null>
+    currentDefinition?: string | undefined
+    currentCompanion?: string | null | undefined
+    onRestoreDraft?: ((snapshot: GitPairSnapshot) => void | Promise<void>) | undefined
+    workspaceRoot?: string | undefined
+    versionReady?: boolean | undefined
+    findings?: readonly string[] | undefined
+    onInitialize?: (() => void | Promise<void>) | undefined
+    onSetIdentity?: ((identity: { userName: string; userEmail: string }) => void | Promise<void>) | undefined
+    onCreateVersion?: ((message: string) => void | Promise<void>) | undefined
   }
-  let { onSelectCommit }: Props = $props()
+  let {
+    onSelectCommit,
+    currentDefinition,
+    currentCompanion,
+    onRestoreDraft,
+    workspaceRoot,
+    versionReady = false,
+    findings = [],
+    onInitialize,
+    onSetIdentity,
+    onCreateVersion,
+  }: Props = $props()
   let selected = $state<GitPairSnapshot | null>(null)
   let selectedOid = $state<string | undefined>()
   let previewError = $state<string | null>(null)
   let previewGeneration = 0
   let previewIdentity = ''
+  let dialog = $state<'initialize' | 'identity' | 'create' | null>(null)
 
   $effect(() => {
     const inspection = $gitState.inspection
@@ -39,6 +63,26 @@
       previewError = error instanceof Error ? error.message : 'The historical workflow could not be loaded.'
     }
   }
+
+  function restoreCommit(oid: string): void {
+    if (selected?.oid !== oid || !onRestoreDraft) return
+    void onRestoreDraft(selected)
+  }
+
+  async function initialize(): Promise<void> {
+    await onInitialize?.()
+    dialog = null
+  }
+
+  async function setIdentity(identity: { userName: string; userEmail: string }): Promise<void> {
+    await onSetIdentity?.(identity)
+    dialog = null
+  }
+
+  async function createVersion(message: string): Promise<void> {
+    await onCreateVersion?.(message)
+    dialog = null
+  }
 </script>
 
 <section class="git-view" aria-labelledby="git-view-title">
@@ -51,11 +95,20 @@
     <p>Open a workflow to inspect its local history.</p>
   {:else if !$gitState.inspection.repository}
     <p>This workspace is not a Git repository.</p>
+    {#if workspaceRoot && onInitialize}
+      <button type="button" onclick={() => (dialog = 'initialize')}>Initialize Git repository</button>
+    {/if}
   {:else}
     {@const repository = $gitState.inspection.repository}
     <p class="repository">
       {repository.branch ? `Branch: ${repository.branch}` : `Detached: ${repository.detachedHead ?? 'unknown'}`}
     </p>
+    <div class="actions">
+      {#if onSetIdentity}<button type="button" onclick={() => (dialog = 'identity')}>Configure identity…</button>{/if}
+      {#if $gitState.inspection.pair && onCreateVersion}
+        <button type="button" onclick={() => (dialog = 'create')}>Create version…</button>
+      {/if}
+    </div>
     <section aria-labelledby="git-status-title">
       <h3 id="git-status-title">{$gitState.inspection.pair ? 'Pair status' : 'Workspace status'}</h3>
       {#if $gitState.inspection.status.entries.length === 0}
@@ -70,7 +123,12 @@
     </section>
     {#if $gitState.inspection.pair}
       <DiffView diff={$gitState.inspection.diff} />
-      <HistoryView history={$gitState.inspection.history} {selectedOid} onSelect={selectCommit} />
+      <HistoryView
+        history={$gitState.inspection.history}
+        {selectedOid}
+        onSelect={selectCommit}
+        onRestore={onRestoreDraft ? restoreCommit : undefined}
+      />
     {:else}
       <p>Open a workflow to inspect its exact diff and history.</p>
     {/if}
@@ -78,14 +136,44 @@
     {#if selected && $gitState.inspection.pair}
       <section class="preview" aria-labelledby="historical-preview-title">
         <h3 id="historical-preview-title">Historical preview</h3>
-        <h4>Definition</h4>
+        {#if currentDefinition !== undefined}
+          <h4>Current definition</h4>
+          <pre aria-label="Current definition">{currentDefinition}</pre>
+        {/if}
+        <h4>Historical definition</h4>
         <pre aria-label="Historical definition">{selected.definition ?? 'Not present in this commit'}</pre>
-        <h4>Companion</h4>
+        {#if currentCompanion !== undefined}
+          <h4>Current companion</h4>
+          <pre aria-label="Current companion">{currentCompanion ?? 'Not present in the current draft'}</pre>
+        {/if}
+        <h4>Historical companion</h4>
         <pre aria-label="Historical companion">{selected.companion ?? 'Not present in this commit'}</pre>
       </section>
     {/if}
   {/if}
 </section>
+
+{#if dialog === 'initialize' && workspaceRoot}
+  <InitializeRepositoryDialog root={workspaceRoot} onConfirm={initialize} onCancel={() => (dialog = null)} />
+{:else if dialog === 'identity' && $gitState.inspection.repository}
+  <RepositoryIdentityDialog
+    root={$gitState.inspection.repository.root}
+    onSave={setIdentity}
+    onCancel={() => (dialog = null)}
+  />
+{:else if dialog === 'create' && $gitState.inspection.pair}
+  <CreateVersionDialog
+    files={[
+      $gitState.inspection.pair.definitionPath,
+      ...($gitState.inspection.pair.companionPath ? [$gitState.inspection.pair.companionPath] : []),
+    ]}
+    diff={`${$gitState.inspection.diff.working}${$gitState.inspection.diff.working && $gitState.inspection.diff.index ? '\n' : ''}${$gitState.inspection.diff.index}`}
+    {findings}
+    ready={versionReady}
+    onCreate={createVersion}
+    onCancel={() => (dialog = null)}
+  />
+{/if}
 
 <style>
   .git-view {
@@ -99,6 +187,12 @@
   }
   .repository {
     color: var(--color-focus);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
   }
   ul {
     padding-left: 1.25rem;
