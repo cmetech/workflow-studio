@@ -86,7 +86,13 @@
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
-  import { createVersion, loadHistoricalPairAsDraft, pairIsSavedCurrentValid } from '$src/lib/git/version-actions'
+  import {
+    createVersion,
+    loadHistoricalPairAsDraft,
+    pairIsSavedCurrentValid,
+    refreshAfterVersion,
+    type CreateVersionOutcome,
+  } from '$src/lib/git/version-actions'
   import { createGitInspectionController, gitState, synchronizeGitLifecycle } from '$src/stores/git'
   import EditorModes from '$src/features/editor/EditorModes.svelte'
   import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
@@ -771,7 +777,7 @@
     await refreshGit()
   }
 
-  async function createCurrentPairVersion(message: string): Promise<void> {
+  async function createCurrentPairVersion(message: string): Promise<CreateVersionOutcome> {
     const session = documentSessionStore.get()
     const repository = await native.gitDetect()
     if (!session.pair || !repository) throw new Error('Open a workflow in a Git repository first.')
@@ -782,7 +788,7 @@
       message,
       authorizationToken: gitState.get().inspection.diff.authorizationToken ?? '',
     })
-    if (result.status !== 'created') {
+    if (result.status === 'blocked') {
       throw new Error(
         result.reason === 'message_required'
           ? 'Enter a version message.'
@@ -791,7 +797,7 @@
             : 'Save the current structurally valid YAML before creating a version.',
       )
     }
-    await refreshGit()
+    return refreshAfterVersion(result, refreshGit)
   }
 
   async function refreshWorkspace(): Promise<void> {

@@ -1665,8 +1665,10 @@ pub fn git_create_pair_version(
         &definition,
         companion.as_deref(),
     )?;
-    let mut result = create_pair_version_with_guard(
+    create_pair_version_with_guard(
         &context.repository_root,
+        &context.git_metadata.metadata.worktree_dir,
+        &authorization.base,
         &definition,
         companion.as_deref(),
         &message,
@@ -1676,11 +1678,7 @@ pub fn git_create_pair_version(
             authorization.binding.verify()?;
             authorization.base.verify(&context.repository_root)
         },
-    )?;
-    verify_workspace_binding(&state, &binding)?;
-    context.verify()?;
-    result.status = context.status()?;
-    Ok(result)
+    )
 }
 
 #[tauri::command]

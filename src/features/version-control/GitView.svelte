@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import type { GitPairSnapshot } from '$src/lib/git/types'
+  import type { CreateVersionOutcome } from '$src/lib/git/version-actions'
   import { gitState } from '$src/stores/git'
   import DiffView from './DiffView.svelte'
   import HistoryView from './HistoryView.svelte'
@@ -17,7 +19,8 @@
     findings?: readonly string[] | undefined
     onInitialize?: (() => void | Promise<void>) | undefined
     onSetIdentity?: ((identity: { userName: string; userEmail: string }) => void | Promise<void>) | undefined
-    onCreateVersion?: ((message: string) => void | Promise<void>) | undefined
+    onCreateVersion?:
+      ((message: string) => void | CreateVersionOutcome | Promise<void | CreateVersionOutcome>) | undefined
   }
   let {
     onSelectCommit,
@@ -37,6 +40,7 @@
   let previewGeneration = 0
   let previewIdentity = ''
   let dialog = $state<'initialize' | 'identity' | 'create' | null>(null)
+  let dialogOpener: HTMLElement | null = null
 
   $effect(() => {
     const inspection = $gitState.inspection
@@ -71,17 +75,31 @@
 
   async function initialize(): Promise<void> {
     await onInitialize?.()
-    dialog = null
+    await closeDialog()
   }
 
   async function setIdentity(identity: { userName: string; userEmail: string }): Promise<void> {
     await onSetIdentity?.(identity)
-    dialog = null
+    await closeDialog()
   }
 
-  async function createVersion(message: string): Promise<void> {
-    await onCreateVersion?.(message)
+  async function createVersion(message: string): Promise<void | CreateVersionOutcome> {
+    const result = await onCreateVersion?.(message)
+    if (!result || (result.status === 'committed' && result.warnings.length === 0)) await closeDialog()
+    return result
+  }
+
+  function openDialog(kind: 'initialize' | 'identity' | 'create', event: MouseEvent): void {
+    dialogOpener = event.currentTarget as HTMLElement
+    dialog = kind
+  }
+
+  async function closeDialog(): Promise<void> {
+    const opener = dialogOpener
     dialog = null
+    dialogOpener = null
+    await tick()
+    opener?.focus()
   }
 </script>
 
@@ -96,7 +114,7 @@
   {:else if !$gitState.inspection.repository}
     <p>This workspace is not a Git repository.</p>
     {#if workspaceRoot && onInitialize}
-      <button type="button" onclick={() => (dialog = 'initialize')}>Initialize Git repository</button>
+      <button type="button" onclick={(event) => openDialog('initialize', event)}>Initialize Git repository</button>
     {/if}
   {:else}
     {@const repository = $gitState.inspection.repository}
@@ -104,9 +122,11 @@
       {repository.branch ? `Branch: ${repository.branch}` : `Detached: ${repository.detachedHead ?? 'unknown'}`}
     </p>
     <div class="actions">
-      {#if onSetIdentity}<button type="button" onclick={() => (dialog = 'identity')}>Configure identity…</button>{/if}
+      {#if onSetIdentity}<button type="button" onclick={(event) => openDialog('identity', event)}
+          >Configure identity…</button
+        >{/if}
       {#if $gitState.inspection.pair && onCreateVersion}
-        <button type="button" onclick={() => (dialog = 'create')}>Create version…</button>
+        <button type="button" onclick={(event) => openDialog('create', event)}>Create version…</button>
       {/if}
     </div>
     <section aria-labelledby="git-status-title">
@@ -154,12 +174,12 @@
 </section>
 
 {#if dialog === 'initialize' && workspaceRoot}
-  <InitializeRepositoryDialog root={workspaceRoot} onConfirm={initialize} onCancel={() => (dialog = null)} />
+  <InitializeRepositoryDialog root={workspaceRoot} onConfirm={initialize} onCancel={() => void closeDialog()} />
 {:else if dialog === 'identity' && $gitState.inspection.repository}
   <RepositoryIdentityDialog
     root={$gitState.inspection.repository.root}
     onSave={setIdentity}
-    onCancel={() => (dialog = null)}
+    onCancel={() => void closeDialog()}
   />
 {:else if dialog === 'create' && $gitState.inspection.pair}
   <CreateVersionDialog
@@ -171,7 +191,7 @@
     {findings}
     ready={versionReady}
     onCreate={createVersion}
-    onCancel={() => (dialog = null)}
+    onCancel={() => void closeDialog()}
   />
 {/if}
 

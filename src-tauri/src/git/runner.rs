@@ -40,6 +40,7 @@ pub(crate) enum ReadOperation<'a> {
     GitDirectory,
     GitCommonDirectory,
     Branch,
+    HeadReference,
     ShortHead,
     FullHead,
     Status,
@@ -73,6 +74,16 @@ pub(crate) enum ReadOperation<'a> {
     IsTracked {
         path: &'a str,
     },
+    ResolveRef {
+        reference: &'a str,
+    },
+    HashFile {
+        path: &'a str,
+    },
+    TreeEntry {
+        tree: &'a str,
+        path: &'a str,
+    },
 }
 
 pub(crate) enum MutationOperation<'a> {
@@ -83,12 +94,27 @@ pub(crate) enum MutationOperation<'a> {
         key: &'a str,
         value: &'a str,
     },
-    IntentToAdd {
+    ReadTree {
+        tree: &'a str,
+    },
+    AddAll {
         paths: &'a [&'a str],
     },
-    CommitOnly {
-        message: &'a str,
-        paths: &'a [&'a str],
+    WriteTree,
+    RunHook {
+        name: &'a str,
+        message_file: Option<&'a Path>,
+        source: Option<&'a str>,
+    },
+    CommitTree {
+        tree: &'a str,
+        parent: Option<&'a str>,
+        message_file: &'a Path,
+    },
+    UpdateRef {
+        reference: &'a str,
+        new_oid: &'a str,
+        old_oid: &'a str,
     },
     Move {
         source: &'a str,
@@ -134,7 +160,9 @@ pub(crate) fn run_mutation_with_index(
     index_path: &Path,
 ) -> GitResult<CommandOutput> {
     let mut command = build_mutation_command(root, operation);
-    command.env("GIT_INDEX_FILE", index_path);
+    command
+        .env("GIT_INDEX_FILE", index_path)
+        .env("GIT_EDITOR", ":");
     run_command(command, MUTATION_TIMEOUT, None)
 }
 
@@ -409,6 +437,13 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
         "GIT_EXTERNAL_DIFF",
         "GIT_PAGER",
         "GIT_OPTIONAL_LOCKS",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "EMAIL",
         "EDITOR",
         "VISUAL",
     ] {
@@ -452,6 +487,13 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Comm
         "GIT_EXTERNAL_DIFF",
         "GIT_PAGER",
         "GIT_OPTIONAL_LOCKS",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "EMAIL",
         "EDITOR",
         "VISUAL",
     ] {
@@ -472,6 +514,7 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             strings(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
         }
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
+        ReadOperation::HeadReference => strings(&["symbolic-ref", "--quiet", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
         ReadOperation::FullHead => strings(&["rev-parse", "HEAD"]),
         ReadOperation::Status => {
@@ -558,6 +601,23 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.push(path.into());
             values
         }
+        ReadOperation::ResolveRef { reference } => {
+            let mut values = strings(&["rev-parse", "--verify"]);
+            values.push(reference.into());
+            values
+        }
+        ReadOperation::HashFile { path } => {
+            let mut values = strings(&["hash-object", "--no-filters", "--"]);
+            values.push(path.into());
+            values
+        }
+        ReadOperation::TreeEntry { tree, path } => {
+            let mut values = strings(&["ls-tree", "-z"]);
+            values.push(tree.into());
+            values.push("--".into());
+            values.push(path.into());
+            values
+        }
     }
 }
 
@@ -569,16 +629,59 @@ fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
             values.extend([OsString::from(key), OsString::from(value)]);
             values
         }
-        MutationOperation::IntentToAdd { paths } => {
-            let mut values = strings(&["add", "--intent-to-add", "--"]);
+        MutationOperation::ReadTree { tree } => {
+            let mut values = strings(&["read-tree"]);
+            values.push(tree.into());
+            values
+        }
+        MutationOperation::AddAll { paths } => {
+            let mut values = strings(&["add", "--all", "--"]);
             values.extend(paths.iter().map(OsString::from));
             values
         }
-        MutationOperation::CommitOnly { message, paths } => {
-            let mut values = strings(&["commit", "--only", "-m"]);
-            values.push(message.into());
-            values.push("--".into());
-            values.extend(paths.iter().map(OsString::from));
+        MutationOperation::WriteTree => strings(&["write-tree"]),
+        MutationOperation::RunHook {
+            name,
+            message_file,
+            source,
+        } => {
+            let mut values = strings(&["hook", "run", "--ignore-missing"]);
+            values.push(name.into());
+            if let Some(message_file) = message_file {
+                values.push("--".into());
+                values.push(message_file.as_os_str().into());
+                if let Some(source) = source {
+                    values.push(source.into());
+                }
+            }
+            values
+        }
+        MutationOperation::CommitTree {
+            tree,
+            parent,
+            message_file,
+        } => {
+            let mut values = strings(&["commit-tree"]);
+            values.push(tree.into());
+            if let Some(parent) = parent {
+                values.push("-p".into());
+                values.push(parent.into());
+            }
+            values.push("-F".into());
+            values.push(message_file.as_os_str().into());
+            values
+        }
+        MutationOperation::UpdateRef {
+            reference,
+            new_oid,
+            old_oid,
+        } => {
+            let mut values = strings(&["update-ref"]);
+            values.extend([
+                OsString::from(reference),
+                OsString::from(new_oid),
+                OsString::from(old_oid),
+            ]);
             values
         }
         MutationOperation::Move {

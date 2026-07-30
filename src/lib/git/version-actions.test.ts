@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import type { YamlTransaction } from '$src/lib/documents/transactions'
 import { createHistoryState, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
-import { createVersion, loadHistoricalPairAsDraft } from './version-actions'
+import { createVersion, loadHistoricalPairAsDraft, refreshAfterVersion } from './version-actions'
 
 function pair(): WorkflowPairText {
   return {
@@ -48,7 +48,12 @@ describe('createVersion', () => {
 
   it('passes exact saved pair paths and a trimmed required message', async () => {
     const native = {
-      gitCreatePairVersion: vi.fn(async () => ({ oid: 'a'.repeat(40), status: { entries: [] } })),
+      gitCreatePairVersion: vi.fn(async () => ({
+        outcome: 'committed' as const,
+        oid: 'a'.repeat(40),
+        status: { entries: [] },
+        warnings: [],
+      })),
     }
 
     const result = await createVersion(native, {
@@ -59,7 +64,7 @@ describe('createVersion', () => {
       authorizationToken: 'preview-token',
     })
 
-    expect(result.status).toBe('created')
+    expect(result).toEqual({ status: 'committed', oid: 'a'.repeat(40), warnings: [] })
     expect(native.gitCreatePairVersion).toHaveBeenCalledWith(
       '/repo',
       'flow.yaml',
@@ -67,6 +72,84 @@ describe('createVersion', () => {
       'Pair version',
       'preview-token',
     )
+  })
+
+  it('preserves committed warnings and distinct unknown outcomes without retrying native Git', async () => {
+    const committedNative = {
+      gitCreatePairVersion: vi.fn(async () => ({
+        outcome: 'committed' as const,
+        oid: 'b'.repeat(40),
+        status: null,
+        warnings: ['Status refresh failed'],
+      })),
+    }
+    const input = {
+      root: '/repo',
+      pair: pair(),
+      analysis: { structurallyValid: true, definitionRevision: 7, companionRevision: 3 },
+      message: 'Version',
+      authorizationToken: 'preview-token',
+    }
+
+    await expect(createVersion(committedNative, input)).resolves.toEqual({
+      status: 'committed',
+      oid: 'b'.repeat(40),
+      warnings: ['Status refresh failed'],
+    })
+
+    const unknownNative = {
+      gitCreatePairVersion: vi.fn(async () => ({
+        outcome: 'unknown' as const,
+        candidateOid: 'c'.repeat(40),
+        code: 'git_commit_outcome_unknown' as const,
+        message: 'Inspect repository before retrying.',
+      })),
+    }
+    await expect(createVersion(unknownNative, input)).resolves.toEqual({
+      status: 'unknown',
+      code: 'git_commit_outcome_unknown',
+      message: 'Inspect repository before retrying.',
+    })
+    expect(unknownNative.gitCreatePairVersion).toHaveBeenCalledOnce()
+  })
+
+  it('never refreshes an unknown outcome and converts committed refresh failure to a warning', async () => {
+    const refresh = vi.fn(async () => {
+      throw new Error('refresh unavailable')
+    })
+    const committed = await refreshAfterVersion(
+      { status: 'committed', oid: 'd'.repeat(40), warnings: ['post hook warning'] },
+      refresh,
+    )
+    expect(committed).toEqual({
+      status: 'committed',
+      oid: 'd'.repeat(40),
+      warnings: [
+        'post hook warning',
+        'The version was committed, but the Git view could not be refreshed: refresh unavailable',
+      ],
+    })
+
+    refresh.mockClear()
+    const unknown = {
+      status: 'unknown' as const,
+      code: 'git_commit_outcome_unknown' as const,
+      message: 'Inspect repository before retrying.',
+    }
+    await expect(refreshAfterVersion(unknown, refresh)).resolves.toBe(unknown)
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('bounds renderer refresh diagnostics after a committed outcome', async () => {
+    const result = await refreshAfterVersion({ status: 'committed', oid: 'e'.repeat(40), warnings: [] }, async () => {
+      throw new Error('x'.repeat(8_192))
+    })
+
+    expect(result.status).toBe('committed')
+    if (result.status !== 'committed') return
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]!.length).toBeLessThanOrEqual(4_097)
+    expect(result.warnings[0]).toMatch(/…$/)
   })
 })
 

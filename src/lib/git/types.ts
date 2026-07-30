@@ -41,10 +41,19 @@ export interface GitPairSnapshot {
   readonly companion: string | null
 }
 
-export interface GitVersionResult {
-  readonly oid: string
-  readonly status: GitStatus
-}
+export type GitVersionResult =
+  | {
+      readonly outcome: 'committed'
+      readonly oid: string
+      readonly status: GitStatus | null
+      readonly warnings: readonly string[]
+    }
+  | {
+      readonly outcome: 'unknown'
+      readonly candidateOid: string
+      readonly code: 'git_commit_outcome_unknown'
+      readonly message: string
+    }
 
 export interface GitPairPaths {
   readonly definitionPath: string

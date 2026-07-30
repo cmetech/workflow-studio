@@ -118,7 +118,7 @@ fn commits_a_tracked_pair_and_returns_the_new_oid() {
     .unwrap();
 
     assert_eq!(
-        version.oid,
+        version.committed_oid().expect("version must be committed"),
         assert_git(root.path(), &["rev-parse", "HEAD"]).trim()
     );
     assert_eq!(
@@ -283,9 +283,226 @@ fn a_rejected_commit_hook_returns_diagnostics_without_committing() {
 
     assert_eq!(error.code, "git_commit_rejected");
     assert!(error.message.contains("hook rejected"));
+    assert!(error.message.contains("worktree side effects may remain"));
     assert!(!git(root.path(), &["rev-parse", "--verify", "HEAD"])
         .status
         .success());
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_cannot_broaden_pair_commit_or_mutate_the_real_index() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    write_pair(root.path());
+    fs::write(root.path().join("tracked.txt"), "base\n").unwrap();
+    assert_git(root.path(), &["add", "."]);
+    assert_git(root.path(), &["commit", "-m", "initial"]);
+    fs::write(root.path().join("flow.yaml"), "name: changed\n").unwrap();
+    fs::write(root.path().join("tracked.txt"), "preexisting staged\n").unwrap();
+    assert_git(root.path(), &["add", "tracked.txt"]);
+    let index_path = root.path().join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = assert_git(root.path(), &["rev-parse", "HEAD"]);
+    let hook = root.path().join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nprintf 'hook created\\n' > hook-created.txt\ngit add tracked.txt hook-created.txt\n",
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "version",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert!(error.message.contains("worktree side effects may remain"));
+    assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:tracked.txt"]),
+        "base\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("hook-created.txt")).unwrap(),
+        "hook created\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hooks_cannot_change_pair_tree_or_stage_unrelated_content() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    for scenario in ["pair", "message-hooks"] {
+        let root = repository();
+        write_pair(root.path());
+        fs::write(root.path().join("unrelated.txt"), "base\n").unwrap();
+        assert_git(root.path(), &["add", "."]);
+        assert_git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(root.path().join("flow.yaml"), "name: accepted\n").unwrap();
+        let index_path = root.path().join(".git/index");
+        let before_index = fs::read(&index_path).unwrap();
+        let before_head = assert_git(root.path(), &["rev-parse", "HEAD"]);
+        if scenario == "pair" {
+            let hook = root.path().join(".git/hooks/pre-commit");
+            fs::write(
+                &hook,
+                "#!/bin/sh\nprintf 'name: hook changed\\n' > flow.yaml\ngit add flow.yaml\n",
+            )
+            .unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        } else {
+            fs::write(root.path().join("prepare.txt"), "prepare\n").unwrap();
+            fs::write(root.path().join("message.txt"), "message\n").unwrap();
+            let prepare = root.path().join(".git/hooks/prepare-commit-msg");
+            fs::write(
+                &prepare,
+                "#!/bin/sh\ntest \"$#\" = 2 && test \"$2\" = message || exit 19\ngit add prepare.txt\n",
+            )
+            .unwrap();
+            fs::set_permissions(&prepare, fs::Permissions::from_mode(0o755)).unwrap();
+            let commit = root.path().join(".git/hooks/commit-msg");
+            fs::write(
+                &commit,
+                "#!/bin/sh\ntest \"$#\" = 1 || exit 20\ngit add message.txt\n",
+            )
+            .unwrap();
+            fs::set_permissions(&commit, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let error = create_pair_version(
+            root.path(),
+            "flow.yaml",
+            Some("flow.hermes.yaml"),
+            "version",
+        )
+        .unwrap_err();
+
+        let expected = if scenario == "pair" {
+            "git_pair_changed"
+        } else {
+            "git_commit_candidate_changed"
+        };
+        assert_eq!(error.code, expected, "{scenario}");
+        assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
+        assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hooks_run_in_git_order_with_exact_arguments_and_post_commit_is_advisory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    write_pair(root.path());
+    assert_git(root.path(), &["add", "."]);
+    assert_git(root.path(), &["commit", "-m", "initial"]);
+    fs::write(root.path().join("flow.yaml"), "name: accepted\n").unwrap();
+    let hooks = root.path().join(".git/hooks");
+    let scripts = [
+        (
+            "pre-commit",
+            "#!/bin/sh\nprintf 'pre\\n' >> hook-order\nprintf 'name: accepted\\n' > flow.yaml\ngit add flow.yaml\n",
+        ),
+        (
+            "prepare-commit-msg",
+            "#!/bin/sh\ntest \"$#\" = 2 && test \"$2\" = message || exit 21\nprintf 'prepare:%s\\n' \"$2\" >> hook-order\n",
+        ),
+        (
+            "commit-msg",
+            "#!/bin/sh\ntest \"$#\" = 1 || exit 22\nprintf 'message\\n' >> hook-order\n",
+        ),
+        (
+            "post-commit",
+            "#!/bin/sh\ngit rev-parse --verify HEAD >/dev/null || exit 23\nprintf 'post\\n' >> hook-order\necho 'post hook warning' >&2\nexit 7\n",
+        ),
+    ];
+    for (name, script) in scripts {
+        let hook = hooks.join(name);
+        fs::write(&hook, script).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let result = create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "version",
+    )
+    .unwrap();
+    let warnings = match result {
+        workflow_studio_lib::git::GitVersionResult::Committed { warnings, .. } => warnings,
+        workflow_studio_lib::git::GitVersionResult::Unknown { .. } => {
+            panic!("commit outcome must be known")
+        }
+    };
+
+    assert_eq!(
+        fs::read_to_string(root.path().join("hook-order")).unwrap(),
+        "pre\nprepare:message\nmessage\npost\n"
+    );
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.contains("post hook warning")));
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.yaml"]),
+        "name: accepted\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_filter_cannot_change_the_accepted_pair_bytes() {
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    write_pair(root.path());
+    fs::write(
+        root.path().join(".gitattributes"),
+        "flow.yaml filter=rewrite\n",
+    )
+    .unwrap();
+    assert_git(
+        root.path(),
+        &[
+            "config",
+            "filter.rewrite.clean",
+            "sed 's/accepted/transformed/'",
+        ],
+    );
+    assert_git(root.path(), &["config", "filter.rewrite.smudge", "cat"]);
+    assert_git(root.path(), &["add", "."]);
+    assert_git(root.path(), &["commit", "-m", "initial"]);
+    fs::write(root.path().join("flow.yaml"), "name: accepted\n").unwrap();
+    let index_path = root.path().join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = assert_git(root.path(), &["rev-parse", "HEAD"]);
+
+    let error = create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "version",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(
+        fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
+        "name: accepted\n"
+    );
 }
 
 #[test]

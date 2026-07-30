@@ -160,10 +160,13 @@ describe('GitView', () => {
       props: { onSelectCommit: vi.fn(), workspaceRoot: '/selected/workspace', onInitialize },
     } as never)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Initialize Git repository' }))
+    const opener = screen.getByRole('button', { name: 'Initialize Git repository' })
+    await fireEvent.click(opener)
     expect(screen.getByText('/selected/workspace')).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'Initialize repository' }))
     expect(onInitialize).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(opener).toHaveFocus()
   })
 
   it('opens create-version confirmation with the exact current pair and readiness', async () => {
@@ -191,5 +194,43 @@ describe('GitView', () => {
     await fireEvent.input(screen.getByLabelText('Version message'), { target: { value: 'Checkpoint' } })
     await fireEvent.click(screen.getByRole('button', { name: 'Create version' }))
     expect(onCreateVersion).toHaveBeenCalledWith('Checkpoint')
+    await vi.waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('keeps committed warnings and unknown outcomes visible without permitting a retry', async () => {
+    const onCreateVersion = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'committed', oid: 'a'.repeat(40), warnings: ['Refresh warning'] })
+    setGitInspection({
+      pair: { definitionPath: 'flow.yaml', companionPath: null },
+      repository: { root: '/repo', branch: 'main', detachedHead: null },
+      status: { entries: [] },
+      diff: { working: 'pair diff', index: '' },
+      history: [],
+    })
+    const { unmount } = render(GitView, {
+      props: { onSelectCommit: vi.fn(), versionReady: true, onCreateVersion },
+    } as never)
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version…' }))
+    await fireEvent.input(screen.getByLabelText('Version message'), { target: { value: 'Checkpoint' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version' }))
+    expect(await screen.findByRole('status')).toHaveTextContent(/committed.*refresh warning/i)
+    expect(screen.queryByRole('button', { name: 'Create version' })).not.toBeInTheDocument()
+    unmount()
+
+    const unknownCreate = vi.fn(async () => ({
+      status: 'unknown' as const,
+      code: 'git_commit_outcome_unknown' as const,
+      message: 'Inspect repository before retrying.',
+    }))
+    render(GitView, {
+      props: { onSelectCommit: vi.fn(), versionReady: true, onCreateVersion: unknownCreate },
+    } as never)
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version…' }))
+    await fireEvent.input(screen.getByLabelText('Version message'), { target: { value: 'Checkpoint' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Create version' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/inspect repository before retry/i)
+    await fireEvent.submit(screen.getByRole('dialog').querySelector('form')!)
+    expect(unknownCreate).toHaveBeenCalledOnce()
   })
 })

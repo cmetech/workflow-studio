@@ -128,6 +128,167 @@ fn pair_move_failure_restores_two_tracked_paths_without_changing_index_or_worktr
 }
 
 #[test]
+fn post_move_failure_rolls_back_current_and_prior_tracked_paths() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("flow.hermes.yaml"), "profile: original\n").unwrap();
+    commit_all(root, "initial");
+    let index_path = root.join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+
+    let error = super::mutate::move_tracked_paths_with_interleave_for_test(
+        root,
+        &[
+            ("flow.yaml", "renamed.yaml"),
+            ("flow.hermes.yaml", "renamed.hermes.yaml"),
+        ],
+        |_| Ok(()),
+        |index| {
+            if index == 1 {
+                Err(super::GitError::new(
+                    "injected_post_move_failure",
+                    "the temporary index failed after the worktree move",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "injected_post_move_failure");
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(
+        fs::read_to_string(root.join("flow.yaml")).unwrap(),
+        "name: original\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("flow.hermes.yaml")).unwrap(),
+        "profile: original\n"
+    );
+    assert!(!root.join("renamed.yaml").exists());
+    assert!(!root.join("renamed.hermes.yaml").exists());
+    assert!(fs::read_dir(root.join(".git")).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("workflow-studio-index-")));
+}
+
+#[test]
+fn post_move_identity_race_reports_partial_after_restoring_prior_paths() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("flow.hermes.yaml"), "profile: original\n").unwrap();
+    commit_all(root, "initial");
+    let index_path = root.join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+
+    let error = super::mutate::move_tracked_paths_with_interleave_for_test(
+        root,
+        &[
+            ("flow.yaml", "renamed.yaml"),
+            ("flow.hermes.yaml", "renamed.hermes.yaml"),
+        ],
+        |_| Ok(()),
+        |index| {
+            if index == 1 {
+                fs::rename(
+                    root.join("renamed.hermes.yaml"),
+                    root.join("parked.hermes.yaml"),
+                )
+                .unwrap();
+                fs::write(root.join("renamed.hermes.yaml"), "replacement\n").unwrap();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "git_move_partial");
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(
+        fs::read_to_string(root.join("flow.yaml")).unwrap(),
+        "name: original\n"
+    );
+    assert!(!root.join("renamed.yaml").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("parked.hermes.yaml")).unwrap(),
+        "profile: original\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("renamed.hermes.yaml")).unwrap(),
+        "replacement\n"
+    );
+}
+
+#[test]
+fn linked_worktree_post_move_failure_restores_current_and_prior_paths() {
+    let directory = tempdir().unwrap();
+    let main = directory.path().join("main");
+    let linked = directory.path().join("linked");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-b", "main"]);
+    git(&main, &["config", "user.name", "Workflow Test"]);
+    git(&main, &["config", "user.email", "workflow@example.test"]);
+    fs::write(main.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(main.join("flow.hermes.yaml"), "profile: original\n").unwrap();
+    commit_all(&main, "initial");
+    git(
+        &main,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    let context = super::AuthorizedGitContext::bind(&linked, &linked).unwrap();
+    let linked_index = context.git_metadata.metadata.worktree_dir.join("index");
+    let main_index = main.join(".git/index");
+    let before_linked_index = fs::read(&linked_index).unwrap();
+    let before_main_index = fs::read(&main_index).unwrap();
+
+    let error = super::mutate::move_tracked_paths_with_interleave_for_test(
+        &linked,
+        &[
+            ("flow.yaml", "renamed.yaml"),
+            ("flow.hermes.yaml", "renamed.hermes.yaml"),
+        ],
+        |_| context.verify(),
+        |index| {
+            if index == 1 {
+                Err(super::GitError::new(
+                    "injected_linked_failure",
+                    "linked worktree failed after move",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "injected_linked_failure");
+    assert_eq!(fs::read(&linked_index).unwrap(), before_linked_index);
+    assert_eq!(fs::read(&main_index).unwrap(), before_main_index);
+    assert!(linked.join("flow.yaml").exists());
+    assert!(linked.join("flow.hermes.yaml").exists());
+    assert!(!linked.join("renamed.yaml").exists());
+    assert!(!linked.join("renamed.hermes.yaml").exists());
+    assert!(fs::read_dir(&context.git_metadata.metadata.worktree_dir)
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("workflow-studio-index-")));
+}
+
+#[test]
 fn tracked_pair_move_succeeds_in_main_and_linked_worktrees() {
     let directory = tempdir().unwrap();
     let main = directory.path().join("main");
@@ -539,7 +700,10 @@ fn unborn_pair_preview_recovers_after_rejected_hook_left_intent_to_add_entries()
     let version =
         super::mutate::create_pair_version(root, "flow.yaml", Some("flow.hermes.yaml"), "retry")
             .unwrap();
-    assert_eq!(version.oid, git_output(root, &["rev-parse", "HEAD"]).trim());
+    assert_eq!(
+        version.committed_oid().expect("version must be committed"),
+        git_output(root, &["rev-parse", "HEAD"]).trim()
+    );
     assert_eq!(
         git_output(root, &["show", "HEAD:flow.yaml"]),
         "name: unborn\n"
@@ -580,6 +744,8 @@ fn pair_version_rejects_head_advances_before_index_or_commit_mutation() {
 
         let error = super::mutate::create_pair_version_with_guard(
             root,
+            Path::new(git_dir.trim()),
+            &base,
             "flow.yaml",
             None,
             "must reject",
@@ -617,6 +783,8 @@ fn pair_version_rejects_unborn_to_born_transition_and_accepts_unchanged_head() {
 
     let error = super::mutate::create_pair_version_with_guard(
         root,
+        &root.join(".git"),
+        &base,
         "flow.yaml",
         None,
         "must reject birth",
@@ -634,13 +802,131 @@ fn pair_version_rejects_unborn_to_born_transition_and_accepts_unchanged_head() {
 
     let (_, binding, base) =
         super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
-    let version =
-        super::mutate::create_pair_version_with_guard(root, "flow.yaml", None, "same head", || {
+    let version = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "same head",
+        || {
             binding.verify()?;
             base.verify(root)
-        })
-        .unwrap();
-    assert_eq!(version.oid, git_output(root, &["rev-parse", "HEAD"]).trim());
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        version.committed_oid().expect("version must be committed"),
+        git_output(root, &["rev-parse", "HEAD"]).trim()
+    );
+}
+
+#[test]
+fn ref_update_failure_is_classified_from_the_exact_bound_ref() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    let base = super::mutate::GitBase::capture(root).unwrap();
+    let failed = || Err(super::GitError::new("git_timeout", "update-ref timed out"));
+
+    assert!(matches!(
+        super::mutate::classify_ref_update(root, &base, &"b".repeat(40), failed()).unwrap(),
+        super::mutate::RefUpdateOutcome::NotCommitted(_)
+    ));
+
+    fs::write(root.join("flow.yaml"), "name: candidate\n").unwrap();
+    commit_all(root, "candidate");
+    let candidate = git_output(root, &["rev-parse", "HEAD"]).trim().to_owned();
+    assert!(matches!(
+        super::mutate::classify_ref_update(root, &base, &candidate, failed()).unwrap(),
+        super::mutate::RefUpdateOutcome::Committed { warning: Some(_) }
+    ));
+
+    let divergent_base = super::mutate::GitBase::capture(root).unwrap();
+    fs::write(root.join("flow.yaml"), "name: divergent\n").unwrap();
+    commit_all(root, "divergent");
+    assert!(matches!(
+        super::mutate::classify_ref_update(root, &divergent_base, &"c".repeat(40), failed())
+            .unwrap(),
+        super::mutate::RefUpdateOutcome::Unknown
+    ));
+    assert!(matches!(
+        super::mutate::classify_ref_update(
+            &root.join("missing-repository"),
+            &divergent_base,
+            &"d".repeat(40),
+            failed(),
+        )
+        .unwrap(),
+        super::mutate::RefUpdateOutcome::Unknown
+    ));
+}
+
+#[test]
+fn post_publication_guard_failure_returns_committed_with_warning() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let base = super::mutate::GitBase::capture(root).unwrap();
+    let original_oid = base.parent().unwrap().to_owned();
+
+    let result = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            let current = git_output(root, &["rev-parse", "HEAD"]);
+            if current.trim() != original_oid {
+                Err(super::GitError::new(
+                    "git_repository_changed",
+                    "metadata changed after publication",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+
+    match result {
+        super::mutate::GitVersionResult::Committed { oid, warnings, .. } => {
+            assert_eq!(oid, git_output(root, &["rev-parse", "HEAD"]).trim());
+            assert!(warnings
+                .iter()
+                .any(|warning| warning.contains("metadata changed after publication")));
+        }
+        super::mutate::GitVersionResult::Unknown { .. } => panic!("published ref must be known"),
+    }
+}
+
+#[test]
+fn post_commit_timeout_and_status_failure_are_committed_warnings() {
+    let post_warning = super::mutate::post_commit_warning(Err(super::GitError::new(
+        "git_timeout",
+        "post-commit timed out",
+    )))
+    .expect("post-commit failure must warn");
+    assert!(post_warning.contains("committed"));
+    assert!(post_warning.contains("timed out"));
+
+    let (status, warning) = super::mutate::committed_status(Err(super::GitError::new(
+        "git_status_failed",
+        "status unavailable",
+    )));
+    assert!(status.is_none());
+    assert!(warning.unwrap().contains("status unavailable"));
 }
 
 fn authorization(
@@ -1461,10 +1747,17 @@ fn pair_version_rejects_a_file_replaced_after_preflight_before_index_mutation() 
     );
     fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
     let context = AuthorizedGitContext::bind(root, root).unwrap();
+    let base = super::mutate::GitBase::capture(root).unwrap();
     let mut replaced = false;
 
-    let error =
-        super::mutate::create_pair_version_with_guard(root, "flow.yaml", None, "version", || {
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
             context.verify()?;
             if !replaced {
                 fs::rename(root.join("flow.yaml"), root.join("original.yaml")).unwrap();
@@ -1472,8 +1765,9 @@ fn pair_version_rejects_a_file_replaced_after_preflight_before_index_mutation() 
                 replaced = true;
             }
             Ok(())
-        })
-        .unwrap_err();
+        },
+    )
+    .unwrap_err();
 
     assert_eq!(error.code, "git_pair_changed");
     let index = Command::new("git")

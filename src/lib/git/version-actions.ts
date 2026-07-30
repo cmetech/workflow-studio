@@ -19,6 +19,14 @@ export interface VersionReadiness {
   readonly companionRevision: number | null
 }
 
+export type CreateVersionOutcome =
+  | { readonly status: 'committed'; readonly oid: string; readonly warnings: readonly string[] }
+  | {
+      readonly status: 'unknown'
+      readonly code: 'git_commit_outcome_unknown'
+      readonly message: string
+    }
+
 export async function createVersion(
   native: VersionActionsNative,
   input: {
@@ -42,7 +50,29 @@ export async function createVersion(
     message,
     input.authorizationToken,
   )
-  return { status: 'created' as const, version }
+  if (version.outcome === 'unknown') {
+    return { status: 'unknown' as const, code: version.code, message: version.message }
+  }
+  return { status: 'committed' as const, oid: version.oid, warnings: version.warnings }
+}
+
+export async function refreshAfterVersion(
+  result: CreateVersionOutcome,
+  refresh: () => Promise<void>,
+): Promise<CreateVersionOutcome> {
+  if (result.status === 'unknown') return result
+  const warnings = [...result.warnings]
+  try {
+    await refresh()
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : 'Local Git refresh failed.'
+    warnings.push(boundedWarning(`The version was committed, but the Git view could not be refreshed: ${detail}`))
+  }
+  return { ...result, warnings }
+}
+
+function boundedWarning(message: string): string {
+  return message.length <= 4_096 ? message : `${message.slice(0, 4_096)}…`
 }
 
 export function pairIsSavedCurrentValid(pair: WorkflowPairText, analysis: VersionReadiness | null): boolean {
