@@ -145,6 +145,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
       - run: npm ci
+      - name: Build release signature verifier
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
       - name: Verify application, contract, and examples
         run: |
           npm run verify

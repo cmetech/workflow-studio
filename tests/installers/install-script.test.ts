@@ -542,6 +542,18 @@ describe('release workflow contract', () => {
     )
   })
 
+  it('builds the release signature verifier before the clean-runner test suite', () => {
+    const steps = workflow().jobs?.build?.steps ?? []
+    const prebuild = steps.findIndex((step) => step.name === 'Build release signature verifier')
+    const verify = steps.findIndex((step) => step.name === 'Verify application, contract, and examples')
+
+    expect(prebuild).toBeGreaterThan(-1)
+    expect(prebuild).toBeLessThan(verify)
+    expect(steps[prebuild]?.run).toBe(
+      'cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature',
+    )
+  })
+
   it('limits write permission to draft upload jobs and sources updater signing only from secrets', () => {
     const release = workflow()
     expect(release.jobs?.validate?.permissions).toBeUndefined()
