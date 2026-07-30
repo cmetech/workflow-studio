@@ -37,6 +37,32 @@ jobs:
       - run: cargo +1.77.2 test --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run build
 
+  renderer-e2e:
+    name: Deterministic renderer E2E
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium only
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload Playwright failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-evidence
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   native-bundle:
     name: Native debug bundle (${{ matrix.os }})
     strategy:

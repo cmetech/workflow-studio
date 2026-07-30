@@ -23,6 +23,8 @@
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -47,6 +49,7 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.0",
     "@sveltejs/vite-plugin-svelte": "7.2.0",
     "@tauri-apps/cli": "2.11.4",
     "@testing-library/jest-dom": "6.9.1",

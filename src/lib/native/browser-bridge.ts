@@ -20,16 +20,24 @@ interface BrowserFile {
   modifiedAt: string
 }
 
-export function createBrowserBridge(): WorkspaceNativeBridge {
+export interface BrowserBridgeOptions {
+  readonly initialFiles?: Readonly<Record<string, string>>
+  readonly selectedRoot?: string
+}
+
+export function createBrowserBridge(options: BrowserBridgeOptions = {}): WorkspaceNativeBridge {
   const files = new Map<string, BrowserFile>(
-    Object.entries(DEFAULT_FILES).map(([path, text]) => [path, { text, modifiedAt: FIXED_MODIFIED_AT }]),
+    Object.entries(options.initialFiles ?? DEFAULT_FILES).map(([path, text]) => [
+      path,
+      { text, modifiedAt: FIXED_MODIFIED_AT },
+    ]),
   )
   const handlers = new Set<WorkspaceChangedHandler>()
   const gitHandlers = new Set<WorkspaceChangedHandler>()
   const recovery = new Map<string, { key: string; content: string }>()
   let recoverySequence = 0
   let layoutContent: string | null = null
-  let selectedRoot = '/browser/workspace'
+  let selectedRoot = options.selectedRoot ?? '/browser/workspace'
   let recentWorkspaces = ''
   let cachedContracts: readonly ContractCacheStoredEntry[] = []
   let gitHistoryEpoch = 0

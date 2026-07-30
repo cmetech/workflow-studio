@@ -22,6 +22,8 @@ Native macOS, Windows, and Linux packages are distributed through public GitHub 
 
 See [Installing Workflow Studio](docs/installing.md) for direct downloads, checksum verification, safe one-line installer commands, and platform warning guidance. Maintainers should follow the [release runbook](docs/releasing.md); automation creates a verified draft and never publishes it automatically.
 
+Security boundaries and the untrusted-input threat model are documented in [Security](docs/security.md). The current [version 1 release acceptance record](docs/verification/version-1-release-acceptance.md) distinguishes completed local verification from the still-required staged updater and clean-machine evidence.
+
 ## Start here
 
 1. Read the [Hermes workflow-language analysis](docs/analysis/2026-07-25-hermes-workflow-language-foundation-review.md).

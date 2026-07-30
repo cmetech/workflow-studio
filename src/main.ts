@@ -1,19 +1,26 @@
-import { mount } from 'svelte'
-import App from './app/App.svelte'
 import './app.css'
 import './styles/tokens.css'
 import './styles/loop24.css'
-import { synchronizeBrandTheme } from './lib/branding/theme-sync'
-import { activeBrandManifest, themePreference } from './stores/branding'
+import { installRuntimeBootstrap } from '$runtime-bootstrap'
 
-const target = document.getElementById('app')
+async function startApplication(): Promise<void> {
+  await installRuntimeBootstrap()
 
-if (!target) {
-  throw new Error('Workflow Studio could not find its application root.')
+  const [svelte, appModule, themeModule, brandStores] = await Promise.all([
+    import('svelte'),
+    import('./app/App.svelte'),
+    import('./lib/branding/theme-sync'),
+    import('./stores/branding'),
+  ])
+  const target = document.getElementById('app')
+  if (!target) throw new Error('Workflow Studio could not find its application root.')
+
+  const stopThemeSynchronization = themeModule.synchronizeBrandTheme(
+    brandStores.activeBrandManifest,
+    brandStores.themePreference,
+  )
+  import.meta.hot?.dispose(stopThemeSynchronization)
+  svelte.mount(appModule.default, { target })
 }
 
-const stopThemeSynchronization = synchronizeBrandTheme(activeBrandManifest, themePreference)
-
-import.meta.hot?.dispose(stopThemeSynchronization)
-
-mount(App, { target })
+void startApplication()
