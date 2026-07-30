@@ -165,6 +165,7 @@ fn preview_pair_version_with_binding(
     binding: PairPathBinding,
     base: GitBase,
 ) -> GitResult<(String, PairPathBinding, GitBase)> {
+    let binding = binding.authorize_git_modes(root, paths, &base)?;
     let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
     ensure_success("git_status_failed", &pair_status)?;
     if pair_status.stdout.is_empty() {
@@ -299,10 +300,40 @@ pub(crate) fn create_pair_version_with_guard(
         root,
         git_dir,
         base,
+        None,
         definition_path,
         companion_path,
         message,
         before_mutation,
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+    )
+}
+
+pub(crate) fn create_pair_version_authorized_with_guard(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    authorized_binding: &PairPathBinding,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    message: &str,
+    before_mutation: impl FnMut() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_pair_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        Some(authorized_binding),
+        definition_path,
+        companion_path,
+        message,
+        before_mutation,
+        || Ok(()),
+        || Ok(()),
         || Ok(()),
         || Ok(()),
         || Ok(()),
@@ -324,6 +355,7 @@ pub(crate) fn create_pair_version_with_index_interleave_for_test(
         root,
         git_dir,
         base,
+        None,
         definition_path,
         companion_path,
         message,
@@ -331,6 +363,8 @@ pub(crate) fn create_pair_version_with_index_interleave_for_test(
         || Ok(()),
         before_index_lock,
         after_index_lock,
+        || Ok(()),
+        || Ok(()),
     )
 }
 
@@ -348,6 +382,7 @@ pub(crate) fn create_pair_version_with_stage_interleave_for_test(
         root,
         git_dir,
         base,
+        None,
         definition_path,
         companion_path,
         message,
@@ -355,6 +390,36 @@ pub(crate) fn create_pair_version_with_stage_interleave_for_test(
         before_candidate_stage,
         || Ok(()),
         || Ok(()),
+        || Ok(()),
+        || Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn create_pair_version_with_lock_identity_interleave_for_test(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    definition_path: &str,
+    companion_path: Option<&str>,
+    message: &str,
+    before_ref_lock_verification: impl FnOnce() -> GitResult<()>,
+    before_index_publish: impl FnOnce() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_pair_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        None,
+        definition_path,
+        companion_path,
+        message,
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        before_ref_lock_verification,
+        before_index_publish,
     )
 }
 
@@ -362,6 +427,7 @@ fn create_pair_version_with_interleave(
     root: &Path,
     git_dir: &Path,
     base: &GitBase,
+    authorized_binding: Option<&PairPathBinding>,
     definition_path: &str,
     companion_path: Option<&str>,
     message: &str,
@@ -369,6 +435,8 @@ fn create_pair_version_with_interleave(
     before_candidate_stage: impl FnOnce() -> GitResult<()>,
     before_index_lock: impl FnOnce() -> GitResult<()>,
     after_index_lock: impl FnOnce() -> GitResult<()>,
+    before_ref_lock_verification: impl FnOnce() -> GitResult<()>,
+    before_index_publish: impl FnOnce() -> GitResult<()>,
 ) -> GitResult<GitVersionResult> {
     let message = required_value(message, "git_message_required", "Enter a version message.")?;
     if message.len() > 64 * 1024 {
@@ -378,7 +446,9 @@ fn create_pair_version_with_interleave(
         ));
     }
     let paths = pair_paths(definition_path, companion_path)?;
-    let path_binding = PairPathBinding::capture(root, &paths)?;
+    let path_binding =
+        PairPathBinding::capture(root, &paths)?.authorize_git_modes(root, &paths, base)?;
+    let accepted_binding = authorized_binding.unwrap_or(&path_binding);
     before_mutation()?;
     path_binding.verify()?;
     base.verify(root)?;
@@ -411,7 +481,8 @@ fn create_pair_version_with_interleave(
     before_candidate_stage()?;
     stage_exact_paths(root, &candidate_index, &paths)?;
     let accepted_tree = write_tree(root, &candidate_index)?;
-    let accepted_entries = verify_tree_pair_entries(root, &accepted_tree, &paths, &path_binding)?;
+    let accepted_entries =
+        verify_tree_pair_entries(root, &accepted_tree, &paths, accepted_binding)?;
 
     let normalized_index = artifacts.create(git_dir, "normalized-index")?;
     if let Some(bytes) = &original_index {
@@ -507,7 +578,7 @@ fn create_pair_version_with_interleave(
             "The normalized Git index no longer contains the exact accepted pair entries.",
         )));
     }
-    let prepared_index = PreparedIndexLock::prepare_with_interleave(
+    let mut prepared_index = PreparedIndexLock::prepare_with_interleave(
         &index_path,
         original_index.as_deref(),
         &normalized_bytes,
@@ -520,6 +591,10 @@ fn create_pair_version_with_interleave(
         .verify()
         .map_err(with_hook_side_effect_warning)?;
     base.verify(root).map_err(with_hook_side_effect_warning)?;
+    before_ref_lock_verification().map_err(with_hook_side_effect_warning)?;
+    prepared_index
+        .verify_ownership()
+        .map_err(with_hook_side_effect_warning)?;
 
     let old_oid = base
         .parent()
@@ -550,7 +625,7 @@ fn create_pair_version_with_interleave(
     if let Some(warning) = update_warning {
         warnings.push(warning);
     }
-    if let Err(error) = prepared_index.publish() {
+    if let Err(error) = prepared_index.publish_with_interleave(before_index_publish) {
         warnings.push(bounded_warning(format!(
             "The version was committed, but the Git index could not be refreshed: {}",
             error.message
@@ -638,9 +713,10 @@ fn verify_tree_pair_entries(
 ) -> GitResult<Vec<Option<GitTreeEntry>>> {
     let mut entries = Vec::with_capacity(paths.len());
     for path in paths {
-        let entry = run_read(root, ReadOperation::TreeEntry { tree, path })?;
+        let entry = run_read(root, ReadOperation::RawTreeEntry { tree, path })?;
         ensure_success("git_commit_candidate_changed", &entry)?;
         let tree_entry = parse_tree_entry(&entry.stdout, path)?;
+        let authorized_mode = binding.authorized_mode(entries.len())?;
         match binding.state(entries.len())? {
             PairPathState::Regular { digest, .. } => {
                 let Some(tree_entry) = tree_entry.as_ref() else {
@@ -649,15 +725,15 @@ fn verify_tree_pair_entries(
                         "The accepted workflow file is missing from the commit candidate.",
                     ));
                 };
-                if !matches!(tree_entry.mode.as_str(), "100644" | "100755") {
+                if Some(tree_entry.mode.as_str()) != authorized_mode {
                     return Err(GitError::new(
                         "git_commit_candidate_changed",
-                        "The accepted workflow file has an invalid Git mode.",
+                        "The workflow file Git mode differs from the exact preview authorization.",
                     ));
                 }
                 let blob = run_read(
                     root,
-                    ReadOperation::Blob {
+                    ReadOperation::RawBlob {
                         oid: &tree_entry.oid,
                     },
                 )?;
@@ -676,7 +752,7 @@ fn verify_tree_pair_entries(
                         "The accepted workflow link is missing from the commit candidate.",
                     ));
                 };
-                if tree_entry.mode != "120000" {
+                if Some(tree_entry.mode.as_str()) != authorized_mode {
                     return Err(GitError::new(
                         "git_commit_candidate_changed",
                         "The accepted workflow link does not have Git symlink mode 120000.",
@@ -684,7 +760,7 @@ fn verify_tree_pair_entries(
                 }
                 let blob = run_read(
                     root,
-                    ReadOperation::Blob {
+                    ReadOperation::RawBlob {
                         oid: &tree_entry.oid,
                     },
                 )?;
@@ -697,7 +773,7 @@ fn verify_tree_pair_entries(
                 }
             }
             PairPathState::Missing => {
-                if tree_entry.is_some() {
+                if authorized_mode.is_some() || tree_entry.is_some() {
                     return Err(GitError::new(
                         "git_commit_candidate_changed",
                         "The accepted workflow deletion was not preserved in the commit candidate.",
@@ -718,7 +794,7 @@ fn pair_tree_entries(
     paths
         .iter()
         .map(|path| {
-            let output = run_read(root, ReadOperation::TreeEntry { tree, path })?;
+            let output = run_read(root, ReadOperation::RawTreeEntry { tree, path })?;
             ensure_success("git_commit_candidate_changed", &output)?;
             parse_tree_entry(&output.stdout, path)
         })
@@ -923,6 +999,8 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> GitResult<()> {
 pub(crate) struct PreparedIndexLock {
     lock_path: PathBuf,
     index_path: PathBuf,
+    identity: Handle,
+    ownership_lost: bool,
     published: bool,
 }
 
@@ -946,12 +1024,27 @@ impl PreparedIndexLock {
         let mut lock = options
             .open(&lock_path)
             .map_err(|_| GitError::new("git_index_changed", "The repository index is busy."))?;
-        let prepared = Self {
+        let identity = Handle::from_file(lock.try_clone().map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "The acquired repository index lock could not be retained.",
+            )
+        })?)
+        .map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "The acquired repository index lock could not be identified.",
+            )
+        })?;
+        let mut prepared = Self {
             lock_path,
             index_path: index_path.to_owned(),
+            identity,
+            ownership_lost: false,
             published: false,
         };
         after_lock()?;
+        prepared.verify_ownership()?;
         let current = read_optional_bounded_file(
             index_path,
             16 * 1024 * 1024,
@@ -977,7 +1070,30 @@ impl PreparedIndexLock {
         Ok(prepared)
     }
 
-    fn publish(mut self) -> GitResult<()> {
+    fn owns_current_path(&self) -> bool {
+        let is_regular_path = fs::symlink_metadata(&self.lock_path)
+            .ok()
+            .is_some_and(|metadata| metadata.file_type().is_file());
+        is_regular_path && Handle::from_path(&self.lock_path).ok().as_ref() == Some(&self.identity)
+    }
+
+    fn verify_ownership(&mut self) -> GitResult<()> {
+        if self.ownership_lost || !self.owns_current_path() {
+            self.ownership_lost = true;
+            return Err(GitError::new(
+                "git_index_changed",
+                "The acquired repository index lock was replaced.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn publish_with_interleave(
+        mut self,
+        before_publish: impl FnOnce() -> GitResult<()>,
+    ) -> GitResult<()> {
+        before_publish()?;
+        self.verify_ownership()?;
         fs::rename(&self.lock_path, &self.index_path).map_err(|_| {
             GitError::new(
                 "git_index_unavailable",
@@ -987,11 +1103,15 @@ impl PreparedIndexLock {
         self.published = true;
         Ok(())
     }
+
+    fn publish(self) -> GitResult<()> {
+        self.publish_with_interleave(|| Ok(()))
+    }
 }
 
 impl Drop for PreparedIndexLock {
     fn drop(&mut self) {
-        if !self.published {
+        if !self.published && !self.ownership_lost && self.owns_current_path() {
             let _ = fs::remove_file(&self.lock_path);
         }
     }
@@ -1233,60 +1353,23 @@ fn publish_temporary_index(
     original: &[u8],
     mut before_publish: impl FnMut() -> GitResult<()>,
 ) -> GitResult<()> {
-    let lock_path = index_path.with_extension("lock");
-    let result = (|| {
-        let mut lock = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-            .map_err(|_| GitError::new("git_index_changed", "The repository index is busy."))?;
-        let current = read_bounded_file(
-            index_path,
-            16 * 1024 * 1024,
-            "git_index_unavailable",
-            "The repository index could not be read again.",
-            "git_index_changed",
-            "The repository index changed during the pair rename.",
-        )?;
-        if current != original {
-            return Err(GitError::new(
-                "git_index_changed",
-                "The repository index changed during the pair rename.",
-            ));
-        }
-        let bytes = read_bounded_file(
-            temporary_index,
-            16 * 1024 * 1024,
-            "git_index_unavailable",
-            "The temporary Git index could not be read.",
-            "git_index_too_large",
-            "The temporary Git index exceeds the 16 MiB rename safety limit.",
-        )?;
-        lock.write_all(&bytes).map_err(|_| {
-            GitError::new(
-                "git_index_unavailable",
-                "The updated Git index could not be written.",
-            )
-        })?;
-        lock.sync_all().map_err(|_| {
-            GitError::new(
-                "git_index_unavailable",
-                "The updated Git index could not be synchronized.",
-            )
-        })?;
-        before_publish()?;
-        drop(lock);
-        fs::rename(&lock_path, index_path).map_err(|_| {
-            GitError::new(
-                "git_index_unavailable",
-                "The updated Git index could not be published.",
-            )
-        })
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&lock_path);
-    }
-    result
+    let bytes = read_bounded_file(
+        temporary_index,
+        16 * 1024 * 1024,
+        "git_index_unavailable",
+        "The temporary Git index could not be read.",
+        "git_index_too_large",
+        "The temporary Git index exceeds the 16 MiB rename safety limit.",
+    )?;
+    let prepared = PreparedIndexLock::prepare_with_interleave(
+        index_path,
+        Some(original),
+        &bytes,
+        || Ok(()),
+        || Ok(()),
+    )?;
+    before_publish()?;
+    prepared.publish()
 }
 
 struct MovePathBinding {
@@ -1428,6 +1511,7 @@ pub(crate) struct PairPathBinding {
     capability: Dir,
     core_file_mode: Option<bool>,
     paths: Vec<(PathBuf, PairPathState)>,
+    authorized_modes: Option<Vec<Option<String>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1500,7 +1584,75 @@ impl PairPathBinding {
             capability,
             core_file_mode,
             paths,
+            authorized_modes: None,
         })
+    }
+
+    fn authorize_git_modes(
+        mut self,
+        root: &Path,
+        paths: &[&str],
+        base: &GitBase,
+    ) -> GitResult<Self> {
+        if self.paths.len() != paths.len() {
+            return Err(GitError::new(
+                "git_commit_candidate_changed",
+                "The pair preview binding no longer matches its Git paths.",
+            ));
+        }
+        let base_entries = if let Some(treeish) = base.parent() {
+            paths
+                .iter()
+                .map(|path| {
+                    let output = run_read(
+                        root,
+                        ReadOperation::TreeEntry {
+                            tree: treeish,
+                            path,
+                        },
+                    )?;
+                    ensure_success("git_preview_failed", &output)?;
+                    parse_tree_entry(&output.stdout, path)
+                })
+                .collect::<GitResult<Vec<_>>>()?
+        } else {
+            vec![None; paths.len()]
+        };
+        let modes = self
+            .paths
+            .iter()
+            .zip(base_entries.iter())
+            .map(|((_, state), base_entry)| match state {
+                PairPathState::Missing => None,
+                PairPathState::SafeSymlink { .. } => Some("120000".to_owned()),
+                PairPathState::Regular {
+                    #[cfg(unix)]
+                    executable,
+                    ..
+                } => {
+                    if self.core_file_mode == Some(false) {
+                        Some(
+                            base_entry
+                                .as_ref()
+                                .filter(|entry| matches!(entry.mode.as_str(), "100644" | "100755"))
+                                .map(|entry| entry.mode.clone())
+                                .unwrap_or_else(|| "100644".to_owned()),
+                        )
+                    } else {
+                        #[cfg(unix)]
+                        {
+                            Some(if *executable { "100755" } else { "100644" }.to_owned())
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            Some("100644".to_owned())
+                        }
+                    }
+                }
+            })
+            .collect();
+        self.authorized_modes = Some(modes);
+        Ok(self)
     }
 
     fn is_present(&self, index: usize) -> bool {
@@ -1517,6 +1669,19 @@ impl PairPathBinding {
                 GitError::new(
                     "git_commit_candidate_changed",
                     "The accepted pair binding no longer matches its Git paths.",
+                )
+            })
+    }
+
+    fn authorized_mode(&self, index: usize) -> GitResult<Option<&str>> {
+        self.authorized_modes
+            .as_ref()
+            .and_then(|modes| modes.get(index))
+            .map(|mode| mode.as_deref())
+            .ok_or_else(|| {
+                GitError::new(
+                    "git_commit_candidate_changed",
+                    "The accepted pair binding has no exact authorized Git mode.",
                 )
             })
     }

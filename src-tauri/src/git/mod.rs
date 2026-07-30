@@ -7,8 +7,9 @@ pub use mutate::{
     set_local_identity, GitVersionResult,
 };
 use mutate::{
-    create_pair_version_with_guard, init_repository_with_guard, move_tracked_path_with_guard,
-    preview_pair_version_authorized_with_binding, set_local_identity_with_guard,
+    create_pair_version_authorized_with_guard, init_repository_with_guard,
+    move_tracked_path_with_guard, preview_pair_version_authorized_with_binding,
+    set_local_identity_with_guard,
 };
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -1674,10 +1675,11 @@ pub fn git_create_pair_version(
         &definition,
         companion.as_deref(),
     )?;
-    create_pair_version_with_guard(
+    create_pair_version_authorized_with_guard(
         &context.repository_root,
         &context.git_metadata.metadata.worktree_dir,
         &authorization.base,
+        &authorization.binding,
         &definition,
         companion.as_deref(),
         &message,

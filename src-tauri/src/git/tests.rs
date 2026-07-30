@@ -128,6 +128,42 @@ fn pair_move_failure_restores_two_tracked_paths_without_changing_index_or_worktr
 }
 
 #[test]
+fn tracked_move_rejects_and_rolls_back_when_its_acquired_index_lock_is_replaced() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    commit_all(root, "initial");
+    let index_path = root.join(".git/index");
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/parked-move-index.lock");
+    let before_index = fs::read(&index_path).unwrap();
+
+    let error = super::mutate::move_tracked_paths_with_interleave_for_test(
+        root,
+        &[("flow.yaml", "renamed.yaml")],
+        |step| {
+            if step == 2 {
+                fs::rename(&lock_path, &parked_owned_lock).unwrap();
+                fs::write(&lock_path, b"foreign move publisher").unwrap();
+            }
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .err()
+    .expect("the move index publisher must retain its acquired lock identity");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert!(root.join("flow.yaml").exists());
+    assert!(!root.join("renamed.yaml").exists());
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(fs::read(&lock_path).unwrap(), b"foreign move publisher");
+}
+
+#[test]
 fn post_move_failure_rolls_back_current_and_prior_tracked_paths() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -510,6 +546,52 @@ fn pair_version_rejects_chmod_performed_by_a_commit_hook() {
 
 #[cfg(unix)]
 #[test]
+fn pair_version_rejects_transient_stage_chmod_restored_by_a_hook() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    git(root, &["config", "core.fileMode", "true"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let (_, _binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    let hook = root.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nchmod -x flow.yaml\n").unwrap();
+    let mut hook_permissions = fs::metadata(&hook).unwrap().permissions();
+    hook_permissions.set_mode(0o755);
+    fs::set_permissions(&hook, hook_permissions).unwrap();
+
+    let error = super::mutate::create_pair_version_with_stage_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            let mut permissions = fs::metadata(root.join("flow.yaml")).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(root.join("flow.yaml"), permissions).unwrap();
+            Ok(())
+        },
+    )
+    .err()
+    .expect("candidate mode must equal the preview-authorized mode");
+
+    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
 fn authorized_pair_rejects_core_filemode_drift_before_candidate_staging() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -530,6 +612,44 @@ fn authorized_pair_rejects_core_filemode_drift_before_candidate_staging() {
     let before_head = git_output(root, &["rev-parse", "HEAD"]);
     let before_index = fs::read(root.join(".git/index")).unwrap();
     git(root, &["config", "core.fileMode", "true"]);
+
+    let error = super::mutate::create_pair_version_with_guard(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            binding.verify()?;
+            base.verify(root)
+        },
+    )
+    .err()
+    .expect("effective Git mode semantics changed after authorization");
+
+    assert_eq!(error.code, "git_pair_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
+fn authorized_pair_rejects_core_filemode_true_to_false_transition() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    git(root, &["config", "core.fileMode", "true"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let (_, binding, base) =
+        super::mutate::preview_pair_version_authorized(root, "flow.yaml", None).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    git(root, &["config", "core.fileMode", "false"]);
 
     let error = super::mutate::create_pair_version_with_guard(
         root,
@@ -1309,6 +1429,231 @@ fn normalized_index_lock_preserves_contended_locks_it_does_not_own() {
 }
 
 #[test]
+fn normalized_index_lock_drop_preserves_a_replacement_path_it_does_not_own() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    git(root, &["add", "flow.yaml"]);
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/parked-owned-index.lock");
+
+    let error = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || Ok(()),
+        || {
+            fs::rename(&lock_path, &parked_owned_lock).unwrap();
+            fs::write(&lock_path, b"foreign publisher").unwrap();
+            Ok(())
+        },
+    )
+    .err()
+    .expect("preparation must reject when its acquired lock is replaced");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(fs::read(&lock_path).unwrap(), b"foreign publisher");
+    assert!(parked_owned_lock.exists());
+    assert_eq!(fs::read(&index_path).unwrap(), original);
+}
+
+#[test]
+fn normalized_index_lock_drop_after_prepare_preserves_a_foreign_replacement() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    git(root, &["add", "flow.yaml"]);
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/parked-prepared-index.lock");
+    let prepared = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || Ok(()),
+        || Ok(()),
+    )
+    .unwrap();
+
+    fs::rename(&lock_path, &parked_owned_lock).unwrap();
+    fs::write(&lock_path, &original).unwrap();
+    drop(prepared);
+
+    assert_eq!(fs::read(&lock_path).unwrap(), original);
+    assert!(parked_owned_lock.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn normalized_index_lock_rejects_a_symlink_to_its_parked_owned_file() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    git(root, &["add", "flow.yaml"]);
+    let index_path = root.join(".git/index");
+    let original = fs::read(&index_path).unwrap();
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/parked-symlink-target.lock");
+
+    let error = super::mutate::PreparedIndexLock::prepare_with_interleave(
+        &index_path,
+        Some(&original),
+        &original,
+        || Ok(()),
+        || {
+            fs::rename(&lock_path, &parked_owned_lock).unwrap();
+            symlink(&parked_owned_lock, &lock_path).unwrap();
+            Ok(())
+        },
+    )
+    .err()
+    .expect("a symlink pathname cannot retain index lock ownership");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert!(fs::symlink_metadata(&lock_path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(parked_owned_lock.exists());
+}
+
+#[test]
+fn pair_version_rejects_an_index_lock_replaced_before_ref_publication() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let index_path = root.join(".git/index");
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/parked-owned-index.lock");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(root).unwrap();
+
+    let error = super::mutate::create_pair_version_with_index_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || Ok(()),
+        || {
+            fs::rename(&lock_path, &parked_owned_lock).unwrap();
+            fs::write(&lock_path, b"foreign publisher").unwrap();
+            Ok(())
+        },
+    )
+    .err()
+    .expect("lock replacement must reject before ref publication");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(fs::read(&lock_path).unwrap(), b"foreign publisher");
+    assert!(parked_owned_lock.exists());
+}
+
+#[test]
+fn pair_version_rejects_an_index_lock_replaced_immediately_before_ref_update() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let index_path = root.join(".git/index");
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/pre-ref-owned-index.lock");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(root).unwrap();
+
+    let error = super::mutate::create_pair_version_with_lock_identity_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            fs::rename(&lock_path, &parked_owned_lock).unwrap();
+            fs::write(&lock_path, b"foreign pre-ref publisher").unwrap();
+            Ok(())
+        },
+        || panic!("the ref must not publish after lock ownership is lost"),
+    )
+    .err()
+    .expect("lock replacement at the final pre-ref guard must reject");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(fs::read(&lock_path).unwrap(), b"foreign pre-ref publisher");
+}
+
+#[test]
+fn pair_version_reports_committed_when_index_lock_is_replaced_before_index_rename() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("flow.yaml"), "name: accepted\n").unwrap();
+    let index_path = root.join(".git/index");
+    let lock_path = root.join(".git/index.lock");
+    let parked_owned_lock = root.join(".git/post-ref-owned-index.lock");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = git_output(root, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(root).unwrap();
+
+    let result = super::mutate::create_pair_version_with_lock_identity_interleave_for_test(
+        root,
+        &root.join(".git"),
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || Ok(()),
+        || {
+            assert_ne!(git_output(root, &["rev-parse", "HEAD"]), before_head);
+            fs::rename(&lock_path, &parked_owned_lock).unwrap();
+            fs::write(&lock_path, b"foreign post-ref publisher").unwrap();
+            Ok(())
+        },
+    )
+    .expect("a known published ref must return an explicit committed outcome");
+
+    match result {
+        super::mutate::GitVersionResult::Committed { oid, warnings, .. } => {
+            assert_eq!(oid, git_output(root, &["rev-parse", "HEAD"]).trim());
+            assert!(warnings.iter().any(|warning| warning.contains("index")));
+        }
+        super::mutate::GitVersionResult::Unknown { .. } => {
+            panic!("a known published ref cannot become retryable or unknown")
+        }
+    }
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(fs::read(&lock_path).unwrap(), b"foreign post-ref publisher");
+}
+
+#[test]
 fn pair_version_rejects_a_real_index_publish_immediately_before_its_lock() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -1404,6 +1749,121 @@ fn linked_pair_version_holds_only_its_bound_index_lock_before_ref_publication() 
     assert!(!linked_index.with_extension("lock").exists());
     assert!(git_output(&linked, &["diff", "--cached", "--name-only"]).is_empty());
     assert!(git_output(&linked, &["diff", "--name-only"]).contains("unrelated.txt"));
+}
+
+#[test]
+fn linked_pair_version_preserves_both_indexes_when_its_lock_is_replaced_post_ref() {
+    let directory = tempdir().unwrap();
+    let main = directory.path().join("main");
+    let linked = directory.path().join("linked");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-b", "main"]);
+    git(&main, &["config", "user.name", "Workflow Test"]);
+    git(&main, &["config", "user.email", "workflow@example.test"]);
+    fs::write(main.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(&main, "base");
+    git(
+        &main,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    fs::write(linked.join("flow.yaml"), "name: accepted\n").unwrap();
+    let metadata = super::detect_repository_metadata(&linked)
+        .unwrap()
+        .expect("linked repository metadata");
+    let linked_index = metadata.worktree_dir.join("index");
+    let linked_lock = linked_index.with_extension("lock");
+    let parked_owned_lock = metadata.worktree_dir.join("parked-post-ref-index.lock");
+    let main_index = main.join(".git/index");
+    let before_main_index = fs::read(&main_index).unwrap();
+    let before_linked_index = fs::read(&linked_index).unwrap();
+    let before_head = git_output(&linked, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(&linked).unwrap();
+
+    let result = super::mutate::create_pair_version_with_lock_identity_interleave_for_test(
+        &linked,
+        &metadata.worktree_dir,
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || Ok(()),
+        || {
+            assert_ne!(git_output(&linked, &["rev-parse", "HEAD"]), before_head);
+            assert!(!main_index.with_extension("lock").exists());
+            fs::rename(&linked_lock, &parked_owned_lock).unwrap();
+            fs::write(&linked_lock, b"foreign linked publisher").unwrap();
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    match result {
+        super::mutate::GitVersionResult::Committed { warnings, .. } => {
+            assert!(warnings.iter().any(|warning| warning.contains("index")));
+        }
+        super::mutate::GitVersionResult::Unknown { .. } => {
+            panic!("known linked ref publication must remain committed")
+        }
+    }
+    assert_eq!(fs::read(&main_index).unwrap(), before_main_index);
+    assert_eq!(fs::read(&linked_index).unwrap(), before_linked_index);
+    assert_eq!(fs::read(&linked_lock).unwrap(), b"foreign linked publisher");
+}
+
+#[test]
+fn linked_pair_version_preserves_both_indexes_when_its_lock_is_replaced_pre_ref() {
+    let directory = tempdir().unwrap();
+    let main = directory.path().join("main");
+    let linked = directory.path().join("linked");
+    fs::create_dir(&main).unwrap();
+    git(&main, &["init", "-b", "main"]);
+    git(&main, &["config", "user.name", "Workflow Test"]);
+    git(&main, &["config", "user.email", "workflow@example.test"]);
+    fs::write(main.join("flow.yaml"), "name: base\n").unwrap();
+    commit_all(&main, "base");
+    git(
+        &main,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    fs::write(linked.join("flow.yaml"), "name: accepted\n").unwrap();
+    let metadata = super::detect_repository_metadata(&linked)
+        .unwrap()
+        .expect("linked repository metadata");
+    let linked_index = metadata.worktree_dir.join("index");
+    let linked_lock = linked_index.with_extension("lock");
+    let parked_owned_lock = metadata.worktree_dir.join("parked-pre-ref-index.lock");
+    let main_index = main.join(".git/index");
+    let before_main_index = fs::read(&main_index).unwrap();
+    let before_linked_index = fs::read(&linked_index).unwrap();
+    let before_head = git_output(&linked, &["rev-parse", "HEAD"]);
+    let base = super::mutate::GitBase::capture(&linked).unwrap();
+
+    let error = super::mutate::create_pair_version_with_lock_identity_interleave_for_test(
+        &linked,
+        &metadata.worktree_dir,
+        &base,
+        "flow.yaml",
+        None,
+        "version",
+        || {
+            assert!(!main_index.with_extension("lock").exists());
+            fs::rename(&linked_lock, &parked_owned_lock).unwrap();
+            fs::write(&linked_lock, b"foreign linked pre-ref publisher").unwrap();
+            Ok(())
+        },
+        || panic!("linked ref must not publish after lock replacement"),
+    )
+    .err()
+    .expect("linked index lock replacement must reject before ref publication");
+
+    assert_eq!(error.code, "git_index_changed");
+    assert_eq!(git_output(&linked, &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&main_index).unwrap(), before_main_index);
+    assert_eq!(fs::read(&linked_index).unwrap(), before_linked_index);
+    assert_eq!(
+        fs::read(&linked_lock).unwrap(),
+        b"foreign linked pre-ref publisher"
+    );
 }
 
 #[test]
@@ -2263,6 +2723,29 @@ fn reports_no_repository_and_detached_head_without_mutating_working_state() {
 }
 
 #[test]
+fn read_only_historical_show_remains_replacement_aware() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    commit_all(root, "base");
+    fs::write(root.join("replacement.txt"), "name: replacement\n").unwrap();
+    let head = git_output(root, &["rev-parse", "HEAD"]);
+    let original_blob = git_output(root, &["rev-parse", "HEAD:flow.yaml"]);
+    let replacement_blob = git_output(root, &["hash-object", "-w", "replacement.txt"]);
+    git(
+        root,
+        &["replace", original_blob.trim(), replacement_blob.trim()],
+    );
+
+    let snapshot = show_pair(root, head.trim(), "flow.yaml", None).unwrap();
+
+    assert_eq!(snapshot.definition.as_deref(), Some("name: replacement\n"));
+}
+
+#[test]
 fn treats_an_initialized_repository_without_commits_as_empty_history() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -2405,6 +2888,44 @@ fn builds_a_fixed_noninteractive_literal_diff_command() {
     assert_eq!(environment.get("LC_ALL"), Some(&Some("C".to_owned())));
     assert_eq!(environment.get("GIT_DIR"), Some(&None));
     assert_eq!(environment.get("GIT_EXTERNAL_DIFF"), Some(&None));
+}
+
+#[test]
+fn raw_object_reads_disable_replacements_without_changing_historical_show() {
+    let root = Path::new("/selected workspace");
+    let oid = "a".repeat(40);
+    let raw = build_read_command(root, ReadOperation::RawBlob { oid: &oid });
+    let raw_environment = raw
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        raw_environment.get("GIT_NO_REPLACE_OBJECTS"),
+        Some(&Some("1".to_owned()))
+    );
+
+    let show = build_read_command(
+        root,
+        ReadOperation::Show {
+            oid: &oid,
+            path: "flow.yaml",
+        },
+    );
+    let show_environment = show
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(show_environment.get("GIT_NO_REPLACE_OBJECTS"), Some(&None));
 }
 
 #[test]

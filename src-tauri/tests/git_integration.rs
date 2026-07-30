@@ -1,5 +1,9 @@
 use std::fs;
+#[cfg(unix)]
+use std::io::Write;
 use std::path::Path;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::process::{Command, Output};
 use std::sync::Mutex;
 
@@ -29,6 +33,22 @@ fn assert_git(root: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+#[cfg(unix)]
+fn write_blob(root: &Path, bytes: &[u8]) -> String {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 fn repository() -> tempfile::TempDir {
@@ -507,6 +527,65 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
 
 #[cfg(unix)]
 #[test]
+fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blob() {
+    let _environment = ENVIRONMENT.lock().unwrap();
+    let root = repository();
+    write_pair(root.path());
+    fs::write(
+        root.path().join(".gitattributes"),
+        "flow.yaml filter=rewrite\n",
+    )
+    .unwrap();
+    assert_git(
+        root.path(),
+        &[
+            "config",
+            "filter.rewrite.clean",
+            "sed 's/accepted/transformed/'",
+        ],
+    );
+    assert_git(root.path(), &["config", "filter.rewrite.smudge", "cat"]);
+    assert_git(root.path(), &["add", "."]);
+    assert_git(root.path(), &["commit", "-m", "initial"]);
+    let accepted = b"name: accepted\n";
+    let transformed = b"name: transformed\n";
+    let accepted_oid = write_blob(root.path(), accepted);
+    let transformed_oid = write_blob(root.path(), transformed);
+    assert_git(root.path(), &["replace", &transformed_oid, &accepted_oid]);
+    assert_eq!(
+        assert_git(root.path(), &["cat-file", "blob", &transformed_oid]).as_bytes(),
+        accepted
+    );
+    let raw = Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["cat-file", "blob", &transformed_oid])
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .output()
+        .unwrap();
+    assert!(raw.status.success());
+    assert_eq!(raw.stdout, transformed);
+    fs::write(root.path().join("flow.yaml"), accepted).unwrap();
+    let index_path = root.path().join(".git/index");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_head = assert_git(root.path(), &["rev-parse", "HEAD"]);
+
+    let error = create_pair_version(
+        root.path(),
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "version",
+    )
+    .err()
+    .expect("raw candidate bytes must not resolve through replacement refs");
+
+    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+}
+
+#[cfg(unix)]
+#[test]
 fn commits_untracked_contained_pair_symlinks_as_exact_link_blobs() {
     use std::os::unix::fs::symlink;
 
@@ -661,6 +740,60 @@ fn core_filemode_false_preserves_the_base_mode_during_content_commit() {
             .split_whitespace()
             .next(),
         Some("100644")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn core_filemode_false_uses_644_for_untracked_exec_and_preserves_tracked_755() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = ENVIRONMENT.lock().unwrap();
+
+    let untracked = repository();
+    assert_git(untracked.path(), &["config", "core.fileMode", "false"]);
+    fs::write(untracked.path().join("flow.yaml"), "name: untracked\n").unwrap();
+    let mut permissions = fs::metadata(untracked.path().join("flow.yaml"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(untracked.path().join("flow.yaml"), permissions).unwrap();
+    create_pair_version(untracked.path(), "flow.yaml", None, "untracked executable").unwrap();
+    assert_eq!(
+        assert_git(untracked.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("100644")
+    );
+
+    let tracked = repository();
+    fs::write(tracked.path().join("flow.yaml"), "name: base\n").unwrap();
+    let mut permissions = fs::metadata(tracked.path().join("flow.yaml"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(tracked.path().join("flow.yaml"), permissions).unwrap();
+    assert_git(tracked.path(), &["add", "flow.yaml"]);
+    assert_git(tracked.path(), &["commit", "-m", "executable base"]);
+    assert_git(tracked.path(), &["config", "core.fileMode", "false"]);
+    let mut permissions = fs::metadata(tracked.path().join("flow.yaml"))
+        .unwrap()
+        .permissions();
+    permissions.set_mode(0o644);
+    fs::set_permissions(tracked.path().join("flow.yaml"), permissions).unwrap();
+    fs::write(tracked.path().join("flow.yaml"), "name: content changed\n").unwrap();
+    create_pair_version(
+        tracked.path(),
+        "flow.yaml",
+        None,
+        "preserve base executable",
+    )
+    .unwrap();
+    assert_eq!(
+        assert_git(tracked.path(), &["ls-tree", "HEAD", "--", "flow.yaml"])
+            .split_whitespace()
+            .next(),
+        Some("100755")
     );
 }
 

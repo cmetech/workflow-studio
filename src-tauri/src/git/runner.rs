@@ -84,7 +84,11 @@ pub(crate) enum ReadOperation<'a> {
         tree: &'a str,
         path: &'a str,
     },
-    Blob {
+    RawTreeEntry {
+        tree: &'a str,
+        path: &'a str,
+    },
+    RawBlob {
         oid: &'a str,
     },
 }
@@ -416,6 +420,10 @@ fn primary_thread_for(process_id: u32) -> GitResult<HANDLE> {
 }
 
 pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> Command {
+    let raw_objects = matches!(
+        &operation,
+        ReadOperation::RawTreeEntry { .. } | ReadOperation::RawBlob { .. }
+    );
     let mut command = Command::new("git");
     command
         .arg("--literal-pathspecs")
@@ -440,6 +448,7 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
         "GIT_EXTERNAL_DIFF",
         "GIT_PAGER",
         "GIT_OPTIONAL_LOCKS",
+        "GIT_NO_REPLACE_OBJECTS",
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE",
@@ -457,6 +466,9 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C");
+    if raw_objects {
+        command.env("GIT_NO_REPLACE_OBJECTS", "1");
+    }
     command
 }
 
@@ -490,6 +502,7 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Comm
         "GIT_EXTERNAL_DIFF",
         "GIT_PAGER",
         "GIT_OPTIONAL_LOCKS",
+        "GIT_NO_REPLACE_OBJECTS",
         "GIT_AUTHOR_NAME",
         "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE",
@@ -621,7 +634,14 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.push(path.into());
             values
         }
-        ReadOperation::Blob { oid } => {
+        ReadOperation::RawTreeEntry { tree, path } => {
+            let mut values = strings(&["ls-tree", "-z"]);
+            values.push(tree.into());
+            values.push("--".into());
+            values.push(path.into());
+            values
+        }
+        ReadOperation::RawBlob { oid } => {
             let mut values = strings(&["cat-file", "blob"]);
             values.push(oid.into());
             values
