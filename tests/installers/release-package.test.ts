@@ -101,6 +101,7 @@ describe('packaged resource verification', () => {
       (root: string) => writeFileSync(join(root, 'unexpected-root-entry'), 'unexpected\n'),
       /extra/i,
     ],
+    ['extra package.json', (root: string) => writeFileSync(join(root, 'package.json'), '{}\n'), /extra/i],
     ['empty directory', (root: string) => mkdirSync(join(root, 'examples/unexpected-empty')), /extra/i],
     [
       'symlinked',
@@ -147,7 +148,6 @@ describe('packaged resource verification', () => {
       const manifestPath = join(repository, RESOURCE_MANIFEST)
       mkdirSync(dirname(manifestPath), { recursive: true })
       cpSync(RESOURCE_MANIFEST, manifestPath)
-      cpSync('package.json', join(repository, 'package.json'))
       cpSync('.gitattributes', join(repository, '.gitattributes'))
 
       runGit(repository, ['init', '--quiet'])
@@ -164,7 +164,19 @@ describe('packaged resource verification', () => {
       for (const entry of manifest.files) {
         expect(readFileSync(join(checkout, entry.path))).toEqual(readFileSync(entry.path))
       }
-      await expect(verifier()(checkout, join(checkout, RESOURCE_MANIFEST))).resolves.toEqual({ verifiedFiles: 30 })
+      const verification = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-assets.mjs',
+          '--source-resource-root',
+          checkout,
+          '--integrity-manifest',
+          join(checkout, RESOURCE_MANIFEST),
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(verification.status, verification.stderr).toBe(0)
+      expect(verification.stdout).toContain('Verified 30 packaged resource files')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

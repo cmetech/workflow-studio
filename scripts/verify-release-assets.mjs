@@ -377,16 +377,7 @@ function validatePackagedResourceManifest(manifest) {
   return filesByPath
 }
 
-async function isSourceResourceRoot(resourceRoot) {
-  try {
-    return (await lstat(join(resourceRoot, 'package.json'))).isFile()
-  } catch (error) {
-    if (error && typeof error === 'object' && error.code === 'ENOENT') return false
-    throw error
-  }
-}
-
-async function collectPackagedResourcePaths(resourceRoot) {
+async function collectPackagedResourcePaths(resourceRoot, sourceTree) {
   const paths = []
   async function visit(relativePath) {
     const absolutePath = join(resourceRoot, relativePath)
@@ -416,7 +407,7 @@ async function collectPackagedResourcePaths(resourceRoot) {
     paths.push(relativePath)
   }
 
-  if (await isSourceResourceRoot(resourceRoot)) {
+  if (sourceTree) {
     for (const directory of PACKAGED_RESOURCE_DIRECTORIES) {
       await visit(directory)
     }
@@ -426,7 +417,7 @@ async function collectPackagedResourcePaths(resourceRoot) {
   return paths
 }
 
-export async function verifyPackagedResources(resourceRoot, integrityManifestPath) {
+async function verifyResourceTree(resourceRoot, integrityManifestPath, sourceTree) {
   if (typeof resourceRoot !== 'string' || resourceRoot === '') {
     throw new Error('Packaged resource root is required')
   }
@@ -436,7 +427,7 @@ export async function verifyPackagedResources(resourceRoot, integrityManifestPat
 
   const manifest = JSON.parse(await readFile(integrityManifestPath, 'utf8'))
   const filesByPath = validatePackagedResourceManifest(manifest)
-  const actualPaths = await collectPackagedResourcePaths(resourceRoot)
+  const actualPaths = await collectPackagedResourcePaths(resourceRoot, sourceTree)
   const actualPathSet = new Set(actualPaths)
   if (actualPathSet.size !== actualPaths.length) {
     throw new Error('Duplicate packaged resource path discovered')
@@ -467,6 +458,14 @@ export async function verifyPackagedResources(resourceRoot, integrityManifestPat
     }
   }
   return { verifiedFiles: PACKAGED_RESOURCE_PATHS.length }
+}
+
+export async function verifyPackagedResources(resourceRoot, integrityManifestPath) {
+  return verifyResourceTree(resourceRoot, integrityManifestPath, false)
+}
+
+async function verifySourceResourceTree(resourceRoot, integrityManifestPath) {
+  return verifyResourceTree(resourceRoot, integrityManifestPath, true)
 }
 
 async function verifyUpdaterArtifacts(directory, tag, updater, signatureVerifier, tauriConfig) {
@@ -573,15 +572,18 @@ async function main(args) {
   const fixturePath = readOption(args, '--fixture')
   const directory = readOption(args, '--directory')
   const packagedResourceRoot = readOption(args, '--packaged-resource-root')
+  const sourceResourceRoot = readOption(args, '--source-resource-root')
   const integrityManifest = readOption(args, '--integrity-manifest')
-  if (packagedResourceRoot || integrityManifest) {
-    if (!packagedResourceRoot || !integrityManifest) {
-      throw new Error('--packaged-resource-root and --integrity-manifest must be used together')
+  if (packagedResourceRoot || sourceResourceRoot || integrityManifest) {
+    if ((packagedResourceRoot ? 1 : 0) + (sourceResourceRoot ? 1 : 0) !== 1 || !integrityManifest) {
+      throw new Error('Use exactly one of --packaged-resource-root or --source-resource-root with --integrity-manifest')
     }
     if (fixturePath || directory) {
       throw new Error('Packaged resource verification cannot be combined with release asset verification')
     }
-    const result = await verifyPackagedResources(packagedResourceRoot, integrityManifest)
+    const result = packagedResourceRoot
+      ? await verifyPackagedResources(packagedResourceRoot, integrityManifest)
+      : await verifySourceResourceTree(sourceResourceRoot, integrityManifest)
     process.stdout.write(`Verified ${result.verifiedFiles} packaged resource files\n`)
     return
   }
