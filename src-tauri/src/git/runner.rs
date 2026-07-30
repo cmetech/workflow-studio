@@ -43,12 +43,34 @@ pub(crate) enum ReadOperation<'a> {
     ShortHead,
     FullHead,
     Status,
-    Diff { cached: bool, paths: &'a [&'a str] },
-    History { follow: bool, paths: &'a [&'a str] },
-    Show { oid: &'a str, path: &'a str },
-    LocalConfig { key: &'a str },
-    PairStatus { paths: &'a [&'a str] },
-    IsTracked { path: &'a str },
+    #[cfg(test)]
+    Diff {
+        cached: bool,
+        paths: &'a [&'a str],
+    },
+    HeadDiff {
+        paths: &'a [&'a str],
+    },
+    UntrackedDiff {
+        path: &'a str,
+    },
+    History {
+        follow: bool,
+        paths: &'a [&'a str],
+    },
+    Show {
+        oid: &'a str,
+        path: &'a str,
+    },
+    LocalConfig {
+        key: &'a str,
+    },
+    PairStatus {
+        paths: &'a [&'a str],
+    },
+    IsTracked {
+        path: &'a str,
+    },
 }
 
 pub(crate) enum MutationOperation<'a> {
@@ -102,6 +124,16 @@ pub(crate) fn run_mutation(
         MUTATION_TIMEOUT,
         None,
     )
+}
+
+pub(crate) fn run_mutation_with_index(
+    root: &Path,
+    operation: MutationOperation<'_>,
+    index_path: &Path,
+) -> GitResult<CommandOutput> {
+    let mut command = build_mutation_command(root, operation);
+    command.env("GIT_INDEX_FILE", index_path);
+    run_command(command, MUTATION_TIMEOUT, None)
 }
 
 fn run_command(
@@ -443,6 +475,7 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
         ReadOperation::Status => {
             strings(&["status", "--porcelain=v2", "-z", "--untracked-files=all"])
         }
+        #[cfg(test)]
         ReadOperation::Diff { cached, paths } => {
             let mut values = strings(&["diff"]);
             if cached {
@@ -455,6 +488,31 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
                 "--",
             ]));
             values.extend(paths.iter().map(OsString::from));
+            values
+        }
+        ReadOperation::HeadDiff { paths } => {
+            let mut values = strings(&[
+                "diff",
+                "HEAD",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--",
+            ]);
+            values.extend(paths.iter().map(OsString::from));
+            values
+        }
+        ReadOperation::UntrackedDiff { path } => {
+            let mut values = strings(&[
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--",
+                "/dev/null",
+            ]);
+            values.push(path.into());
             values
         }
         ReadOperation::History { follow, paths } => {

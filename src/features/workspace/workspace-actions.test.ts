@@ -233,11 +233,25 @@ describe('workspace actions', () => {
     const api = actions()
     await expect(api.openWorkspace()).resolves.toMatchObject({ rootPath: '/selected' })
     expect(native.workspaceSetRoot).toHaveBeenCalledWith('/selected')
+    expect(workspace.get().rootPath).toBe('/selected')
     expect(closeWorkspace).toHaveBeenCalledBefore(vi.mocked(native.workspaceSetRoot))
 
     vi.mocked(native.chooseWorkspaceFolder).mockResolvedValueOnce(null)
     await expect(api.openWorkspace()).resolves.toBeNull()
     expect(native.workspaceSetRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('publishes roots for external directory and YAML paths and clears a closed root before a failed switch', async () => {
+    const api = actions()
+    await api.handleExternalPath('/external/workspace')
+    expect(workspace.get().rootPath).toBe('/external/workspace')
+
+    await api.handleExternalPath('/external/yaml/flow.yaml')
+    expect(workspace.get().rootPath).toBe('/external/yaml')
+
+    vi.mocked(native.workspaceSetRoot).mockRejectedValueOnce(new Error('selection failed'))
+    await expect(api.openWorkspace('/failed')).rejects.toThrow('selection failed')
+    expect(workspace.get().rootPath).toBeNull()
   })
 
   function sameProfileActions() {
@@ -480,7 +494,7 @@ describe('workspace actions', () => {
     const mixedNative = Object.assign(native, {
       gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
       gitIsTracked: vi.fn(async (_root: string, path: string) => path === 'flow.yaml'),
-      gitMovePath: vi.fn(async () => undefined),
+      gitMovePaths: vi.fn(async () => undefined),
       workspaceRenamePath: vi.fn(async (source: string, destination: string) => ({
         paths: [destination],
         results: [{ relativePath: source, destinationPath: destination, status: 'moved' as const }],
@@ -507,7 +521,9 @@ describe('workspace actions', () => {
       destinationDefinition: 'renamed.yaml',
     })
 
-    expect(mixedNative.gitMovePath).toHaveBeenCalledWith('/repo', 'flow.yaml', 'renamed.yaml')
+    expect(mixedNative.gitMovePaths).toHaveBeenCalledWith('/repo', [
+      { source: 'flow.yaml', destination: 'renamed.yaml' },
+    ])
     expect(mixedNative.workspaceRenamePath).toHaveBeenCalledWith('flow.hermes.yaml', 'renamed.hermes.yaml')
     expect(renameDocument).toHaveBeenCalledWith('workspace', 'flow.yaml', 'renamed.yaml', true)
     expect(outcome.status).toBe('completed')
@@ -517,10 +533,13 @@ describe('workspace actions', () => {
     const mixedNative = Object.assign(native, {
       gitDetect: vi.fn(async () => ({ root: '/repo', branch: 'main', detachedHead: null })),
       gitIsTracked: vi.fn(async (_root: string, path: string) => path === 'flow.yaml'),
-      gitMovePath: vi.fn(async () => undefined),
-      workspaceRenamePath: vi.fn(async () => {
-        throw Object.assign(new Error('companion move failed'), { code: 'workspace_rename_failed' })
+      gitMovePaths: vi.fn(async () => {
+        throw Object.assign(new Error('tracked move failed'), { code: 'git_move_failed' })
       }),
+      workspaceRenamePath: vi.fn(async (source: string, destination: string) => ({
+        paths: [destination],
+        results: [{ relativePath: source, destinationPath: destination, status: 'moved' as const }],
+      })),
     })
 
     const outcome = await createWorkspaceActions({
@@ -543,7 +562,8 @@ describe('workspace actions', () => {
       destinationDefinition: 'renamed.yaml',
     })
 
-    expect(mixedNative.gitMovePath).toHaveBeenNthCalledWith(2, '/repo', 'renamed.yaml', 'flow.yaml')
+    expect(mixedNative.workspaceRenamePath).toHaveBeenNthCalledWith(1, 'flow.hermes.yaml', 'renamed.hermes.yaml')
+    expect(mixedNative.workspaceRenamePath).toHaveBeenNthCalledWith(2, 'renamed.hermes.yaml', 'flow.hermes.yaml')
     expect(renameDocument).not.toHaveBeenCalled()
     expect(outcome.status).toBe('partial')
   })
@@ -886,6 +906,7 @@ describe('workspace actions', () => {
     ])
     await actions().handleStartupPaths()
     expect(native.workspaceSetRoot).toHaveBeenCalledWith('/startup')
+    expect(workspace.get().rootPath).toBe('/startup')
     expect(activate).toHaveBeenCalledWith(expect.objectContaining({ definitionPath: 'flow.yaml' }))
   })
 

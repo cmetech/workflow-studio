@@ -80,6 +80,26 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
 }
 
 describe('App', () => {
+  it('initializes Git at the authoritative current workspace root after the root changes', async () => {
+    const gitInit = vi.fn(async () => ({ root: '/current', branch: 'main', detachedHead: null }))
+    setNativeBridgeForTest({
+      gitDetect: vi.fn(async () => null),
+      gitInit,
+      workspaceScan: vi.fn(async () => []),
+    })
+    loadWorkspaceEntries('old', 'old', [], '/old')
+    render(App)
+    loadWorkspaceEntries('current', 'current', [], '/current')
+    showActivity('git')
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Initialize Git repository' }))
+    expect(screen.getByText('/current')).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Initialize repository' }))
+
+    await waitFor(() => expect(gitInit).toHaveBeenCalledWith('/current'))
+    expect(gitInit).not.toHaveBeenCalledWith('/old')
+  })
+
   it('does not acquire or dispose Git history authority when the application unmounts without history work', async () => {
     const gitBeginHistorySession = vi.fn(async () => 41)
     const gitDisposeHistorySession = vi.fn(async () => undefined)

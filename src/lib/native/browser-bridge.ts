@@ -236,6 +236,9 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     gitMovePath: async () => {
       throw new NativeError('git_unavailable', 'Moving a tracked Git path requires the desktop application.')
     },
+    gitMovePaths: async () => {
+      throw new NativeError('git_unavailable', 'Moving tracked Git paths requires the desktop application.')
+    },
     onWorkspaceChanged: async (handler) => {
       handlers.add(handler)
       return () => handlers.delete(handler)

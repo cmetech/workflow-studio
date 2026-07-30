@@ -5,6 +5,7 @@ import type { WorkspaceEntry, WorkspaceFileEntry, WorkspaceTreeEntry } from '$sr
 
 export interface WorkspaceState {
   readonly id: string | null
+  readonly rootPath: string | null
   readonly displayName: string | null
   readonly files: readonly WorkspaceFileEntry[]
   readonly entries: readonly WorkspaceEntry[]
@@ -14,6 +15,7 @@ export interface WorkspaceState {
 
 const emptyWorkspace: WorkspaceState = Object.freeze({
   id: null,
+  rootPath: null,
   displayName: null,
   files: Object.freeze([]),
   entries: Object.freeze([]),
@@ -24,12 +26,18 @@ const emptyWorkspace: WorkspaceState = Object.freeze({
 export const $workspace = atom<WorkspaceState>(emptyWorkspace)
 export const workspace = $workspace
 
-export function loadWorkspaceEntries(id: string, displayName: string, files: readonly WorkspaceFileEntry[]): void {
+export function loadWorkspaceEntries(
+  id: string,
+  displayName: string,
+  files: readonly WorkspaceFileEntry[],
+  rootPath: string | null = null,
+): void {
   const copiedFiles = Object.freeze(files.map((entry) => Object.freeze({ ...entry })))
   const entries = pairWorkflowFiles(id, copiedFiles)
   $workspace.set(
     Object.freeze({
       id,
+      rootPath,
       displayName,
       files: copiedFiles,
       entries,

@@ -15,7 +15,7 @@ import type {
 import { createRecentWorkspaceStore, type RecentWorkspaceStore } from '$src/lib/workspace/recent-workspaces'
 import { pairWorkflowFiles } from '$src/lib/workspace/pair-workflows'
 import type { WorkflowPairEntry, WorkspaceFileEntry } from '$src/lib/workspace/types'
-import { loadWorkspaceEntries, selectWorkspaceEntry } from '$src/stores/workspace'
+import { clearWorkspace, loadWorkspaceEntries, selectWorkspaceEntry } from '$src/stores/workspace'
 
 export interface ExternalYamlReadResult {
   readonly path: string
@@ -58,6 +58,10 @@ export interface WorkspaceActionsNative {
   gitDetect?(): Promise<{ readonly root: string } | null>
   gitIsTracked?(root: string, path: string): Promise<boolean>
   gitMovePath?(root: string, source: string, destination: string): Promise<void>
+  gitMovePaths?(
+    root: string,
+    moves: readonly { readonly source: string; readonly destination: string }[],
+  ): Promise<void>
   workspaceTrashPaths(requests: readonly WorkspaceTrashRequest[]): Promise<WorkspaceTrashResult>
   externalReadYaml(path: string): Promise<ExternalYamlReadResult>
   externalExportYamlPair(request: {
@@ -135,11 +139,12 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       if (generation !== rootGeneration) return
       await dependencies.closeWorkspace()
       if (generation !== rootGeneration) return
+      clearWorkspace()
       const selected = await dependencies.native.workspaceSetRoot(rootPath)
       if (generation !== rootGeneration) return
       const files = await dependencies.native.workspaceScan()
       if (generation !== rootGeneration) return
-      loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files)
+      loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files, selected.rootPath)
       if (relativePath) {
         const entries = pairWorkflowFiles(selected.workspaceId, files)
         const target = entries.find(
@@ -282,8 +287,8 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
     sourceDefinition: string,
     destinationDefinition: string,
   ): Promise<WorkspaceRenameResult> {
-    const { gitDetect, gitIsTracked, gitMovePath, workspaceRenamePath } = dependencies.native
-    if (!gitDetect || !gitIsTracked || !gitMovePath || !workspaceRenamePath) {
+    const { gitDetect, gitIsTracked, gitMovePaths, workspaceRenamePath } = dependencies.native
+    if (!gitDetect || !gitIsTracked || !gitMovePaths || !workspaceRenamePath) {
       return dependencies.native.workspaceRenamePair({ sourceDefinition, destinationDefinition })
     }
     const repository = await gitDetect()
@@ -302,18 +307,27 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       return dependencies.native.workspaceRenamePair({ sourceDefinition, destinationDefinition })
     }
 
+    const orderedMoves = moves
+      .map((move, index) => ({ ...move, tracked: tracked[index] ?? false }))
+      .sort((left, right) => Number(left.tracked) - Number(right.tracked))
     const completed: { source: string; destination: string; tracked: boolean }[] = []
     const results: WorkspaceRenameResult['results'][number][] = []
     try {
-      for (const [index, move] of moves.entries()) {
-        if (tracked[index]) {
-          await gitMovePath(repository.root, move.source, move.destination)
+      for (const move of orderedMoves.filter((candidate) => !candidate.tracked)) {
+        const moved = await workspaceRenamePath(move.source, move.destination)
+        results.push(...moved.results)
+        completed.push(move)
+      }
+      const trackedMoves = orderedMoves.filter((candidate) => candidate.tracked)
+      if (trackedMoves.length > 0) {
+        await gitMovePaths(
+          repository.root,
+          trackedMoves.map(({ source, destination }) => ({ source, destination })),
+        )
+        for (const move of trackedMoves) {
           results.push({ relativePath: move.source, destinationPath: move.destination, status: 'moved' })
-        } else {
-          const moved = await workspaceRenamePath(move.source, move.destination)
-          results.push(...moved.results)
+          completed.push(move)
         }
-        completed.push({ ...move, tracked: tracked[index] ?? false })
       }
       return { paths: moves.map(({ destination }) => destination), results }
     } catch (error: unknown) {
@@ -321,8 +335,8 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       const rollbackResults = [...results]
       for (const move of completed.reverse()) {
         try {
-          if (move.tracked) await gitMovePath(repository.root, move.destination, move.source)
-          else await workspaceRenamePath(move.destination, move.source)
+          if (move.tracked) continue
+          await workspaceRenamePath(move.destination, move.source)
           const prior = rollbackResults.find((result) => result.relativePath === move.source)
           if (prior) Object.assign(prior, { status: 'rolledBack' as const })
         } catch (rollbackError: unknown) {
@@ -336,8 +350,8 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
         }
       }
       rollbackResults.push({
-        relativePath: moves[failedIndex]?.source ?? sourceDefinition,
-        destinationPath: moves[failedIndex]?.destination ?? destinationDefinition,
+        relativePath: orderedMoves[failedIndex]?.source ?? sourceDefinition,
+        destinationPath: orderedMoves[failedIndex]?.destination ?? destinationDefinition,
         status: 'failed',
         errorCode: errorCode(error),
         message: error instanceof Error ? error.message : String(error),

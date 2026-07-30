@@ -139,9 +139,11 @@ export interface GitMutationNativeBridge extends NativeBridge {
     definitionPath: string,
     companionPath: string | null,
     message: string,
+    authorizationToken: string,
   ): Promise<GitVersionResult>
   gitIsTracked(root: string, path: string): Promise<boolean>
   gitMovePath(root: string, source: string, destination: string): Promise<void>
+  gitMovePaths(root: string, moves: readonly { readonly source: string; readonly destination: string }[]): Promise<void>
 }
 
 export interface ContractNativeBridge extends NativeBridge {

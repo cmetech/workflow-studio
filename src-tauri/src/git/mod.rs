@@ -3,12 +3,12 @@ mod parse;
 mod runner;
 
 pub use mutate::{
-    create_pair_version, init_repository, is_tracked, move_tracked_path, set_local_identity,
-    GitVersionResult,
+    create_pair_version, init_repository, is_tracked, move_tracked_path, move_tracked_paths,
+    set_local_identity, GitVersionResult,
 };
 use mutate::{
     create_pair_version_with_guard, init_repository_with_guard, move_tracked_path_with_guard,
-    set_local_identity_with_guard,
+    move_tracked_paths_with_guard, preview_pair_version, set_local_identity_with_guard,
 };
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use same_file::Handle;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use parse::{parse_history_records, parse_status, HistoryRecord};
@@ -73,9 +73,12 @@ pub struct GitStatus {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitDiff {
     pub working: String,
     pub index: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -116,6 +119,7 @@ struct HistoryAuthorizationState {
 #[derive(Default)]
 pub struct GitState {
     history: Mutex<HistoryAuthorizationState>,
+    version: Mutex<Option<VersionAuthorization>>,
     context_generation: AtomicU64,
     next_controller_epoch: AtomicU64,
 }
@@ -129,6 +133,41 @@ impl GitState {
             history.pending.clear();
             history.retained.clear();
         }
+        if let Ok(mut version) = self.version.lock() {
+            *version = None;
+        }
+    }
+
+    fn issue_version(&self, authorization: VersionAuthorization) -> GitResult<String> {
+        let token = history_token()?;
+        let mut version = self.version.lock().map_err(|_| state_error())?;
+        *version = Some(VersionAuthorization {
+            token: token.clone(),
+            ..authorization
+        });
+        Ok(token)
+    }
+
+    fn consume_version(
+        &self,
+        token: &str,
+        context: &AuthorizedGitContext,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> GitResult<VersionAuthorization> {
+        let authorization = self
+            .version
+            .lock()
+            .map_err(|_| state_error())?
+            .take()
+            .ok_or_else(pair_not_authorized)?;
+        if authorization.token != token
+            || !authorization.matches_context(context, definition_path, companion_path)
+        {
+            return Err(pair_not_authorized());
+        }
+        authorization.binding.verify()?;
+        Ok(authorization)
     }
 
     fn begin_history_session(&self) -> GitResult<u64> {
@@ -319,6 +358,51 @@ impl GitState {
     }
 }
 
+struct VersionAuthorization {
+    token: String,
+    workspace_root: PathBuf,
+    workspace_identity: Arc<Handle>,
+    repository_root: PathBuf,
+    repository_identity: Arc<Handle>,
+    definition_path: String,
+    companion_path: Option<String>,
+    binding: mutate::PairPathBinding,
+}
+
+impl VersionAuthorization {
+    fn from_preview(
+        context: &AuthorizedGitContext,
+        definition_path: String,
+        companion_path: Option<String>,
+        binding: mutate::PairPathBinding,
+    ) -> Self {
+        Self {
+            token: String::new(),
+            workspace_root: context.workspace_root.clone(),
+            workspace_identity: context.workspace_identity.clone(),
+            repository_root: context.repository_root.clone(),
+            repository_identity: context.repository_identity.clone(),
+            definition_path,
+            companion_path,
+            binding,
+        }
+    }
+
+    fn matches_context(
+        &self,
+        context: &AuthorizedGitContext,
+        definition_path: &str,
+        companion_path: Option<&str>,
+    ) -> bool {
+        self.workspace_root == context.workspace_root
+            && self.workspace_identity.as_ref() == context.workspace_identity.as_ref()
+            && self.repository_root == context.repository_root
+            && self.repository_identity.as_ref() == context.repository_identity.as_ref()
+            && self.definition_path == definition_path
+            && self.companion_path.as_deref() == companion_path
+    }
+}
+
 #[derive(Clone, Copy)]
 struct HistoryRequest {
     controller_epoch: u64,
@@ -483,6 +567,7 @@ impl AuthorizedGitContext {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn diff_pair(
         &self,
         definition_path: &str,
@@ -593,6 +678,7 @@ pub(crate) fn status(root: &Path) -> GitResult<GitStatus> {
     parse_status(&output.stdout)
 }
 
+#[cfg(test)]
 pub(crate) fn diff_pair(
     root: &Path,
     definition_path: &str,
@@ -618,6 +704,7 @@ pub(crate) fn diff_pair(
     Ok(GitDiff {
         working: output_text(&working.stdout)?,
         index: output_text(&index.stdout)?,
+        authorization_token: None,
     })
 }
 
@@ -1103,12 +1190,31 @@ pub fn git_diff_pair(
     definition_path: String,
     companion_path: Option<String>,
     state: State<'_, crate::workspace::WorkspaceState>,
+    git_state: State<'_, GitState>,
 ) -> GitResult<GitDiff> {
     let binding = active_workspace_binding(&state)?;
-    let result = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?
-        .diff_pair(&definition_path, companion_path.as_deref())?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let definition = context.translate(&definition_path)?;
+    let companion = companion_path
+        .as_deref()
+        .map(|path| context.translate(path))
+        .transpose()?;
+    let (prospective, pair_binding) =
+        preview_pair_version(&context.repository_root, &definition, companion.as_deref())?;
     verify_workspace_binding(&state, &binding)?;
-    Ok(result)
+    context.verify()?;
+    pair_binding.verify()?;
+    let authorization_token = git_state.issue_version(VersionAuthorization::from_preview(
+        &context,
+        definition,
+        companion,
+        pair_binding,
+    ))?;
+    Ok(GitDiff {
+        working: prospective,
+        index: String::new(),
+        authorization_token: Some(authorization_token),
+    })
 }
 
 #[tauri::command]
@@ -1236,7 +1342,9 @@ pub fn git_create_pair_version(
     definition_path: String,
     companion_path: Option<String>,
     message: String,
+    authorization_token: String,
     state: State<'_, crate::workspace::WorkspaceState>,
+    git_state: State<'_, GitState>,
 ) -> GitResult<GitVersionResult> {
     let binding = active_workspace_binding(&state)?;
     let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
@@ -1245,6 +1353,12 @@ pub fn git_create_pair_version(
         .as_deref()
         .map(|path| context.translate(path))
         .transpose()?;
+    let authorization = git_state.consume_version(
+        &authorization_token,
+        &context,
+        &definition,
+        companion.as_deref(),
+    )?;
     let mut result = create_pair_version_with_guard(
         &context.repository_root,
         &definition,
@@ -1252,7 +1366,8 @@ pub fn git_create_pair_version(
         &message,
         || {
             verify_workspace_binding(&state, &binding)?;
-            context.verify()
+            context.verify()?;
+            authorization.binding.verify()
         },
     )?;
     verify_workspace_binding(&state, &binding)?;
@@ -1288,6 +1403,42 @@ pub fn git_move_path(
     let source = context.translate(&source)?;
     let destination = context.translate(&destination)?;
     move_tracked_path_with_guard(&context.repository_root, &source, &destination, || {
+        verify_workspace_binding(&state, &binding)?;
+        context.verify()
+    })?;
+    verify_workspace_binding(&state, &binding)?;
+    context.verify()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitMoveRequest {
+    source: String,
+    destination: String,
+}
+
+#[tauri::command]
+pub fn git_move_paths(
+    root: String,
+    moves: Vec<GitMoveRequest>,
+    state: State<'_, crate::workspace::WorkspaceState>,
+) -> GitResult<()> {
+    let binding = active_workspace_binding(&state)?;
+    let context = AuthorizedGitContext::bind(&binding.root, Path::new(&root))?;
+    let translated = moves
+        .iter()
+        .map(|request| {
+            Ok((
+                context.translate(&request.source)?,
+                context.translate(&request.destination)?,
+            ))
+        })
+        .collect::<GitResult<Vec<_>>>()?;
+    let borrowed = translated
+        .iter()
+        .map(|(source, destination)| (source.as_str(), destination.as_str()))
+        .collect::<Vec<_>>();
+    move_tracked_paths_with_guard(&context.repository_root, &borrowed, || {
         verify_workspace_binding(&state, &binding)?;
         context.verify()
     })?;

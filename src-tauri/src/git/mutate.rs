@@ -1,9 +1,15 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use same_file::Handle;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-use super::runner::{run_mutation, run_read, MutationOperation, ReadOperation};
+use super::runner::{
+    run_mutation, run_mutation_with_index, run_read, MutationOperation, ReadOperation,
+};
 use super::{
     command_error, detect_repository, ensure_success, output_text, pair_paths, status,
     validate_path, GitError, GitRepository, GitResult, GitStatus,
@@ -83,6 +89,47 @@ pub fn create_pair_version(
     create_pair_version_with_guard(root, definition_path, companion_path, message, || Ok(()))
 }
 
+pub(crate) fn preview_pair_version(
+    root: &Path,
+    definition_path: &str,
+    companion_path: Option<&str>,
+) -> GitResult<(String, PairPathBinding)> {
+    let paths = pair_paths(definition_path, companion_path)?;
+    let binding = PairPathBinding::capture(root, &paths)?;
+    let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
+    ensure_success("git_status_failed", &pair_status)?;
+    if pair_status.stdout.is_empty() {
+        binding.verify()?;
+        return Ok((String::new(), binding));
+    }
+    let combined = run_read(root, ReadOperation::HeadDiff { paths: &paths })?;
+    let mut diff = if combined.success() {
+        output_text(&combined.stdout)?.to_owned()
+    } else {
+        String::new()
+    };
+    for path in paths {
+        if !is_tracked(root, path)? && root.join(path).is_file() {
+            let untracked = run_read(root, ReadOperation::UntrackedDiff { path })?;
+            if untracked.stdout.is_empty() {
+                return Err(GitError::new(
+                    "git_preview_failed",
+                    "An untracked workflow path could not be included in the version preview.",
+                ));
+            }
+            diff.push_str(&output_text(&untracked.stdout)?);
+        }
+    }
+    if diff.is_empty() {
+        return Err(GitError::new(
+            "git_preview_failed",
+            "The prospective pair patch could not be generated.",
+        ));
+    }
+    binding.verify()?;
+    Ok((diff, binding))
+}
+
 pub(crate) fn create_pair_version_with_guard(
     root: &Path,
     definition_path: &str,
@@ -146,6 +193,245 @@ pub fn move_tracked_path(root: &Path, source: &str, destination: &str) -> GitRes
     move_tracked_path_with_guard(root, source, destination, || Ok(()))
 }
 
+pub fn move_tracked_paths(root: &Path, moves: &[(&str, &str)]) -> GitResult<()> {
+    move_tracked_paths_with_guard(root, moves, || Ok(()))
+}
+
+pub(crate) fn move_tracked_paths_with_guard(
+    root: &Path,
+    moves: &[(&str, &str)],
+    mut before_mutation: impl FnMut() -> GitResult<()>,
+) -> GitResult<()> {
+    if moves.is_empty() {
+        return Ok(());
+    }
+    let bindings = moves
+        .iter()
+        .map(|(source, destination)| MovePathBinding::capture(root, source, destination))
+        .collect::<GitResult<Vec<_>>>()?;
+    for (source, _) in moves {
+        if !is_tracked(root, source)? {
+            return Err(GitError::new(
+                "git_path_not_tracked",
+                "Only tracked workflow paths can be moved through Git.",
+            ));
+        }
+    }
+
+    let git_dir_output = run_read(root, ReadOperation::GitDirectory)?;
+    ensure_success("git_repository_unavailable", &git_dir_output)?;
+    let git_dir = PathBuf::from(output_text(&git_dir_output.stdout)?.trim());
+    let index_path = git_dir.join("index");
+    let original_index = read_bounded_file(
+        &index_path,
+        16 * 1024 * 1024,
+        "git_index_unavailable",
+        "The repository index could not be read.",
+        "git_index_too_large",
+        "The repository index exceeds the 16 MiB rename safety limit.",
+    )?;
+    let temporary_index = temporary_index_path(&git_dir);
+    let mut temporary = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_index)
+        .map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "A temporary Git index could not be created.",
+            )
+        })?;
+    if temporary.write_all(&original_index).is_err() {
+        drop(temporary);
+        let _ = fs::remove_file(&temporary_index);
+        return Err(GitError::new(
+            "git_index_unavailable",
+            "The temporary Git index could not be initialized.",
+        ));
+    }
+    drop(temporary);
+
+    let mut completed = 0;
+    let operation = (|| {
+        for (index, (source, destination)) in moves.iter().enumerate() {
+            before_mutation()?;
+            bindings[index].verify_source_and_destination()?;
+            let output = run_mutation_with_index(
+                root,
+                MutationOperation::Move {
+                    source,
+                    destination,
+                },
+                &temporary_index,
+            )?;
+            ensure_success("git_move_failed", &output)?;
+            bindings[index].verify_destination()?;
+            completed += 1;
+        }
+        before_mutation()?;
+        publish_temporary_index(&index_path, &temporary_index, &original_index)
+    })();
+
+    if let Err(error) = operation {
+        let rollback = rollback_worktree_moves(&bindings[..completed]);
+        let _ = fs::remove_file(&temporary_index);
+        if rollback.is_err() {
+            return Err(GitError::new(
+                "git_move_rollback_failed",
+                "The pair rename failed and its worktree rollback could not be completed safely.",
+            ));
+        }
+        return Err(error);
+    }
+    let _ = fs::remove_file(&temporary_index);
+    Ok(())
+}
+
+static NEXT_TEMP_INDEX: AtomicU64 = AtomicU64::new(1);
+
+fn temporary_index_path(git_dir: &Path) -> PathBuf {
+    git_dir.join(format!(
+        "workflow-studio-index-{}-{}",
+        std::process::id(),
+        NEXT_TEMP_INDEX.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn publish_temporary_index(
+    index_path: &Path,
+    temporary_index: &Path,
+    original: &[u8],
+) -> GitResult<()> {
+    let lock_path = index_path.with_extension("lock");
+    let result = (|| {
+        let mut lock = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|_| GitError::new("git_index_changed", "The repository index is busy."))?;
+        let current = read_bounded_file(
+            index_path,
+            16 * 1024 * 1024,
+            "git_index_unavailable",
+            "The repository index could not be read again.",
+            "git_index_changed",
+            "The repository index changed during the pair rename.",
+        )?;
+        if current != original {
+            return Err(GitError::new(
+                "git_index_changed",
+                "The repository index changed during the pair rename.",
+            ));
+        }
+        let bytes = read_bounded_file(
+            temporary_index,
+            16 * 1024 * 1024,
+            "git_index_unavailable",
+            "The temporary Git index could not be read.",
+            "git_index_too_large",
+            "The temporary Git index exceeds the 16 MiB rename safety limit.",
+        )?;
+        lock.write_all(&bytes).map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "The updated Git index could not be written.",
+            )
+        })?;
+        lock.sync_all().map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "The updated Git index could not be synchronized.",
+            )
+        })?;
+        drop(lock);
+        fs::rename(&lock_path, index_path).map_err(|_| {
+            GitError::new(
+                "git_index_unavailable",
+                "The updated Git index could not be published.",
+            )
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&lock_path);
+    }
+    result
+}
+
+struct MovePathBinding {
+    source: PathBuf,
+    destination: PathBuf,
+    identity: Handle,
+}
+
+impl MovePathBinding {
+    fn capture(root: &Path, source: &str, destination: &str) -> GitResult<Self> {
+        validate_path(source)?;
+        validate_path(destination)?;
+        let source = root.join(source);
+        let destination = root.join(destination);
+        if destination.exists() {
+            return Err(GitError::new(
+                "git_move_destination_exists",
+                "A tracked rename destination already exists.",
+            ));
+        }
+        let identity = Handle::from_path(&source).map_err(|_| {
+            GitError::new(
+                "git_pair_unavailable",
+                "A tracked workflow path could not be identified.",
+            )
+        })?;
+        Ok(Self {
+            source,
+            destination,
+            identity,
+        })
+    }
+
+    fn verify_source_and_destination(&self) -> GitResult<()> {
+        if Handle::from_path(&self.source).ok().as_ref() != Some(&self.identity)
+            || self.destination.exists()
+        {
+            return Err(GitError::new(
+                "git_pair_changed",
+                "A workflow rename path changed before Git could move it.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_destination(&self) -> GitResult<()> {
+        if Handle::from_path(&self.destination).ok().as_ref() != Some(&self.identity)
+            || self.source.exists()
+        {
+            return Err(GitError::new(
+                "git_pair_changed",
+                "A workflow path changed while Git was moving it.",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn rollback_worktree_moves(completed: &[MovePathBinding]) -> GitResult<()> {
+    for binding in completed.iter().rev() {
+        binding.verify_destination()?;
+        fs::rename(&binding.destination, &binding.source).map_err(|_| {
+            GitError::new(
+                "git_move_rollback_failed",
+                "A moved workflow path could not be restored.",
+            )
+        })?;
+        if Handle::from_path(&binding.source).ok().as_ref() != Some(&binding.identity) {
+            return Err(GitError::new(
+                "git_move_rollback_failed",
+                "A restored workflow path no longer has its original identity.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn move_tracked_path_with_guard(
     root: &Path,
     source: &str,
@@ -186,8 +472,8 @@ pub(crate) fn move_tracked_path_with_guard(
     ensure_success("git_move_failed", &output)
 }
 
-struct PairPathBinding {
-    paths: Vec<(PathBuf, Option<Handle>)>,
+pub(crate) struct PairPathBinding {
+    paths: Vec<(PathBuf, Option<Handle>, Option<[u8; 32]>)>,
 }
 
 impl PairPathBinding {
@@ -206,14 +492,27 @@ impl PairPathBinding {
                         ))
                     }
                 };
-                Ok((absolute, identity))
+                let digest = if identity.is_some() {
+                    let bytes = read_bounded_file(
+                        &absolute,
+                        16 * 1024 * 1024,
+                        "git_pair_unavailable",
+                        "A selected workflow path could not be read.",
+                        "git_pair_too_large",
+                        "A selected workflow path exceeds the 16 MiB Git safety limit.",
+                    )?;
+                    Some(Sha256::digest(bytes).into())
+                } else {
+                    None
+                };
+                Ok((absolute, identity, digest))
             })
             .collect::<GitResult<Vec<_>>>()?;
         Ok(Self { paths })
     }
 
-    fn verify(&self) -> GitResult<()> {
-        for (path, expected) in &self.paths {
+    pub(crate) fn verify(&self) -> GitResult<()> {
+        for (path, expected, expected_digest) in &self.paths {
             let current = Handle::from_path(path).ok();
             if current.as_ref() != expected.as_ref() {
                 return Err(GitError::new(
@@ -221,9 +520,47 @@ impl PairPathBinding {
                     "A selected workflow path was replaced before Git could mutate it.",
                 ));
             }
+            let current_digest = if current.is_some() {
+                let bytes = read_bounded_file(
+                    path,
+                    16 * 1024 * 1024,
+                    "git_pair_changed",
+                    "A selected workflow path could not be read again.",
+                    "git_pair_changed",
+                    "A selected workflow path grew after its Git preview.",
+                )?;
+                Some(<[u8; 32]>::from(Sha256::digest(bytes)))
+            } else {
+                None
+            };
+            if &current_digest != expected_digest {
+                return Err(GitError::new(
+                    "git_pair_changed",
+                    "A selected workflow path changed after its Git preview.",
+                ));
+            }
         }
         Ok(())
     }
+}
+
+fn read_bounded_file(
+    path: &Path,
+    limit: usize,
+    read_code: &'static str,
+    read_message: &'static str,
+    large_code: &'static str,
+    large_message: &'static str,
+) -> GitResult<Vec<u8>> {
+    let file = File::open(path).map_err(|_| GitError::new(read_code, read_message))?;
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| GitError::new(read_code, read_message))?;
+    if bytes.len() > limit {
+        return Err(GitError::new(large_code, large_message));
+    }
+    Ok(bytes)
 }
 
 fn require_identity(root: &Path) -> GitResult<()> {

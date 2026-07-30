@@ -9,7 +9,7 @@ export async function inspectGitRepository(native: GitNativeBridge): Promise<Git
     pair: null,
     repository,
     status: await native.gitStatus(repository.root),
-    diff: { working: '', index: '' },
+    diff: { working: '', index: '', authorizationToken: '' },
     history: [],
   }
 }

@@ -158,15 +158,17 @@ export const tauriBridge: WorkspaceNativeBridge = {
   gitInit: (root) => invokeTyped<GitRepository>('git_init', { root }),
   gitSetLocalIdentity: (root, userName, userEmail) =>
     invokeTyped<void>('git_set_local_identity', { root, userName, userEmail }),
-  gitCreatePairVersion: (root, definitionPath, companionPath, message) =>
+  gitCreatePairVersion: (root, definitionPath, companionPath, message, authorizationToken) =>
     invokeTyped<GitVersionResult>('git_create_pair_version', {
       root,
       definitionPath,
       companionPath,
       message,
+      authorizationToken,
     }),
   gitIsTracked: (root, path) => invokeTyped<boolean>('git_is_tracked', { root, path }),
   gitMovePath: (root, source, destination) => invokeTyped<void>('git_move_path', { root, source, destination }),
+  gitMovePaths: (root, moves) => invokeTyped<void>('git_move_paths', { root, moves }),
   onWorkspaceChanged: async (handler) => {
     try {
       return await listen<WorkspaceChangedEvent>('workspace://changed', ({ payload }) => {

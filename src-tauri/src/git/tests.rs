@@ -32,6 +32,208 @@ fn commit_all(root: &Path, message: &str) {
     git(root, &["commit", "-m", message]);
 }
 
+#[test]
+fn pair_move_failure_restores_two_tracked_paths_without_changing_index_or_worktree() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("flow.hermes.yaml"), "profile: original\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "original\n").unwrap();
+    commit_all(root, "initial");
+    fs::write(root.join("flow.yaml"), "name: unstaged\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "staged unrelated\n").unwrap();
+    git(root, &["add", "unrelated.txt"]);
+
+    let git_dir = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let index_path = Path::new(git_dir.trim()).join("index");
+    let before_index = fs::read(&index_path).unwrap();
+    let before_status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+        .output()
+        .unwrap()
+        .stdout;
+    let mut guard_calls = 0;
+
+    let error = super::mutate::move_tracked_paths_with_guard(
+        root,
+        &[
+            ("flow.yaml", "renamed.yaml"),
+            ("flow.hermes.yaml", "renamed.hermes.yaml"),
+        ],
+        || {
+            guard_calls += 1;
+            if guard_calls == 2 {
+                Err(super::GitError::new(
+                    "injected_failure",
+                    "second move failed",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "injected_failure");
+    assert_eq!(fs::read(&index_path).unwrap(), before_index);
+    assert_eq!(
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+            .output()
+            .unwrap()
+            .stdout,
+        before_status
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("flow.yaml")).unwrap(),
+        "name: unstaged\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("flow.hermes.yaml")).unwrap(),
+        "profile: original\n"
+    );
+    assert!(!root.join("renamed.yaml").exists());
+    assert!(!root.join("renamed.hermes.yaml").exists());
+}
+
+#[test]
+fn pair_version_preview_includes_untracked_bytes_and_rejects_in_place_changes() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: previewed\n").unwrap();
+
+    let (diff, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    assert!(diff.contains("flow.yaml"));
+    assert!(diff.contains("+name: previewed"));
+
+    fs::write(root.join("flow.yaml"), "name: changed in place\n").unwrap();
+    assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
+}
+
+#[test]
+fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: first\n").unwrap();
+    fs::write(root.join("other.yaml"), "name: other\n").unwrap();
+    let context = super::AuthorizedGitContext::bind(root, root).unwrap();
+    let state = super::GitState::default();
+
+    let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let token = state
+        .issue_version(super::VersionAuthorization::from_preview(
+            &context,
+            "flow.yaml".to_owned(),
+            None,
+            binding,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .consume_version(&token, &context, "other.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+    assert_eq!(
+        state
+            .consume_version(&token, &context, "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+
+    let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let token = state
+        .issue_version(super::VersionAuthorization::from_preview(
+            &context,
+            "flow.yaml".to_owned(),
+            None,
+            binding,
+        ))
+        .unwrap();
+    fs::rename(root.join("flow.yaml"), root.join("parked.yaml")).unwrap();
+    fs::write(root.join("flow.yaml"), "name: replacement\n").unwrap();
+    assert_eq!(
+        state
+            .consume_version(&token, &context, "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_changed"
+    );
+
+    let other = tempdir().unwrap();
+    git(other.path(), &["init", "-b", "main"]);
+    fs::write(other.path().join("flow.yaml"), "name: other root\n").unwrap();
+    let other_context = super::AuthorizedGitContext::bind(other.path(), other.path()).unwrap();
+    let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let token = state
+        .issue_version(super::VersionAuthorization::from_preview(
+            &context,
+            "flow.yaml".to_owned(),
+            None,
+            binding,
+        ))
+        .unwrap();
+    assert_eq!(
+        state
+            .consume_version(&token, &other_context, "flow.yaml", None)
+            .err()
+            .unwrap()
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[test]
+fn prospective_pair_preview_combines_staged_unstaged_and_deletion_without_unrelated_paths() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("flow.hermes.yaml"), "profile: original\n").unwrap();
+    fs::write(root.join("unrelated.txt"), "secret original\n").unwrap();
+    commit_all(root, "initial");
+    fs::write(root.join("flow.yaml"), "name: staged\n").unwrap();
+    git(root, &["add", "flow.yaml"]);
+    fs::write(root.join("flow.yaml"), "name: final unstaged\n").unwrap();
+    fs::remove_file(root.join("flow.hermes.yaml")).unwrap();
+    fs::write(root.join("unrelated.txt"), "secret changed\n").unwrap();
+
+    let (diff, _) =
+        super::mutate::preview_pair_version(root, "flow.yaml", Some("flow.hermes.yaml")).unwrap();
+
+    assert!(diff.contains("name: final unstaged"));
+    assert!(diff.contains("profile: original"));
+    assert!(!diff.contains("secret changed"));
+    assert!(!diff.contains("unrelated.txt"));
+}
+
 fn authorization(
     context: &AuthorizedGitContext,
     definition_path: impl Into<String>,

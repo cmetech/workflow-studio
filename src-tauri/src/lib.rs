@@ -61,6 +61,7 @@ pub fn run() {
             git::git_create_pair_version,
             git::git_is_tracked,
             git::git_move_path,
+            git::git_move_paths,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Workflow Studio");

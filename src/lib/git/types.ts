@@ -19,6 +19,7 @@ export interface GitStatus {
 export interface GitDiff {
   readonly working: string
   readonly index: string
+  readonly authorizationToken?: string
 }
 
 export interface GitCommitSummary {
@@ -63,7 +64,7 @@ export const emptyGitInspection: GitInspection = Object.freeze({
   pair: null,
   repository: null,
   status: Object.freeze({ entries: Object.freeze([]) }),
-  diff: Object.freeze({ working: '', index: '' }),
+  diff: Object.freeze({ working: '', index: '', authorizationToken: '' }),
   history: Object.freeze([]),
   historyAuthorizationToken: null,
 })

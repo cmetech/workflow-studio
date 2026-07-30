@@ -1,4 +1,5 @@
 import type { WorkflowPairText } from '$src/lib/documents/types'
+import type { YamlTransaction } from '$src/lib/documents/transactions'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
 import type { GitPairSnapshot, GitVersionResult } from './types'
 
@@ -8,6 +9,7 @@ export interface VersionActionsNative {
     definitionPath: string,
     companionPath: string | null,
     message: string,
+    authorizationToken: string,
   ): Promise<GitVersionResult>
 }
 
@@ -24,10 +26,12 @@ export async function createVersion(
     readonly pair: WorkflowPairText
     readonly analysis: VersionReadiness | null
     readonly message: string
+    readonly authorizationToken: string
   },
 ) {
   const message = input.message.trim()
   if (!message) return { status: 'blocked' as const, reason: 'message_required' as const }
+  if (!input.authorizationToken) return { status: 'blocked' as const, reason: 'preview_required' as const }
   if (!pairIsSavedCurrentValid(input.pair, input.analysis)) {
     return { status: 'blocked' as const, reason: 'pair_not_saved_current_valid' as const }
   }
@@ -36,6 +40,7 @@ export async function createVersion(
     input.pair.definition.path,
     input.pair.companion?.path ?? null,
     message,
+    input.authorizationToken,
   )
   return { status: 'created' as const, version }
 }
@@ -58,29 +63,48 @@ export async function loadHistoricalPairAsDraft(input: {
     pair: WorkflowPairText,
     mutation: Extract<WorkflowMutation, { readonly type: 'replace-document' }>,
     group: string,
-  ) => Promise<WorkflowPairText>
-}): Promise<WorkflowPairText> {
+  ) => Promise<{ readonly pair: WorkflowPairText; readonly transaction: YamlTransaction }>
+}): Promise<{ readonly pair: WorkflowPairText; readonly transaction: YamlTransaction | null }> {
   const group = `restore:${input.snapshot.oid}`
   let pair = input.pair
+  const transactions: YamlTransaction[] = []
   if (input.snapshot.definition !== null && input.snapshot.definition !== pair.definition.text) {
-    pair = await input.apply(
+    const applied = await input.apply(
       pair,
       { type: 'replace-document', document: 'definition', text: input.snapshot.definition },
       group,
     )
+    pair = applied.pair
+    transactions.push(applied.transaction)
   }
   if (
     input.snapshot.companion !== null &&
     pair.companion !== null &&
     input.snapshot.companion !== pair.companion.text
   ) {
-    pair = await input.apply(
+    const applied = await input.apply(
       pair,
       { type: 'replace-document', document: 'companion', text: input.snapshot.companion },
       group,
     )
+    pair = applied.pair
+    transactions.push(applied.transaction)
   }
-  return pair
+  return { pair, transaction: composeRestoreTransaction(transactions, input.snapshot.oid) }
+}
+
+function composeRestoreTransaction(transactions: readonly YamlTransaction[], oid: string): YamlTransaction | null {
+  const first = transactions[0]
+  const last = transactions.at(-1)
+  if (!first || !last) return null
+  return Object.freeze({
+    ...first,
+    label: `Restore pair from ${oid.slice(0, 12)}`,
+    before: first.before,
+    after: last.after,
+    beforeRevisions: first.beforeRevisions,
+    afterRevisions: last.afterRevisions,
+  })
 }
 
 export function compareHistoricalPair(pair: WorkflowPairText, snapshot: GitPairSnapshot) {
