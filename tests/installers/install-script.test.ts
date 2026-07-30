@@ -430,7 +430,13 @@ interface WorkflowJob {
   needs?: string | string[]
   permissions?: Record<string, string>
   strategy?: { 'max-parallel'?: number; matrix?: { include?: Array<Record<string, unknown>> } }
-  steps?: Array<{ uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> }>
+  steps?: Array<{
+    name?: string
+    uses?: string
+    run?: string
+    env?: Record<string, string>
+    with?: Record<string, unknown>
+  }>
 }
 
 interface ReleaseWorkflow {
@@ -540,6 +546,17 @@ describe('release workflow contract', () => {
     expect(yaml).toContain('releases/assets/$ASSET_ID" --method DELETE')
     expect(yaml).toContain('gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"')
     expect(yaml).toContain('Draft release verified; publish it manually after review.')
+  })
+
+  it('installs the complete Linux native dependency set before compiling the release verifier', () => {
+    const steps = workflow().jobs?.verify?.steps ?? []
+    const dependencies = steps.findIndex((step) => step.name === 'Install Linux bundle dependencies')
+    const verifier = steps.findIndex((step) => step.name === 'Build updater signature verifier')
+    expect(dependencies).toBeGreaterThan(-1)
+    expect(dependencies).toBeLessThan(verifier)
+    expect(steps[dependencies]?.run).toContain(
+      'sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils',
+    )
   })
 })
 

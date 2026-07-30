@@ -190,6 +190,10 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
+      - name: Install Linux bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
       - name: Build updater signature verifier
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
       - name: Assert tag still resolves to the validated commit
