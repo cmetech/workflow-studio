@@ -20,7 +20,9 @@ function verifier(): PackagedResourceVerifier {
 }
 
 function materializeResourceRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'workflow-studio-packaged-resources-'))
+  const cleanupRoot = mkdtempSync(join(tmpdir(), 'workflow-studio-packaged-resources-'))
+  const root = join(cleanupRoot, 'resources')
+  mkdirSync(root)
   const manifest = JSON.parse(readFileSync(RESOURCE_MANIFEST, 'utf8')) as {
     files: Array<{ path: string }>
   }
@@ -30,11 +32,11 @@ function materializeResourceRoot() {
     mkdirSync(dirname(destination), { recursive: true })
     cpSync(entry.path, destination)
   }
-  const manifestPath = join(root, RESOURCE_MANIFEST)
+  const manifestPath = join(cleanupRoot, RESOURCE_MANIFEST)
   mkdirSync(dirname(manifestPath), { recursive: true })
   cpSync(RESOURCE_MANIFEST, manifestPath)
 
-  return { root, manifest, manifestPath }
+  return { cleanupRoot, root, manifest, manifestPath }
 }
 
 function runGit(cwd: string, args: string[]) {
@@ -44,22 +46,22 @@ function runGit(cwd: string, args: string[]) {
 
 describe('packaged resource verification', () => {
   it('accepts the exact 30-file packaged resource tree', async () => {
-    const { root, manifestPath } = materializeResourceRoot()
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
       await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 30 })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(cleanupRoot, { recursive: true, force: true })
     }
   })
 
   it('rejects protected resources changed from LF to CRLF bytes', async () => {
-    const { root, manifestPath } = materializeResourceRoot()
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
       const target = join(root, 'examples/README.md')
       writeFileSync(target, readFileSync(target).toString().replaceAll('\n', '\r\n'))
       await expect(verifier()(root, manifestPath)).rejects.toThrow(/sha-256 mismatch/i)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(cleanupRoot, { recursive: true, force: true })
     }
   })
 
@@ -77,7 +79,7 @@ describe('packaged resource verification', () => {
       /schema version/i,
     ],
   ])('rejects %s', async (_kind, mutate, expectedError) => {
-    const { root, manifestPath } = materializeResourceRoot()
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
         schemaVersion: number
@@ -87,13 +89,19 @@ describe('packaged resource verification', () => {
       writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`)
       await expect(verifier()(root, manifestPath)).rejects.toThrow(expectedError)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(cleanupRoot, { recursive: true, force: true })
     }
   })
 
   it.each([
     ['missing', (root: string) => unlinkSync(join(root, 'examples/README.md')), /missing/i],
     ['extra', (root: string) => writeFileSync(join(root, 'brands/unexpected.txt'), 'unexpected\n'), /extra/i],
+    [
+      'root-level extra',
+      (root: string) => writeFileSync(join(root, 'unexpected-root-entry'), 'unexpected\n'),
+      /extra/i,
+    ],
+    ['empty directory', (root: string) => mkdirSync(join(root, 'examples/unexpected-empty')), /extra/i],
     [
       'symlinked',
       (root: string) => {
@@ -118,12 +126,12 @@ describe('packaged resource verification', () => {
       /regular file/i,
     ],
   ])('rejects a %s packaged-resource entry', async (_kind, mutate, expectedError) => {
-    const { root, manifestPath } = materializeResourceRoot()
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
       mutate(root)
       await expect(verifier()(root, manifestPath)).rejects.toThrow(expectedError)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(cleanupRoot, { recursive: true, force: true })
     }
   })
 
@@ -139,6 +147,7 @@ describe('packaged resource verification', () => {
       const manifestPath = join(repository, RESOURCE_MANIFEST)
       mkdirSync(dirname(manifestPath), { recursive: true })
       cpSync(RESOURCE_MANIFEST, manifestPath)
+      cpSync('package.json', join(repository, 'package.json'))
       cpSync('.gitattributes', join(repository, '.gitattributes'))
 
       runGit(repository, ['init', '--quiet'])

@@ -12,7 +12,6 @@ const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z][
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const SAFE_ASSET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const INTEGRITY_SCHEMA_VERSION = 1
-const PACKAGED_RESOURCE_DIRECTORIES = Object.freeze(['brands', 'contracts', 'examples'])
 const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'brands/loop24/brand.yaml',
   'brands/loop24/logo.svg',
@@ -46,6 +45,16 @@ const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'examples/sequential/workflow.yaml',
 ])
 const PACKAGED_RESOURCE_PATH_SET = new Set(PACKAGED_RESOURCE_PATHS)
+const PACKAGED_RESOURCE_DIRECTORY_PATH_SET = new Set(
+  PACKAGED_RESOURCE_PATHS.flatMap((path) => {
+    const segments = path.split('/')
+    segments.pop()
+    return segments.map((_, index) => segments.slice(0, index + 1).join('/'))
+  }),
+)
+const PACKAGED_RESOURCE_DIRECTORIES = Object.freeze(
+  [...PACKAGED_RESOURCE_DIRECTORY_PATH_SET].filter((path) => !path.includes('/')).sort(),
+)
 
 const TARGETS = Object.freeze({
   'darwin-aarch64': Object.freeze({
@@ -368,6 +377,15 @@ function validatePackagedResourceManifest(manifest) {
   return filesByPath
 }
 
+async function isSourceResourceRoot(resourceRoot) {
+  try {
+    return (await lstat(join(resourceRoot, 'package.json'))).isFile()
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') return false
+    throw error
+  }
+}
+
 async function collectPackagedResourcePaths(resourceRoot) {
   const paths = []
   async function visit(relativePath) {
@@ -377,20 +395,33 @@ async function collectPackagedResourcePaths(resourceRoot) {
       throw new Error(`Packaged resource must not be a symbolic link: ${relativePath}`)
     }
     if (info.isDirectory()) {
+      if (PACKAGED_RESOURCE_PATH_SET.has(relativePath)) {
+        throw new Error(`Packaged resource must be a regular file: ${relativePath}`)
+      }
+      if (relativePath !== '' && !PACKAGED_RESOURCE_DIRECTORY_PATH_SET.has(relativePath)) {
+        throw new Error(`Extra packaged resource directory: ${relativePath}`)
+      }
       const entries = await readdir(absolutePath)
       for (const entry of entries) {
-        await visit(`${relativePath}/${entry}`)
+        await visit(relativePath === '' ? entry : `${relativePath}/${entry}`)
       }
       return
     }
     if (!info.isFile()) {
       throw new Error(`Packaged resource must be a regular file: ${relativePath}`)
     }
+    if (!PACKAGED_RESOURCE_PATH_SET.has(relativePath)) {
+      throw new Error(`Extra packaged resource: ${relativePath}`)
+    }
     paths.push(relativePath)
   }
 
-  for (const directory of PACKAGED_RESOURCE_DIRECTORIES) {
-    await visit(directory)
+  if (await isSourceResourceRoot(resourceRoot)) {
+    for (const directory of PACKAGED_RESOURCE_DIRECTORIES) {
+      await visit(directory)
+    }
+  } else {
+    await visit('')
   }
   return paths
 }
@@ -435,12 +466,6 @@ export async function verifyPackagedResources(resourceRoot, integrityManifestPat
       throw new Error(`Packaged resource SHA-256 mismatch: ${path}`)
     }
   }
-  for (const path of actualPaths) {
-    if (!PACKAGED_RESOURCE_PATH_SET.has(path)) {
-      throw new Error(`Extra packaged resource: ${path}`)
-    }
-  }
-
   return { verifiedFiles: PACKAGED_RESOURCE_PATHS.length }
 }
 
