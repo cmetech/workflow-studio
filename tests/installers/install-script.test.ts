@@ -562,7 +562,7 @@ describe('release workflow contract', () => {
     expect(verify?.trim()).toBe(`npm run format:check
 npm run lint
 npm run check
-npm run test:unit -- --testTimeout=20000
+npm run test:unit -- --testTimeout=20000 --maxWorkers=1
 npm run test:rust
 npm run contracts:check
 npm run examples:check`)
