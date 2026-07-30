@@ -48,6 +48,22 @@ fn resource_fixture() -> (tempfile::TempDir, IntegrityManifest) {
     )
 }
 
+fn add_resource(
+    root: &std::path::Path,
+    manifest: &mut IntegrityManifest,
+    path: String,
+    bytes: &[u8],
+) {
+    let destination = root.join(&path);
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::write(&destination, bytes).unwrap();
+    manifest.files.push(IntegrityEntry {
+        path,
+        sha256: digest(bytes),
+        max_bytes: 1_024,
+    });
+}
+
 #[test]
 fn committed_integrity_manifest_matches_the_exact_bundled_repository_tree() {
     let manifest: IntegrityManifest =
@@ -99,10 +115,98 @@ fn resource_verification_rejects_tampering_missing_extra_and_oversized_files() {
     );
 }
 
+#[test]
+fn resource_verification_rejects_unlisted_empty_directories() {
+    let (root, manifest) = resource_fixture();
+    fs::create_dir(root.path().join("examples/unlisted-empty")).unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_unexpected_directory"
+    );
+}
+
+#[test]
+fn resource_verification_accepts_manifest_derived_directory_prefixes() {
+    let (root, mut manifest) = resource_fixture();
+    add_resource(
+        root.path(),
+        &mut manifest,
+        "examples/minimal/nested/workflow.yaml".to_owned(),
+        b"name: nested\n",
+    );
+
+    verify_resource_tree(root.path(), &manifest).unwrap();
+}
+
+#[test]
+fn resource_verification_rejects_excessive_directory_depth() {
+    let (root, mut manifest) = resource_fixture();
+    let nested = std::iter::repeat("nested")
+        .take(16)
+        .collect::<Vec<_>>()
+        .join("/");
+    add_resource(
+        root.path(),
+        &mut manifest,
+        format!("examples/{nested}/workflow.yaml"),
+        b"name: too-deep\n",
+    );
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_budget_exceeded"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_excessive_directory_count() {
+    let (root, mut manifest) = resource_fixture();
+    for index in 0..256 {
+        add_resource(
+            root.path(),
+            &mut manifest,
+            format!("contracts/wide-{index}/contract.json"),
+            b"contract",
+        );
+    }
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_budget_exceeded"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_excessive_manifest_entry_count() {
+    let (root, mut manifest) = resource_fixture();
+    for index in 0..1_022 {
+        manifest.files.push(IntegrityEntry {
+            path: format!("examples/generated-{index}.yaml"),
+            sha256: digest(b"generated"),
+            max_bytes: 1_024,
+        });
+    }
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_budget_exceeded"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn resource_verification_rejects_symlinks_and_special_entries() {
     use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
 
     let (root, manifest) = resource_fixture();
     fs::remove_file(root.path().join("contracts/contract.json")).unwrap();
@@ -111,6 +215,15 @@ fn resource_verification_rejects_symlinks_and_special_entries() {
         root.path().join("contracts/contract.json"),
     )
     .unwrap();
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_invalid_type"
+    );
+
+    let (root, manifest) = resource_fixture();
+    let _socket = UnixListener::bind(root.path().join("examples/minimal/socket")).unwrap();
     assert_eq!(
         verify_resource_tree(root.path(), &manifest)
             .unwrap_err()

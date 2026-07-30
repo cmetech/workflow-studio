@@ -20,6 +20,9 @@ const READY_FILE: &str = "setup-ready-v1.json";
 const RECENT_FILE: &str = "recent-workspaces-v1.json";
 const MAX_RECENT_BYTES: u64 = 64 * 1024;
 const MAX_RESOURCE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_RESOURCE_DEPTH: usize = 16;
+const MAX_RESOURCE_DIRECTORIES: usize = 256;
+const MAX_RESOURCE_ENTRIES: usize = 1_024;
 const MAX_LOG_LINE_BYTES: usize = 4 * 1024;
 const MAX_LOG_BYTES: usize = 256 * 1024;
 const MAX_RENDERER_LINES: usize = 500;
@@ -1030,7 +1033,11 @@ impl ResourceScope {
         if manifest.schema_version != 1 || manifest.files.is_empty() {
             return Err(invalid_integrity_manifest());
         }
+        if manifest.files.len() > MAX_RESOURCE_ENTRIES {
+            return Err(resource_budget_exceeded());
+        }
         let mut expected = HashMap::new();
+        let mut allowed_directories = HashSet::new();
         for entry in &manifest.files {
             if !safe_resource_path(&entry.path)
                 || entry.max_bytes == 0
@@ -1040,9 +1047,23 @@ impl ResourceScope {
             {
                 return Err(invalid_integrity_manifest());
             }
+            add_resource_directory_prefixes(&entry.path, &mut allowed_directories);
+        }
+        let expected_entries = allowed_directories.len().checked_add(expected.len());
+        if allowed_directories.len() > MAX_RESOURCE_DIRECTORIES
+            || allowed_directories
+                .iter()
+                .any(|directory| directory.split('/').count() > MAX_RESOURCE_DEPTH)
+            || !matches!(expected_entries, Some(entries) if entries <= MAX_RESOURCE_ENTRIES)
+        {
+            return Err(resource_budget_exceeded());
         }
         let mut found = HashSet::new();
+        let mut budget = ResourceTraversalBudget::default();
         for top in ["contracts", "examples", "brands"] {
+            if !allowed_directories.contains(top) {
+                return Err(invalid_integrity_manifest());
+            }
             let metadata = self.root.symlink_metadata(top).map_err(|_| {
                 setup_error(
                     "setup_resource_missing",
@@ -1057,7 +1078,17 @@ impl ResourceScope {
                 .open_dir(top)
                 .map_err(|error| io_error("setup_resource_read_failed", error))?;
             let identity = directory_identity(&directory, "setup_resource_read_failed")?;
-            walk_cap_resources(&directory, top, &expected, &mut found, hook)?;
+            budget.enter_directory(1)?;
+            walk_cap_resources(
+                &directory,
+                top,
+                1,
+                &expected,
+                &allowed_directories,
+                &mut found,
+                &mut budget,
+                hook,
+            )?;
             if !named_directory_identity_matches(&self.root, OsStr::new(top), &identity) {
                 return Err(setup_error(
                     "setup_resource_changed",
@@ -1084,8 +1115,11 @@ pub(crate) fn verify_resource_tree(root: &Path, manifest: &IntegrityManifest) ->
 fn walk_cap_resources<'a>(
     directory: &Dir,
     relative_directory: &str,
+    depth: usize,
     expected: &HashMap<&'a str, &'a IntegrityEntry>,
+    allowed_directories: &HashSet<String>,
     found: &mut HashSet<&'a str>,
+    budget: &mut ResourceTraversalBudget,
     hook: &mut dyn FnMut(&str),
 ) -> SetupResult<()> {
     for entry in directory
@@ -1093,6 +1127,7 @@ fn walk_cap_resources<'a>(
         .map_err(|error| io_error("setup_resource_read_failed", error))?
     {
         let entry = entry.map_err(|error| io_error("setup_resource_read_failed", error))?;
+        budget.visit_entry()?;
         let name = entry.file_name();
         let name_text = name.to_str().ok_or_else(|| {
             setup_error(
@@ -1108,11 +1143,28 @@ fn walk_cap_resources<'a>(
             return Err(invalid_resource_type());
         }
         if file_type.is_dir() {
+            if !allowed_directories.contains(&relative) {
+                return Err(setup_error(
+                    "setup_resource_unexpected_directory",
+                    "An unexpected bundled resource directory was found.",
+                ));
+            }
+            let child_depth = depth.checked_add(1).ok_or_else(resource_budget_exceeded)?;
+            budget.enter_directory(child_depth)?;
             let child = entry
                 .open_dir()
                 .map_err(|error| io_error("setup_resource_read_failed", error))?;
             let identity = directory_identity(&child, "setup_resource_read_failed")?;
-            walk_cap_resources(&child, &relative, expected, found, hook)?;
+            walk_cap_resources(
+                &child,
+                &relative,
+                child_depth,
+                expected,
+                allowed_directories,
+                found,
+                budget,
+                hook,
+            )?;
             if !named_directory_identity_matches(directory, &name, &identity) {
                 return Err(setup_error(
                     "setup_resource_changed",
@@ -1181,6 +1233,36 @@ fn walk_cap_resources<'a>(
         found.insert(expected_entry.path.as_str());
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct ResourceTraversalBudget {
+    directories: usize,
+    entries: usize,
+}
+
+impl ResourceTraversalBudget {
+    fn enter_directory(&mut self, depth: usize) -> SetupResult<()> {
+        self.directories = self
+            .directories
+            .checked_add(1)
+            .ok_or_else(resource_budget_exceeded)?;
+        if depth > MAX_RESOURCE_DEPTH || self.directories > MAX_RESOURCE_DIRECTORIES {
+            return Err(resource_budget_exceeded());
+        }
+        Ok(())
+    }
+
+    fn visit_entry(&mut self) -> SetupResult<()> {
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .ok_or_else(resource_budget_exceeded)?;
+        if self.entries > MAX_RESOURCE_ENTRIES {
+            return Err(resource_budget_exceeded());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1902,6 +1984,13 @@ fn invalid_resource_type() -> SetupError {
     )
 }
 
+fn resource_budget_exceeded() -> SetupError {
+    setup_error(
+        "setup_resource_budget_exceeded",
+        "The bundled resource tree exceeds setup verification limits.",
+    )
+}
+
 fn resource_root_changed() -> SetupError {
     setup_error(
         "setup_resource_root_changed",
@@ -1933,6 +2022,21 @@ fn safe_resource_path(value: &str) -> bool {
         && Path::new(value)
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn add_resource_directory_prefixes(path: &str, directories: &mut HashSet<String>) {
+    let mut prefix = String::new();
+    let mut components = path.split('/').peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            break;
+        }
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(component);
+        directories.insert(prefix.clone());
+    }
 }
 
 fn is_sha256(value: &str) -> bool {
