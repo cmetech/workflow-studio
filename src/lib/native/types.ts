@@ -10,6 +10,7 @@ import type {
   GitStatus,
   GitVersionResult,
 } from '../git/types'
+import type { BrandManifest } from '../branding/types'
 
 export interface HostInfo {
   appVersion: string
@@ -98,6 +99,47 @@ export interface NativeBridge {
   hostHealth(): Promise<HostInfo>
 }
 
+export interface BrandSourceSelection {
+  readonly grantToken: string
+  readonly manifestText: string
+  readonly manifestSha256: string
+}
+
+export interface BrandSourceAsset {
+  readonly path: string
+  readonly bytes: readonly number[]
+  readonly sha256: string
+}
+
+export interface StoredBrandPack {
+  readonly manifest: BrandManifest
+  readonly assets: readonly { readonly path: string; readonly bytes: readonly number[] }[]
+}
+
+export interface BrandImportRequest {
+  readonly grantToken: string
+  readonly manifest: BrandManifest
+  readonly manifestSourceSha256: string
+  readonly assets: readonly {
+    readonly path: string
+    readonly sourceSha256: string
+    readonly mediaType: 'image/svg+xml' | 'image/png'
+    readonly sanitizedBytes: readonly number[]
+  }[]
+}
+
+export interface BrandNativeBridge extends NativeBridge {
+  brandChooseSource(): Promise<BrandSourceSelection | null>
+  brandReadSourceAssets(grantToken: string, paths: readonly string[]): Promise<readonly BrandSourceAsset[]>
+  brandRevokeSourceGrant(grantToken: string): Promise<void>
+  brandImport(request: BrandImportRequest): Promise<{ readonly id: string; readonly displayName: string }>
+  brandActivate(id: string): Promise<void>
+  brandRemove(id: string, revertActive: boolean): Promise<void>
+  brandLoadActive(): Promise<string>
+  brandLoadPack(id: string): Promise<StoredBrandPack>
+  setWindowIcon(id: string): Promise<{ readonly status: 'applied' | 'unsupported' }>
+}
+
 export interface LayoutNativeBridge extends NativeBridge {
   layoutLoad(): Promise<string | null>
   layoutSave(content: string): Promise<void>
@@ -171,7 +213,7 @@ export interface ContractNativeBridge extends NativeBridge {
 }
 
 export interface WorkspaceNativeBridge
-  extends LayoutNativeBridge, ContractNativeBridge, GitNativeBridge, GitMutationNativeBridge {
+  extends LayoutNativeBridge, ContractNativeBridge, GitNativeBridge, GitMutationNativeBridge, BrandNativeBridge {
   chooseWorkspaceFolder(): Promise<string | null>
   chooseImportDefinition(): Promise<string | null>
   chooseExportDirectory(): Promise<string | null>

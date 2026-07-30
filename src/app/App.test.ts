@@ -80,6 +80,14 @@ async function cachedArchonEntry(): Promise<ContractCacheStoredEntry> {
 }
 
 describe('App', () => {
+  it('mounts runtime brand management in Settings', async () => {
+    showActivity('settings')
+    render(App)
+
+    expect(await screen.findByRole('heading', { name: 'Brand and theme packs' })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import brand pack' })).toBeEnabled())
+  })
+
   it('initializes Git at the authoritative current workspace root after the root changes', async () => {
     const gitInit = vi.fn(async () => ({ root: '/current', branch: 'main', detachedHead: null }))
     setNativeBridgeForTest({

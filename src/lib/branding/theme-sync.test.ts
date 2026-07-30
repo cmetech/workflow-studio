@@ -55,7 +55,7 @@ describe('brand theme synchronization', () => {
     const colorScheme = new ControllableColorScheme(false)
     const environment = { matchMedia: () => colorScheme as MediaQueryList }
 
-    const stop = synchronizeBrandTheme(loadBundledBrand(), preference, root, environment)
+    const stop = synchronizeBrandTheme(atom(loadBundledBrand()), preference, root, environment)
 
     expect(root.dataset.theme).toBe('light')
     expect(colorScheme.listenerCount()).toBe(1)
@@ -87,7 +87,7 @@ describe('brand theme synchronization', () => {
     const root = document.createElement('div')
     const colorScheme = new ControllableColorScheme(false)
 
-    const stop = synchronizeBrandTheme(loadBundledBrand(), preference, root, {
+    const stop = synchronizeBrandTheme(atom(loadBundledBrand()), preference, root, {
       matchMedia: () => colorScheme as MediaQueryList,
     })
 

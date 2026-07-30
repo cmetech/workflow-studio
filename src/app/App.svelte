@@ -13,7 +13,7 @@
   import { dispatchKeybinding } from '$src/lib/commands/keybindings'
   import { NodeChordController, type NodeChordKind, type NodeChordState } from '$src/lib/commands/node-chords'
   import type { CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
-  import { getBundledBrandAssetUrl, loadBundledBrand } from '$src/lib/branding/load-brand'
+  import { resolveThemeMode } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
@@ -21,6 +21,8 @@
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
+  import BrandSettings from '$src/features/branding/BrandSettings.svelte'
+  import BrandPreview from '$src/features/branding/BrandPreview.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
@@ -41,6 +43,7 @@
   import { loadWorkspaceEntries, workspace } from '$src/stores/workspace'
   import { selectWorkspaceEntry } from '$src/stores/workspace'
   import { getNativeBridge } from '$src/lib/native/bridge'
+  import { createBrandController, themePreference } from '$src/stores/branding'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
@@ -123,7 +126,6 @@
   }
   let { commandSurface = commandRegistry }: Props = $props()
 
-  const brand = loadBundledBrand()
   const bundledGuideSources = import.meta.glob('../../docs/app-guides/*.md', {
     eager: true,
     import: 'default',
@@ -136,8 +138,9 @@
       body,
     }))
     .sort((left, right) => left.id.localeCompare(right.id))
-  const brandMarkUrl = getBundledBrandAssetUrl(brand, 'mark')
   const native = getNativeBridge()
+  const brandController = createBrandController(native)
+  const brandState = brandController.state
   const gitController = createGitInspectionController(native)
   let gitLifecycleIdentity = ''
   const layoutStore = createLayoutStore(native)
@@ -190,6 +193,8 @@
   let newDialogVisible = $state(false)
   let importDialogOpener = $state<HTMLElement | undefined>()
   let importDialogVisible = $state(false)
+  let brandPreviewId = $state<string | null>(null)
+  let brandPreviewOpener = $state<HTMLElement | undefined>()
   let exportBlockingIssues = $state<readonly string[]>([])
   let nodeChordState = $state.raw<NodeChordState>({ pending: false, choices: [], afterSelection: false })
   let inspectorDocumentationTopicId = $state<string | undefined>()
@@ -308,6 +313,13 @@
       () => withCanvasLayoutBarrier(() => documentWorkspace.dispose()),
     )
   }, surfaceCanvasPersistenceError)
+
+  const activeRuntimeBrand = $derived.by(() => {
+    const fallback = $brandState.packs[0]
+    if (!fallback) throw new Error('The bundled LOOP24 brand is unavailable.')
+    return $brandState.packs.find(({ manifest }) => manifest.id === $brandState.activeId) ?? fallback
+  })
+  const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
 
   const inspectorContract = $derived(
     contracts.find(
@@ -750,6 +762,17 @@
     return applicationDisposal.dispose()
   }
 
+  async function runBrandOperation(operation: () => Promise<unknown>): Promise<boolean> {
+    try {
+      workspaceError = null
+      await operation()
+      return true
+    } catch (error: unknown) {
+      workspaceError = error instanceof Error ? error.message : 'The brand operation could not be completed.'
+      return false
+    }
+  }
+
   async function refreshRecent(): Promise<void> {
     recent = await actions.recentWorkspaces.list()
   }
@@ -1119,6 +1142,9 @@
   })
 
   onMount(() => {
+    void brandController.initialize().catch((error: unknown) => {
+      workspaceError = error instanceof Error ? error.message : 'The saved brand could not be loaded.'
+    })
     const unbindCanvas = setCanvasCommandHandlers({
       addNode: () => {
         if (graphCanvas) graphCanvas.requestAdd()
@@ -1285,16 +1311,18 @@
 </script>
 
 <svelte:head>
-  <title>{brand.displayName}</title>
+  <title>{activeRuntimeBrand.manifest.displayName}</title>
 </svelte:head>
 
 <main class="application-shell">
   <header class="titlebar">
     <div class="brand-lockup">
-      <img src={brandMarkUrl} alt="" />
+      <img src={activeRuntimeBrand.assetUrls.mark} alt="" />
       <div class="title-copy">
-        <p class="eyebrow">LOOP24</p>
-        <h1 aria-label={brand.displayName}>Workflow Studio</h1>
+        <p class="eyebrow">{activeRuntimeBrand.builtIn ? 'LOOP24' : 'CUSTOM BRAND'}</p>
+        <h1 aria-label={activeRuntimeBrand.manifest.displayName}>
+          {activeRuntimeBrand.builtIn ? 'Workflow Studio' : activeRuntimeBrand.manifest.displayName}
+        </h1>
       </div>
     </div>
     <div class="title-actions">
@@ -1353,17 +1381,38 @@
           }}
         />
       {:else if $activeActivity === 'settings'}
-        {#if contractsLoaded && appContractCache}
-          <ContractSettingsHost
-            cache={appContractCache}
-            {native}
-            confirmUnsupported={() =>
-              Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
-            onContractsChanged={synchronizeContractRegistry}
+        <div class="settings-stack">
+          <BrandSettings
+            packs={$brandState.packs}
+            activeId={$brandState.activeId}
+            pending={$brandState.pending}
+            warning={$brandState.warning}
+            onImport={async () => {
+              await runBrandOperation(() => brandController.importPack())
+            }}
+            onPreview={(id) => {
+              brandPreviewId = id
+              brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+            }}
+            onActivate={async (id) => {
+              await runBrandOperation(() => brandController.activate(id))
+            }}
+            onRemove={async (id, revertActive) => {
+              await runBrandOperation(() => brandController.remove(id, revertActive))
+            }}
           />
-        {:else}
-          <p>Loading bundled contracts…</p>
-        {/if}
+          {#if contractsLoaded && appContractCache}
+            <ContractSettingsHost
+              cache={appContractCache}
+              {native}
+              confirmUnsupported={() =>
+                Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+              onContractsChanged={synchronizeContractRegistry}
+            />
+          {:else}
+            <p>Loading bundled contracts…</p>
+          {/if}
+        </div>
       {:else if $activeActivity === 'git'}
         <GitView
           onSelectCommit={loadHistoricalGitPair}
@@ -1584,6 +1633,20 @@
   </div>
 
   <StatusBar />
+  {#if previewRuntimeBrand}
+    <BrandPreview
+      pack={previewRuntimeBrand}
+      mode={resolveThemeMode($themePreference)}
+      pending={$brandState.pending}
+      opener={brandPreviewOpener}
+      onClose={() => (brandPreviewId = null)}
+      onActivate={async () => {
+        if (await runBrandOperation(() => brandController.activate(previewRuntimeBrand.manifest.id))) {
+          brandPreviewId = null
+        }
+      }}
+    />
+  {/if}
   {#if quickOpenVisible}
     <QuickOpen
       entries={$workspace.entries}
@@ -1890,6 +1953,13 @@
 
   .left-panel {
     border-right: 1px solid var(--color-border);
+  }
+
+  .settings-stack {
+    display: grid;
+    align-content: start;
+    height: 100%;
+    overflow: auto;
   }
 
   .inspector-panel {

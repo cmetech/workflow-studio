@@ -33,6 +33,14 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
   let recentWorkspaces = ''
   let cachedContracts: readonly ContractCacheStoredEntry[] = []
   let gitHistoryEpoch = 0
+  let activeBrandId = 'loop24'
+  const brandPacks = new Map<
+    string,
+    {
+      manifest: import('../branding/types').BrandManifest
+      assets: readonly { readonly path: string; readonly bytes: readonly number[] }[]
+    }
+  >()
 
   async function emit(event: WorkspaceChangedEvent): Promise<void> {
     await Promise.all([...handlers].map((handler) => handler(event)))
@@ -44,6 +52,33 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       os: 'browser',
       arch: 'browser',
     }),
+    brandChooseSource: async () => null,
+    brandReadSourceAssets: async () => [],
+    brandRevokeSourceGrant: async () => undefined,
+    brandImport: async (request) => {
+      brandPacks.set(request.manifest.id, {
+        manifest: structuredClone(request.manifest),
+        assets: request.assets.map(({ path, sanitizedBytes }) => ({ path, bytes: [...sanitizedBytes] })),
+      })
+      return { id: request.manifest.id, displayName: request.manifest.displayName }
+    },
+    brandActivate: async (id) => {
+      if (id !== 'loop24' && !brandPacks.has(id)) throw new NativeError('brand_not_found', 'Brand not found.')
+      activeBrandId = id
+    },
+    brandRemove: async (id, revertActive) => {
+      if (id === 'loop24') throw new NativeError('brand_builtin_protected', 'LOOP24 cannot be removed.')
+      if (activeBrandId === id && !revertActive) throw new NativeError('brand_active', 'Revert before removal.')
+      if (activeBrandId === id) activeBrandId = 'loop24'
+      brandPacks.delete(id)
+    },
+    brandLoadActive: async () => activeBrandId,
+    brandLoadPack: async (id) => {
+      const pack = brandPacks.get(id)
+      if (!pack) throw new NativeError('brand_not_found', 'Brand not found.')
+      return structuredClone(pack)
+    },
+    setWindowIcon: async () => ({ status: 'unsupported' }),
     chooseContractFile: async () => null,
     chooseHermesExecutable: async () => null,
     contractReadFile: async (path) => {

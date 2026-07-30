@@ -40,3 +40,25 @@ export interface BrandManifest {
   assets: BrandAssets
   themes: Readonly<Record<ThemeMode, ThemeTokens>>
 }
+
+export interface RuntimeBrandAssetUrls {
+  readonly logo: string
+  readonly mark: string
+  readonly windowIcon: string
+}
+
+export interface RuntimeBrandIssue {
+  readonly code: string
+  readonly severity: 'error' | 'warning'
+  readonly message: string
+  readonly mode: ThemeMode
+}
+
+export interface RuntimeBrandPack {
+  readonly manifest: BrandManifest
+  readonly assetUrls: RuntimeBrandAssetUrls
+  readonly issues: readonly RuntimeBrandIssue[]
+  readonly canActivate: boolean
+  readonly builtIn: boolean
+  readonly previewOnly?: boolean
+}

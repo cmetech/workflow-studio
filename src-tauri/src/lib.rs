@@ -1,3 +1,4 @@
+mod branding;
 mod commands;
 mod contracts;
 pub mod git;
@@ -13,6 +14,7 @@ pub fn run() {
         .manage(git::GitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(contracts::ContractGrantState::default())
+        .manage(branding::BrandGrantState::default())
         .manage(layout::LayoutState::default())
         .manage(startup::RecentWorkspaceState::default())
         .plugin(tauri_plugin_log::Builder::new().build())
@@ -64,6 +66,15 @@ pub fn run() {
             git::git_is_tracked,
             git::git_move_path,
             git::git_move_paths,
+            branding::brand_choose_source,
+            branding::brand_read_source_assets,
+            branding::brand_revoke_source_grant,
+            branding::import_brand_pack,
+            branding::activate_brand_pack,
+            branding::remove_brand_pack,
+            branding::brand_load_active,
+            branding::brand_load_pack,
+            branding::set_window_icon,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Workflow Studio");

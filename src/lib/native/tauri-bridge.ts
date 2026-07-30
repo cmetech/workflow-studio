@@ -13,6 +13,8 @@ import type {
 } from '../git/types'
 import {
   NativeError,
+  type BrandSourceSelection,
+  type StoredBrandPack,
   type PathOperationResult,
   type HostInfo,
   type WorkspaceNativeBridge,
@@ -73,6 +75,16 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
 
 export const tauriBridge: WorkspaceNativeBridge = {
   hostHealth: () => invokeTyped<HostInfo>('host_health'),
+  brandChooseSource: () => invokeTyped<BrandSourceSelection | null>('brand_choose_source'),
+  brandReadSourceAssets: (grantToken, paths) =>
+    invokeTyped('brand_read_source_assets', { grantToken, paths: [...paths] }),
+  brandRevokeSourceGrant: (grantToken) => invokeTyped<void>('brand_revoke_source_grant', { grantToken }),
+  brandImport: (request) => invokeTyped('import_brand_pack', { request }),
+  brandActivate: (id) => invokeTyped<void>('activate_brand_pack', { id }),
+  brandRemove: (id, revertActive) => invokeTyped<void>('remove_brand_pack', { id, revertActive }),
+  brandLoadActive: () => invokeTyped<string>('brand_load_active'),
+  brandLoadPack: (id) => invokeTyped<StoredBrandPack>('brand_load_pack', { id }),
+  setWindowIcon: (id) => invokeTyped('set_window_icon', { id }),
   chooseContractFile: () => invokeTyped<string | null>('contract_choose_file'),
   chooseHermesExecutable: () => invokeTyped<string | null>('contract_choose_hermes_executable'),
   contractReadFile: async (path) => new Uint8Array(await invokeTyped<number[]>('contract_read_file', { path })),
