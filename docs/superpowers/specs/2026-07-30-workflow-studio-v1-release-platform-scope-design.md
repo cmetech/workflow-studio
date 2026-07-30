@@ -7,7 +7,7 @@
 
 The immutable `v1.0.0` application-source tag already exists and must not move. Native release jobs successfully built and verified macOS Apple Silicon, macOS Intel, and Windows x64 artifacts. The Linux x64 runner remained unusually slow and was cancelled at the user's direction because Linux is not a version 1 release priority.
 
-The existing release contract requires Linux x64 alongside the three completed targets. Merely publishing the partial draft would bypass its final checksum, updater-manifest, signature, and asset-inventory gate. Version 1 therefore needs an explicit platform-scope amendment rather than a manual partial publication.
+The existing release contract requires Linux x64 alongside the three completed targets. Publishing the partial draft bypasses its final updater-manifest, signature, and asset-inventory gate. At the user's explicit direction, the current artifacts and an independently verified checksum manifest were made public temporarily so the owner can test the Windows bootstrap and unsigned installer before the full three-platform rebuild. This owner-only test state is not final release acceptance. Version 1 still needs an explicit platform-scope amendment and a complete three-platform verification pass.
 
 This specification supersedes only the version 1 release-platform and pre-publication acceptance requirements in the 2026-07-25 product and release documents. It does not remove Linux compatibility from the application's long-term product direction.
 
@@ -22,6 +22,8 @@ Workflow Studio `v1.0.0` will publicly support these native release targets:
 Linux packaging is deferred. Version 1 must not publish an AppImage, advertise Linux installation, or silently redirect Linux users to another platform artifact. The shell bootstrap must reject Linux with a clear unsupported-platform error before downloading a release asset.
 
 The existing `v1.0.0` application-source tag remains immutable. Release-policy and verification changes live on reviewed `base` commits. The release workflow must pin the exact release-tooling commit used by a run while continuing to build application artifacts exclusively from the validated `v1.0.0` tag commit.
+
+Before the verified rebuild mutates any public asset, the temporary test release must be returned to draft state. Exact test assets may then be deleted or replaced while the release is private. The final verified release is published again only after all amended gates pass.
 
 ## Release-tooling boundary
 
@@ -46,7 +48,7 @@ The final release verifier must:
 - re-download the completed draft and validate it again before allowing publication; and
 - keep the release as a draft until that job is green.
 
-Successful assets from cancelled attempts may remain in the draft only if the new run overwrites the exact expected names and the final verifier validates the freshly downloaded bytes. Stale or extra Linux assets must be deleted or rejected before publication.
+Successful assets from cancelled attempts or the temporary owner-only test publication may remain after the release returns to draft only if the new run overwrites the exact expected names and the final verifier validates the freshly downloaded bytes. Stale or extra Linux assets must be deleted or rejected before final publication.
 
 ## Installer and documentation behavior
 
@@ -58,9 +60,11 @@ The documentation continues to explain that OS bundles lack Apple Developer ID/n
 
 ## Publication and acceptance
 
-The automated three-platform build and draft-wide verification gate is the required pre-publication gate for `v1.0.0`. Once it is green, an independent authenticated download must confirm the draft inventory, checksum manifest, updater metadata, and updater signatures before the draft is published.
+The current public `v1.0.0` is an explicit, temporary exception used only by the repository owner to exercise the initial Windows installation path. Its Windows bytes and public checksum path were independently verified before publication, but its updater inventory is incomplete and it must not be described as the completed release.
 
-Clean-machine functional, installation, updater, and performance acceptance for macOS and Windows remains required release follow-up evidence, but it no longer blocks making this explicitly unsigned `v1.0.0` release public. Any failure found during that acceptance is handled through a subsequent immutable patch release; `v1.0.0` assets and tag must not be silently replaced after publication.
+After the owner test, `v1.0.0` returns to draft before any asset replacement. The automated three-platform build and draft-wide verification gate is then the required gate for final publication. Once it is green, an independent authenticated download must confirm the draft inventory, checksum manifest, updater metadata, and updater signatures before the completed draft is published.
+
+Clean-machine functional, installation, updater, and performance acceptance for macOS and Windows remains required release follow-up evidence, but it no longer blocks final publication of this explicitly unsigned `v1.0.0` release. After final publication, any failure found during that acceptance is handled through a subsequent immutable patch release; `v1.0.0` assets and tag must not be silently replaced again.
 
 Linux clean-machine acceptance is deferred until Linux packaging is reintroduced in a later reviewed release-scope amendment.
 
@@ -74,8 +78,9 @@ Implementation follows strict red-green-refactor sequencing:
 4. Update the smallest relevant workflow, verifier, installer, and documentation surfaces.
 5. Run focused tests after each change, then the complete TypeScript, Rust, contract, example, formatting, lint, type, workflow-lint, and end-to-end gates.
 6. Obtain independent subagent specification and code-quality reviews.
-7. Run the macOS/Windows release workflow against the unchanged `v1.0.0` source tag.
-8. Independently download and verify every completed draft asset before publication.
+7. Return the temporary owner-test release to draft state before replacing any asset.
+8. Run the macOS/Windows release workflow against the unchanged `v1.0.0` source tag.
+9. Independently download and verify every completed draft asset before final publication.
 
 ## Non-goals
 
