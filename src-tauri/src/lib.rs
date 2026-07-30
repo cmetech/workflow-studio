@@ -73,6 +73,7 @@ pub fn run() {
             branding::activate_brand_pack,
             branding::remove_brand_pack,
             branding::brand_load_active,
+            branding::brand_list_packs,
             branding::brand_load_pack,
             branding::set_window_icon,
         ])

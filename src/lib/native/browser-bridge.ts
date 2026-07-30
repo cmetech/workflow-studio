@@ -39,6 +39,7 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
     {
       manifest: import('../branding/types').BrandManifest
       assets: readonly { readonly path: string; readonly bytes: readonly number[] }[]
+      revision: string
     }
   >()
 
@@ -59,20 +60,32 @@ export function createBrowserBridge(): WorkspaceNativeBridge {
       brandPacks.set(request.manifest.id, {
         manifest: structuredClone(request.manifest),
         assets: request.assets.map(({ path, sanitizedBytes }) => ({ path, bytes: [...sanitizedBytes] })),
+        revision: `browser:${request.manifest.id}`,
       })
       return { id: request.manifest.id, displayName: request.manifest.displayName }
     },
     brandActivate: async (id) => {
       if (id !== 'loop24' && !brandPacks.has(id)) throw new NativeError('brand_not_found', 'Brand not found.')
       activeBrandId = id
+      return { id, pack: id === 'loop24' ? null : structuredClone(brandPacks.get(id)!) }
     },
     brandRemove: async (id, revertActive) => {
       if (id === 'loop24') throw new NativeError('brand_builtin_protected', 'LOOP24 cannot be removed.')
       if (activeBrandId === id && !revertActive) throw new NativeError('brand_active', 'Revert before removal.')
       if (activeBrandId === id) activeBrandId = 'loop24'
-      brandPacks.delete(id)
+      const removed = brandPacks.delete(id)
+      return { activeId: activeBrandId, removed, warning: null }
     },
-    brandLoadActive: async () => activeBrandId,
+    brandLoadActive: async () => ({
+      id: activeBrandId,
+      pack: activeBrandId === 'loop24' ? null : structuredClone(brandPacks.get(activeBrandId)!),
+      recovered: false,
+      warning: null,
+    }),
+    brandListPacks: async () => ({
+      packs: [...brandPacks.values()].map((pack) => structuredClone(pack)),
+      warnings: [],
+    }),
     brandLoadPack: async (id) => {
       const pack = brandPacks.get(id)
       if (!pack) throw new NativeError('brand_not_found', 'Brand not found.')

@@ -6,8 +6,8 @@ import {
   resolveThemeMode,
 } from '$src/lib/branding/load-brand'
 import { parseBrandManifest, validateBrandPack, type ValidatedBrandPack } from '$src/lib/branding/validate-theme'
-import type { BrandManifest, RuntimeBrandPack, ThemePreference } from '$src/lib/branding/types'
-import type { BrandNativeBridge } from '$src/lib/native/types'
+import type { BrandManifest, RuntimeBrandPack, RuntimeBrandReport, ThemePreference } from '$src/lib/branding/types'
+import type { BrandActivationResult, BrandNativeBridge, StoredBrandPack } from '$src/lib/native/types'
 
 export const activeBrand = atom('loop24')
 export const activeBrandManifest = atom<BrandManifest>(loadBundledBrand())
@@ -16,6 +16,7 @@ export const themePreference = atom<ThemePreference>('system')
 export interface BrandControllerState {
   readonly activeId: string
   readonly packs: readonly RuntimeBrandPack[]
+  readonly reports: readonly RuntimeBrandReport[]
   readonly pending: boolean
   readonly warning: string | null
 }
@@ -30,7 +31,12 @@ export interface BrandController {
 }
 
 function boundedWarning(cause: unknown): string {
-  const value = cause instanceof Error && cause.message ? cause.message : 'The active brand could not be loaded.'
+  const value =
+    typeof cause === 'string'
+      ? cause
+      : cause instanceof Error && cause.message
+        ? cause.message
+        : 'The active brand could not be loaded.'
   return value.length <= 4096 ? value : `${value.slice(0, 4096)}…`
 }
 
@@ -54,7 +60,7 @@ function makeObjectUrl(bytes: Uint8Array, mediaType: string): string {
   return URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }))
 }
 
-function runtimePack(validated: ValidatedBrandPack, previewOnly = false): RuntimeBrandPack {
+function runtimePack(validated: ValidatedBrandPack, previewOnly = false, revision?: string): RuntimeBrandPack {
   const urlFor = (path: string): string => {
     const asset = validated.assets[path]
     if (!asset) throw new Error(`Validated brand asset ${path} is missing.`)
@@ -71,7 +77,20 @@ function runtimePack(validated: ValidatedBrandPack, previewOnly = false): Runtim
     canActivate: validated.canActivate,
     builtIn: false,
     previewOnly,
+    ...(revision ? { revision } : {}),
   }
+}
+
+function releasePack(pack: RuntimeBrandPack | undefined): void {
+  if (!pack || pack.builtIn || typeof URL.revokeObjectURL !== 'function') return
+  for (const url of new Set(Object.values(pack.assetUrls))) URL.revokeObjectURL(url)
+}
+
+function loadStoredRuntimePack(stored: StoredBrandPack): RuntimeBrandPack {
+  const assets = Object.fromEntries(stored.assets.map(({ path, bytes }) => [path, Uint8Array.from(bytes)]))
+  const validated = validateBrandPack(JSON.stringify(stored.manifest), assets)
+  if (!validated.canActivate) throw new Error(`${stored.manifest.id} no longer meets activation requirements.`)
+  return runtimePack(validated, false, stored.revision)
 }
 
 export function createBrandController(
@@ -79,9 +98,11 @@ export function createBrandController(
   root: HTMLElement = document.documentElement,
 ): BrandController {
   const packs = new Map<string, RuntimeBrandPack>([['loop24', bundledPack()]])
+  const reports: RuntimeBrandReport[] = []
   const state = atom<BrandControllerState>({
     activeId: 'loop24',
     packs: [...packs.values()],
+    reports,
     pending: false,
     warning: null,
   })
@@ -89,7 +110,22 @@ export function createBrandController(
   let busy = false
 
   function publish(patch: Partial<BrandControllerState> = {}): void {
-    state.set({ ...state.get(), packs: [...packs.values()], ...patch })
+    state.set({ ...state.get(), packs: [...packs.values()], reports: [...reports], ...patch })
+  }
+
+  function warningText(values: readonly unknown[]): string | null {
+    const messages = values.filter((value) => value !== null && value !== undefined).map(boundedWarning)
+    return messages.length > 0 ? boundedWarning(messages.join(' ')) : null
+  }
+
+  function addReport(cause: unknown): void {
+    reports.push({
+      reportId: `rejected-${reports.length + 1}`,
+      displayName: 'Rejected brand pack',
+      message: boundedWarning(cause),
+      canActivate: false,
+      safeToRender: false,
+    })
   }
 
   function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -122,29 +158,70 @@ export function createBrandController(
 
   async function initialize(): Promise<void> {
     return serialize(async () => {
+      const warnings: unknown[] = []
       try {
-        const id = await native.brandLoadActive()
-        if (id === 'loop24') {
-          commit(packs.get('loop24')!)
-          return
+        const listed = await native.brandListPacks()
+        warnings.push(...listed.warnings)
+        for (const stored of listed.packs) {
+          try {
+            const pack = loadStoredRuntimePack(stored)
+            const previous = packs.get(pack.manifest.id)
+            packs.set(pack.manifest.id, pack)
+            releasePack(previous)
+          } catch (cause: unknown) {
+            addReport(cause)
+            warnings.push(cause)
+          }
         }
-        const stored = await native.brandLoadPack(id)
-        const assets = Object.fromEntries(stored.assets.map(({ path, bytes }) => [path, Uint8Array.from(bytes)]))
-        const validated = validateBrandPack(JSON.stringify(stored.manifest), assets)
-        if (!validated.canActivate) throw new Error('The saved active brand no longer meets activation requirements.')
-        const pack = runtimePack(validated)
-        packs.set(id, pack)
-        commit(pack)
       } catch (cause: unknown) {
-        let warning = boundedWarning(cause)
+        warnings.push(cause)
+      }
+      try {
+        const active = await native.brandLoadActive()
+        if (active.warning) warnings.push(active.warning)
+        const pack =
+          active.id === 'loop24'
+            ? packs.get('loop24')!
+            : active.pack
+              ? loadStoredRuntimePack(active.pack)
+              : (() => {
+                  throw new Error('The active custom brand did not include its exact stored revision.')
+                })()
+        if (!pack.builtIn) {
+          const previous = packs.get(pack.manifest.id)
+          packs.set(pack.manifest.id, pack)
+          releasePack(previous)
+        }
+        commit(pack)
+        try {
+          await native.setWindowIcon(pack.manifest.id, pack.revision ?? null)
+        } catch (cause: unknown) {
+          warnings.push(cause)
+          if (pack.manifest.id !== 'loop24') {
+            await native.brandActivate('loop24')
+            commit(packs.get('loop24')!)
+            try {
+              await native.setWindowIcon('loop24', null)
+            } catch (fallbackIconCause: unknown) {
+              warnings.push(fallbackIconCause)
+            }
+          }
+        }
+      } catch (cause: unknown) {
+        warnings.push(cause)
         try {
           await native.brandActivate('loop24')
         } catch (fallbackCause: unknown) {
-          warning = boundedWarning(fallbackCause)
+          warnings.push(fallbackCause)
         }
         commit(packs.get('loop24')!)
-        publish({ warning })
+        try {
+          await native.setWindowIcon('loop24', null)
+        } catch (iconCause: unknown) {
+          warnings.push(iconCause)
+        }
       }
+      publish({ warning: warningText(warnings) })
     })
   }
 
@@ -187,9 +264,22 @@ export function createBrandController(
             'Brand import failed and its source grant could not be revoked.',
           )
         }
-        throw cause
+        addReport(cause)
+        publish()
+        return null
       }
     })
+  }
+
+  function exactActivationPack(result: BrandActivationResult): RuntimeBrandPack {
+    if (result.id === 'loop24') {
+      if (result.pack) throw new Error('LOOP24 activation returned an unexpected custom payload.')
+      return packs.get('loop24')!
+    }
+    if (!result.pack || result.pack.manifest.id !== result.id) {
+      throw new Error('Native activation did not return its exact custom brand revision.')
+    }
+    return loadStoredRuntimePack(result.pack)
   }
 
   async function activate(id: string): Promise<void> {
@@ -198,19 +288,34 @@ export function createBrandController(
       if (!pack) throw new Error('The selected brand is not available.')
       if (!pack.canActivate) throw new Error('Resolve blocking brand validation issues before activation.')
       const previous = packs.get(state.get().activeId) ?? packs.get('loop24')!
-      await native.brandActivate(id)
+      const activated = await native.brandActivate(id)
+      let exact: RuntimeBrandPack | undefined
       try {
-        commit(pack)
+        exact = exactActivationPack(activated)
+        if (!exact.builtIn) packs.set(exact.manifest.id, exact)
+        commit(exact)
       } catch (cause: unknown) {
-        await native.brandActivate(previous.manifest.id)
-        commit(previous)
+        releasePack(exact)
+        const rolledBack = exactActivationPack(await native.brandActivate(previous.manifest.id))
+        if (!rolledBack.builtIn) packs.set(rolledBack.manifest.id, rolledBack)
+        commit(rolledBack)
         throw cause
       }
+      if (!exact) throw new Error('Native activation did not return a usable brand revision.')
       try {
-        await native.setWindowIcon(id)
+        await native.setWindowIcon(exact.manifest.id, exact.revision ?? null)
       } catch (cause: unknown) {
-        publish({ warning: boundedWarning(cause) })
+        const rolledBack = exactActivationPack(await native.brandActivate(previous.manifest.id))
+        if (!rolledBack.builtIn) packs.set(rolledBack.manifest.id, rolledBack)
+        commit(rolledBack)
+        try {
+          await native.setWindowIcon(rolledBack.manifest.id, rolledBack.revision ?? null)
+        } catch (rollbackIconCause: unknown) {
+          publish({ warning: warningText([cause, rollbackIconCause]) })
+        }
+        throw cause
       }
+      if (exact !== pack) releasePack(pack)
     })
   }
 
@@ -218,13 +323,45 @@ export function createBrandController(
     return serialize(async () => {
       const removed = packs.get(id)
       if (!removed) throw new Error('The selected brand is not available.')
-      if (!removed.previewOnly) await native.brandRemove(id, revertActive)
-      if (state.get().activeId === id) commit(packs.get('loop24')!)
-      packs.delete(id)
-      if (removed && !removed.builtIn && typeof URL.revokeObjectURL === 'function') {
-        for (const url of new Set(Object.values(removed.assetUrls))) URL.revokeObjectURL(url)
+      if (removed.previewOnly) {
+        packs.delete(id)
+        releasePack(removed)
+        publish()
+        return
       }
-      publish()
+      const revertingActive = state.get().activeId === id && revertActive
+      if (revertingActive) await native.setWindowIcon('loop24', null)
+      let result: Awaited<ReturnType<BrandNativeBridge['brandRemove']>>
+      try {
+        result = await native.brandRemove(id, revertActive)
+      } catch (cause: unknown) {
+        if (revertingActive) {
+          try {
+            await native.setWindowIcon(removed.manifest.id, removed.revision ?? null)
+          } catch (restoreIconCause: unknown) {
+            throw new AggregateError([cause, restoreIconCause], 'Brand removal and icon restoration both failed.')
+          }
+        }
+        throw cause
+      }
+      const warnings: unknown[] = result.warning ? [result.warning] : []
+      if (result.activeId !== state.get().activeId) {
+        const next = packs.get(result.activeId)
+        if (!next) throw new Error('Native removal selected an unavailable active brand.')
+        commit(next)
+        if (!revertingActive) {
+          try {
+            await native.setWindowIcon(next.manifest.id, next.revision ?? null)
+          } catch (cause: unknown) {
+            warnings.push(cause)
+          }
+        }
+      }
+      if (result.removed) {
+        packs.delete(id)
+        releasePack(removed)
+      }
+      publish({ warning: warningText(warnings) })
     })
   }
 

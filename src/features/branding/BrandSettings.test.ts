@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import { loadBundledBrand } from '$src/lib/branding/load-brand'
 import type { RuntimeBrandPack } from '$src/lib/branding/types'
@@ -20,6 +20,32 @@ function pack(id: string, canActivate = true): RuntimeBrandPack {
 }
 
 describe('BrandSettings', () => {
+  it('shows non-renderable invalid-pack diagnostics without exposing preview or activation controls', () => {
+    render(BrandSettings, {
+      packs: [pack('loop24')],
+      reports: [
+        {
+          reportId: 'rejected-1',
+          displayName: 'Rejected brand pack',
+          message: 'logo.svg contains active SVG content.',
+          canActivate: false,
+          safeToRender: false,
+        },
+      ],
+      activeId: 'loop24',
+      pending: false,
+      warning: null,
+      onImport: vi.fn(),
+      onPreview: vi.fn(),
+      onActivate: vi.fn(),
+      onRemove: vi.fn(),
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('logo.svg contains active SVG content')
+    expect(screen.queryByRole('button', { name: /preview rejected/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /activate rejected/i })).not.toBeInTheDocument()
+  })
+
   it('exposes keyboard-operable import, preview, activation, and protected removal', async () => {
     const onImport = vi.fn()
     const onPreview = vi.fn()
@@ -80,5 +106,83 @@ describe('BrandSettings', () => {
     expect(screen.getByRole('dialog', { name: 'Revert active brand' })).toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Revert to LOOP24 and remove' }))
     expect(onRemove).toHaveBeenCalledWith('acme', true)
+  })
+
+  it('enters the active-removal modal and traps keyboard focus within its actions', async () => {
+    render(BrandSettings, {
+      packs: [pack('loop24'), pack('acme')],
+      activeId: 'acme',
+      pending: false,
+      warning: null,
+      onImport: vi.fn(),
+      onPreview: vi.fn(),
+      onActivate: vi.fn(),
+      onRemove: vi.fn(),
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove acme Studio' }))
+    const dialog = screen.getByRole('dialog', { name: 'Revert active brand' })
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    const confirm = screen.getByRole('button', { name: 'Revert to LOOP24 and remove' })
+
+    expect(dialog).toHaveAttribute('open')
+    await waitFor(() => expect(cancel).toHaveFocus())
+    await fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })
+    expect(confirm).toHaveFocus()
+    await fireEvent.keyDown(confirm, { key: 'Tab' })
+    expect(cancel).toHaveFocus()
+  })
+
+  it('uses native modal presentation when the dialog API is available', async () => {
+    const existing = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    const showModal = vi.fn(function (this: HTMLDialogElement) {
+      this.setAttribute('open', '')
+    })
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: showModal })
+
+    try {
+      render(BrandSettings, {
+        packs: [pack('loop24'), pack('acme')],
+        activeId: 'acme',
+        pending: false,
+        warning: null,
+        onImport: vi.fn(),
+        onPreview: vi.fn(),
+        onActivate: vi.fn(),
+        onRemove: vi.fn(),
+      })
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Remove acme Studio' }))
+      expect(showModal).toHaveBeenCalledOnce()
+    } finally {
+      if (existing) Object.defineProperty(HTMLDialogElement.prototype, 'showModal', existing)
+      else Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    }
+  })
+
+  it('guards dismissal while pending, then Escape closes and restores focus to the remove control', async () => {
+    const props = {
+      packs: [pack('loop24'), pack('acme')],
+      activeId: 'acme',
+      pending: false,
+      warning: null,
+      onImport: vi.fn(),
+      onPreview: vi.fn(),
+      onActivate: vi.fn(),
+      onRemove: vi.fn(),
+    }
+    const { rerender } = render(BrandSettings, props)
+    const opener = screen.getByRole('button', { name: 'Remove acme Studio' })
+
+    await fireEvent.click(opener)
+    const dialog = screen.getByRole('dialog', { name: 'Revert active brand' })
+    await rerender({ ...props, pending: true })
+    await fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { name: 'Revert active brand' })).toBeInTheDocument()
+
+    await rerender({ ...props, pending: false })
+    await fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Revert active brand' })).not.toBeInTheDocument())
+    expect(opener).toHaveFocus()
   })
 })

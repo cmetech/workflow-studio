@@ -75,7 +75,7 @@ pub struct BrandSourceAsset {
     sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeBrandAssets {
     logo: String,
@@ -83,14 +83,14 @@ pub struct NativeBrandAssets {
     window_icon: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeBrandThemes {
     light: HashMap<String, String>,
     dark: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeBrandManifest {
     schema_version: u8,
@@ -118,14 +118,14 @@ pub struct BrandImportRequest {
     assets: Vec<BrandImportAsset>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedBrand {
     id: String,
     display_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowIconResult {
     status: &'static str,
@@ -143,6 +143,38 @@ pub struct StoredBrandAsset {
 pub struct StoredBrandPack {
     manifest: NativeBrandManifest,
     assets: Vec<StoredBrandAsset>,
+    revision: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandPackListResult {
+    packs: Vec<StoredBrandPack>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandActiveLoadResult {
+    id: String,
+    pack: Option<StoredBrandPack>,
+    recovered: bool,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandActivationResult {
+    id: String,
+    pack: Option<StoredBrandPack>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandRemovalResult {
+    active_id: String,
+    removed: bool,
+    warning: Option<String>,
 }
 
 #[derive(Default)]
@@ -156,6 +188,8 @@ struct GrantedBrandSource {
     manifest_path: PathBuf,
     manifest_identity: Handle,
     manifest_sha256: String,
+    source_manifest: Option<NativeBrandManifest>,
+    authorized_paths: HashSet<String>,
     assets: HashMap<String, BoundBrandAsset>,
 }
 
@@ -290,6 +324,145 @@ fn validate_brand_id(id: &str) -> bool {
         && !id.ends_with('-')
 }
 
+fn source_color_component(value: &str) -> Option<u8> {
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent: f64 = percent.parse().ok()?;
+        return (percent.is_finite() && (0.0..=100.0).contains(&percent))
+            .then(|| (percent * 255.0 / 100.0).round() as u8);
+    }
+    let number: f64 = value.parse().ok()?;
+    (number.is_finite() && (0.0..=255.0).contains(&number)).then(|| number.round() as u8)
+}
+
+fn source_alpha_component(value: Option<&str>) -> Option<u8> {
+    let Some(value) = value else { return Some(255) };
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent: f64 = percent.parse().ok()?;
+        return (percent.is_finite() && (0.0..=100.0).contains(&percent))
+            .then(|| (percent * 255.0 / 100.0).round() as u8);
+    }
+    let number: f64 = value.parse().ok()?;
+    (number.is_finite() && (0.0..=1.0).contains(&number)).then(|| (number * 255.0).round() as u8)
+}
+
+fn canonical_source_color(source: &str) -> Option<String> {
+    let value = source.trim();
+    if let Some(hex) = value.strip_prefix('#') {
+        if !matches!(hex.len(), 3 | 4 | 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let expanded = if hex.len() <= 4 {
+            hex.chars()
+                .flat_map(|digit| [digit, digit])
+                .collect::<String>()
+        } else {
+            hex.to_owned()
+        };
+        let color = expanded.to_ascii_uppercase();
+        return Some(if color.ends_with("FF") && color.len() == 8 {
+            format!("#{}", &color[..6])
+        } else {
+            format!("#{color}")
+        });
+    }
+    let lower = value.to_ascii_lowercase();
+    let inner = lower
+        .strip_prefix("rgb(")
+        .or_else(|| lower.strip_prefix("rgba("))?
+        .strip_suffix(')')?
+        .trim();
+    let (colors, slash_alpha) = inner
+        .split_once('/')
+        .map_or((inner, None), |(colors, alpha)| {
+            (colors.trim(), Some(alpha.trim()))
+        });
+    let mut parts: Vec<&str> = if colors.contains(',') {
+        colors.split(',').map(str::trim).collect()
+    } else {
+        colors.split_whitespace().collect()
+    };
+    let alpha = if parts.len() == 4 && slash_alpha.is_none() {
+        parts.pop()
+    } else {
+        slash_alpha
+    };
+    if parts.len() != 3 {
+        return None;
+    }
+    let channels = [
+        source_color_component(parts[0])?,
+        source_color_component(parts[1])?,
+        source_color_component(parts[2])?,
+    ];
+    let alpha = source_alpha_component(alpha)?;
+    Some(if alpha == 255 {
+        format!("#{:02X}{:02X}{:02X}", channels[0], channels[1], channels[2])
+    } else {
+        format!(
+            "#{:02X}{:02X}{:02X}{alpha:02X}",
+            channels[0], channels[1], channels[2]
+        )
+    })
+}
+
+fn normalize_source_theme(theme: &mut HashMap<String, String>) -> BrandResult<()> {
+    let expected: HashSet<&str> = THEME_TOKEN_NAMES.iter().copied().collect();
+    if theme.len() != expected.len() || theme.keys().any(|name| !expected.contains(name.as_str())) {
+        return Err(brand_error(
+            "brand_manifest_invalid",
+            "The selected source theme does not use the exact semantic token set.",
+        ));
+    }
+    for value in theme.values_mut() {
+        *value = canonical_source_color(value).ok_or_else(|| {
+            brand_error(
+                "brand_manifest_invalid",
+                "The selected source contains an unsupported theme color.",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn parse_source_manifest(bytes: &[u8]) -> BrandResult<NativeBrandManifest> {
+    let mut manifest: NativeBrandManifest = serde_yaml::from_slice(bytes).map_err(|_| {
+        brand_error(
+            "brand_manifest_invalid",
+            "The selected source manifest cannot authorize asset access.",
+        )
+    })?;
+    manifest.id = manifest.id.trim().to_owned();
+    manifest.display_name = manifest.display_name.trim().to_owned();
+    manifest.assets.logo = manifest.assets.logo.trim().to_owned();
+    manifest.assets.mark = manifest.assets.mark.trim().to_owned();
+    manifest.assets.window_icon = manifest.assets.window_icon.trim().to_owned();
+    normalize_source_theme(&mut manifest.themes.light)?;
+    normalize_source_theme(&mut manifest.themes.dark)?;
+    if manifest.schema_version != 1
+        || !validate_brand_id(&manifest.id)
+        || manifest.id == BUILTIN_BRAND_ID
+        || manifest.display_name.is_empty()
+    {
+        return Err(brand_error(
+            "brand_manifest_invalid",
+            "The selected source manifest identity is invalid.",
+        ));
+    }
+    let paths = [
+        &manifest.assets.logo,
+        &manifest.assets.mark,
+        &manifest.assets.window_icon,
+    ];
+    if paths.iter().any(|path| !safe_asset_path(path)) {
+        return Err(brand_error(
+            "brand_asset_path_invalid",
+            "The selected source contains an unsafe asset path.",
+        ));
+    }
+    Ok(manifest)
+}
+
 fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<BrandSourceSelection> {
     if path.file_name().and_then(|name| name.to_str()) != Some("brand.yaml") {
         return Err(brand_error(
@@ -328,6 +501,19 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
         )
     })?;
     let manifest_sha256 = sha256(&manifest_bytes);
+    let source_manifest = parse_source_manifest(&manifest_bytes).ok();
+    let authorized_paths = source_manifest
+        .as_ref()
+        .map(|manifest| {
+            [
+                manifest.assets.logo.clone(),
+                manifest.assets.mark.clone(),
+                manifest.assets.window_icon.clone(),
+            ]
+            .into_iter()
+            .collect()
+        })
+        .unwrap_or_default();
     let grant_token = opaque_token()?;
     grants
         .grants
@@ -341,6 +527,8 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
                 manifest_path: canonical,
                 manifest_identity,
                 manifest_sha256: manifest_sha256.clone(),
+                source_manifest,
+                authorized_paths,
                 assets: HashMap::new(),
             },
         );
@@ -420,6 +608,13 @@ fn read_brand_source_assets(
         )
     })?;
     verify_manifest(grant)?;
+    let requested_paths: HashSet<String> = paths.iter().cloned().collect();
+    if grant.source_manifest.is_none() || requested_paths != grant.authorized_paths {
+        return Err(brand_error(
+            "brand_asset_set_invalid",
+            "Read each and only the assets referenced by the exact selected manifest.",
+        ));
+    }
     let mut result = Vec::with_capacity(paths.len());
     for relative in paths {
         let path = checked_asset_path(&grant.parent_path, relative)?;
@@ -571,6 +766,7 @@ fn validate_manifest(manifest: &NativeBrandManifest) -> BrandResult<HashSet<Stri
     Ok(paths.into_iter().cloned().collect())
 }
 
+#[cfg(test)]
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xffff_ffff_u32;
     for byte in bytes {
@@ -583,14 +779,26 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 fn validate_png(bytes: &[u8]) -> bool {
-    const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    bytes.len() >= 33
-        && bytes[..8] == SIGNATURE
-        && bytes[8..12] == [0, 0, 0, 13]
-        && bytes[12..16] == *b"IHDR"
-        && (1..=4096).contains(&u32::from_be_bytes(bytes[16..20].try_into().unwrap()))
-        && (1..=4096).contains(&u32::from_be_bytes(bytes[20..24].try_into().unwrap()))
-        && crc32(&bytes[12..29]) == u32::from_be_bytes(bytes[29..33].try_into().unwrap())
+    let decoder = png::Decoder::new_with_limits(
+        std::io::Cursor::new(bytes),
+        png::Limits {
+            bytes: MAX_ASSET_BYTES,
+        },
+    );
+    let Ok(mut reader) = decoder.read_info() else {
+        return false;
+    };
+    if !(1..=4096).contains(&reader.info().width) || !(1..=4096).contains(&reader.info().height) {
+        return false;
+    }
+    loop {
+        match reader.next_row() {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => return false,
+        }
+    }
+    reader.finish().is_ok()
 }
 
 fn validate_svg_start(
@@ -1039,6 +1247,12 @@ fn import_brand_pack_at_with_commit_hook(
             "The imported manifest revision does not match the selected source.",
         ));
     }
+    if grant.source_manifest.as_ref() != Some(&request.manifest) {
+        return Err(brand_error(
+            "brand_manifest_mismatch",
+            "The normalized import manifest does not match the exact selected source.",
+        ));
+    }
     for asset in &request.assets {
         validate_sanitized_asset(asset)?;
         verify_bound_asset(grant, asset)?;
@@ -1084,14 +1298,16 @@ fn import_brand_pack_at_with_commit_hook(
     Ok(ImportedBrand { id, display_name })
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActiveBrandRecord {
     schema_version: u8,
     id: String,
+    #[serde(default)]
+    revision: Option<String>,
 }
 
-fn atomic_active_write(storage: &Path, id: &str) -> BrandResult<()> {
+fn atomic_active_write(storage: &Path, id: &str, revision: Option<&str>) -> BrandResult<()> {
     let storage_identity =
         Handle::from_path(storage).map_err(|error| io_error("brand_storage_failed", error))?;
     let token = opaque_token()?;
@@ -1099,6 +1315,7 @@ fn atomic_active_write(storage: &Path, id: &str) -> BrandResult<()> {
     let bytes = serde_json::to_vec(&ActiveBrandRecord {
         schema_version: 1,
         id: id.to_owned(),
+        revision: revision.map(str::to_owned),
     })
     .map_err(|error| brand_error("brand_storage_failed", error.to_string()))?;
     write_private_file(&temporary, &bytes)?;
@@ -1186,7 +1403,7 @@ fn replace_active_file(source: &Path, destination: &Path) -> BrandResult<()> {
     }
 }
 
-fn load_active_brand_at(app_data: &Path) -> BrandResult<String> {
+fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {
     let (storage, _) = prepare_storage_root(app_data)?;
     let path = storage.join(ACTIVE_FILE);
     match fs::symlink_metadata(&path) {
@@ -1204,19 +1421,71 @@ fn load_active_brand_at(app_data: &Path) -> BrandResult<String> {
                     "The saved active brand is corrupt; LOOP24 must be restored.",
                 )
             })?;
-            if record.schema_version != 1 || !validate_brand_id(&record.id) {
+            let revision_valid = if record.id == BUILTIN_BRAND_ID {
+                record.revision.is_none()
+            } else {
+                record
+                    .revision
+                    .as_deref()
+                    .is_some_and(|revision| revision.starts_with("sha256:") && revision.len() == 71)
+            };
+            if record.schema_version != 1 || !validate_brand_id(&record.id) || !revision_valid {
                 return Err(brand_error(
                     "brand_active_invalid",
                     "The saved active brand is invalid; LOOP24 must be restored.",
                 ));
             }
-            Ok(record.id)
+            Ok(record)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(BUILTIN_BRAND_ID.to_owned())
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ActiveBrandRecord {
+            schema_version: 1,
+            id: BUILTIN_BRAND_ID.to_owned(),
+            revision: None,
+        }),
         Err(error) => Err(io_error("brand_storage_failed", error)),
     }
+}
+
+fn load_active_brand_at(app_data: &Path) -> BrandResult<String> {
+    load_active_record_at(app_data).map(|record| record.id)
+}
+
+fn stored_pack_revision(
+    manifest: &NativeBrandManifest,
+    assets: &[StoredBrandAsset],
+) -> BrandResult<String> {
+    let mut digest = Sha256::new();
+    let mut update = |bytes: &[u8]| {
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    };
+    update(&[manifest.schema_version]);
+    update(manifest.id.as_bytes());
+    update(manifest.display_name.as_bytes());
+    update(manifest.assets.logo.as_bytes());
+    update(manifest.assets.mark.as_bytes());
+    update(manifest.assets.window_icon.as_bytes());
+    for theme in [&manifest.themes.light, &manifest.themes.dark] {
+        for token in THEME_TOKEN_NAMES {
+            update(token.as_bytes());
+            update(
+                theme
+                    .get(token)
+                    .ok_or_else(|| {
+                        brand_error(
+                            "brand_storage_invalid",
+                            "The stored brand theme is incomplete.",
+                        )
+                    })?
+                    .as_bytes(),
+            );
+        }
+    }
+    for asset in assets {
+        update(asset.path.as_bytes());
+        update(&asset.bytes);
+    }
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
 fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack> {
@@ -1281,13 +1550,77 @@ fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack
             "The stored brand directory changed while it was loaded.",
         ));
     }
-    Ok(StoredBrandPack { manifest, assets })
+    let revision = stored_pack_revision(&manifest, &assets)?;
+    Ok(StoredBrandPack {
+        manifest,
+        assets,
+        revision,
+    })
 }
 
-fn load_stored_manifest(app_data: &Path, id: &str) -> BrandResult<NativeBrandManifest> {
-    load_stored_pack_at(app_data, id).map(|pack| pack.manifest)
+fn bounded_native_warning(message: impl AsRef<str>) -> String {
+    let message = message.as_ref();
+    if message.len() <= 4096 {
+        message.to_owned()
+    } else {
+        let boundary = (0..=4096)
+            .rev()
+            .find(|index| message.is_char_boundary(*index))
+            .unwrap_or_default();
+        format!("{}…", &message[..boundary])
+    }
 }
 
+fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
+    const MAX_LISTED_PACKS: usize = 16;
+    const MAX_LISTED_BYTES: usize = 32 * 1024 * 1024;
+    let (storage, _) = prepare_storage_root(app_data)?;
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(&storage).map_err(|error| io_error("brand_storage_failed", error))? {
+        let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if validate_brand_id(&name) && name != BUILTIN_BRAND_ID {
+            ids.push(name);
+        }
+    }
+    ids.sort();
+    let mut packs = Vec::new();
+    let mut warnings = Vec::new();
+    let mut total_bytes = 0_usize;
+    for id in ids {
+        if packs.len() >= MAX_LISTED_PACKS {
+            warnings.push(
+                "Additional stored brand packs were omitted from this bounded listing.".to_owned(),
+            );
+            break;
+        }
+        match load_stored_pack_at(app_data, &id) {
+            Ok(pack) => {
+                let pack_bytes = pack
+                    .assets
+                    .iter()
+                    .map(|asset| asset.bytes.len())
+                    .sum::<usize>();
+                if total_bytes.saturating_add(pack_bytes) > MAX_LISTED_BYTES {
+                    warnings.push(
+                        "Additional stored brand bytes were omitted from this bounded listing."
+                            .to_owned(),
+                    );
+                    break;
+                }
+                total_bytes += pack_bytes;
+                packs.push(pack);
+            }
+            Err(error) => warnings.push(bounded_native_warning(format!(
+                "Stored brand {id} was ignored: {}",
+                error.message
+            ))),
+        }
+    }
+    Ok(BrandPackListResult { packs, warnings })
+}
+
+#[cfg(test)]
 fn load_window_icon_at_with_hook(
     app_data: &Path,
     id: &str,
@@ -1318,16 +1651,103 @@ fn load_window_icon_at_with_hook(
     Ok(Some(bytes))
 }
 
-fn load_window_icon_at(app_data: &Path, id: &str) -> BrandResult<Option<Vec<u8>>> {
-    load_window_icon_at_with_hook(app_data, id, || {})
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn load_window_icon_for_revision_at(
+    app_data: &Path,
+    id: &str,
+    expected_revision: Option<&str>,
+) -> BrandResult<Option<Vec<u8>>> {
+    if id == BUILTIN_BRAND_ID {
+        if expected_revision.is_some() {
+            return Err(brand_error(
+                "brand_icon_revision_mismatch",
+                "LOOP24 does not use a custom icon revision.",
+            ));
+        }
+        return Ok(None);
+    }
+    let pack = load_stored_pack_at(app_data, id)?;
+    if expected_revision != Some(pack.revision.as_str()) {
+        return Err(brand_error(
+            "brand_icon_revision_mismatch",
+            "The stored brand changed after activation; its icon was not applied.",
+        ));
+    }
+    if !pack
+        .manifest
+        .assets
+        .window_icon
+        .to_ascii_lowercase()
+        .ends_with(".png")
+    {
+        return Ok(None);
+    }
+    pack.assets
+        .into_iter()
+        .find(|asset| asset.path == pack.manifest.assets.window_icon)
+        .map(|asset| Some(asset.bytes))
+        .ok_or_else(|| {
+            brand_error(
+                "brand_storage_invalid",
+                "The stored window icon is missing.",
+            )
+        })
 }
 
-fn activate_brand_pack_at(app_data: &Path, id: &str) -> BrandResult<()> {
-    if id != BUILTIN_BRAND_ID {
-        load_stored_manifest(app_data, id)?;
-    }
+fn activate_brand_pack_at(app_data: &Path, id: &str) -> BrandResult<BrandActivationResult> {
+    let pack = if id == BUILTIN_BRAND_ID {
+        None
+    } else {
+        Some(load_stored_pack_at(app_data, id)?)
+    };
     let (storage, _) = prepare_storage_root(app_data)?;
-    atomic_active_write(&storage, id)
+    atomic_active_write(
+        &storage,
+        id,
+        pack.as_ref().map(|pack| pack.revision.as_str()),
+    )?;
+    Ok(BrandActivationResult {
+        id: id.to_owned(),
+        pack,
+    })
+}
+
+fn load_active_brand_with_recovery_at(app_data: &Path) -> BrandResult<BrandActiveLoadResult> {
+    let loaded = load_active_record_at(app_data).and_then(|record| {
+        if record.id == BUILTIN_BRAND_ID {
+            return Ok(BrandActiveLoadResult {
+                id: record.id,
+                pack: None,
+                recovered: false,
+                warning: None,
+            });
+        }
+        let pack = load_stored_pack_at(app_data, &record.id)?;
+        if record.revision.as_deref() != Some(pack.revision.as_str()) {
+            return Err(brand_error(
+                "brand_active_revision_changed",
+                "The active stored brand revision changed and LOOP24 must be restored.",
+            ));
+        }
+        Ok(BrandActiveLoadResult {
+            id: record.id,
+            pack: Some(pack),
+            recovered: false,
+            warning: None,
+        })
+    });
+    match loaded {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            activate_brand_pack_at(app_data, BUILTIN_BRAND_ID)?;
+            Ok(BrandActiveLoadResult {
+                id: BUILTIN_BRAND_ID.to_owned(),
+                pack: None,
+                recovered: true,
+                warning: Some(bounded_native_warning(error.message)),
+            })
+        }
+    }
 }
 
 fn reject_unsafe_tree(path: &Path) -> BrandResult<()> {
@@ -1353,7 +1773,20 @@ fn reject_unsafe_tree(path: &Path) -> BrandResult<()> {
     Ok(())
 }
 
-fn remove_brand_pack_at(app_data: &Path, id: &str, revert_active: bool) -> BrandResult<()> {
+fn remove_brand_pack_at(
+    app_data: &Path,
+    id: &str,
+    revert_active: bool,
+) -> BrandResult<BrandRemovalResult> {
+    remove_brand_pack_at_with_remover(app_data, id, revert_active, |path| fs::remove_dir_all(path))
+}
+
+fn remove_brand_pack_at_with_remover(
+    app_data: &Path,
+    id: &str,
+    revert_active: bool,
+    remover: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> BrandResult<BrandRemovalResult> {
     if id == BUILTIN_BRAND_ID {
         return Err(brand_error(
             "brand_builtin_protected",
@@ -1373,9 +1806,6 @@ fn remove_brand_pack_at(app_data: &Path, id: &str, revert_active: bool) -> Brand
             "Revert to LOOP24 before removing the active custom brand.",
         ));
     }
-    if active == id {
-        activate_brand_pack_at(app_data, BUILTIN_BRAND_ID)?;
-    }
     let (storage, _) = prepare_storage_root(app_data)?;
     let directory = storage.join(id);
     let metadata = fs::symlink_metadata(&directory)
@@ -1387,7 +1817,28 @@ fn remove_brand_pack_at(app_data: &Path, id: &str, revert_active: bool) -> Brand
         ));
     }
     reject_unsafe_tree(&directory)?;
-    fs::remove_dir_all(&directory).map_err(|error| io_error("brand_remove_failed", error))
+    if active == id {
+        activate_brand_pack_at(app_data, BUILTIN_BRAND_ID)?;
+    }
+    match remover(&directory) {
+        Ok(()) => Ok(BrandRemovalResult {
+            active_id: if active == id {
+                BUILTIN_BRAND_ID.to_owned()
+            } else {
+                active
+            },
+            removed: true,
+            warning: None,
+        }),
+        Err(error) if active == id => Ok(BrandRemovalResult {
+            active_id: BUILTIN_BRAND_ID.to_owned(),
+            removed: false,
+            warning: Some(bounded_native_warning(format!(
+                "The active brand reverted to LOOP24, but removal did not finish: {error}"
+            ))),
+        }),
+        Err(error) => Err(io_error("brand_remove_failed", error)),
+    }
 }
 
 fn app_data(app: &AppHandle) -> BrandResult<PathBuf> {
@@ -1448,32 +1899,27 @@ pub fn import_brand_pack(
 }
 
 #[tauri::command]
-pub fn activate_brand_pack(app: AppHandle, id: String) -> BrandResult<()> {
+pub fn activate_brand_pack(app: AppHandle, id: String) -> BrandResult<BrandActivationResult> {
     activate_brand_pack_at(&app_data(&app)?, &id)
 }
 
 #[tauri::command]
-pub fn remove_brand_pack(app: AppHandle, id: String, revert_active: bool) -> BrandResult<()> {
+pub fn remove_brand_pack(
+    app: AppHandle,
+    id: String,
+    revert_active: bool,
+) -> BrandResult<BrandRemovalResult> {
     remove_brand_pack_at(&app_data(&app)?, &id, revert_active)
 }
 
 #[tauri::command]
-pub fn brand_load_active(app: AppHandle) -> BrandResult<String> {
-    let app_data = app_data(&app)?;
-    match load_active_brand_at(&app_data) {
-        Ok(id) if id == BUILTIN_BRAND_ID => Ok(id),
-        Ok(id) => match load_stored_manifest(&app_data, &id) {
-            Ok(_) => Ok(id),
-            Err(_) => {
-                activate_brand_pack_at(&app_data, BUILTIN_BRAND_ID)?;
-                Ok(BUILTIN_BRAND_ID.to_owned())
-            }
-        },
-        Err(_) => {
-            activate_brand_pack_at(&app_data, BUILTIN_BRAND_ID)?;
-            Ok(BUILTIN_BRAND_ID.to_owned())
-        }
-    }
+pub fn brand_load_active(app: AppHandle) -> BrandResult<BrandActiveLoadResult> {
+    load_active_brand_with_recovery_at(&app_data(&app)?)
+}
+
+#[tauri::command]
+pub fn brand_list_packs(app: AppHandle) -> BrandResult<BrandPackListResult> {
+    list_brand_packs_at(&app_data(&app)?)
 }
 
 #[tauri::command]
@@ -1482,29 +1928,47 @@ pub fn brand_load_pack(app: AppHandle, id: String) -> BrandResult<StoredBrandPac
 }
 
 #[tauri::command]
-pub fn set_window_icon(app: AppHandle, id: String) -> BrandResult<WindowIconResult> {
-    if id == BUILTIN_BRAND_ID {
-        return Ok(WindowIconResult {
-            status: "unsupported",
-        });
-    }
-    let app_data = app_data(&app)?;
-    let Some(bytes) = load_window_icon_at(&app_data, &id)? else {
-        return Ok(WindowIconResult {
-            status: "unsupported",
-        });
-    };
+pub fn set_window_icon(
+    app: AppHandle,
+    id: String,
+    expected_revision: Option<String>,
+) -> BrandResult<WindowIconResult> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (app, bytes);
+        let _ = (app, id, expected_revision);
         Ok(WindowIconResult {
             status: "unsupported",
         })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let image = tauri::image::Image::from_bytes(&bytes)
-            .map_err(|error| brand_error("brand_icon_failed", error.to_string()))?;
+        let image = if id == BUILTIN_BRAND_ID {
+            if expected_revision.is_some() {
+                return Err(brand_error(
+                    "brand_icon_revision_mismatch",
+                    "LOOP24 does not use a custom icon revision.",
+                ));
+            }
+            app.default_window_icon().cloned().ok_or_else(|| {
+                brand_error(
+                    "brand_icon_failed",
+                    "The bundled default window icon is unavailable.",
+                )
+            })?
+        } else {
+            let Some(bytes) = load_window_icon_for_revision_at(
+                &app_data(&app)?,
+                &id,
+                expected_revision.as_deref(),
+            )?
+            else {
+                return Ok(WindowIconResult {
+                    status: "unsupported",
+                });
+            };
+            tauri::image::Image::from_bytes(&bytes)
+                .map_err(|error| brand_error("brand_icon_failed", error.to_string()))?
+        };
         let window = app.get_webview_window("main").ok_or_else(|| {
             brand_error(
                 "brand_icon_failed",
@@ -1533,11 +1997,11 @@ mod tests {
 
     fn source_pack() -> (tempfile::TempDir, std::path::PathBuf) {
         let source = tempfile::tempdir().unwrap();
-        let manifest = source.path().join("brand.yaml");
-        fs::write(&manifest, "schemaVersion: 1\nid: acme\n").unwrap();
+        let manifest_path = source.path().join("brand.yaml");
+        fs::write(&manifest_path, serde_yaml::to_string(&manifest()).unwrap()).unwrap();
         fs::write(source.path().join("logo.svg"), svg("#112233")).unwrap();
         fs::write(source.path().join("mark.svg"), svg("#445566")).unwrap();
-        (source, manifest)
+        (source, manifest_path)
     }
 
     fn theme() -> HashMap<String, String> {
@@ -1616,6 +2080,46 @@ mod tests {
     }
 
     #[test]
+    fn source_grant_reads_only_exact_manifest_assets_and_rejects_manifest_substitution() {
+        let (_source, path) = source_pack();
+        fs::write(path.parent().unwrap().join("adjacent.svg"), svg("#ABCDEF")).unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+
+        assert_eq!(
+            read_brand_source_assets(&selection.grant_token, &["logo.svg".to_owned()], &grants,)
+                .unwrap_err()
+                .code,
+            "brand_asset_set_invalid"
+        );
+        assert_eq!(
+            read_brand_source_assets(
+                &selection.grant_token,
+                &["adjacent.svg".to_owned()],
+                &grants,
+            )
+            .unwrap_err()
+            .code,
+            "brand_asset_set_invalid"
+        );
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        let mut substituted = request(&selection, &sources);
+        substituted.manifest.display_name = "Substituted Studio".to_owned();
+        assert_eq!(
+            import_brand_pack_at(app_data.path(), substituted, &grants)
+                .unwrap_err()
+                .code,
+            "brand_manifest_mismatch"
+        );
+    }
+
+    #[test]
     fn source_grants_can_be_revoked_idempotently_before_import() {
         let (_source, path) = source_pack();
         let app_data = tempfile::tempdir().unwrap();
@@ -1666,7 +2170,7 @@ mod tests {
                     .unwrap_err();
             assert!(matches!(
                 error.code.as_str(),
-                "brand_asset_path_invalid" | "brand_source_changed"
+                "brand_asset_path_invalid" | "brand_source_changed" | "brand_asset_set_invalid"
             ));
         }
     }
@@ -1723,6 +2227,156 @@ mod tests {
     }
 
     #[test]
+    fn list_retains_inactive_valid_packs_and_reports_corrupt_entries_without_hiding_valid_ones() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        activate_brand_pack_at(app_data.path(), BUILTIN_BRAND_ID).unwrap();
+        let corrupt = app_data.path().join("brands/corrupt");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("brand.yaml"), b"not-json").unwrap();
+
+        let listed = list_brand_packs_at(app_data.path()).unwrap();
+
+        assert_eq!(listed.packs.len(), 1);
+        assert_eq!(listed.packs[0].manifest.id, "acme");
+        assert!(listed.packs[0].revision.starts_with("sha256:"));
+        assert_eq!(listed.warnings.len(), 1);
+        assert!(listed.warnings[0].contains("corrupt"));
+    }
+
+    #[test]
+    fn activation_returns_and_persists_the_exact_revalidated_stored_revision() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+
+        let activated = activate_brand_pack_at(app_data.path(), "acme").unwrap();
+        let pack = activated.pack.unwrap();
+        let record = load_active_record_at(app_data.path()).unwrap();
+
+        assert_eq!(activated.id, "acme");
+        assert_eq!(record.revision.as_deref(), Some(pack.revision.as_str()));
+        assert_eq!(
+            pack.assets[0].bytes,
+            fs::read(app_data.path().join("brands/acme/logo.svg")).unwrap()
+        );
+    }
+
+    #[test]
+    fn startup_revision_corruption_recovers_to_loop24_with_a_bounded_warning() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        activate_brand_pack_at(app_data.path(), "acme").unwrap();
+        fs::write(app_data.path().join("brands/acme/logo.svg"), svg("#ABCDEF")).unwrap();
+
+        let result = load_active_brand_with_recovery_at(app_data.path()).unwrap();
+
+        assert_eq!(result.id, BUILTIN_BRAND_ID);
+        assert!(result.recovered);
+        assert!(result
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.len() <= 4096));
+        assert_eq!(
+            load_active_brand_at(app_data.path()).unwrap(),
+            BUILTIN_BRAND_ID
+        );
+    }
+
+    #[test]
+    fn active_removal_failure_returns_coherent_loop24_state_for_renderer_reconciliation() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        activate_brand_pack_at(app_data.path(), "acme").unwrap();
+
+        let result = remove_brand_pack_at_with_remover(app_data.path(), "acme", true, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(result.active_id, BUILTIN_BRAND_ID);
+        assert!(!result.removed);
+        assert!(result
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("did not finish")));
+        assert_eq!(
+            load_active_brand_at(app_data.path()).unwrap(),
+            BUILTIN_BRAND_ID
+        );
+        assert!(app_data.path().join("brands/acme").is_dir());
+    }
+
+    #[test]
+    fn icon_loading_is_revision_bound_and_loop24_selects_the_default_icon_path() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        let pack = load_stored_pack_at(app_data.path(), "acme").unwrap();
+
+        assert!(
+            load_window_icon_for_revision_at(app_data.path(), "acme", Some("sha256:stale"))
+                .is_err()
+        );
+        assert!(
+            load_window_icon_for_revision_at(app_data.path(), "acme", Some(&pack.revision))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            load_window_icon_for_revision_at(app_data.path(), BUILTIN_BRAND_ID, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn import_rechecks_every_source_after_renderer_validation() {
         let (_source, path) = source_pack();
         let app_data = tempfile::tempdir().unwrap();
@@ -1763,7 +2417,7 @@ mod tests {
             "brand_source_changed"
         );
 
-        fs::write(&path, "schemaVersion: 1\nid: acme\n").unwrap();
+        fs::write(&path, serde_yaml::to_string(&manifest()).unwrap()).unwrap();
         let replacement_grants = BrandGrantState::default();
         let replacement = grant_brand_source(&path, &replacement_grants).unwrap();
         let replacement_sources = read_brand_source_assets(
@@ -1790,6 +2444,10 @@ mod tests {
     #[test]
     fn duplicate_manifest_references_require_one_exact_payload_without_alias_collision() {
         let (_source, path) = source_pack();
+        let mut source_manifest = manifest();
+        source_manifest.assets.mark = "logo.svg".to_owned();
+        source_manifest.assets.window_icon = "logo.svg".to_owned();
+        fs::write(&path, serde_yaml::to_string(&source_manifest).unwrap()).unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let grants = BrandGrantState::default();
         let selection = grant_brand_source(&path, &grants).unwrap();
@@ -1898,6 +2556,44 @@ mod tests {
     }
 
     #[test]
+    fn native_png_revalidation_requires_a_complete_decodable_image() {
+        let mut asset = BrandImportAsset {
+            path: "icon.png".to_owned(),
+            source_sha256: String::new(),
+            media_type: "image/png".to_owned(),
+            sanitized_bytes: valid_png()[..33].to_vec(),
+        };
+        assert_eq!(
+            validate_sanitized_asset(&asset).unwrap_err().code,
+            "brand_asset_invalid"
+        );
+
+        asset.sanitized_bytes = valid_png();
+        asset.sanitized_bytes.pop();
+        assert_eq!(
+            validate_sanitized_asset(&asset).unwrap_err().code,
+            "brand_asset_invalid"
+        );
+
+        asset.sanitized_bytes = valid_png();
+        let final_byte = asset.sanitized_bytes.last_mut().unwrap();
+        *final_byte ^= 0xff;
+        assert_eq!(
+            validate_sanitized_asset(&asset).unwrap_err().code,
+            "brand_asset_invalid"
+        );
+
+        asset.sanitized_bytes = valid_png();
+        asset.sanitized_bytes[43] ^= 0xff;
+        let idat_crc = crc32(&asset.sanitized_bytes[37..52]);
+        asset.sanitized_bytes[52..56].copy_from_slice(&idat_crc.to_be_bytes());
+        assert_eq!(
+            validate_sanitized_asset(&asset).unwrap_err().code,
+            "brand_asset_invalid"
+        );
+    }
+
+    #[test]
     fn native_svg_revalidation_structurally_rejects_renderer_bypass_payloads() {
         let valid = BrandImportAsset {
             path: "mark.SvG".to_owned(),
@@ -1927,6 +2623,9 @@ mod tests {
     fn window_icon_uses_the_exact_bounded_bytes_that_were_validated_before_path_replacement() {
         let (_source, path) = source_pack();
         fs::write(path.parent().unwrap().join("icon.png"), valid_png()).unwrap();
+        let mut source_manifest = manifest();
+        source_manifest.assets.window_icon = "icon.png".to_owned();
+        fs::write(&path, serde_yaml::to_string(&source_manifest).unwrap()).unwrap();
         let app_data = tempfile::tempdir().unwrap();
         let grants = BrandGrantState::default();
         let selection = grant_brand_source(&path, &grants).unwrap();

@@ -114,6 +114,30 @@ export interface BrandSourceAsset {
 export interface StoredBrandPack {
   readonly manifest: BrandManifest
   readonly assets: readonly { readonly path: string; readonly bytes: readonly number[] }[]
+  readonly revision: string
+}
+
+export interface BrandPackListResult {
+  readonly packs: readonly StoredBrandPack[]
+  readonly warnings: readonly string[]
+}
+
+export interface BrandActiveLoadResult {
+  readonly id: string
+  readonly pack: StoredBrandPack | null
+  readonly recovered: boolean
+  readonly warning: string | null
+}
+
+export interface BrandActivationResult {
+  readonly id: string
+  readonly pack: StoredBrandPack | null
+}
+
+export interface BrandRemovalResult {
+  readonly activeId: string
+  readonly removed: boolean
+  readonly warning: string | null
 }
 
 export interface BrandImportRequest {
@@ -133,11 +157,12 @@ export interface BrandNativeBridge extends NativeBridge {
   brandReadSourceAssets(grantToken: string, paths: readonly string[]): Promise<readonly BrandSourceAsset[]>
   brandRevokeSourceGrant(grantToken: string): Promise<void>
   brandImport(request: BrandImportRequest): Promise<{ readonly id: string; readonly displayName: string }>
-  brandActivate(id: string): Promise<void>
-  brandRemove(id: string, revertActive: boolean): Promise<void>
-  brandLoadActive(): Promise<string>
+  brandActivate(id: string): Promise<BrandActivationResult>
+  brandRemove(id: string, revertActive: boolean): Promise<BrandRemovalResult>
+  brandLoadActive(): Promise<BrandActiveLoadResult>
+  brandListPacks(): Promise<BrandPackListResult>
   brandLoadPack(id: string): Promise<StoredBrandPack>
-  setWindowIcon(id: string): Promise<{ readonly status: 'applied' | 'unsupported' }>
+  setWindowIcon(id: string, expectedRevision: string | null): Promise<{ readonly status: 'applied' | 'unsupported' }>
 }
 
 export interface LayoutNativeBridge extends NativeBridge {

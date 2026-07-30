@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify'
+import { decode as decodePng } from 'fast-png'
 
 export const MAX_BRAND_ASSET_BYTES = 2 * 1024 * 1024
 export const MAX_BRAND_IMAGE_DIMENSION = 4096
@@ -142,6 +143,14 @@ function sanitizePng(path: string, bytes: Uint8Array): SanitizedBrandAsset {
     crc32(bytes.subarray(12, 29)) !== expectedHeaderCrc
   ) {
     throw new Error(`${path} has an invalid or unsupported PNG IHDR.`)
+  }
+  try {
+    const decoded = decodePng(bytes, { checkCrc: true })
+    if (decoded.width !== width || decoded.height !== height) {
+      throw new Error('Decoded PNG dimensions do not match its IHDR.')
+    }
+  } catch {
+    throw new Error(`${path} is not a complete decodable PNG.`)
   }
   return { path, mediaType: 'image/png', bytes: bytes.slice(), width, height }
 }

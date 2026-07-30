@@ -61,4 +61,13 @@ export interface RuntimeBrandPack {
   readonly canActivate: boolean
   readonly builtIn: boolean
   readonly previewOnly?: boolean
+  readonly revision?: string
+}
+
+export interface RuntimeBrandReport {
+  readonly reportId: string
+  readonly displayName: string
+  readonly message: string
+  readonly canActivate: false
+  readonly safeToRender: false
 }

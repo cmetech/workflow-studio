@@ -2,7 +2,7 @@ import { stringify } from 'yaml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadBundledBrand } from '$src/lib/branding/load-brand'
 import { synchronizeBrandTheme } from '$src/lib/branding/theme-sync'
-import type { BrandNativeBridge } from '$src/lib/native/types'
+import type { BrandNativeBridge, StoredBrandPack } from '$src/lib/native/types'
 import { activeBrand, activeBrandManifest, createBrandController, themePreference } from './branding'
 
 afterEach(() => {
@@ -18,14 +18,28 @@ function native(overrides: Partial<BrandNativeBridge> = {}): BrandNativeBridge {
     brandReadSourceAssets: async () => [],
     brandRevokeSourceGrant: async () => undefined,
     brandImport: async (request) => ({ id: request.manifest.id, displayName: request.manifest.displayName }),
-    brandActivate: async () => undefined,
-    brandRemove: async () => undefined,
-    brandLoadActive: async () => 'loop24',
+    brandActivate: async (id) => ({ id, pack: null }),
+    brandRemove: async () => ({ activeId: 'loop24', removed: true, warning: null }),
+    brandLoadActive: async () => ({ id: 'loop24', pack: null, recovered: false, warning: null }),
+    brandListPacks: async () => ({ packs: [], warnings: [] }),
     brandLoadPack: async () => {
       throw new Error('missing pack')
     },
     setWindowIcon: async () => ({ status: 'unsupported' }),
     ...overrides,
+  }
+}
+
+const SVG_BYTES = [...new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')]
+
+function stored(
+  manifest = loadBundledBrand(),
+  revision = `sha256:${manifest.id.padEnd(64, '0').slice(0, 64)}`,
+): StoredBrandPack {
+  return {
+    manifest,
+    revision,
+    assets: [...new Set(Object.values(manifest.assets))].map((path) => ({ path, bytes: SVG_BYTES })),
   }
 }
 
@@ -41,29 +55,32 @@ describe('brand controller', () => {
         mediaListeners.delete(listener),
     } as unknown as MediaQueryList
     const stop = synchronizeBrandTheme(activeBrandManifest, themePreference, root, { matchMedia: () => colorScheme })
-    const controller = createBrandController(native(), root)
     const custom = {
       ...bundled,
       id: 'custom',
       themes: {
-        light: { ...bundled.themes.light, background: '#112233' },
-        dark: { ...bundled.themes.dark, background: '#445566' },
+        light: { ...bundled.themes.light, background: '#FFFFFF' },
+        dark: { ...bundled.themes.dark, background: '#000000' },
       },
     }
+    const controller = createBrandController(
+      native({ brandActivate: async () => ({ id: custom.id, pack: stored(custom) }) }),
+      root,
+    )
     controller.registerForTest(custom)
 
     await controller.activate('custom')
     themePreference.set('light')
 
     expect(root.dataset.brand).toBe('custom')
-    expect(root.style.getPropertyValue('--color-background')).toBe('#112233')
+    expect(root.style.getPropertyValue('--color-background')).toBe('#FFFFFF')
 
     themePreference.set('system')
     for (const listener of mediaListeners) {
       listener({ matches: true } as MediaQueryListEvent)
     }
     expect(root.dataset.brand).toBe('custom')
-    expect(root.style.getPropertyValue('--color-background')).toBe('#445566')
+    expect(root.style.getPropertyValue('--color-background')).toBe('#000000')
     stop()
   })
 
@@ -78,11 +95,10 @@ describe('brand controller', () => {
         dark: { ...bundled.themes.dark, text: bundled.themes.dark.background },
       },
     }
-    const svg = [...new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')]
     const importPack = vi.fn(async () => ({ id: value.id, displayName: value.displayName }))
     const revoke = vi.fn(async () => undefined)
-    const activate = vi.fn(async () => undefined)
-    const remove = vi.fn(async () => undefined)
+    const activate = vi.fn(async (id: string) => ({ id, pack: null }))
+    const remove = vi.fn(async () => ({ activeId: 'loop24', removed: true, warning: null }))
     const controller = createBrandController(
       native({
         brandChooseSource: async () => ({
@@ -91,7 +107,7 @@ describe('brand controller', () => {
           manifestSha256: 'a'.repeat(64),
         }),
         brandReadSourceAssets: async (_grant, paths) =>
-          paths.map((path) => ({ path, bytes: svg, sha256: 'b'.repeat(64) })),
+          paths.map((path) => ({ path, bytes: SVG_BYTES, sha256: 'b'.repeat(64) })),
         brandRevokeSourceGrant: revoke,
         brandImport: importPack,
         brandActivate: activate,
@@ -112,7 +128,7 @@ describe('brand controller', () => {
     expect(remove).not.toHaveBeenCalled()
   })
 
-  it('revokes a selected source grant when renderer validation fails', async () => {
+  it('keeps an unsafe selected pack as a non-renderable inspection report and revokes its grant', async () => {
     const revoke = vi.fn(async () => undefined)
     const controller = createBrandController(
       native({
@@ -126,12 +142,20 @@ describe('brand controller', () => {
       document.createElement('div'),
     )
 
-    await expect(controller.importPack()).rejects.toThrow(/css/i)
+    expect(await controller.importPack()).toBeNull()
+    expect(controller.state.get().reports).toContainEqual(
+      expect.objectContaining({
+        displayName: 'Rejected brand pack',
+        message: expect.stringMatching(/css/i),
+        safeToRender: false,
+      }),
+    )
+    expect(controller.state.get().packs).toHaveLength(1)
     expect(revoke).toHaveBeenCalledWith('failed-grant')
   })
 
   it('recovers when the active-brand record itself cannot be read', async () => {
-    const activate = vi.fn(async () => undefined)
+    const activate = vi.fn(async (id: string) => ({ id, pack: null }))
     const controller = createBrandController(
       native({
         brandLoadActive: async () => Promise.reject(new Error('invalid active brand record')),
@@ -148,12 +172,10 @@ describe('brand controller', () => {
   })
 
   it('reverts a corrupt startup selection to LOOP24 and exposes one bounded warning', async () => {
-    const activate = vi.fn(async () => undefined)
     const controller = createBrandController(
       native({
-        brandLoadActive: async () => 'corrupt',
+        brandLoadActive: async () => ({ id: 'loop24', pack: null, recovered: true, warning: 'x'.repeat(9000) }),
         brandLoadPack: async () => Promise.reject(new Error('x'.repeat(9000))),
-        brandActivate: activate,
       }),
       document.createElement('div'),
     )
@@ -162,18 +184,157 @@ describe('brand controller', () => {
 
     expect(controller.state.get().activeId).toBe('loop24')
     expect(controller.state.get().warning).toHaveLength(4097)
-    expect(activate).toHaveBeenCalledWith('loop24')
+  })
+
+  it('hydrates every valid persisted pack and surfaces bounded corrupt-entry and recovery warnings', async () => {
+    const bundled = loadBundledBrand()
+    const acme = { ...bundled, id: 'acme', displayName: 'Acme' }
+    const beta = { ...bundled, id: 'beta', displayName: 'Beta' }
+    const icon = vi.fn(async () => ({ status: 'applied' as const }))
+    const controller = createBrandController(
+      native({
+        brandListPacks: async () => ({ packs: [stored(acme), stored(beta)], warnings: ['corrupt ignored'] }),
+        brandLoadActive: async () => ({
+          id: 'acme',
+          pack: stored(acme),
+          recovered: true,
+          warning: 'active record recovered',
+        }),
+        setWindowIcon: icon,
+      }),
+      document.createElement('div'),
+    )
+
+    await controller.initialize()
+
+    expect(controller.state.get().packs.map(({ manifest }) => manifest.id)).toEqual(['loop24', 'acme', 'beta'])
+    expect(controller.state.get().warning).toMatch(/corrupt ignored.*active record recovered/i)
+    expect(icon).toHaveBeenCalledWith('acme', stored(acme).revision)
+  })
+
+  it('rolls a custom startup selection and its window icon back to LOOP24 when icon application fails', async () => {
+    const custom = { ...loadBundledBrand(), id: 'acme', displayName: 'Acme' }
+    const calls: string[] = []
+    const activate = vi.fn(async (id: string) => {
+      calls.push(`activate:${id}`)
+      return { id, pack: null }
+    })
+    const icon = vi.fn(async (id: string) => {
+      calls.push(`icon:${id}`)
+      if (id === 'acme') throw new Error('startup icon failed')
+      return { status: 'applied' as const }
+    })
+    const root = document.createElement('div')
+    const controller = createBrandController(
+      native({
+        brandLoadActive: async () => ({
+          id: 'acme',
+          pack: stored(custom),
+          recovered: false,
+          warning: null,
+        }),
+        brandActivate: activate,
+        setWindowIcon: icon,
+      }),
+      root,
+    )
+
+    await controller.initialize()
+
+    expect(calls).toEqual(['icon:acme', 'activate:loop24', 'icon:loop24'])
+    expect(controller.state.get().activeId).toBe('loop24')
+    expect(controller.state.get().warning).toMatch(/startup icon failed/i)
+    expect(root.dataset.brand).toBe('loop24')
+  })
+
+  it('commits only the exact native-revalidated activation revision and restores the default icon for LOOP24', async () => {
+    const bundled = loadBundledBrand()
+    const stale = {
+      ...bundled,
+      id: 'acme',
+      themes: { ...bundled.themes, dark: { ...bundled.themes.dark, background: '#010101' } },
+    }
+    const exact = { ...stale, themes: { ...stale.themes, dark: { ...stale.themes.dark, background: '#000000' } } }
+    const calls: string[] = []
+    const activate = vi.fn(async (id: string) => {
+      calls.push(`activate:${id}`)
+      return { id, pack: id === 'loop24' ? null : stored(exact, 'sha256:exact') }
+    })
+    const icon = vi.fn(async (id: string, revision: string | null) => {
+      calls.push(`icon:${id}:${revision ?? 'default'}`)
+      return { status: 'applied' as const }
+    })
+    const root = document.createElement('div')
+    const controller = createBrandController(native({ brandActivate: activate, setWindowIcon: icon }), root)
+    controller.registerForTest(stale)
+
+    await controller.activate('acme')
+    expect(root.style.getPropertyValue('--color-background')).toBe('#000000')
+    expect(controller.state.get().packs.find(({ manifest }) => manifest.id === 'acme')?.revision).toBe('sha256:exact')
+
+    await controller.activate('loop24')
+    expect(calls).toEqual(['activate:acme', 'icon:acme:sha256:exact', 'activate:loop24', 'icon:loop24:default'])
+    expect(root.dataset.brand).toBe('loop24')
+  })
+
+  it('reconciles renderer state when active removal reverts natively but cleanup reports failure', async () => {
+    const bundled = loadBundledBrand()
+    const custom = { ...bundled, id: 'acme' }
+    const calls: string[] = []
+    const icon = vi.fn(async (id: string) => {
+      calls.push(`icon:${id}`)
+      return { status: 'applied' as const }
+    })
+    const remove = vi.fn(async () => {
+      calls.push('remove:acme')
+      return { activeId: 'loop24', removed: false, warning: 'cleanup denied' }
+    })
+    const controller = createBrandController(
+      native({
+        brandActivate: async () => ({ id: 'acme', pack: stored(custom) }),
+        brandRemove: remove,
+        setWindowIcon: icon,
+      }),
+      document.createElement('div'),
+    )
+    controller.registerForTest(custom)
+    await controller.activate('acme')
+
+    await controller.remove('acme', true)
+
+    expect(controller.state.get().activeId).toBe('loop24')
+    expect(controller.state.get().packs.map(({ manifest }) => manifest.id)).toContain('acme')
+    expect(controller.state.get().warning).toBe('cleanup denied')
+    expect(icon).toHaveBeenLastCalledWith('loop24', null)
+    expect(calls.slice(-2)).toEqual(['icon:loop24', 'remove:acme'])
+  })
+
+  it('rolls native, renderer, and icon state back when a supported activation icon update fails', async () => {
+    const custom = { ...loadBundledBrand(), id: 'acme' }
+    const activate = vi.fn(async (id: string) => ({ id, pack: id === 'loop24' ? null : stored(custom) }))
+    const icon = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('supported icon update failed'))
+      .mockResolvedValueOnce({ status: 'applied' })
+    const root = document.createElement('div')
+    const controller = createBrandController(native({ brandActivate: activate, setWindowIcon: icon }), root)
+    controller.registerForTest(custom)
+
+    await expect(controller.activate('acme')).rejects.toThrow(/icon update failed/i)
+
+    expect(activate.mock.calls).toEqual([['acme'], ['loop24']])
+    expect(icon.mock.calls).toEqual([
+      ['acme', stored(custom).revision],
+      ['loop24', null],
+    ])
+    expect(controller.state.get().activeId).toBe('loop24')
+    expect(root.dataset.brand).toBe('loop24')
   })
 
   it('serializes activation so failed or stale work cannot leave a half-applied global theme', async () => {
     let release!: () => void
     const first = new Promise<void>((resolve) => (release = resolve))
-    const activate = vi
-      .fn()
-      .mockImplementationOnce(() => first)
-      .mockResolvedValueOnce(undefined)
     const root = document.createElement('div')
-    const controller = createBrandController(native({ brandActivate: activate }), root)
     const bundled = loadBundledBrand()
     const acme = {
       ...bundled,
@@ -185,6 +346,18 @@ describe('brand controller', () => {
       id: 'beta',
       themes: { ...bundled.themes, dark: { ...bundled.themes.dark, background: '#040506' } },
     }
+    const byId = new Map([
+      [acme.id, stored(acme)],
+      [beta.id, stored(beta)],
+    ])
+    const activate = vi
+      .fn()
+      .mockImplementationOnce(async (id: string) => {
+        await first
+        return { id, pack: byId.get(id)! }
+      })
+      .mockImplementationOnce(async (id: string) => ({ id, pack: byId.get(id)! }))
+    const controller = createBrandController(native({ brandActivate: activate }), root)
     controller.registerForTest(acme)
     controller.registerForTest(beta)
 
@@ -202,13 +375,15 @@ describe('brand controller', () => {
 
   it('serializes startup restoration before user-triggered brand operations', async () => {
     let releaseStartup!: () => void
-    const startup = new Promise<string>((resolve) => (releaseStartup = () => resolve('loop24')))
-    const activate = vi.fn(async () => undefined)
+    const custom = { ...loadBundledBrand(), id: 'queued-custom' }
+    const startup = new Promise<Awaited<ReturnType<BrandNativeBridge['brandLoadActive']>>>(
+      (resolve) => (releaseStartup = () => resolve({ id: 'loop24', pack: null, recovered: false, warning: null })),
+    )
+    const activate = vi.fn(async (id: string) => ({ id, pack: stored(custom) }))
     const controller = createBrandController(
       native({ brandLoadActive: () => startup, brandActivate: activate }),
       document.createElement('div'),
     )
-    const custom = { ...loadBundledBrand(), id: 'queued-custom' }
     controller.registerForTest(custom)
 
     const initialization = controller.initialize()

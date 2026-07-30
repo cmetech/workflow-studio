@@ -31,6 +31,19 @@ function pngWithDimensions(width: number, height: number): Uint8Array {
   return bytes
 }
 
+function pngWithCorruptImageData(): Uint8Array {
+  const bytes = VALID_PNG.slice()
+  const idatTypeOffset = 37
+  const idatLength = new DataView(bytes.buffer).getUint32(idatTypeOffset - 4)
+  const idatDataOffset = idatTypeOffset + 4
+  bytes[idatDataOffset + 2] = bytes[idatDataOffset + 2]! ^ 0xff
+  new DataView(bytes.buffer).setUint32(
+    idatDataOffset + idatLength,
+    crc32(bytes.subarray(idatTypeOffset, idatDataOffset + idatLength)),
+  )
+  return bytes
+}
+
 describe('sanitizeBrandAsset', () => {
   it.each([
     ['script', '<script>alert(1)</script>'],
@@ -80,6 +93,15 @@ describe('sanitizeBrandAsset', () => {
       width: 1,
       height: 1,
     })
+  })
+
+  it.each([
+    ['an IHDR-only payload', VALID_PNG.slice(0, 33)],
+    ['a truncated final chunk', VALID_PNG.slice(0, -1)],
+    ['corrupt image data with a recomputed chunk CRC', pngWithCorruptImageData()],
+    ['a corrupt IEND checksum', Uint8Array.from([...VALID_PNG.slice(0, -1), VALID_PNG.at(-1)! ^ 0xff])],
+  ])('rejects a PNG that cannot be completely decoded: %s', (_name, bytes) => {
+    expect(() => sanitizeBrandAsset('icon.png', bytes)).toThrow(/PNG/i)
   })
 
   it.each([

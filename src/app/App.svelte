@@ -1384,6 +1384,7 @@
         <div class="settings-stack">
           <BrandSettings
             packs={$brandState.packs}
+            reports={$brandState.reports}
             activeId={$brandState.activeId}
             pending={$brandState.pending}
             warning={$brandState.warning}
