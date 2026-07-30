@@ -645,14 +645,19 @@ Get-WindowsArchitecture
 
 interface WorkflowJob {
   needs?: string | string[]
+  outputs?: Record<string, string>
   permissions?: Record<string, string>
   strategy?: { 'max-parallel'?: number; matrix?: { include?: Array<Record<string, unknown>> } }
   steps?: Array<{
+    id?: string
+    if?: string
     name?: string
+    shell?: string
     uses?: string
     run?: string
     env?: Record<string, string>
     with?: Record<string, unknown>
+    'working-directory'?: string
   }>
 }
 
@@ -667,132 +672,348 @@ interface ReleaseWorkflow {
 
 describe('release workflow contract', () => {
   const workflow = () => parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow
+  const jobSteps = (job: string) => workflow().jobs?.[job]?.steps ?? []
+  const namedStep = (job: string, name: string) => {
+    const step = jobSteps(job).find((candidate) => candidate.name === name)
+    expect(step, `${job} must define the ${name} step`).toBeDefined()
+    return step!
+  }
 
-  it('runs only for version tags or an explicit required tag input with global read access', () => {
+  it('dispatches only from base with a required tag and resolves distinct application/tooling commits', () => {
     const release = workflow()
-    expect(release.on?.push?.tags).toEqual(['v*'])
+    expect(Object.keys(release.on ?? {})).toEqual(['workflow_dispatch'])
     expect(release.on?.workflow_dispatch?.inputs?.tag).toMatchObject({ required: true, type: 'string' })
     expect(release.permissions).toEqual({ contents: 'read' })
+
+    const validate = release.jobs?.validate
+    expect(validate?.outputs).toEqual({
+      tag: '${{ steps.release-ref.outputs.tag }}',
+      application_commit: '${{ steps.release-ref.outputs.application_commit }}',
+      tooling_commit: '${{ github.sha }}',
+    })
+    const resolution = namedStep('validate', 'Validate dispatch ref and resolve immutable tag')
+    expect(resolution.env).toEqual({
+      DISPATCH_REF: '${{ github.ref }}',
+      REQUESTED_TAG: '${{ inputs.tag }}',
+      TOOLING_COMMIT: '${{ github.sha }}',
+    })
+    expect(resolution['working-directory']).toBe('.release-tooling')
+    expect(resolution.run).toContain('[[ "$DISPATCH_REF" == "refs/heads/base" ]]')
+    expect(resolution.run).toContain('git merge-base --is-ancestor "$TOOLING_COMMIT" "origin/base"')
+    expect(resolution.run).toContain('TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")')
+    expect(resolution.run).toContain('application_commit=$TAG_COMMIT')
+    expect(resolution.run).toContain('Release tooling commit')
+    expect(resolution.run).toContain('Application commit')
   })
 
-  it('uses the exact proven native matrix and current official action majors', () => {
-    const build = workflow().jobs?.build
-    const matrix = build?.strategy?.matrix?.include ?? []
-    expect(matrix.map((row) => row.runner)).toEqual([
-      'macos-latest',
-      'macos-15-intel',
-      'windows-latest',
-      'ubuntu-24.04',
-    ])
-    expect(matrix.map((row) => `${row.platform}-${row.arch}`)).toEqual([
-      'macos-aarch64',
-      'macos-x86_64',
-      'windows-x86_64',
-      'linux-x86_64',
-    ])
-    expect(build?.strategy).toMatchObject({ 'max-parallel': 1 })
-    const allUses = Object.values(workflow().jobs ?? {})
-      .flatMap((job) => job.steps ?? [])
-      .map((step) => step.uses)
-      .filter(Boolean)
+  it('executes the dispatch boundary and rejects both a non-base ref and tooling outside base', () => {
+    const run = namedStep('validate', 'Validate dispatch ref and resolve immutable tag').run!
+    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-boundary-'))
+    const origin = join(root, 'origin')
+    const checkout = join(root, 'checkout')
+    const output = join(root, 'output')
+    const summary = join(root, 'summary')
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      return result.stdout.trim()
+    }
+
+    try {
+      mkdirSync(origin)
+      git(origin, 'init', '-b', 'base')
+      git(origin, 'config', 'user.name', 'Release Test')
+      git(origin, 'config', 'user.email', 'release@example.invalid')
+      writeFileSync(join(origin, 'application'), 'tagged\n')
+      git(origin, 'add', 'application')
+      git(origin, 'commit', '-m', 'tagged application')
+      const applicationCommit = git(origin, 'rev-parse', 'HEAD')
+      git(origin, 'tag', '-a', 'v1.2.3', '-m', 'v1.2.3')
+      writeFileSync(join(origin, 'tooling'), 'release tooling\n')
+      git(origin, 'add', 'tooling')
+      git(origin, 'commit', '-m', 'release tooling')
+      const toolingCommit = git(origin, 'rev-parse', 'HEAD')
+      git(origin, 'checkout', '--orphan', 'unrelated')
+      git(origin, 'rm', '-rf', '.')
+      writeFileSync(join(origin, 'unrelated'), 'outside base\n')
+      git(origin, 'add', 'unrelated')
+      git(origin, 'commit', '-m', 'unrelated tooling')
+      const unrelatedCommit = git(origin, 'rev-parse', 'HEAD')
+      git(origin, 'checkout', 'base')
+      git(root, 'clone', origin, checkout)
+
+      const invoke = (dispatchRef: string, commit: string) =>
+        spawnSync('bash', ['-c', run], {
+          cwd: checkout,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            DISPATCH_REF: dispatchRef,
+            REQUESTED_TAG: 'v1.2.3',
+            TOOLING_COMMIT: commit,
+            GITHUB_OUTPUT: output,
+            GITHUB_STEP_SUMMARY: summary,
+          },
+        })
+
+      const wrongRef = invoke('refs/heads/feature', toolingCommit)
+      expect(wrongRef.status).toBe(1)
+      expect(wrongRef.stderr).toContain('must be dispatched from base')
+
+      const unrelated = invoke('refs/heads/base', unrelatedCommit)
+      expect(unrelated.status).toBe(1)
+      expect(unrelated.stderr).toContain('does not belong to base')
+
+      const accepted = invoke('refs/heads/base', toolingCommit)
+      expect(accepted.status, accepted.stderr).toBe(0)
+      expect(readFileSync(output, 'utf8')).toContain(`application_commit=${applicationCommit}`)
+      expect(readFileSync(summary, 'utf8')).toContain(toolingCommit)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses separate credential-free application and pinned release-tooling checkouts in every job', () => {
+    const expectedRefs = {
+      validate: {
+        application: '${{ steps.release-ref.outputs.application_commit }}',
+        tooling: '${{ github.sha }}',
+      },
+      build: {
+        application: '${{ needs.validate.outputs.application_commit }}',
+        tooling: '${{ needs.validate.outputs.tooling_commit }}',
+      },
+      verify: {
+        application: '${{ needs.validate.outputs.application_commit }}',
+        tooling: '${{ needs.validate.outputs.tooling_commit }}',
+      },
+    }
+
+    for (const [job, refs] of Object.entries(expectedRefs)) {
+      const checkouts = jobSteps(job).filter((step) => step.uses === 'actions/checkout@v7')
+      expect(checkouts).toHaveLength(2)
+      const tooling = checkouts.find((step) => step.with?.path === '.release-tooling')
+      const application = checkouts.find((step) => step.with?.path === undefined)
+      expect(tooling?.with).toMatchObject({
+        ref: refs.tooling,
+        path: '.release-tooling',
+        'fetch-depth': 0,
+        'persist-credentials': false,
+      })
+      expect(application?.with).toMatchObject({
+        ref: refs.application,
+        'fetch-depth': 0,
+        'persist-credentials': false,
+      })
+      if (job === 'validate') expect(application?.with?.clean).toBe(false)
+    }
+  })
+
+  it('pins reviewed actions and exposes signing credentials only to the native draft build', () => {
+    const release = workflow()
+    const allSteps = Object.values(release.jobs ?? {}).flatMap((job) => job.steps ?? [])
+    const allUses = allSteps.map((step) => step.uses).filter(Boolean)
     expect(allUses).toContain('actions/checkout@v7')
     expect(allUses).toContain('actions/setup-node@v6')
     expect(allUses).toContain('tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f')
-    expect(readFileSync('.github/workflows/release.yml', 'utf8')).toContain(
-      '# tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f',
+
+    const tauri = jobSteps('build').find((step) => step.id === 'tauri')
+    expect(tauri?.env).toMatchObject({
+      GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
+      TAURI_SIGNING_PRIVATE_KEY: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}',
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}',
+    })
+    const environmentKeys = allSteps.flatMap((step) => Object.keys(step.env ?? {}))
+    expect(environmentKeys).not.toEqual(
+      expect.arrayContaining(['APPLE_CERTIFICATE', 'APPLE_SIGNING_IDENTITY', 'WINDOWS_CERTIFICATE', 'AZURE_TENANT']),
     )
+    for (const step of allSteps.filter((candidate) => candidate.env?.GH_TOKEN)) {
+      expect(step.run).not.toMatch(/npm (?:ci|run)/)
+    }
   })
 
-  it('builds the release signature verifier before the clean-runner test suite', () => {
-    const steps = workflow().jobs?.build?.steps ?? []
-    const prebuild = steps.findIndex((step) => step.name === 'Build release signature verifier')
-    const verify = steps.findIndex((step) => step.name === 'Verify application, contract, and examples')
+  it('keeps app inputs at the tag while executing only the verifier from pinned release tooling', () => {
+    const release = workflow()
+    const allSteps = Object.values(release.jobs ?? {}).flatMap((job) => job.steps ?? [])
+    const verifierCalls = allSteps
+      .map((step) => step.run ?? '')
+      .filter((run) => run.includes('verify-release-assets.mjs'))
+    expect(verifierCalls.length).toBeGreaterThanOrEqual(4)
+    for (const run of verifierCalls) {
+      expect(run).toContain('node .release-tooling/scripts/verify-release-assets.mjs')
+      expect(run).not.toMatch(/node scripts\/verify-release-assets\.mjs/)
+    }
+    expect(
+      verifierCalls.some((run) => run.includes('--integrity-manifest src-tauri/resources/setup-integrity-v1.json')),
+    ).toBe(true)
+    expect(verifierCalls.filter((run) => run.includes('--tauri-config src-tauri/tauri.conf.json'))).toHaveLength(2)
+    expect(allSteps.map((step) => step.run ?? '').join('\n')).not.toMatch(
+      /\bcp\b[^\n]*\.release-tooling|Copy-Item[^\n]*\.release-tooling/,
+    )
 
-    expect(prebuild).toBeGreaterThan(-1)
-    expect(prebuild).toBeLessThan(verify)
-    expect(steps[prebuild]?.run).toBe(
+    const buildSteps = jobSteps('build')
+    expect(namedStep('build', 'Build release signature verifier').run).toBe(
       'cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature',
     )
-  })
-
-  it('runs the complete verification gate with enough time for the recovery storage limit test', () => {
-    const verify = workflow().jobs?.build?.steps?.find(
-      (step) => step.name === 'Verify application, contract, and examples',
-    )?.run
-
-    expect(verify?.trim()).toBe(`npm run format:check
+    expect(namedStep('build', 'Verify application, contract, and examples').run?.trim()).toBe(`npm run format:check
 npm run lint
 npm run check
 npm run test:unit -- --testTimeout=20000 --maxWorkers=1
 npm run test:rust
 npm run contracts:check
 npm run examples:check`)
+    expect(buildSteps.find((step) => step.id === 'tauri')?.with).toMatchObject({
+      releaseCommitish: '${{ needs.validate.outputs.application_commit }}',
+    })
   })
 
-  it('limits write permission to draft upload jobs and sources updater signing only from secrets', () => {
+  it('finishes tagged application-wide checks before adding the nested tooling checkout', () => {
+    for (const job of ['build', 'verify']) {
+      const steps = jobSteps(job)
+      const toolingCheckout = steps.findIndex((step) => step.with?.path === '.release-tooling')
+      const lastTaggedValidation = Math.max(
+        steps.findIndex((step) => step.name === 'Verify application, contract, and examples'),
+        steps.findIndex((step) => step.name === 'Build updater signature verifier'),
+      )
+      expect(lastTaggedValidation).toBeGreaterThan(-1)
+      expect(toolingCheckout).toBeGreaterThan(lastTaggedValidation)
+    }
+  })
+
+  it('re-resolves the immutable tag before native packaging and final verification', () => {
+    for (const job of ['build', 'verify']) {
+      const assertion = namedStep(job, 'Assert tag still resolves to the validated commit')
+      expect(assertion.env).toMatchObject({
+        TAG: '${{ needs.validate.outputs.tag }}',
+        EXPECTED_COMMIT: '${{ needs.validate.outputs.application_commit }}',
+      })
+      expect(assertion.run).toContain("REMOTE_TAG_COMMIT=$(git rev-parse 'FETCH_HEAD^{commit}')")
+      expect(assertion.run).toContain('Tag moved after validation')
+    }
+  })
+
+  it('serializes exactly the two DMGs and Windows x64 NSIS target', () => {
+    const build = workflow().jobs?.build
+    expect(build?.strategy).toMatchObject({ 'max-parallel': 1 })
+    expect(build?.strategy?.matrix?.include).toEqual([
+      {
+        runner: 'macos-latest',
+        platform: 'macos',
+        arch: 'aarch64',
+        rust_target: 'aarch64-apple-darwin',
+        bundles: 'dmg',
+      },
+      {
+        runner: 'macos-15-intel',
+        platform: 'macos',
+        arch: 'x86_64',
+        rust_target: 'x86_64-apple-darwin',
+        bundles: 'dmg',
+      },
+      {
+        runner: 'windows-latest',
+        platform: 'windows',
+        arch: 'x86_64',
+        rust_target: 'x86_64-pc-windows-msvc',
+        bundles: 'nsis',
+      },
+    ])
+    expect(jobSteps('build').some((step) => step.name?.includes('Linux'))).toBe(false)
+  })
+
+  it('gates each Tauri-built DMG and NSIS payload with unambiguous extracted-package checks', () => {
+    const steps = jobSteps('build')
+    const tauri = steps.findIndex((step) => step.id === 'tauri')
+    const mac = namedStep('build', 'Verify extracted macOS DMG payload')
+    const windows = namedStep('build', 'Verify extracted Windows NSIS payload')
+    expect(steps.findIndex((step) => step.name === mac.name)).toBeGreaterThan(tauri)
+    expect(steps.findIndex((step) => step.name === windows.name)).toBeGreaterThan(tauri)
+
+    expect(mac.if).toBe("${{ matrix.platform == 'macos' }}")
+    expect(mac.shell).toBe('bash')
+    expect(mac.run).toContain('hdiutil attach -readonly')
+    expect(mac.run).toContain('trap cleanup EXIT')
+    expect(mac.run).toContain('${#DMG_FILES[@]} != 1')
+    expect(mac.run).toContain('${#APP_BUNDLES[@]} != 1')
+    expect(mac.run).toContain('/Contents/Resources/_up_')
+    expect(mac.run).toContain('--integrity-manifest src-tauri/resources/setup-integrity-v1.json')
+
+    expect(windows.if).toBe("${{ matrix.platform == 'windows' }}")
+    expect(windows.shell).toBe('pwsh')
+    expect(windows.run).toContain("[guid]::NewGuid().ToString('N')")
+    expect(windows.run).toContain('$installers.Count -ne 1')
+    expect(windows.run).toContain('& 7z x')
+    expect(windows.run).toContain('$resourceRoots.Count -ne 1')
+    expect(windows.run).toContain('$executables.Count -ne 1')
+    expect(windows.run).toContain('--packaged-resource-root')
+    expect(windows.run).toContain('--pe-executable')
+    expect(windows.run).toContain('--integrity-manifest src-tauri/resources/setup-integrity-v1.json')
+  })
+
+  it('keeps the extracted-package gates valid in their native command languages', () => {
+    const mac = namedStep('build', 'Verify extracted macOS DMG payload').run!.replaceAll(
+      '${{ matrix.rust_target }}',
+      'aarch64-apple-darwin',
+    )
+    const bash = spawnSync('bash', ['-n'], { input: mac, encoding: 'utf8' })
+    expect(bash.status, bash.stderr).toBe(0)
+
+    const powershellProbe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    if (powershellProbe.error) return
+    const windows = namedStep('build', 'Verify extracted Windows NSIS payload').run!.replaceAll(
+      '${{ matrix.rust_target }}',
+      'x86_64-pc-windows-msvc',
+    )
+    const parser = `$source = [Console]::In.ReadToEnd()
+$tokens = $null
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseInput($source, [ref] $tokens, [ref] $errors) | Out-Null
+if ($errors.Count -ne 0) {
+  $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
+  exit 1
+}`
+    const powershell = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', parser], {
+      input: windows,
+      encoding: 'utf8',
+    })
+    expect(powershell.status, powershell.stderr).toBe(0)
+  })
+
+  it('keeps normalize, upload, re-download, signature/checksum, and exact final validation ordered', () => {
+    const steps = jobSteps('verify')
+    const position = (name: string) => steps.findIndex((step) => step.name === name)
+    const orderedNames = [
+      'Download draft assets for metadata normalization',
+      'Normalize updater metadata without release credentials',
+      'Upload normalized updater metadata',
+      'Re-download published updater bytes',
+      'Generate checksums from published bytes without release credentials',
+      'Upload checksum manifest',
+      'Re-download completed draft',
+      'Validate completed draft without release credentials',
+    ]
+    expect(orderedNames.map(position)).toEqual([...orderedNames.map(position)].sort((left, right) => left - right))
+    expect(orderedNames.every((name) => position(name) >= 0)).toBe(true)
+
+    const checksums = namedStep('verify', 'Generate checksums from published bytes without release credentials').run!
+    const finalValidation = namedStep('verify', 'Validate completed draft without release credentials').run!
+    expect(checksums).toContain('--write-checksums')
+    expect(checksums).toContain('--signature-verifier "$SIGNATURE_VERIFIER"')
+    expect(finalValidation).not.toContain('--write-checksums')
+    expect(finalValidation).toContain('--signature-verifier "$SIGNATURE_VERIFIER"')
+    expect(finalValidation).toContain('Draft release verified; publish it manually after review.')
+
     const release = workflow()
     expect(release.jobs?.validate?.permissions).toBeUndefined()
     expect(release.jobs?.build?.permissions).toEqual({ contents: 'write' })
     expect(release.jobs?.verify?.permissions).toEqual({ contents: 'write' })
-    const yaml = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(yaml).toContain('TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}')
-    expect(yaml).toContain('TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}')
-    expect(yaml).not.toMatch(/APPLE_CERTIFICATE|APPLE_SIGNING_IDENTITY|WINDOWS_CERTIFICATE|AZURE_TENANT/)
-    expect(yaml).toContain('releaseDraft: true')
-    expect(yaml).not.toMatch(/gh release edit[^\n]*--draft=false/)
-    const checkoutSteps = Object.values(release.jobs ?? {})
-      .flatMap((job) => job.steps ?? [])
-      .filter((step) => step.uses === 'actions/checkout@v7')
-    expect(checkoutSteps.length).toBeGreaterThan(0)
-    for (const step of checkoutSteps) {
-      expect(step.with?.['persist-credentials']).toBe(false)
-    }
-    expect(yaml).not.toMatch(/env:\n\s+GH_TOKEN:[\s\S]{0,400}(?:npm ci|npm run)/)
-  })
-
-  it('checks the exact tag against base and verifies every draft asset before manual publication', () => {
-    const yaml = readFileSync('.github/workflows/release.yml', 'utf8')
-    expect(yaml).toContain("ref: ${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}")
-    expect(yaml.indexOf('id: requested-ref')).toBeLessThan(yaml.indexOf('- uses: actions/checkout@v7'))
-    expect(yaml).toContain('git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"')
-    expect(yaml).toContain('commit: ${{ steps.release-ref.outputs.commit }}')
-    expect(yaml).toContain('ref: ${{ needs.validate.outputs.commit }}')
-    expect(yaml).toContain('releaseCommitish: ${{ needs.validate.outputs.commit }}')
-    expect(yaml).toContain('REMOTE_TAG_COMMIT')
-    expect(yaml).toContain('Tag moved after validation')
-    const normalize = yaml.indexOf('--normalize-updater')
-    const uploadLatest = yaml.indexOf('gh release upload "$TAG" "$ASSET_DIR/latest.json" --clobber')
-    const redownloadPublished = yaml.indexOf('Re-download published updater bytes')
-    const writeChecksums = yaml.indexOf('--write-checksums')
-    const uploadChecksums = yaml.indexOf('gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"')
-    const redownloadComplete = yaml.indexOf('Re-download completed draft')
-    const finalValidate = yaml.lastIndexOf(
-      'node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG"',
-    )
-    expect(normalize).toBeGreaterThan(-1)
-    expect(uploadLatest).toBeGreaterThan(normalize)
-    expect(redownloadPublished).toBeGreaterThan(uploadLatest)
-    expect(writeChecksums).toBeGreaterThan(redownloadPublished)
-    expect(uploadChecksums).toBeGreaterThan(writeChecksums)
-    expect(redownloadComplete).toBeGreaterThan(uploadChecksums)
-    expect(finalValidate).toBeGreaterThan(redownloadComplete)
-    expect(
-      yaml.indexOf('cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature'),
-    ).toBeLessThan(writeChecksums)
-    expect(
-      yaml.match(/--signature-verifier "\$SIGNATURE_VERIFIER" --tauri-config src-tauri\/tauri\.conf\.json/g),
-    ).toHaveLength(2)
-    expect(yaml).toContain(
-      'node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums',
-    )
-    expect(yaml).toContain('if [[ "$ASSET_NAME" == "SHA256SUMS" ]]')
-    expect(yaml).toContain('releases/assets/$ASSET_ID" --method DELETE')
-    expect(yaml).toContain('gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"')
-    expect(yaml).toContain('Draft release verified; publish it manually after review.')
+    const tauri = jobSteps('build').find((step) => step.id === 'tauri')
+    expect(tauri?.with).toMatchObject({ releaseDraft: true, prerelease: false })
+    expect(steps.map((step) => step.run ?? '').join('\n')).not.toMatch(/gh release edit[^\n]*--draft=false/)
   })
 
   it('distinguishes an absent release from an existing published release', () => {
-    const check = workflow().jobs?.validate?.steps?.find((step) => step.name === 'Check existing release state')?.run
+    const check = namedStep('validate', 'Check existing release state').run
 
     expect(check).toContain('RELEASE_STATUS=$(gh api --include')
     expect(check).toContain('if [[ "$RELEASE_STATUS" == "404" ]]')
@@ -801,15 +1022,16 @@ npm run examples:check`)
     expect(check).not.toMatch(/EXISTING_DRAFT=.*\|\| true/)
   })
 
-  it('installs the complete Linux native dependency set before compiling the release verifier', () => {
-    const steps = workflow().jobs?.verify?.steps ?? []
-    const dependencies = steps.findIndex((step) => step.name === 'Install Linux bundle dependencies')
+  it('installs Linux native libraries only in final verification before compiling the tagged Rust verifier', () => {
+    const steps = jobSteps('verify')
+    const dependencies = steps.findIndex((step) => step.name === 'Install tagged verifier dependencies')
     const verifier = steps.findIndex((step) => step.name === 'Build updater signature verifier')
     expect(dependencies).toBeGreaterThan(-1)
     expect(dependencies).toBeLessThan(verifier)
     expect(steps[dependencies]?.run).toContain(
       'sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils',
     )
+    expect(jobSteps('build').some((step) => step.run?.includes('apt-get'))).toBe(false)
   })
 })
 

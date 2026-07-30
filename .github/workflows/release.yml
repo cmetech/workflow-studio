@@ -1,9 +1,6 @@
 name: Native release draft
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -15,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -24,42 +21,74 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.release-ref.outputs.tag }}
-      commit: ${{ steps.release-ref.outputs.commit }}
+      application_commit: ${{ steps.release-ref.outputs.application_commit }}
+      tooling_commit: ${{ github.sha }}
     steps:
-      - name: Validate requested tag syntax
-        id: requested-ref
+      - name: Checkout pinned release tooling
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: .release-tooling
+          persist-credentials: false
+      - name: Validate dispatch ref and resolve immutable tag
+        id: release-ref
         env:
-          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          DISPATCH_REF: ${{ github.ref }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          TOOLING_COMMIT: ${{ github.sha }}
         shell: bash
+        working-directory: .release-tooling
         run: |
           set -euo pipefail
+          if ! [[ "$DISPATCH_REF" == "refs/heads/base" ]]; then
+            echo "Release workflow must be dispatched from base, not $DISPATCH_REF" >&2
+            exit 1
+          fi
           TAG="$REQUESTED_TAG"
           if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "Invalid version tag: $TAG" >&2
             exit 1
           fi
+          git fetch --no-tags origin base:refs/remotes/origin/base
+          if ! git merge-base --is-ancestor "$TOOLING_COMMIT" "origin/base"; then
+            echo "Release tooling commit $TOOLING_COMMIT does not belong to base" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"; then
+            echo "Tag $TAG is not on base" >&2
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+          echo "application_commit=$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Validated release boundary'
+            echo "- Application tag: \`$TAG\`"
+            echo "- Application commit: \`$TAG_COMMIT\`"
+            echo "- Release tooling commit: \`$TOOLING_COMMIT\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Checkout immutable tagged application
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}
+          ref: ${{ steps.release-ref.outputs.application_commit }}
           persist-credentials: false
+          clean: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22.13.0
           cache: npm
-      - name: Validate tag, version, and base ancestry
-        id: release-ref
+      - name: Validate tagged application identity
         env:
-          REQUESTED_TAG: ${{ steps.requested-ref.outputs.tag }}
+          TAG: ${{ steps.release-ref.outputs.tag }}
+          EXPECTED_COMMIT: ${{ steps.release-ref.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="$REQUESTED_TAG"
-          TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
-          git fetch --no-tags origin base:refs/remotes/origin/base
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"; then
-            echo "Tag $TAG is not on base" >&2
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
+            echo "Application checkout does not match validated tag commit" >&2
             exit 1
           fi
           CONFIG_VERSION=$(node -p "JSON.parse(require('node:fs').readFileSync('src-tauri/tauri.conf.json', 'utf8')).version")
@@ -67,8 +96,6 @@ jobs:
             echo "Tag $TAG does not match Tauri version $CONFIG_VERSION" >&2
             exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "commit=$TAG_COMMIT" >> "$GITHUB_OUTPUT"
       - name: Check existing release state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,17 +145,13 @@ jobs:
             arch: x86_64
             rust_target: x86_64-pc-windows-msvc
             bundles: nsis
-          - runner: ubuntu-24.04
-            platform: linux
-            arch: x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            bundles: appimage
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout immutable tagged application
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ needs.validate.outputs.commit }}
+          ref: ${{ needs.validate.outputs.application_commit }}
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
@@ -139,11 +162,6 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup target add "${{ matrix.rust_target }}"
-      - name: Install Linux bundle dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
       - run: npm ci
       - name: Build release signature verifier
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
@@ -159,7 +177,7 @@ jobs:
       - name: Assert tag still resolves to the validated commit
         env:
           TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -169,6 +187,13 @@ jobs:
             echo "Tag moved after validation: $TAG" >&2
             exit 1
           fi
+      - name: Checkout pinned release tooling
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.tooling_commit }}
+          path: .release-tooling
+          persist-credentials: false
       - name: Build and upload unsigned native bundle to a draft release
         id: tauri
         # tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f
@@ -179,7 +204,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ needs.validate.outputs.tag }}
-          releaseCommitish: ${{ needs.validate.outputs.commit }}
+          releaseCommitish: ${{ needs.validate.outputs.application_commit }}
           releaseName: LOOP24 Workflow Studio ${{ needs.validate.outputs.tag }}
           releaseBody: Native operating-system artifacts are unsigned. Review docs/installing.md before installation.
           releaseDraft: true
@@ -187,6 +212,93 @@ jobs:
           updaterJsonPreferNsis: true
           releaseAssetNamePattern: LOOP24-Workflow-Studio_[version]_${{ matrix.platform }}_${{ matrix.arch }}[setup][ext]
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
+      - name: Verify extracted macOS DMG payload
+        if: ${{ matrix.platform == 'macos' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg"
+          DMG_FILES=()
+          while IFS= read -r -d '' FILE; do
+            DMG_FILES+=("$FILE")
+          done < <(find "$BUNDLE_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.dmg' -print0)
+          if (( ${#DMG_FILES[@]} != 1 )); then
+            echo "Expected exactly one Tauri DMG in $BUNDLE_DIR, found ${#DMG_FILES[@]}" >&2
+            exit 1
+          fi
+
+          MOUNT_DIR=$(mktemp -d "$RUNNER_TEMP/workflow-studio-dmg.XXXXXX")
+          MOUNTED=false
+          cleanup() {
+            STATUS=$?
+            trap - EXIT
+            if [[ "$MOUNTED" == "true" ]] && ! hdiutil detach "$MOUNT_DIR"; then
+              echo "Failed to detach verified DMG at $MOUNT_DIR" >&2
+              STATUS=1
+            fi
+            rmdir "$MOUNT_DIR" 2>/dev/null || true
+            exit "$STATUS"
+          }
+          trap cleanup EXIT
+
+          hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_DIR" "${DMG_FILES[0]}"
+          MOUNTED=true
+          APP_BUNDLES=()
+          while IFS= read -r -d '' APP; do
+            APP_BUNDLES+=("$APP")
+          done < <(find "$MOUNT_DIR" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0)
+          if (( ${#APP_BUNDLES[@]} != 1 )); then
+            echo "Expected exactly one application bundle in the DMG, found ${#APP_BUNDLES[@]}" >&2
+            exit 1
+          fi
+
+          RESOURCE_ROOT="${APP_BUNDLES[0]}/Contents/Resources/_up_"
+          node .release-tooling/scripts/verify-release-assets.mjs \
+            --packaged-resource-root "$RESOURCE_ROOT" \
+            --integrity-manifest src-tauri/resources/setup-integrity-v1.json
+      - name: Verify extracted Windows NSIS payload
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundleDirectory = 'src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis'
+          $installers = @(Get-ChildItem -LiteralPath $bundleDirectory -File -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one Tauri NSIS setup executable in $bundleDirectory, found $($installers.Count)"
+          }
+
+          $extractRoot = Join-Path $env:RUNNER_TEMP "workflow-studio-nsis-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $extractRoot | Out-Null
+          try {
+            & 7z x "-o$extractRoot" -y $installers[0].FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "7-Zip failed to extract $($installers[0].FullName)"
+            }
+
+            $resourceRoots = @(
+              Get-ChildItem -LiteralPath $extractRoot -Directory -Filter '_up_' -Recurse |
+                Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }
+            )
+            if ($resourceRoots.Count -ne 1) {
+              throw "Expected exactly one packaged _up_ resource root, found $($resourceRoots.Count)"
+            }
+
+            $applicationRoot = Split-Path -Parent $resourceRoots[0].FullName
+            $executables = @(Get-ChildItem -LiteralPath $applicationRoot -File -Filter '*.exe')
+            if ($executables.Count -ne 1) {
+              throw "Expected exactly one application executable beside _up_, found $($executables.Count)"
+            }
+
+            & node .release-tooling/scripts/verify-release-assets.mjs `
+              --packaged-resource-root $resourceRoots[0].FullName `
+              --integrity-manifest src-tauri/resources/setup-integrity-v1.json `
+              --pe-executable $executables[0].FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Extracted NSIS payload verification failed'
+            }
+          } finally {
+            Remove-Item -LiteralPath $extractRoot -Recurse -Force
+          }
 
   verify:
     name: Verify complete draft and publish checksums
@@ -195,17 +307,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout immutable tagged application
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ needs.validate.outputs.commit }}
+          ref: ${{ needs.validate.outputs.application_commit }}
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      - name: Install Linux bundle dependencies
+      - name: Install tagged verifier dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
@@ -214,7 +327,7 @@ jobs:
       - name: Assert tag still resolves to the validated commit
         env:
           TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -224,11 +337,18 @@ jobs:
             echo "Tag moved after validation: $TAG" >&2
             exit 1
           fi
+      - name: Checkout pinned release tooling
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.tooling_commit }}
+          path: .release-tooling
+          persist-credentials: false
       - name: Download draft assets for metadata normalization
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -262,7 +382,7 @@ jobs:
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
-          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --normalize-updater
+          node .release-tooling/scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --normalize-updater
       - name: Upload normalized updater metadata
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,7 +394,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -299,7 +419,7 @@ jobs:
         run: |
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
           SIGNATURE_VERIFIER="src-tauri/target/debug/examples/verify_release_signature"
-          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
+          node .release-tooling/scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --write-checksums --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
       - name: Upload checksum manifest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -311,7 +431,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
-          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -336,5 +456,5 @@ jobs:
         run: |
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
           SIGNATURE_VERIFIER="src-tauri/target/debug/examples/verify_release_signature"
-          node scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
+          node .release-tooling/scripts/verify-release-assets.mjs --directory "$ASSET_DIR" --tag "$TAG" --signature-verifier "$SIGNATURE_VERIFIER" --tauri-config src-tauri/tauri.conf.json
           echo 'Draft release verified; publish it manually after review.'
