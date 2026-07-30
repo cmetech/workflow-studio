@@ -20,7 +20,7 @@ Manual workflow dispatch accepts only an existing version tag. The workflow reso
 | `windows-latest` | `x86_64-pc-windows-msvc` | NSIS plus updater archive/signature |
 | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | AppImage plus updater archive/signature |
 
-Every native job uses `npm ci`, `npm run verify`, `npm run contracts:check`, and `npm run examples:check` before Tauri builds. Do not add Windows/Linux ARM64 claims until native runners produce accepted installers. The operating-system artifacts are deliberately unsigned: there is no Apple notarization/Developer ID or Microsoft Authenticode identity in the workflow.
+Every native job uses `npm ci` and runs the same formatting, lint, Svelte check, TypeScript unit-test, Rust-test, authoring-contract, and example gates as `npm run verify` before Tauri builds. Release CI gives the recovery storage-limit unit test 20 seconds because it intentionally serializes nearly 64 MiB on every native runner; this changes only the timeout, not the assertions or coverage. Do not add Windows/Linux ARM64 claims until native runners produce accepted installers. The operating-system artifacts are deliberately unsigned: there is no Apple notarization/Developer ID or Microsoft Authenticode identity in the workflow.
 
 ## Updater-key custody
 

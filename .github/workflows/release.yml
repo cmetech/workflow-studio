@@ -149,7 +149,11 @@ jobs:
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
       - name: Verify application, contract, and examples
         run: |
-          npm run verify
+          npm run format:check
+          npm run lint
+          npm run check
+          npm run test:unit -- --testTimeout=20000
+          npm run test:rust
           npm run contracts:check
           npm run examples:check
       - name: Assert tag still resolves to the validated commit

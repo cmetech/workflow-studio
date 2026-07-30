@@ -554,6 +554,20 @@ describe('release workflow contract', () => {
     )
   })
 
+  it('runs the complete verification gate with enough time for the recovery storage limit test', () => {
+    const verify = workflow().jobs?.build?.steps?.find(
+      (step) => step.name === 'Verify application, contract, and examples',
+    )?.run
+
+    expect(verify?.trim()).toBe(`npm run format:check
+npm run lint
+npm run check
+npm run test:unit -- --testTimeout=20000
+npm run test:rust
+npm run contracts:check
+npm run examples:check`)
+  })
+
   it('limits write permission to draft upload jobs and sources updater signing only from secrets', () => {
     const release = workflow()
     expect(release.jobs?.validate?.permissions).toBeUndefined()
