@@ -12,6 +12,10 @@ const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z][
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const SAFE_ASSET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const INTEGRITY_SCHEMA_VERSION = 1
+const PE_DOS_HEADER_SIZE = 0x40
+const PE_COFF_HEADER_SIZE = 24
+const PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET = 68
+const MAX_PE_HEADER_OFFSET = 1024 * 1024
 const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'brands/loop24/brand.yaml',
   'brands/loop24/logo.svg',
@@ -464,6 +468,59 @@ export async function verifyPackagedResources(resourceRoot, integrityManifestPat
   return verifyResourceTree(resourceRoot, integrityManifestPath, false)
 }
 
+async function verifyWindowsGuiExecutable(executablePath) {
+  let executableInfo
+  try {
+    executableInfo = await lstat(executablePath)
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      throw new Error(`Windows executable is missing: ${executablePath}`)
+    }
+    throw error
+  }
+  if (executableInfo.isSymbolicLink()) {
+    throw new Error(`Windows executable must not be a symbolic link: ${executablePath}`)
+  }
+  if (!executableInfo.isFile()) {
+    throw new Error(`Windows executable must be a regular file: ${executablePath}`)
+  }
+
+  const executable = await readFile(executablePath)
+  if (executable.length < PE_DOS_HEADER_SIZE) {
+    throw new Error('Windows executable has a truncated DOS header')
+  }
+  if (executable.toString('ascii', 0, 2) !== 'MZ') {
+    throw new Error('Windows executable is missing the DOS magic')
+  }
+
+  const peOffset = executable.readUInt32LE(0x3c)
+  if (peOffset > MAX_PE_HEADER_OFFSET || peOffset + PE_COFF_HEADER_SIZE > executable.length) {
+    throw new Error('Windows executable e_lfanew PE header offset is out of bounds')
+  }
+  if (executable.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
+    throw new Error('Windows executable is missing the PE signature')
+  }
+  if (executable.readUInt16LE(peOffset + 4) !== 0x8664) {
+    throw new Error('Windows executable must use the AMD64 machine type')
+  }
+
+  const optionalHeaderSize = executable.readUInt16LE(peOffset + 20)
+  const optionalHeaderOffset = peOffset + PE_COFF_HEADER_SIZE
+  if (
+    optionalHeaderSize < PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET + 2 ||
+    optionalHeaderOffset + optionalHeaderSize > executable.length
+  ) {
+    throw new Error('Windows executable has a truncated optional header')
+  }
+  const optionalHeaderMagic = executable.readUInt16LE(optionalHeaderOffset)
+  if (optionalHeaderMagic !== 0x10b && optionalHeaderMagic !== 0x20b) {
+    throw new Error('Windows executable must use a PE32 or PE32+ optional header')
+  }
+  if (executable.readUInt16LE(optionalHeaderOffset + PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET) !== 2) {
+    throw new Error('Windows executable must use the Windows GUI subsystem (2)')
+  }
+}
+
 async function verifySourceResourceTree(resourceRoot, integrityManifestPath) {
   return verifyResourceTree(resourceRoot, integrityManifestPath, true)
 }
@@ -574,13 +631,18 @@ async function main(args) {
   const packagedResourceRoot = readOption(args, '--packaged-resource-root')
   const sourceResourceRoot = readOption(args, '--source-resource-root')
   const integrityManifest = readOption(args, '--integrity-manifest')
-  if (packagedResourceRoot || sourceResourceRoot || integrityManifest) {
+  const peExecutable = readOption(args, '--pe-executable')
+  if (packagedResourceRoot || sourceResourceRoot || integrityManifest || peExecutable) {
     if ((packagedResourceRoot ? 1 : 0) + (sourceResourceRoot ? 1 : 0) !== 1 || !integrityManifest) {
       throw new Error('Use exactly one of --packaged-resource-root or --source-resource-root with --integrity-manifest')
+    }
+    if (peExecutable && !packagedResourceRoot) {
+      throw new Error('--pe-executable requires --packaged-resource-root')
     }
     if (fixturePath || directory) {
       throw new Error('Packaged resource verification cannot be combined with release asset verification')
     }
+    if (peExecutable) await verifyWindowsGuiExecutable(peExecutable)
     const result = packagedResourceRoot
       ? await verifyPackagedResources(packagedResourceRoot, integrityManifest)
       : await verifySourceResourceTree(sourceResourceRoot, integrityManifest)

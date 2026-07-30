@@ -3,6 +3,7 @@ mod commands;
 mod contracts;
 pub mod git;
 mod layout;
+mod logging;
 mod recovery;
 mod setup;
 mod startup;
@@ -17,6 +18,9 @@ mod setup_spec;
 #[cfg(test)]
 mod updater_spec;
 
+#[cfg(test)]
+mod logging_spec;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -29,7 +33,7 @@ pub fn run() {
         .manage(startup::RecentWorkspaceState::default())
         .manage(setup::SetupState::default())
         .manage(updater::UpdateState::default())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(logging::plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

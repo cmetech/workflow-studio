@@ -44,6 +44,52 @@ function runGit(cwd: string, args: string[]) {
   expect(result.status, result.stderr).toBe(0)
 }
 
+type PeFixture = {
+  machine?: number
+  optionalHeaderMagic?: number
+  subsystem?: number
+  dosMagic?: boolean
+  peSignature?: boolean
+  peOffset?: number
+  size?: number
+}
+
+function writePeFixture(path: string, fixture: PeFixture = {}) {
+  const peOffset = fixture.peOffset ?? 0x80
+  const optionalHeaderMagic = fixture.optionalHeaderMagic ?? 0x20b
+  const size = fixture.size ?? peOffset + 24 + 0xf0
+  const bytes = Buffer.alloc(size)
+
+  if (fixture.dosMagic !== false && size >= 2) bytes.write('MZ', 0, 'ascii')
+  if (size >= 0x40) bytes.writeUInt32LE(peOffset, 0x3c)
+  if (fixture.peSignature !== false && peOffset + 4 <= size) bytes.write('PE\0\0', peOffset, 'ascii')
+  if (peOffset + 24 <= size) {
+    bytes.writeUInt16LE(fixture.machine ?? 0x8664, peOffset + 4)
+    bytes.writeUInt16LE(0xf0, peOffset + 20)
+  }
+  if (peOffset + 26 <= size) {
+    bytes.writeUInt16LE(optionalHeaderMagic, peOffset + 24)
+    if (peOffset + 24 + 70 <= size) bytes.writeUInt16LE(fixture.subsystem ?? 2, peOffset + 24 + 68)
+  }
+  writeFileSync(path, bytes)
+}
+
+function verifyPackagedResourcesWithPe(root: string, manifestPath: string, executable: string) {
+  return spawnSync(
+    process.execPath,
+    [
+      'scripts/verify-release-assets.mjs',
+      '--packaged-resource-root',
+      root,
+      '--integrity-manifest',
+      manifestPath,
+      '--pe-executable',
+      executable,
+    ],
+    { encoding: 'utf8' },
+  )
+}
+
 describe('packaged resource verification', () => {
   it('accepts the exact 30-file packaged resource tree', async () => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
@@ -180,5 +226,67 @@ describe('packaged resource verification', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('Windows packaged executable verification', () => {
+  it('accepts an AMD64 GUI PE executable with a valid packaged resource tree', () => {
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
+    try {
+      const executable = join(cleanupRoot, 'Workflow Studio.exe')
+      writePeFixture(executable)
+
+      const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toContain('Verified 30 packaged resource files')
+    } finally {
+      rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['console subsystem', { subsystem: 3 }, /Windows GUI subsystem/i],
+    ['x86 machine', { machine: 0x14c }, /AMD64/i],
+    ['ARM64 machine', { machine: 0xaa64 }, /AMD64/i],
+    ['invalid DOS signature', { dosMagic: false }, /DOS magic/i],
+    ['invalid PE signature', { peSignature: false }, /PE signature/i],
+    ['out-of-bounds PE offset', { peOffset: 0x1000, size: 0x200 }, /e_lfanew/i],
+    ['truncated optional header', { size: 0x98 }, /truncated/i],
+  ] as const)('rejects a %s executable', (_kind, fixture, expectedError) => {
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
+    try {
+      const executable = join(cleanupRoot, 'Workflow Studio.exe')
+      writePeFixture(executable, fixture)
+
+      const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(expectedError)
+    } finally {
+      rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('runs the packaged-resource gate after a valid PE gate', () => {
+    const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
+    try {
+      const executable = join(cleanupRoot, 'Workflow Studio.exe')
+      writePeFixture(executable)
+      unlinkSync(join(root, 'examples/README.md'))
+
+      const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/missing packaged resource/i)
+    } finally {
+      rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('declares the Windows GUI subsystem and frontend favicon explicitly', () => {
+    expect(
+      readFileSync('src-tauri/src/main.rs', 'utf8').startsWith(
+        '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]',
+      ),
+    ).toBe(true)
+    expect(readFileSync('index.html', 'utf8')).toContain('<link rel="icon" href="/favicon.ico" type="image/x-icon" />')
   })
 })
