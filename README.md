@@ -18,7 +18,7 @@ Use `npm run dev` for renderer development and `npm run tauri -- dev` to launch 
 
 ## Installation and releases
 
-Native macOS, Windows, and Linux packages are distributed through public GitHub Releases. The operating-system packages are intentionally unsigned by Apple or Microsoft; updater artifacts carry the separate first-party integrity signature required for automatic installation.
+Native macOS (Apple Silicon and Intel) and Windows x64 packages are distributed through public GitHub Releases. Linux packaging is deferred. The operating-system packages are intentionally unsigned by Apple or Microsoft; checksum verification and updater artifacts carry separate first-party integrity verification.
 
 See [Installing Workflow Studio](docs/installing.md) for direct downloads, checksum verification, safe one-line installer commands, and platform warning guidance. Maintainers should follow the [release runbook](docs/releasing.md); automation creates a verified draft and never publishes it automatically.
 
@@ -57,5 +57,5 @@ Security boundaries and the untrusted-input threat model are documented in [Secu
 - `.yaml`/`.yml` definitions and canonical `.hermes.yaml` companions edited as one logical workflow pair
 - Local-only Git integration in version 1
 - LOOP24 default branding with data-driven runtime brand and theme packs
-- macOS, Windows, and Linux native release artifacts
+- macOS Apple Silicon/Intel and Windows x64 native release artifacts; Linux deferred
 - Unsigned operating-system binaries with cryptographically signed updater artifacts

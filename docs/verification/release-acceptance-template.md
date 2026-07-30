@@ -54,18 +54,10 @@ Repeat every macOS Apple Silicon field.
 - Repeat all functional, brand, Git, performance, and staged-updater fields above:
 - Verdict/blockers:
 
-### Linux x64
-
-- Artifact and SHA-256:
-- Fresh distribution/machine architecture:
-- AppImage executable/install behavior:
-- Repeat all functional, brand, Git, performance, and staged-updater fields above:
-- Verdict/blockers:
-
 ## Unsupported architecture checks
 
 - Windows ARM64 installer selection fails clearly (unsupported in version 1):
-- Linux ARM64 installer selection fails clearly (unsupported in version 1):
+- Linux bootstrap rejects the platform before any release-asset network request:
 - No fallback artifact was launched:
 
 ## Final decision

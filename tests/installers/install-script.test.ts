@@ -1178,17 +1178,19 @@ if ($errors.Count -ne 0) {
 })
 
 describe('release documentation contract', () => {
-  it('documents safe one-line downloads without piping network responses to a shell', () => {
+  it('documents immutable v1.0.1 bootstrap commands and checksum verification', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
-    expect(installing).toContain('curl --fail --location')
-    expect(installing).toContain('Invoke-RestMethod')
-    expect(installing).not.toMatch(/curl[^\n|]*\|\s*(?:sh|bash)/i)
+    expect(installing).toContain(
+      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.1/scripts/install.sh | sh',
+    )
+    expect(installing).toContain(
+      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.1/scripts/install.ps1')",
+    )
     expect(installing).toContain('SHA256SUMS')
     expect(installing).toContain('Right-click')
     expect(installing).toContain('More info')
     expect(installing).not.toContain('/base/scripts/install')
-    expect(installing.match(/2a0ec9f5c5bd95f693d8b97599653700d1471f0c\/scripts\/install/g)).toHaveLength(2)
-    expect(installing).toContain('does not automatically adopt later bootstrap-script changes')
+    expect(installing).not.toContain('v1.0.0')
   })
 
   it('documents updater key custody, the base/tag invariant, draft verification, and no OS signing', () => {

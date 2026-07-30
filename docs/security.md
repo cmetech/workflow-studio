@@ -14,7 +14,7 @@ Workflow Studio treats every workspace file, Git repository, imported contract, 
 | Embedded Markdown | Markdown is rendered offline through a fixed tag/attribute allowlist. Remote images and active HTML are removed; external documentation links become explicit inert buttons handled by the application. | `src/lib/docs/render-markdown.ts`, `src/lib/docs/render-markdown.test.ts`, `tests/security/security-boundaries.test.ts` |
 | Setup/update events and logs | Native run IDs and monotonic sequences prevent stale completion. Logs are redacted, line/byte bounded, stored only in application data, and never include workflow bodies. UI progress reflects native stages/bytes instead of timers. | `src-tauri/src/setup.rs`, `src-tauri/src/updater.rs`, progress reducer/controller tests, `tests/e2e/update-progress.spec.ts` |
 | Recovery, recents, layout, settings | Native code enforces schema and byte/entry limits and stores these records only below the platform application-data directory. Workspace YAML never receives editor layout/application state. | `src-tauri/src/recovery.rs`, `startup.rs`, `layout.rs`, setup/updater specifications, workspace integration tests |
-| Release metadata and artifacts | Installers require an exact OS/architecture match and published SHA-256 manifest. In-app updates additionally require the committed first-party Minisign public key; a release build fails closed on an empty or documented test key. Release verification compares companion signatures with `latest.json` and cryptographically verifies artifact bytes before checksums pass. | `scripts/verify-release-assets.mjs`, installer tests, `src-tauri/build.rs`, `src-tauri/src/updater_key.rs`, updater Rust tests |
+| Release metadata and artifacts | v1.0.1 installers support only macOS Apple Silicon/Intel and Windows x64, require an exact OS/architecture match, and verify the published SHA-256 manifest. In-app updates additionally require the committed first-party Minisign public key; a release build fails closed on an empty or documented test key. Release verification checks the extracted DMG/NSIS package payloads, compares companion signatures with `latest.json`, and cryptographically verifies artifact bytes before checksums pass. | `scripts/verify-release-assets.mjs`, installer tests, `src-tauri/build.rs`, `src-tauri/src/updater_key.rs`, updater Rust tests |
 
 ## Renderer and native capability policy
 
@@ -28,7 +28,7 @@ Workflow authoring, bundled contracts, examples, documentation, and LOOP24 resou
 
 ## Unsigned operating-system packages
 
-macOS and Windows packages are intentionally not signed by Apple or Microsoft. Gatekeeper or SmartScreen warnings therefore remain expected and are documented in `docs/installing.md`; Workflow Studio never disables or weakens those controls. This is separate from the mandatory first-party Tauri updater signature, which protects update metadata and bytes after installation.
+macOS and Windows packages are intentionally not code-signed/notarized by Apple or Microsoft. Gatekeeper or SmartScreen warnings therefore remain expected and are documented in `docs/installing.md`; Workflow Studio never disables or weakens those controls. This is separate from installer checksum verification and the mandatory first-party Tauri updater signature, which protects update metadata and bytes after installation.
 
 ## Reporting and release posture
 
