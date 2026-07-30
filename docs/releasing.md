@@ -44,7 +44,7 @@ The release workflow is dispatched from `base`, resolves the tag once, and uses 
 6. generates `SHA256SUMS` over only the re-downloaded public bytes and uploads it; and
 7. re-downloads and validates the completed draft while leaving publication manual.
 
-Review the workflow logs, `latest.json`, artifact names and byte sizes, `SHA256SUMS`, contract/example results, and the platform acceptance record. Download a clean copy of every artifact and independently compare its digest. Exercise a staged signed update. Only then use GitHub’s release UI to publish the draft manually.
+Review the workflow logs, `latest.json`, artifact names and byte sizes, `SHA256SUMS`, and contract/example results. Download a clean copy of every artifact and independently compare its digest before using GitHub’s release UI to publish the draft manually. Extracted DMG/NSIS payload verification, the exact draft inventory, checksums, and updater signatures block publication. Clean-machine functional installs and staged-update exercises are required follow-up evidence after publication.
 
 If any package-payload gate, native job, updater target, checksum, or signature is absent, keep the draft unpublished. Clean-machine macOS/Windows acceptance remains required follow-up evidence, but does not replace or weaken this publication gate. Never remove a target from verification simply to make a release green.
 

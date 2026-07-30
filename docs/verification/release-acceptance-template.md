@@ -1,6 +1,6 @@
 # Workflow Studio release acceptance template
 
-Copy this file for a release candidate. Use real artifacts from one immutable draft release. Never substitute browser fixtures or compilation for clean-machine evidence.
+Copy this file for a release candidate. Use real artifacts from one immutable draft release. Never substitute browser fixtures or compilation for clean-machine evidence. Extracted DMG/NSIS payload verification, the exact draft inventory, checksums, and updater signatures block publication. Clean-machine functional installs and staged-update exercises are required follow-up evidence after publication.
 
 ## Candidate identity
 
@@ -21,9 +21,9 @@ Copy this file for a release candidate. Use real artifacts from one immutable dr
 | Security boundaries | `npm run test:unit -- tests/security` | |
 | Production renderer | `npm run build` | |
 | Native debug bundles | three-platform CI run | |
-| Release assets/signatures/checksums | draft verification job | |
+| Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures | draft verification job | |
 
-## Clean-machine platform record
+## Post-publication clean-machine platform record
 
 Complete one section per supported artifact. Attach artifact/checksum, machine identity, screenshots/logs, and exact observed outcome.
 
@@ -60,12 +60,15 @@ Repeat every macOS Apple Silicon field.
 - Linux bootstrap rejects the platform before any release-asset network request:
 - No fallback artifact was launched:
 
-## Final decision
+## Pre-publication decision
 
-- [ ] All supported clean-machine rows contain real evidence.
-- [ ] The staged updater installed and relaunched on every supported platform.
-- [ ] Checksums and updater signatures were verified from downloaded draft bytes.
+- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures were verified from downloaded draft bytes.
 - [ ] No unresolved Critical/Important review finding remains.
 - [ ] Release approved for manual publication.
 
 Decision owner/date:
+
+## Required post-publication follow-up
+
+- [ ] All supported clean-machine rows contain real evidence.
+- [ ] The staged updater installed and relaunched on every supported platform.

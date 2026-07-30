@@ -1,10 +1,17 @@
 import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 const RELEASE_VERSION = '1.0.1'
 
 function json(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+}
+
+function baseCargoLock(): string {
+  const result = spawnSync('git', ['show', '53792c7:src-tauri/Cargo.lock'], { encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
 }
 
 describe('version one release metadata', () => {
@@ -24,6 +31,16 @@ describe('version one release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.1"/)
   })
 
+  it('changes no Cargo lockfile package record except the workflow-studio release version', () => {
+    const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
+    const expectedCargoLock = baseCargoLock().replace(
+      'name = "workflow-studio"\nversion = "1.0.0"',
+      'name = "workflow-studio"\nversion = "1.0.1"',
+    )
+
+    expect(currentCargoLock).toBe(expectedCargoLock)
+  })
+
   it('documents the v1.0.1 bootstrap contract and unsigned platform warnings', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
@@ -39,5 +56,20 @@ describe('version one release metadata', () => {
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
     expect(installing).not.toContain('v1.0.0')
+  })
+
+  it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {
+    const releasing = readFileSync('docs/releasing.md', 'utf8')
+    const security = readFileSync('docs/security.md', 'utf8')
+    const acceptanceTemplate = readFileSync('docs/verification/release-acceptance-template.md', 'utf8')
+    const publicationGate =
+      'Extracted DMG/NSIS payload verification, the exact draft inventory, checksums, and updater signatures block publication.'
+    const followUp =
+      'Clean-machine functional installs and staged-update exercises are required follow-up evidence after publication.'
+
+    for (const document of [releasing, security, acceptanceTemplate]) {
+      expect(document).toContain(publicationGate)
+      expect(document).toContain(followUp)
+    }
   })
 })
