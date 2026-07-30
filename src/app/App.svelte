@@ -969,8 +969,10 @@
     return activeContractForProfile(profile)
   }
 
-  async function openEntry(entry: WorkflowPairEntry): Promise<void> {
-    const requestToken = documentWorkspace.beginActivation()
+  async function openEntry(
+    entry: WorkflowPairEntry,
+    requestToken: number = documentWorkspace.beginActivation(),
+  ): Promise<void> {
     let didOpen = false
     await withCanvasLayoutBarrier(async () => {
       await contractReadiness
@@ -991,6 +993,7 @@
     if (!$workspace.id) {
       throw new WorkspaceActionError('workspace_required', 'Open a workspace before creating an example copy.')
     }
+    const requestToken = documentWorkspace.beginActivation()
     await contractReadiness
     const contract = activeContractForProfile(example.profile)
     if (!contract)
@@ -1000,7 +1003,7 @@
       workspaceId: $workspace.id,
       contract,
       analyze: analyzeCandidateInWorker,
-      open: openEntry,
+      open: (entry) => openEntry(entry, requestToken),
     })
     await refreshWorkspace()
   }

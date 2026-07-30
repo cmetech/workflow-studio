@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto'
+
+const EXPECTED_SHELL_SHA256 = 'd9428fe0305649a82e9c9adc1db536aa02343f101f71efda7c9b2ef748fc674f'
+const EXPECTED_POWERSHELL_SHA256 = 'bf8da9b02ab17d72c3c43195b3e9e6396a38da98c267560a84da25f74a2ff03c'
+
 const EXPECTED_SHELL_DESTINATIONS = ['$API_URL', '$RELEASE_ROOT/$TAG/$INSTALLER_NAME', '$RELEASE_ROOT/$TAG/SHA256SUMS']
 
 const EXPECTED_POWERSHELL_DESTINATIONS = ['$ApiUrl', '$ReleaseRoot/$Tag/$InstallerName', '$ReleaseRoot/$Tag/SHA256SUMS']
@@ -64,6 +69,8 @@ export function verifyInstallerNetworkPolicy(shellSource, powershellSource) {
   const powershell = powershellCommands.map(powershellDestination)
   requireExact(shell, EXPECTED_SHELL_DESTINATIONS, 'shell')
   requireExact(powershell, EXPECTED_POWERSHELL_DESTINATIONS, 'PowerShell')
+  requireAuditedScript(shellSource, EXPECTED_SHELL_SHA256, 'shell')
+  requireAuditedScript(powershellSource, EXPECTED_POWERSHELL_SHA256, 'PowerShell')
   return { shell, powershell }
 }
 
@@ -118,5 +125,13 @@ function requireAbsent(source, pattern, label) {
 function requireExact(actual, expected, label) {
   if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
     throw new Error(`Unapproved installer network destination in ${label}: ${actual.join(', ')}`)
+  }
+}
+
+function requireAuditedScript(source, expectedSha256, label) {
+  const normalized = source.replaceAll('\r\n', '\n')
+  const actualSha256 = createHash('sha256').update(normalized).digest('hex')
+  if (actualSha256 !== expectedSha256) {
+    throw new Error(`Unapproved installer network destination: ${label} installer content changed.`)
   }
 }

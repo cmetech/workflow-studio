@@ -328,15 +328,70 @@ function collectDeclaredFormats(...schemas: readonly unknown[]): Set<string> {
 }
 
 function resolveSchema(value: unknown, root: Record<string, unknown>): Record<string, unknown> | null {
-  if (!isRecord(value)) return null
-  if (typeof value.$ref !== 'string' || !value.$ref.startsWith('#/')) return value
+  return resolveContractSchema(value, root)
+}
 
-  let resolved: unknown = root
-  for (const segment of pointerTokens(value.$ref.slice(1))) {
-    if (!isRecord(resolved)) return null
-    resolved = resolved[segment]
+/**
+ * Resolves the schema shapes used by editor inspection without weakening Ajv's
+ * authoritative validation. Only local JSON Pointers are accepted. Invalid,
+ * remote, unresolved, or cyclic references fail closed.
+ */
+export function resolveContractSchema(
+  value: unknown,
+  root: Record<string, unknown>,
+  resolving: ReadonlySet<string> = new Set(),
+): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  let resolved = value
+  if (Object.hasOwn(value, '$ref')) {
+    if (typeof value.$ref !== 'string' || (value.$ref !== '#' && !value.$ref.startsWith('#/'))) return null
+    if (resolving.has(value.$ref)) return null
+    let target: unknown = root
+    if (value.$ref !== '#') {
+      for (const segment of pointerTokens(value.$ref.slice(1))) {
+        if (!isRecord(target) || !Object.hasOwn(target, segment)) return null
+        target = target[segment]
+      }
+    }
+    const nextResolving = new Set(resolving)
+    nextResolving.add(value.$ref)
+    const referenced = resolveContractSchema(target, root, nextResolving)
+    if (!referenced) return null
+    const siblings = { ...value }
+    delete siblings.$ref
+    resolved = mergeInspectionSchemas(referenced, siblings)
   }
-  return isRecord(resolved) ? resolved : null
+
+  if (resolved.allOf !== undefined) {
+    if (!Array.isArray(resolved.allOf)) return null
+    let aggregate = { ...resolved }
+    for (const branch of resolved.allOf) {
+      const branchSchema = resolveContractSchema(branch, root, resolving)
+      if (!branchSchema) return null
+      aggregate = mergeInspectionSchemas(aggregate, branchSchema)
+    }
+    resolved = aggregate
+  }
+  return resolved
+}
+
+function mergeInspectionSchemas(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...left, ...right }
+  const leftProperties = recordValue(left.properties)
+  const rightProperties = recordValue(right.properties)
+  if (leftProperties || rightProperties) {
+    merged.properties = { ...(leftProperties ?? {}), ...(rightProperties ?? {}) }
+  }
+  const required = [
+    ...(Array.isArray(left.required) ? left.required.filter((item): item is string => typeof item === 'string') : []),
+    ...(Array.isArray(right.required) ? right.required.filter((item): item is string => typeof item === 'string') : []),
+  ]
+  if (required.length > 0) merged.required = [...new Set(required)]
+  if (left.additionalProperties === false || right.additionalProperties === false) merged.additionalProperties = false
+  return merged
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

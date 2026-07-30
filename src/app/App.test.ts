@@ -7,6 +7,7 @@ import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { editDocumentText } from '$src/lib/documents/revisions'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
+import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import {
   $documentSession,
@@ -26,6 +27,8 @@ import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canoni
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import { createCommandRegistry, listCommands } from '$src/lib/commands/registry'
+import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/workers/document-worker'
+import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
 
 const contractResolverTestState = vi.hoisted(() => ({
@@ -83,6 +86,37 @@ async function waitForSetupReady(): Promise<void> {
   await waitFor(() => {
     expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument()
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((done) => (resolve = done))
+  return { promise, resolve }
+}
+
+class RealDocumentWorker {
+  private readonly cache = createDocumentWorkerCache()
+  private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+
+  postMessage(message: DocumentWorkerRequest): void {
+    void processDocumentWorkerRequest(message, this.cache).then((response) => {
+      queueMicrotask(() => {
+        for (const listener of this.listeners) listener(new MessageEvent('message', { data: response }))
+      })
+    })
+  }
+
+  addEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+    this.listeners.add(listener)
+  }
+
+  removeEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+    this.listeners.delete(listener)
+  }
+
+  terminate(): void {
+    this.listeners.clear()
+  }
 }
 
 describe('App', () => {
@@ -504,6 +538,52 @@ describe('App', () => {
 
     await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('examples/hello.yaml'))
     expect(screen.queryByText(/workflow analysis is unavailable/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps a later Explorer selection active when editable-copy creation finishes afterward', async () => {
+    const releaseDemo = `name: Release demo
+description: Keep the later Explorer intent active.
+nodes:
+  - id: release
+    command: publish
+`
+    const backing = createBrowserBridge({ initialFiles: { 'release-demo.yaml': releaseDemo } })
+    const allowCreationWrite = deferred<void>()
+    let creationWriteStarted = false
+    const workspaceScan = vi.fn(backing.workspaceScan)
+    setNativeBridgeForTest({
+      workspaceScan,
+      workspaceRead: backing.workspaceRead,
+      workspaceTrashPaths: backing.workspaceTrashPaths,
+      workspaceWrite: async (input) => {
+        creationWriteStarted = true
+        await allowCreationWrite.promise
+        return backing.workspaceWrite(input)
+      },
+    })
+    const originalWorker = globalThis.Worker
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
+    try {
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      showActivity('examples')
+      render(App)
+      await waitForSetupReady()
+
+      await fireEvent.click((await screen.findAllByRole('button', { name: /^Create Editable Copy:/ }))[0]!)
+      await waitFor(() => expect(creationWriteStarted).toBe(true))
+      await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
+      await fireEvent.click(screen.getByRole('treeitem', { name: /release-demo\.yaml/i }))
+      await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml'))
+
+      allowCreationWrite.resolve()
+      await waitFor(() => expect(workspaceScan.mock.calls.length).toBeGreaterThanOrEqual(3))
+      expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml')
+      expect($documentSession.get().pair?.definition.text).toBe(releaseDemo)
+    } finally {
+      allowCreationWrite.resolve()
+      if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+      else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
   })
 
   it('renders a structured blocked save outcome for the active document', async () => {

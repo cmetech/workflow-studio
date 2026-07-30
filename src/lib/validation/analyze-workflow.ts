@@ -5,7 +5,7 @@ import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import { validateDag } from './dag-validator'
-import { validateContractDocument } from './schema-validator'
+import { resolveContractSchema, validateContractDocument } from './schema-validator'
 
 export async function analyzeWorkflowPair(
   request: AnalyzeDocumentRequest,
@@ -174,7 +174,13 @@ function draftIssuesAreVisuallyAuthorable(
       contract.definition_schema,
       descriptor.schemaTokens.slice(0, descriptor.sequenceIndex + 1),
     )
-    const branches = Array.isArray(itemSchema?.oneOf) ? itemSchema.oneOf.filter(isRecord) : []
+    if (!itemSchema || (itemSchema.oneOf !== undefined && !Array.isArray(itemSchema.oneOf))) return false
+    const branches: Record<string, unknown>[] = []
+    for (const branch of Array.isArray(itemSchema.oneOf) ? itemSchema.oneOf : []) {
+      const resolved = resolveContractSchema(branch, contract.definition_schema)
+      if (!resolved) return false
+      branches.push(resolved)
+    }
     const kindField = descriptor.relativePath[0]
     const intendedBranch = branches.find(
       (branch) =>
@@ -293,13 +299,12 @@ function schemaAtValuePath(
   root: Record<string, unknown>,
   path: readonly (string | number)[],
 ): Record<string, unknown> | null {
-  let current: unknown = root
+  let current: Record<string, unknown> | null = resolveContractSchema(root, root)
   for (const token of path) {
-    if (!isRecord(current)) return null
-    current =
-      typeof token === 'number' ? current.items : isRecord(current.properties) ? current.properties[token] : undefined
+    if (!current) return null
+    current = typeof token === 'number' ? resolveContractSchema(current.items, root) : schemaChild(current, token, root)
   }
-  return isRecord(current) ? current : null
+  return current
 }
 
 function startsWithPath(value: readonly (string | number)[], prefix: readonly (string | number)[]): boolean {
@@ -318,13 +323,35 @@ function schemaAtPath(
   root: Record<string, unknown>,
   tokens: readonly { readonly key: string; readonly sequence: boolean }[],
 ): Record<string, unknown> | null {
-  let current: unknown = root
+  let current: Record<string, unknown> | null = resolveContractSchema(root, root)
   for (const { key, sequence } of tokens) {
-    if (!isRecord(current) || !isRecord(current.properties)) return null
-    current = current.properties[key]
-    if (sequence) current = isRecord(current) ? current.items : undefined
+    if (!current) return null
+    current = schemaChild(current, key, root)
+    if (sequence && current) current = resolveContractSchema(current.items, root)
   }
-  return isRecord(current) ? current : null
+  return current
+}
+
+function schemaChild(
+  schemaValue: Record<string, unknown>,
+  key: string,
+  root: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const schema = resolveContractSchema(schemaValue, root)
+  if (!schema) return null
+  if (isRecord(schema.properties) && Object.hasOwn(schema.properties, key)) {
+    return resolveContractSchema(schema.properties[key], root)
+  }
+  for (const keyword of ['allOf', 'oneOf', 'anyOf'] as const) {
+    if (!Array.isArray(schema[keyword])) continue
+    for (const branch of schema[keyword]) {
+      const resolvedBranch = resolveContractSchema(branch, root)
+      if (!resolvedBranch) return null
+      const child = schemaChild(resolvedBranch, key, root)
+      if (child) return child
+    }
+  }
+  return null
 }
 
 function valueAtPath(value: unknown, path: readonly string[]): unknown {

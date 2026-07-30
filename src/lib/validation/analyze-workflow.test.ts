@@ -21,7 +21,7 @@ function applicability(profile: WorkflowProfile) {
   return { profiles: [profile], documents: ['definition'] as const }
 }
 
-function kindDescriptor(profile: WorkflowProfile, id: 'command' | 'prompt'): NodeKindDescriptor {
+function kindDescriptor(profile: WorkflowProfile, id: string): NodeKindDescriptor {
   const field: FieldDescriptor = {
     id: `node-${id}-value`,
     label: `${id} value`,
@@ -42,6 +42,87 @@ function kindDescriptor(profile: WorkflowProfile, id: 'command' | 'prompt'): Nod
     description: `${id} node`,
     fields: [field],
   }
+}
+
+function importedComposedContract(): AuthoringContract {
+  const activeContract = contract('hermes-legacy')
+  activeContract.node_kinds = [
+    kindDescriptor(activeContract.profile, 'command'),
+    kindDescriptor(activeContract.profile, 'prompt'),
+    kindDescriptor(activeContract.profile, 'loop'),
+  ]
+  activeContract.definition_schema = {
+    type: 'object',
+    properties: {
+      name: { type: 'string', minLength: 1 },
+      description: { type: 'string', minLength: 1 },
+      nodes: { $ref: '#/$defs/nodeList' },
+    },
+    required: ['name', 'description', 'nodes'],
+    additionalProperties: false,
+    $defs: {
+      nodeList: {
+        type: 'array',
+        minItems: 1,
+        items: { $ref: '#/$defs/node' },
+      },
+      node: {
+        oneOf: [
+          { allOf: [{ $ref: '#/$defs/commonNode' }, { $ref: '#/$defs/commandNode' }] },
+          { allOf: [{ $ref: '#/$defs/commonNode' }, { $ref: '#/$defs/promptNode' }] },
+          { allOf: [{ $ref: '#/$defs/commonNode' }, { $ref: '#/$defs/loopNode' }] },
+        ],
+      },
+      id: { type: 'string', minLength: 1 },
+      dependencies: { type: 'array', items: { $ref: '#/$defs/id' } },
+      nonEmptyText: { type: 'string', minLength: 1 },
+      loopConfig: {
+        type: 'object',
+        properties: { over: { $ref: '#/$defs/nonEmptyText' } },
+        required: ['over'],
+        additionalProperties: false,
+      },
+      commonNode: {
+        type: 'object',
+        properties: {
+          id: { $ref: '#/$defs/id' },
+          depends_on: { $ref: '#/$defs/dependencies' },
+        },
+        required: ['id'],
+      },
+      commandNode: {
+        type: 'object',
+        properties: {
+          id: { $ref: '#/$defs/id' },
+          depends_on: { $ref: '#/$defs/dependencies' },
+          command: { $ref: '#/$defs/nonEmptyText' },
+        },
+        required: ['command'],
+        additionalProperties: false,
+      },
+      promptNode: {
+        type: 'object',
+        properties: {
+          id: { $ref: '#/$defs/id' },
+          depends_on: { $ref: '#/$defs/dependencies' },
+          prompt: { $ref: '#/$defs/nonEmptyText' },
+        },
+        required: ['prompt'],
+        additionalProperties: false,
+      },
+      loopNode: {
+        type: 'object',
+        properties: {
+          id: { $ref: '#/$defs/id' },
+          depends_on: { $ref: '#/$defs/dependencies' },
+          loop: { $ref: '#/$defs/loopConfig' },
+        },
+        required: ['loop'],
+        additionalProperties: false,
+      },
+    },
+  }
+  return activeContract
 }
 
 function semanticRules(profile: WorkflowProfile): readonly SemanticRuleDescriptor[] {
@@ -148,6 +229,70 @@ function request(
 }
 
 describe('workflow pair analysis', () => {
+  it.each([
+    ['a scalar kind draft', '  - id: command\n    command: ""\n', 'command'],
+    ['an object kind draft', '  - id: loop\n    loop: {}\n', 'loop'],
+  ])('recognizes %s through imported local refs and allOf composition', async (_case, nodes, kind) => {
+    const activeContract = importedComposedContract()
+
+    const analysis = await analyzeWorkflowPair(
+      request(activeContract, `name: Imported\ndescription: Composed contract\nnodes:\n${nodes}`),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect((analysis.projection as WorkflowProjection | undefined)?.nodes).toContainEqual(
+      expect.objectContaining({ id: kind, kind }),
+    )
+  })
+
+  it.each([
+    ['an unknown node field', '  - id: command\n    command: ""\n    surprise: true\n', 'schema_additional_properties'],
+    [
+      'duplicate node identifiers',
+      '  - id: same\n    command: echo\n  - id: same\n    prompt: hello\n',
+      'duplicate_node_id',
+    ],
+    [
+      'an unresolved dependency',
+      '  - id: command\n    command: echo\n    depends_on: [missing]\n',
+      'missing_dependency',
+    ],
+    [
+      'a dependency cycle',
+      '  - id: first\n    command: echo\n    depends_on: [second]\n  - id: second\n    prompt: hello\n    depends_on: [first]\n',
+      'dependency_cycle',
+    ],
+  ])('keeps imported composed contracts fail-closed for %s', async (_case, nodes, issueCode) => {
+    const activeContract = importedComposedContract()
+
+    const analysis = await analyzeWorkflowPair(
+      request(activeContract, `name: Imported\ndescription: Composed contract\nnodes:\n${nodes}`),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues.map(({ code }) => code)).toContain(issueCode)
+  })
+
+  it('fails closed when an imported contract uses a remote schema reference', async () => {
+    const activeContract = importedComposedContract()
+    const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>
+    definitions.nonEmptyText = { $ref: 'https://attacker.invalid/schema.json' }
+
+    const analysis = await analyzeWorkflowPair(
+      request(activeContract, 'name: Imported\ndescription: Remote ref\nnodes:\n  - id: command\n    command: ""\n'),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues.map(({ code }) => code)).toContain('contract_schema_invalid')
+  })
+
   it('keeps validator compilation bounded to one stable entry while draft subsets change', async () => {
     const activeContract = contract('hermes-legacy')
     const nodesSchema = (activeContract.definition_schema.properties as Record<string, { items?: unknown }>).nodes
