@@ -16,6 +16,12 @@ npm run build
 
 Use `npm run dev` for renderer development and `npm run tauri -- dev` to launch the native application.
 
+## Installation and releases
+
+Native macOS, Windows, and Linux packages are distributed through public GitHub Releases. The operating-system packages are intentionally unsigned by Apple or Microsoft; updater artifacts carry the separate first-party integrity signature required for automatic installation.
+
+See [Installing Workflow Studio](docs/installing.md) for direct downloads, checksum verification, safe one-line installer commands, and platform warning guidance. Maintainers should follow the [release runbook](docs/releasing.md); automation creates a verified draft and never publishes it automatically.
+
 ## Start here
 
 1. Read the [Hermes workflow-language analysis](docs/analysis/2026-07-25-hermes-workflow-language-foundation-review.md).
@@ -36,7 +42,9 @@ Use `npm run dev` for renderer development and `npm run tauri -- dev` to launch 
 - Product design: approved
 - Technology selection: approved
 - Phase 1 native foundation: complete
-- Phase 2 YAML document and workspace: next
+- Phase 2 YAML document and workspace: complete
+- Phase 3 visual authoring: complete
+- Phase 4 integration and release: in progress
 - Version 1 implementation: in progress
 
 ## Foundational decisions
