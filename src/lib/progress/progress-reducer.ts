@@ -68,7 +68,17 @@ export function applyProgressEvent(current: ProgressState | null, event: Progres
     return derive({ ...current, sequence: event.sequence, status: 'succeeded', cancellable: false })
   }
   if (event.type === 'cancelled') {
-    return derive({ ...current, sequence: event.sequence, status: 'cancelled', cancellable: false })
+    const stages = current.stages.map((stage): ProgressStage =>
+      stage.status === 'running' ? { ...stage, status: 'skipped' } : stage,
+    )
+    return derive({
+      ...current,
+      sequence: event.sequence,
+      status: 'cancelled',
+      cancellable: false,
+      currentStageId: null,
+      stages,
+    })
   }
   return derive({
     ...current,

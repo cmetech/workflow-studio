@@ -1633,6 +1633,13 @@ fn apply_event_to_snapshot(snapshot: &mut SetupSnapshot, event: &SetupEvent) {
             });
         }
         SetupEvent::Cancelled { .. } => {
+            for stage in snapshot
+                .stages
+                .iter_mut()
+                .filter(|stage| stage.status == SetupStageStatus::Running)
+            {
+                stage.status = SetupStageStatus::Skipped;
+            }
             snapshot.status = SetupRunStatus::Cancelled;
             snapshot.cancellable = false;
             snapshot.current_stage_id = None;

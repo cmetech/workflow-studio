@@ -664,6 +664,19 @@ fn setup_cancel_acknowledged_after_ready_loop_check_prevents_the_commit() {
     let snapshot = worker.join().unwrap();
 
     assert_eq!(snapshot.status, SetupRunStatus::Cancelled);
+    assert!(snapshot
+        .stages
+        .iter()
+        .all(|stage| stage.status != crate::setup::SetupStageStatus::Running));
+    assert_eq!(
+        snapshot
+            .stages
+            .iter()
+            .find(|stage| stage.id == "ready")
+            .unwrap()
+            .status,
+        crate::setup::SetupStageStatus::Skipped
+    );
     assert!(!is_ready(app_data.path(), "0.1.0"));
 }
 

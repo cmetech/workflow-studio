@@ -131,6 +131,29 @@ describe('progress reducer', () => {
     expect(state).toMatchObject({ status: 'running', cancellable: false, currentStageId: 'ready' })
   })
 
+  it('normalizes the active stage when cancellation wins the ready transition race', () => {
+    let state = applyProgressEvent(applyProgressEvent(null, manifest()), {
+      type: 'stage',
+      runId: 'run-a',
+      sequence: 2,
+      timestamp: 110,
+      stageId: 'ready',
+      status: 'running',
+      cancellable: false,
+    })
+    state = applyProgressEvent(state, {
+      type: 'cancelled',
+      runId: 'run-a',
+      sequence: 3,
+      timestamp: 111,
+      durationMs: 11,
+    })
+
+    expect(state).toMatchObject({ status: 'cancelled', currentStageId: null })
+    expect(state?.stages.filter(({ status }) => status === 'running')).toHaveLength(0)
+    expect(state?.stages.find(({ id }) => id === 'ready')?.status).toBe('skipped')
+  })
+
   it('keeps only the newest 500 renderer log lines', () => {
     let state = applyProgressEvent(null, manifest())
     for (let index = 0; index < 503; index += 1) {
