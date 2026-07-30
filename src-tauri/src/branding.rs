@@ -712,7 +712,6 @@ fn read_brand_source_assets(
 }
 
 #[cfg(test)]
-#[cfg_attr(windows, allow(dead_code))]
 fn read_brand_source_assets_with_bound_hook(
     token: &str,
     paths: &[String],
@@ -1943,7 +1942,6 @@ fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack
 }
 
 #[cfg(test)]
-#[cfg_attr(windows, allow(dead_code))]
 fn load_stored_pack_at_with_bound_hook(
     app_data: &Path,
     id: &str,
@@ -2408,7 +2406,6 @@ fn remove_brand_pack_at_with_remover(
 }
 
 #[cfg(test)]
-#[cfg_attr(windows, allow(dead_code))]
 fn remove_brand_pack_at_with_bound_hook(
     app_data: &Path,
     id: &str,
@@ -2619,6 +2616,19 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
+    static SOURCE_PACK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct SourcePackFixture {
+        directory: tempfile::TempDir,
+        _serial_guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SourcePackFixture {
+        fn path(&self) -> &Path {
+            self.directory.path()
+        }
+    }
+
     fn svg(fill: &str) -> Vec<u8> {
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg"><path fill="{fill}" d="M0 0h1v1z"/></svg>"#
@@ -2626,13 +2636,45 @@ mod tests {
         .into_bytes()
     }
 
-    fn source_pack() -> (tempfile::TempDir, std::path::PathBuf) {
+    fn source_pack() -> (SourcePackFixture, std::path::PathBuf) {
+        let serial_guard = SOURCE_PACK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let source = tempfile::tempdir().unwrap();
         let manifest_path = source.path().join("brand.yaml");
         fs::write(&manifest_path, serde_yaml::to_string(&manifest()).unwrap()).unwrap();
         fs::write(source.path().join("logo.svg"), svg("#112233")).unwrap();
         fs::write(source.path().join("mark.svg"), svg("#445566")).unwrap();
-        (source, manifest_path)
+        (
+            SourcePackFixture {
+                directory: source,
+                _serial_guard: serial_guard,
+            },
+            manifest_path,
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn replace_directory_name_for_test(path: &Path, parked: &Path) -> bool {
+        fs::rename(path, parked).unwrap();
+        true
+    }
+
+    #[cfg(windows)]
+    fn replace_directory_name_for_test(path: &Path, parked: &Path) -> bool {
+        match fs::rename(path, parked) {
+            Ok(()) => true,
+            Err(error) => {
+                assert!(
+                    error.kind() == std::io::ErrorKind::PermissionDenied
+                        || matches!(error.raw_os_error(), Some(5 | 32 | 33)),
+                    "a held directory may only prevent replacement through a Windows access/share denial: {error}"
+                );
+                assert!(path.is_dir());
+                assert!(!parked.exists());
+                false
+            }
+        }
     }
 
     fn theme() -> HashMap<String, String> {
@@ -2821,9 +2863,9 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn source_reader_keeps_a_nested_directory_capability_when_its_name_is_swapped() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
 
         let (source, path) = source_pack();
@@ -2839,6 +2881,7 @@ mod tests {
         let grants = BrandGrantState::default();
         let selection = grant_brand_source(&path, &grants).unwrap();
         let parked = source.path().join("parked-nested");
+        let swapped = std::cell::Cell::new(false);
 
         let assets = read_brand_source_assets_with_bound_hook(
             &selection.grant_token,
@@ -2846,8 +2889,17 @@ mod tests {
             &grants,
             |relative| {
                 if relative == "nested/logo.svg" {
-                    fs::rename(&nested, &parked).unwrap();
-                    symlink(outside.path(), &nested).unwrap();
+                    let replaced = replace_directory_name_for_test(&nested, &parked);
+                    swapped.set(replaced);
+                    if replaced {
+                        #[cfg(unix)]
+                        symlink(outside.path(), &nested).unwrap();
+                        #[cfg(windows)]
+                        {
+                            fs::create_dir(&nested).unwrap();
+                            fs::write(nested.join("logo.svg"), svg("#DEAD00")).unwrap();
+                        }
+                    }
                 }
             },
         )
@@ -2858,6 +2910,14 @@ mod tests {
             fs::read(outside.path().join("logo.svg")).unwrap(),
             svg("#DEAD00")
         );
+        if swapped.get() {
+            assert_eq!(fs::read(parked.join("logo.svg")).unwrap(), expected);
+            #[cfg(windows)]
+            assert_eq!(fs::read(nested.join("logo.svg")).unwrap(), svg("#DEAD00"));
+        } else {
+            assert!(cfg!(windows));
+            assert!(!parked.exists());
+        }
     }
 
     #[test]
@@ -3095,9 +3155,9 @@ mod tests {
         assert!(app_data.path().join("brands/acme").is_dir());
     }
 
-    #[cfg(unix)]
     #[test]
     fn stored_pack_load_and_removal_never_follow_a_replaced_pack_ancestor() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
 
         let (_source, path) = source_pack();
@@ -3123,33 +3183,77 @@ mod tests {
         fs::copy(pack_path.join("logo.svg"), outside.path().join("logo.svg")).unwrap();
         fs::copy(pack_path.join("mark.svg"), outside.path().join("mark.svg")).unwrap();
         fs::write(outside.path().join("sentinel"), b"outside").unwrap();
+        let load_swapped = std::cell::Cell::new(false);
 
         let loaded = load_stored_pack_at_with_bound_hook(app_data.path(), "acme", || {
-            fs::rename(&pack_path, &parked).unwrap();
-            symlink(outside.path(), &pack_path).unwrap();
-        })
-        .unwrap_err();
+            let replaced = replace_directory_name_for_test(&pack_path, &parked);
+            load_swapped.set(replaced);
+            if replaced {
+                #[cfg(unix)]
+                symlink(outside.path(), &pack_path).unwrap();
+                #[cfg(windows)]
+                {
+                    fs::create_dir(&pack_path).unwrap();
+                    fs::write(pack_path.join("sentinel"), b"replacement").unwrap();
+                }
+            }
+        });
 
-        assert_eq!(loaded.code, "brand_storage_scope_invalid");
         assert_eq!(
             fs::read(outside.path().join("sentinel")).unwrap(),
             b"outside"
         );
-
-        fs::remove_file(&pack_path).unwrap();
-        fs::rename(&parked, &pack_path).unwrap();
+        if load_swapped.get() {
+            assert_eq!(loaded.unwrap_err().code, "brand_storage_scope_invalid");
+            #[cfg(unix)]
+            fs::remove_file(&pack_path).unwrap();
+            #[cfg(windows)]
+            {
+                assert_eq!(
+                    fs::read(pack_path.join("sentinel")).unwrap(),
+                    b"replacement"
+                );
+                fs::remove_dir_all(&pack_path).unwrap();
+            }
+            fs::rename(&parked, &pack_path).unwrap();
+        } else {
+            assert!(cfg!(windows));
+            assert_eq!(loaded.unwrap().manifest.id, "acme");
+            assert!(!parked.exists());
+        }
+        let remove_swapped = std::cell::Cell::new(false);
         let removal = remove_brand_pack_at_with_bound_hook(app_data.path(), "acme", false, || {
-            fs::rename(&pack_path, &parked).unwrap();
-            symlink(outside.path(), &pack_path).unwrap();
-        })
-        .unwrap_err();
+            let replaced = replace_directory_name_for_test(&pack_path, &parked);
+            remove_swapped.set(replaced);
+            if replaced {
+                #[cfg(unix)]
+                symlink(outside.path(), &pack_path).unwrap();
+                #[cfg(windows)]
+                {
+                    fs::create_dir(&pack_path).unwrap();
+                    fs::write(pack_path.join("sentinel"), b"replacement").unwrap();
+                }
+            }
+        });
 
-        assert_eq!(removal.code, "brand_storage_scope_invalid");
         assert_eq!(
             fs::read(outside.path().join("sentinel")).unwrap(),
             b"outside"
         );
-        assert!(parked.is_dir());
+        if remove_swapped.get() {
+            assert_eq!(removal.unwrap_err().code, "brand_storage_scope_invalid");
+            #[cfg(windows)]
+            assert_eq!(
+                fs::read(pack_path.join("sentinel")).unwrap(),
+                b"replacement"
+            );
+            assert!(parked.is_dir());
+        } else {
+            assert!(cfg!(windows));
+            assert!(removal.unwrap().removed);
+            assert!(!pack_path.exists());
+            assert!(!parked.exists());
+        }
     }
 
     #[test]
@@ -3637,9 +3741,9 @@ mod tests {
         assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
     }
 
-    #[cfg(unix)]
     #[test]
     fn import_never_commits_through_a_replaced_brands_capability() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
 
         let (_source, path) = source_pack();
@@ -3655,28 +3759,50 @@ mod tests {
         )
         .unwrap();
         let parked = app_data.path().join("parked-brands");
+        let swapped = std::cell::Cell::new(false);
 
-        let error = import_brand_pack_at_with_commit_hook(
+        let imported = import_brand_pack_at_with_commit_hook(
             app_data.path(),
             request(&selection, &sources),
             &grants,
             |storage| {
-                fs::rename(storage, &parked).unwrap();
-                symlink(outside.path(), storage).unwrap();
+                let replaced = replace_directory_name_for_test(storage, &parked);
+                swapped.set(replaced);
+                if replaced {
+                    #[cfg(unix)]
+                    symlink(outside.path(), storage).unwrap();
+                    #[cfg(windows)]
+                    {
+                        fs::create_dir(storage).unwrap();
+                        fs::write(storage.join("sentinel"), b"replacement").unwrap();
+                    }
+                }
             },
-        )
-        .unwrap_err();
+        );
 
-        assert_eq!(error.code, "brand_storage_scope_invalid");
         assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
-        assert!(!parked.join("acme").exists());
-        assert!(fs::read_dir(&parked).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".acme-")
-        }));
+        if swapped.get() {
+            assert_eq!(imported.unwrap_err().code, "brand_storage_scope_invalid");
+            assert!(!app_data.path().join("brands/acme").exists());
+            #[cfg(windows)]
+            assert_eq!(
+                fs::read(app_data.path().join("brands/sentinel")).unwrap(),
+                b"replacement"
+            );
+            assert!(!parked.join("acme").exists());
+            assert!(fs::read_dir(&parked).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".acme-")
+            }));
+        } else {
+            assert!(cfg!(windows));
+            assert_eq!(imported.unwrap().id, "acme");
+            assert!(app_data.path().join("brands/acme/brand.yaml").is_file());
+            assert!(!parked.exists());
+        }
     }
 
     #[test]
