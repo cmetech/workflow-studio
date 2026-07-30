@@ -47,6 +47,7 @@ function runGit(cwd: string, args: string[]) {
 type PeFixture = {
   machine?: number
   optionalHeaderMagic?: number
+  optionalHeaderSize?: number
   subsystem?: number
   dosMagic?: boolean
   peSignature?: boolean
@@ -65,7 +66,7 @@ function writePeFixture(path: string, fixture: PeFixture = {}) {
   if (fixture.peSignature !== false && peOffset + 4 <= size) bytes.write('PE\0\0', peOffset, 'ascii')
   if (peOffset + 24 <= size) {
     bytes.writeUInt16LE(fixture.machine ?? 0x8664, peOffset + 4)
-    bytes.writeUInt16LE(0xf0, peOffset + 20)
+    bytes.writeUInt16LE(fixture.optionalHeaderSize ?? 0xf0, peOffset + 20)
   }
   if (peOffset + 26 <= size) {
     bytes.writeUInt16LE(optionalHeaderMagic, peOffset + 24)
@@ -252,6 +253,7 @@ describe('Windows packaged executable verification', () => {
     ['invalid PE signature', { peSignature: false }, /PE signature/i],
     ['out-of-bounds PE offset', { peOffset: 0x1000, size: 0x200 }, /e_lfanew/i],
     ['truncated optional header', { size: 0x98 }, /truncated/i],
+    ['partial PE32+ optional header', { optionalHeaderSize: 70 }, /truncated optional header/i],
   ] as const)('rejects a %s executable', (_kind, fixture, expectedError) => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {

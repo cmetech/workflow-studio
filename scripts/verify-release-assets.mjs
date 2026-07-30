@@ -15,6 +15,11 @@ const INTEGRITY_SCHEMA_VERSION = 1
 const PE_DOS_HEADER_SIZE = 0x40
 const PE_COFF_HEADER_SIZE = 24
 const PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET = 68
+const PE32_OPTIONAL_HEADER_FIXED_SIZE = 96
+const PE32_PLUS_OPTIONAL_HEADER_FIXED_SIZE = 112
+const PE32_NUMBER_OF_RVA_AND_SIZES_OFFSET = 92
+const PE32_PLUS_NUMBER_OF_RVA_AND_SIZES_OFFSET = 108
+const PE_DATA_DIRECTORY_SIZE = 8
 const MAX_PE_HEADER_OFFSET = 1024 * 1024
 const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'brands/loop24/brand.yaml',
@@ -506,15 +511,27 @@ async function verifyWindowsGuiExecutable(executablePath) {
 
   const optionalHeaderSize = executable.readUInt16LE(peOffset + 20)
   const optionalHeaderOffset = peOffset + PE_COFF_HEADER_SIZE
-  if (
-    optionalHeaderSize < PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET + 2 ||
-    optionalHeaderOffset + optionalHeaderSize > executable.length
-  ) {
+  if (optionalHeaderSize < 2 || optionalHeaderOffset + optionalHeaderSize > executable.length) {
     throw new Error('Windows executable has a truncated optional header')
   }
   const optionalHeaderMagic = executable.readUInt16LE(optionalHeaderOffset)
-  if (optionalHeaderMagic !== 0x10b && optionalHeaderMagic !== 0x20b) {
+  let fixedHeaderSize
+  let numberOfRvaAndSizesOffset
+  if (optionalHeaderMagic === 0x10b) {
+    fixedHeaderSize = PE32_OPTIONAL_HEADER_FIXED_SIZE
+    numberOfRvaAndSizesOffset = PE32_NUMBER_OF_RVA_AND_SIZES_OFFSET
+  } else if (optionalHeaderMagic === 0x20b) {
+    fixedHeaderSize = PE32_PLUS_OPTIONAL_HEADER_FIXED_SIZE
+    numberOfRvaAndSizesOffset = PE32_PLUS_NUMBER_OF_RVA_AND_SIZES_OFFSET
+  } else {
     throw new Error('Windows executable must use a PE32 or PE32+ optional header')
+  }
+  if (optionalHeaderSize < fixedHeaderSize) {
+    throw new Error('Windows executable has a truncated optional header')
+  }
+  const dataDirectoryCount = executable.readUInt32LE(optionalHeaderOffset + numberOfRvaAndSizesOffset)
+  if (optionalHeaderSize < fixedHeaderSize + dataDirectoryCount * PE_DATA_DIRECTORY_SIZE) {
+    throw new Error('Windows executable has a truncated optional header')
   }
   if (executable.readUInt16LE(optionalHeaderOffset + PE_OPTIONAL_HEADER_SUBSYSTEM_OFFSET) !== 2) {
     throw new Error('Windows executable must use the Windows GUI subsystem (2)')
