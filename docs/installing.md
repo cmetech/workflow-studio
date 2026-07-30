@@ -12,7 +12,7 @@ Workflow Studio v1.0.1 publishes native installers from the public `cmetech/work
 
 Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in v1.0.1.
 
-## One-line download and install
+## One-line verified installer launch
 
 These versioned commands bootstrap v1.0.1 directly. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
 
@@ -28,7 +28,7 @@ Windows PowerShell:
 iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.1/scripts/install.ps1')
 ```
 
-Both commands use immutable v1.0.1 bootstrap URLs. The scripts select the correct supported CPU installer, verify its published checksum from `SHA256SUMS`, and install it automatically. The installed app verifies first-party Tauri updater signatures before applying updates; those signatures are separate from operating-system publisher signing.
+Both commands use immutable v1.0.1 bootstrap URLs. On macOS, the script selects the correct CPU artifact, downloads and verifies the DMG, then opens it; you complete installation by dragging Workflow Studio to Applications. On Windows, the script downloads and verifies the x64 NSIS executable, then launches the installer flow automatically. The installed app verifies first-party Tauri updater signatures before applying updates; those signatures are separate from operating-system publisher signing.
 
 Each script chooses only an exact OS/architecture filename, downloads `SHA256SUMS` from the matching release tag, computes SHA-256 locally, and launches only after an exact match. A mismatch stops installation. Linux and unsupported architectures fail clearly without downloading or launching an installer.
 

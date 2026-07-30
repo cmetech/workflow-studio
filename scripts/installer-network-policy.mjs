@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 const EXPECTED_SHELL_SHA256 = '2a0cc7fda53a53d6a36cf6ad19ac76485fb4941684aa0d388a999b1ce29466ce'
-const EXPECTED_POWERSHELL_SHA256 = '8c7a89ed268ca0de848b51c6c341f6712f18c2f73a797d05ea6038c999d8e3d5'
+const EXPECTED_POWERSHELL_SHA256 = 'e6233cdeaf1c680245b0e87a3c01ae17f37514d1d4a72623d7415c5147d4a4ed'
 
 const EXPECTED_SHELL_DESTINATIONS = ['$API_URL', '$RELEASE_ROOT/$TAG/$INSTALLER_NAME', '$RELEASE_ROOT/$TAG/SHA256SUMS']
 
@@ -25,8 +25,8 @@ const EXPECTED_SHELL_COMMANDS = [
 
 const EXPECTED_POWERSHELL_COMMANDS = [
   '$Release = Invoke-RestMethod -Uri $ApiUrl -Headers $Headers',
-  'Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/$InstallerName" -OutFile $InstallerPath',
-  'Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/SHA256SUMS" -OutFile $ChecksumPath',
+  'Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/$InstallerName" -OutFile $InstallerPath -UseBasicParsing',
+  'Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/SHA256SUMS" -OutFile $ChecksumPath -UseBasicParsing',
 ]
 
 export function verifyInstallerNetworkPolicy(shellSource, powershellSource) {

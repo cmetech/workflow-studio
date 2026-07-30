@@ -77,8 +77,8 @@ $ChecksumPath = [IO.Path]::Combine($TempDirectory, 'SHA256SUMS')
 
 try {
   Write-Status "downloading $InstallerName"
-  Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/$InstallerName" -OutFile $InstallerPath
-  Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/SHA256SUMS" -OutFile $ChecksumPath
+  Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/$InstallerName" -OutFile $InstallerPath -UseBasicParsing
+  Invoke-WebRequest -Uri "$ReleaseRoot/$Tag/SHA256SUMS" -OutFile $ChecksumPath -UseBasicParsing
 
   $MatchingLines = @(Get-Content -LiteralPath $ChecksumPath | Where-Object {
     $_ -match '^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$' -and $Matches[2] -ceq $InstallerName

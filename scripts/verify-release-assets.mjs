@@ -76,7 +76,7 @@ const TARGETS = Object.freeze({
   }),
   'windows-x86_64': Object.freeze({
     installerSuffix: 'windows_x86_64-setup.exe',
-    updaterSuffix: 'windows_x86_64.nsis.zip',
+    updaterSuffix: 'windows_x86_64-setup.nsis.zip',
   }),
 })
 

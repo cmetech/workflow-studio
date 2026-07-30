@@ -31,6 +31,7 @@ interface ReleaseFixture {
 }
 
 const fixture = JSON.parse(readFileSync('tests/fixtures/releases/valid-manifest.json', 'utf8')) as ReleaseFixture
+const POWERSHELL_EXECUTABLE = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
 
 const TEST_UPDATER_PUBLIC_KEY = `untrusted comment: minisign public key E7620F1842B4E81F
 RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
@@ -150,7 +151,7 @@ describe('release asset verification', () => {
       signature: 'signed-darwin-arm',
     })
     expect(normalized.platforms['windows-x86_64'].url).toContain(
-      '/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip',
+      '/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip',
     )
     expect(updater.platforms['windows-x86_64']!.url).toContain('api.github.com')
   })
@@ -466,7 +467,7 @@ describe('downloader static safety', () => {
   const powershell = () => readFileSync('scripts/install.ps1', 'utf8')
 
   it('resolves x64 Windows through the PowerShell 5.1-compatible environment fallback', () => {
-    const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    const probe = spawnSync(POWERSHELL_EXECUTABLE, ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
     if (probe.error) return
 
     const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-powershell-architecture-'))
@@ -492,9 +493,13 @@ Get-WindowsArchitecture
 `,
       )
 
-      const result = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', harness, 'scripts/install.ps1'], {
-        encoding: 'utf8',
-      })
+      const result = spawnSync(
+        POWERSHELL_EXECUTABLE,
+        ['-NoLogo', '-NoProfile', '-File', harness, 'scripts/install.ps1'],
+        {
+          encoding: 'utf8',
+        },
+      )
       expect(result.status, result.stderr).toBe(0)
       expect(result.stdout.trim()).toBe('X64')
     } finally {
@@ -567,6 +572,15 @@ Get-WindowsArchitecture
     }
   })
 
+  it('requires Windows PowerShell 5.1-compatible parsing for every downloaded file', () => {
+    expect(verifyInstallerNetworkPolicy(shell(), powershell())).toBeDefined()
+
+    const incompatible = powershell().replaceAll(' -UseBasicParsing', '')
+    expect(() => verifyInstallerNetworkPolicy(shell(), incompatible)).toThrow(
+      /PowerShell command forms|content changed/i,
+    )
+  })
+
   it('uses exact architecture mapping, local SHA-256 verification, and verified launch ordering', () => {
     expect(shell()).toContain('uname -m')
     expect(shell()).toMatch(/sha256sum|shasum/)
@@ -609,10 +623,10 @@ Get-WindowsArchitecture
 
   it('rejects non-Windows hosts before PowerShell performs network or architecture selection', () => {
     if (process.platform === 'win32') return
-    const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    const probe = spawnSync(POWERSHELL_EXECUTABLE, ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
     if (probe.error) return
 
-    const result = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', 'scripts/install.ps1'], {
+    const result = spawnSync(POWERSHELL_EXECUTABLE, ['-NoLogo', '-NoProfile', '-File', 'scripts/install.ps1'], {
       encoding: 'utf8',
     })
     expect(result.status).toBe(1)
@@ -710,7 +724,7 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('Application commit')
   })
 
-  it.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0+build.5'], ['v1.2.3+build.001']])(
+  it.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0']])(
     'executes strict SemVer validation for valid tag %s',
     (tag) => {
       const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
@@ -739,6 +753,8 @@ describe('release workflow contract', () => {
     ['refs/heads/base', 'v1.2.3-a..b'],
     ['refs/heads/base', 'v1.2.3-a.'],
     ['refs/heads/base', 'v1.2.3+build..5'],
+    ['refs/heads/base', 'v1.2.3+build.001'],
+    ['refs/heads/base', 'v1.2.3-alpha.1+build.001'],
     ['refs/heads/base', 'v01.2.3'],
   ])('rejects invalid dispatch/tag pair %s %s before checkout', (dispatchRef, tag) => {
     const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
@@ -985,6 +1001,25 @@ npm run examples:check`)
     expect(jobSteps('build').some((step) => step.name?.includes('Linux'))).toBe(false)
   })
 
+  it('ties the v1-compatible updater mode and upload pattern to the exact Windows updater inventory', () => {
+    const config = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')) as {
+      bundle?: { createUpdaterArtifacts?: boolean | string }
+    }
+    const tauri = jobSteps('build').find((step) => step.id === 'tauri')
+    const updaterName = 'LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip'
+
+    expect(config.bundle?.createUpdaterArtifacts).toBe('v1Compatible')
+    expect(tauri?.with?.releaseAssetNamePattern).toBe(
+      'LOOP24-Workflow-Studio_[version]_${{ matrix.platform }}_${{ matrix.arch }}[setup][ext]',
+    )
+    expect(fixture.assets.map((asset) => asset.name)).toEqual(
+      expect.arrayContaining([updaterName, `${updaterName}.sig`]),
+    )
+    expect(normalizeUpdaterManifest(fixture.updater, fixture.tag).platforms['windows-x86_64'].url).toBe(
+      `https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/${updaterName}`,
+    )
+  })
+
   it('gates each Tauri-built DMG and NSIS payload with unambiguous extracted-package checks', () => {
     const steps = jobSteps('build')
     const tauri = steps.findIndex((step) => step.id === 'tauri')
@@ -1016,7 +1051,12 @@ npm run examples:check`)
   })
 
   it('selects workflow-studio.exe from an NSIS payload that also contains uninstall.exe', () => {
-    const powershellProbe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    const powershellProbe = spawnSync(POWERSHELL_EXECUTABLE, [
+      '-NoLogo',
+      '-NoProfile',
+      '-Command',
+      '$PSVersionTable.PSVersion',
+    ])
     if (powershellProbe.error) return
 
     const root = mkdtempSync(join(tmpdir(), 'workflow-studio-nsis-gate-'))
@@ -1060,7 +1100,7 @@ ${gate}
 
     const invoke = (mode: 'accepted' | 'missing' | 'ambiguous') => {
       rmSync(sentinel, { force: true })
-      return spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', harnessPath], {
+      return spawnSync(POWERSHELL_EXECUTABLE, ['-NoLogo', '-NoProfile', '-File', harnessPath], {
         cwd: root,
         encoding: 'utf8',
         env: {
@@ -1100,7 +1140,12 @@ ${gate}
     const bash = spawnSync('bash', ['-n'], { input: mac, encoding: 'utf8' })
     expect(bash.status, bash.stderr).toBe(0)
 
-    const powershellProbe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    const powershellProbe = spawnSync(POWERSHELL_EXECUTABLE, [
+      '-NoLogo',
+      '-NoProfile',
+      '-Command',
+      '$PSVersionTable.PSVersion',
+    ])
     if (powershellProbe.error) return
     const windows = namedStep('build', 'Verify extracted Windows NSIS payload').run!.replaceAll(
       '${{ matrix.rust_target }}',
@@ -1114,7 +1159,7 @@ if ($errors.Count -ne 0) {
   $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
   exit 1
 }`
-    const powershell = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', parser], {
+    const powershell = spawnSync(POWERSHELL_EXECUTABLE, ['-NoLogo', '-NoProfile', '-Command', parser], {
       input: windows,
       encoding: 'utf8',
     })
@@ -1189,6 +1234,9 @@ describe('release documentation contract', () => {
     expect(installing).toContain('SHA256SUMS')
     expect(installing).toContain('Right-click')
     expect(installing).toContain('More info')
+    expect(installing).toContain('downloads and verifies the DMG, then opens it')
+    expect(installing).toContain('drag Workflow Studio to Applications')
+    expect(installing).not.toContain('install it automatically')
     expect(installing).not.toContain('/base/scripts/install')
     expect(installing).not.toContain('v1.0.0')
   })

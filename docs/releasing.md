@@ -21,6 +21,8 @@ Manual workflow dispatch accepts only an existing version tag. The workflow reso
 
 These are the exact three v1.0.1 targets; Linux and Windows ARM64 artifacts are deferred. Every native job uses `npm ci` and runs the same formatting, lint, Svelte check, TypeScript unit-test, Rust-test, authoring-contract, and example gates as `npm run verify` before Tauri builds. Release CI runs Vitest with one worker to prevent cross-file CPU contention from starving UI timing assertions on slower native runners, and gives the recovery storage-limit test 20 seconds because it intentionally serializes nearly 64 MiB. These settings change only scheduling and timeout allowances, not assertions or coverage. The operating-system artifacts are deliberately unsigned: there is no Apple notarization/Developer ID or Microsoft Authenticode identity in the workflow.
 
+The release Tauri configuration uses `createUpdaterArtifacts: "v1Compatible"`. With the pinned Tauri Action naming pattern, the Windows updater and signature must be exactly `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.nsis.zip` and `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.nsis.zip.sig`. The verifier rejects the non-emitted name without the `-setup` segment.
+
 ## Updater-key custody
 
 Tauri updater signing is an integrity control and is distinct from third-party operating-system publisher signing. GitHub Actions reads only these repository secrets:

@@ -37,14 +37,13 @@ jobs:
             exit 1
           fi
           TAG="$REQUESTED_TAG"
-          SEMVER_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
+          SEMVER_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
           if [[ ! "$TAG" =~ $SEMVER_PATTERN ]]; then
             echo "Invalid version tag: $TAG" >&2
             exit 1
           fi
-          VERSION_WITHOUT_BUILD=${TAG%%+*}
-          if [[ "$VERSION_WITHOUT_BUILD" == *-* ]]; then
-            PRERELEASE=${VERSION_WITHOUT_BUILD#*-}
+          if [[ "$TAG" == *-* ]]; then
+            PRERELEASE=${TAG#*-}
             IFS='.' read -r -a PRERELEASE_IDENTIFIERS <<< "$PRERELEASE"
             for IDENTIFIER in "${PRERELEASE_IDENTIFIERS[@]}"; do
               if [[ "$IDENTIFIER" =~ ^0[0-9]+$ ]]; then

@@ -55,6 +55,9 @@ describe('version one release metadata', () => {
     )
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
+    expect(installing).toContain('downloads and verifies the DMG, then opens it')
+    expect(installing).toContain('drag Workflow Studio to Applications')
+    expect(installing).not.toContain('install it automatically')
     expect(installing).not.toContain('v1.0.0')
   })
 

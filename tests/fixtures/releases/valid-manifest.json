@@ -37,12 +37,12 @@
       "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
     },
     {
-      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
+      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip",
       "size": 108,
       "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
     },
     {
-      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip.sig",
+      "name": "LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip.sig",
       "size": 109,
       "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
     },
@@ -75,11 +75,11 @@
         "signature": "signed-darwin-intel"
       },
       "windows-x86_64": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip",
         "signature": "signed-windows"
       },
       "windows-x86_64-nsis": {
-        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip",
+        "url": "https://github.com/cmetech/workflow-studio/releases/download/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64-setup.nsis.zip",
         "signature": "signed-windows"
       }
     }
