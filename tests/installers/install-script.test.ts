@@ -47,6 +47,11 @@ const signatureVerifierPath = join(
   'examples',
   `verify_release_signature${process.platform === 'win32' ? '.exe' : ''}`,
 )
+const UPDATER_ALIAS_PAIRS = [
+  ['darwin-aarch64', 'darwin-aarch64-app'],
+  ['darwin-x86_64', 'darwin-x86_64-app'],
+  ['windows-x86_64', 'windows-x86_64-nsis'],
+] as const
 
 function materializeCryptoRelease(useApiUrls = false) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-assets-'))
@@ -148,6 +153,38 @@ describe('release asset verification', () => {
       '/v1.0.1/LOOP24-Workflow-Studio_1.0.1_windows_x86_64.nsis.zip',
     )
     expect(updater.platforms['windows-x86_64']!.url).toContain('api.github.com')
+  })
+
+  it.each(UPDATER_ALIAS_PAIRS)('rejects manifest signatures that differ between %s and %s', (primary, alias) => {
+    const invalid = manifestWith((copy) => {
+      copy.updater.platforms[alias]!.signature = `${copy.updater.platforms[primary]!.signature}-mismatch`
+    })
+
+    expect(() => validateReleaseManifest(invalid)).toThrow(/must match/i)
+    expect(() => normalizeUpdaterManifest(invalid.updater, invalid.tag)).toThrow(/must match/i)
+  })
+
+  it.each(UPDATER_ALIAS_PAIRS)('does not rewrite latest.json when %s and %s signatures differ', (primary, alias) => {
+    const { root, directory } = materializeCryptoRelease(true)
+    const updaterPath = join(directory, 'latest.json')
+    try {
+      const updater = JSON.parse(readFileSync(updaterPath, 'utf8')) as ReleaseFixture['updater']
+      updater.platforms[alias]!.signature = `${updater.platforms[primary]!.signature}-mismatch`
+      const mutatedBytes = `${JSON.stringify(updater)}\n`
+      writeFileSync(updaterPath, mutatedBytes)
+
+      const result = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-assets.mjs', '--directory', directory, '--tag', fixture.tag, '--normalize-updater'],
+        { encoding: 'utf8' },
+      )
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/must match/i)
+      expect(readFileSync(updaterPath, 'utf8')).toBe(mutatedBytes)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it.each([
@@ -368,6 +405,7 @@ describe('release asset verification', () => {
       const updaterPath = join(directory, 'latest.json')
       const updater = JSON.parse(readFileSync(updaterPath, 'utf8')) as ReleaseFixture['updater']
       updater.platforms['darwin-aarch64']!.signature = `${TEST_UPDATER_SIGNATURE}tampered`
+      updater.platforms['darwin-aarch64-app']!.signature = `${TEST_UPDATER_SIGNATURE}tampered`
       writeFileSync(updaterPath, `${JSON.stringify(updater)}\n`)
 
       const result = spawnSync(

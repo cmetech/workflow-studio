@@ -198,6 +198,7 @@ export function normalizeUpdaterManifest(updater, tag) {
       url: `${REPOSITORY_RELEASE_ROOT}/${tag}/${updaterName}`,
     }
   }
+  assertUpdaterAliasSignatures(updater.platforms)
   return { ...updater, platforms }
 }
 
@@ -289,6 +290,11 @@ export function validateReleaseManifest(manifest) {
     if (!platform || typeof platform.signature !== 'string' || platform.signature.trim() === '') {
       throw new Error(`Updater signature is missing for ${targetKey}`)
     }
+  }
+  assertUpdaterAliasSignatures(platforms)
+
+  for (const targetKey of expectedTargets) {
+    const platform = platforms[targetKey]
     const updaterName = updaterAssetNameFromUrl(platform.url, tag)
     if (!byName.has(updaterName)) {
       throw new Error(`Updater target ${targetKey} refers to an asset not present in the manifest: ${updaterName}`)
@@ -351,6 +357,18 @@ function assertExactDirectoryInventory(names, tag, checksumRequired) {
   if (names.length !== expected.size) {
     const missing = [...expected].find((name) => !names.includes(name))
     throw new Error(`Missing required release asset: ${missing ?? 'unknown'}`)
+  }
+}
+
+function assertUpdaterAliasSignatures(platforms) {
+  const signatureByTarget = new Map()
+  for (const [platformKey, baseTarget] of Object.entries(UPDATER_TARGETS)) {
+    const signature = platforms[platformKey].signature
+    const first = signatureByTarget.get(baseTarget)
+    if (first && first.signature !== signature) {
+      throw new Error(`Updater signatures for ${first.platformKey} and ${platformKey} must match`)
+    }
+    signatureByTarget.set(baseTarget, { platformKey, signature })
   }
 }
 
