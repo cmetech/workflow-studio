@@ -10,13 +10,45 @@ function Write-Status([string] $Message) {
   Write-Host "Workflow Studio: $Message"
 }
 
+function Get-WindowsArchitecture {
+  try {
+    $Processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
+      Select-Object -First 1
+    if ($null -ne $Processor -and $null -ne $Processor.Architecture) {
+      switch ([int] $Processor.Architecture) {
+        9 { return 'X64' }
+        12 { return 'Arm64' }
+        0 { return 'X86' }
+        5 { return 'Arm' }
+      }
+    }
+  }
+  catch {
+    # Locked-down hosts may not allow CIM. Fall back to native Windows
+    # architecture variables, preferring the WoW64 real-OS value.
+  }
+
+  $EnvironmentArchitecture = if ($env:PROCESSOR_ARCHITEW6432) {
+    $env:PROCESSOR_ARCHITEW6432
+  }
+  else {
+    $env:PROCESSOR_ARCHITECTURE
+  }
+  switch ([string] $EnvironmentArchitecture) {
+    'AMD64' { return 'X64' }
+    'ARM64' { return 'Arm64' }
+    'x86' { return 'X86' }
+    default { return [string] $EnvironmentArchitecture }
+  }
+}
+
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [System.Runtime.InteropServices.OSPlatform]::Windows
   )) {
   throw 'Unsupported operating system: this installer requires Windows'
 }
 
-$RuntimeArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+$RuntimeArchitecture = Get-WindowsArchitecture
 switch ($RuntimeArchitecture) {
   'X64' { $AssetSuffix = 'windows_x86_64-setup.exe' }
   default { throw "Unsupported architecture: $RuntimeArchitecture on Windows" }

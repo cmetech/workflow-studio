@@ -357,6 +357,43 @@ describe('downloader static safety', () => {
   const shell = () => readFileSync('scripts/install.sh', 'utf8')
   const powershell = () => readFileSync('scripts/install.ps1', 'utf8')
 
+  it('resolves x64 Windows through the PowerShell 5.1-compatible environment fallback', () => {
+    const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    if (probe.error) return
+
+    const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-powershell-architecture-'))
+    const harness = join(directory, 'architecture-test.ps1')
+    try {
+      writeFileSync(
+        harness,
+        `$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref] $tokens, [ref] $parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Installer script did not parse' }
+$functionAst = $ast.Find({
+  param($node)
+  $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Get-WindowsArchitecture'
+}, $true)
+if ($null -eq $functionAst) { throw 'Get-WindowsArchitecture was not defined' }
+Invoke-Expression $functionAst.Extent.Text
+function Get-CimInstance { throw 'CIM unavailable in compatibility fixture' }
+$env:PROCESSOR_ARCHITEW6432 = 'AMD64'
+$env:PROCESSOR_ARCHITECTURE = 'x86'
+Get-WindowsArchitecture
+`,
+      )
+
+      const result = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', harness, 'scripts/install.ps1'], {
+        encoding: 'utf8',
+      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe('X64')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('contains no shell evaluation, remote pipe execution, security bypass, or broad cleanup', () => {
     for (const script of [shell(), powershell()]) {
       expect(script).not.toMatch(/\beval\b/)
@@ -426,7 +463,6 @@ describe('downloader static safety', () => {
     expect(shell()).toContain('uname -m')
     expect(shell()).toMatch(/sha256sum|shasum/)
     expect(shell()).toContain('EXPECTED_CHECKSUM')
-    expect(powershell()).toContain('[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture')
     expect(powershell()).toContain('Get-FileHash')
 
     for (const script of [shell(), powershell()]) {
