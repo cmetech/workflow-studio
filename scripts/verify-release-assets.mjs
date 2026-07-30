@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,6 +11,41 @@ const REPOSITORY_RELEASE_ROOT = 'https://github.com/cmetech/workflow-studio/rele
 const TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?$/
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const SAFE_ASSET_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const INTEGRITY_SCHEMA_VERSION = 1
+const PACKAGED_RESOURCE_DIRECTORIES = Object.freeze(['brands', 'contracts', 'examples'])
+const PACKAGED_RESOURCE_PATHS = Object.freeze([
+  'brands/loop24/brand.yaml',
+  'brands/loop24/logo.svg',
+  'brands/loop24/mark.svg',
+  'brands/resource-root',
+  'contracts/README.md',
+  'contracts/archon-2026-07-v1.json',
+  'contracts/hermes-legacy-v1.json',
+  'contracts/manifest.json',
+  'contracts/resource-root',
+  'examples/README.md',
+  'examples/advanced-reference/workflow.hermes.yaml',
+  'examples/advanced-reference/workflow.yaml',
+  'examples/ai-tools/workflow.hermes.yaml',
+  'examples/ai-tools/workflow.yaml',
+  'examples/approval/workflow.hermes.yaml',
+  'examples/approval/workflow.yaml',
+  'examples/bash-script/workflow.hermes.yaml',
+  'examples/bash-script/workflow.yaml',
+  'examples/bounded-loop/workflow.hermes.yaml',
+  'examples/bounded-loop/workflow.yaml',
+  'examples/catalog.yaml',
+  'examples/conditional/workflow.hermes.yaml',
+  'examples/conditional/workflow.yaml',
+  'examples/minimal/workflow.yaml',
+  'examples/parallel-fan-in/workflow.hermes.yaml',
+  'examples/parallel-fan-in/workflow.yaml',
+  'examples/resource-root',
+  'examples/retry-trigger/workflow.yaml',
+  'examples/sequential/workflow.hermes.yaml',
+  'examples/sequential/workflow.yaml',
+])
+const PACKAGED_RESOURCE_PATH_SET = new Set(PACKAGED_RESOURCE_PATHS)
 
 const TARGETS = Object.freeze({
   'darwin-aarch64': Object.freeze({
@@ -290,6 +325,125 @@ async function digestFile(path) {
   return hash.digest('hex')
 }
 
+function validatePackagedResourceManifest(manifest) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error('Packaged resource integrity manifest must be an object')
+  }
+  if (manifest.schemaVersion !== INTEGRITY_SCHEMA_VERSION) {
+    throw new Error(`Unsupported packaged resource integrity schema version: ${String(manifest.schemaVersion)}`)
+  }
+  if (!Array.isArray(manifest.files)) {
+    throw new Error('Packaged resource integrity manifest files must be an array')
+  }
+
+  const filesByPath = new Map()
+  for (const entry of manifest.files) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Packaged resource integrity manifest contains an invalid file entry')
+    }
+    const { path, sha256, maxBytes } = entry
+    if (typeof path !== 'string' || !PACKAGED_RESOURCE_PATH_SET.has(path)) {
+      throw new Error(`Unexpected packaged resource manifest path: ${String(path)}`)
+    }
+    if (filesByPath.has(path)) {
+      throw new Error(`Duplicate packaged resource manifest path: ${path}`)
+    }
+    if (typeof sha256 !== 'string' || !SHA256_PATTERN.test(sha256)) {
+      throw new Error(`Invalid SHA-256 digest for packaged resource: ${path}`)
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error(`Invalid maximum size for packaged resource: ${path}`)
+    }
+    filesByPath.set(path, entry)
+  }
+
+  for (const path of PACKAGED_RESOURCE_PATHS) {
+    if (!filesByPath.has(path)) {
+      throw new Error(`Missing packaged resource manifest path: ${path}`)
+    }
+  }
+  if (manifest.files.length !== PACKAGED_RESOURCE_PATHS.length) {
+    throw new Error(`Packaged resource integrity manifest must contain exactly ${PACKAGED_RESOURCE_PATHS.length} files`)
+  }
+  return filesByPath
+}
+
+async function collectPackagedResourcePaths(resourceRoot) {
+  const paths = []
+  async function visit(relativePath) {
+    const absolutePath = join(resourceRoot, relativePath)
+    const info = await lstat(absolutePath)
+    if (info.isSymbolicLink()) {
+      throw new Error(`Packaged resource must not be a symbolic link: ${relativePath}`)
+    }
+    if (info.isDirectory()) {
+      const entries = await readdir(absolutePath)
+      for (const entry of entries) {
+        await visit(`${relativePath}/${entry}`)
+      }
+      return
+    }
+    if (!info.isFile()) {
+      throw new Error(`Packaged resource must be a regular file: ${relativePath}`)
+    }
+    paths.push(relativePath)
+  }
+
+  for (const directory of PACKAGED_RESOURCE_DIRECTORIES) {
+    await visit(directory)
+  }
+  return paths
+}
+
+export async function verifyPackagedResources(resourceRoot, integrityManifestPath) {
+  if (typeof resourceRoot !== 'string' || resourceRoot === '') {
+    throw new Error('Packaged resource root is required')
+  }
+  if (typeof integrityManifestPath !== 'string' || integrityManifestPath === '') {
+    throw new Error('Packaged resource integrity manifest path is required')
+  }
+
+  const manifest = JSON.parse(await readFile(integrityManifestPath, 'utf8'))
+  const filesByPath = validatePackagedResourceManifest(manifest)
+  const actualPaths = await collectPackagedResourcePaths(resourceRoot)
+  const actualPathSet = new Set(actualPaths)
+  if (actualPathSet.size !== actualPaths.length) {
+    throw new Error('Duplicate packaged resource path discovered')
+  }
+  for (const path of PACKAGED_RESOURCE_PATHS) {
+    const absolutePath = join(resourceRoot, path)
+    let info
+    try {
+      info = await lstat(absolutePath)
+    } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'ENOENT') {
+        throw new Error(`Missing packaged resource: ${path}`)
+      }
+      throw error
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(`Packaged resource must not be a symbolic link: ${path}`)
+    }
+    if (!info.isFile()) {
+      throw new Error(`Packaged resource must be a regular file: ${path}`)
+    }
+    const { sha256, maxBytes } = filesByPath.get(path)
+    if (info.size > maxBytes) {
+      throw new Error(`Packaged resource exceeds maximum size: ${path}`)
+    }
+    if ((await digestFile(absolutePath)) !== sha256) {
+      throw new Error(`Packaged resource SHA-256 mismatch: ${path}`)
+    }
+  }
+  for (const path of actualPaths) {
+    if (!PACKAGED_RESOURCE_PATH_SET.has(path)) {
+      throw new Error(`Extra packaged resource: ${path}`)
+    }
+  }
+
+  return { verifiedFiles: PACKAGED_RESOURCE_PATHS.length }
+}
+
 async function verifyUpdaterArtifacts(directory, tag, updater, signatureVerifier, tauriConfig) {
   if (!signatureVerifier || !tauriConfig) {
     throw new Error('Directory verification requires --signature-verifier and --tauri-config')
@@ -393,6 +547,19 @@ function readOption(args, name) {
 async function main(args) {
   const fixturePath = readOption(args, '--fixture')
   const directory = readOption(args, '--directory')
+  const packagedResourceRoot = readOption(args, '--packaged-resource-root')
+  const integrityManifest = readOption(args, '--integrity-manifest')
+  if (packagedResourceRoot || integrityManifest) {
+    if (!packagedResourceRoot || !integrityManifest) {
+      throw new Error('--packaged-resource-root and --integrity-manifest must be used together')
+    }
+    if (fixturePath || directory) {
+      throw new Error('Packaged resource verification cannot be combined with release asset verification')
+    }
+    const result = await verifyPackagedResources(packagedResourceRoot, integrityManifest)
+    process.stdout.write(`Verified ${result.verifiedFiles} packaged resource files\n`)
+    return
+  }
   if ((fixturePath ? 1 : 0) + (directory ? 1 : 0) !== 1) {
     throw new Error('Use exactly one of --fixture or --directory')
   }
