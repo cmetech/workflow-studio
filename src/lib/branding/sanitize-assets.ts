@@ -81,6 +81,8 @@ const SAFE_SVG_ATTRIBUTES = [
   'id',
   'href',
 ] as const
+const SAFE_SVG_ELEMENT_SET = new Set<string>(SAFE_SVG_ELEMENTS.map((name) => name.toLowerCase()))
+const SAFE_SVG_ATTRIBUTE_SET = new Set<string>(SAFE_SVG_ATTRIBUTES.map((name) => name.toLowerCase()))
 const FORBIDDEN_ELEMENTS = new Set([
   'script',
   'foreignobject',
@@ -165,7 +167,11 @@ function parseSvg(source: string, context: string): XMLDocument {
 
 function assertSafeSvgDocument(document: XMLDocument): void {
   for (const element of document.querySelectorAll('*')) {
-    if (element.namespaceURI !== SVG_NAMESPACE || FORBIDDEN_ELEMENTS.has(element.localName.toLowerCase())) {
+    if (
+      element.namespaceURI !== SVG_NAMESPACE ||
+      FORBIDDEN_ELEMENTS.has(element.localName.toLowerCase()) ||
+      !SAFE_SVG_ELEMENT_SET.has(element.localName.toLowerCase())
+    ) {
       throw new Error('The asset contains an unsafe SVG element or namespace.')
     }
     for (const attribute of [...element.attributes]) {
@@ -173,6 +179,7 @@ function assertSafeSvgDocument(document: XMLDocument): void {
       const value = attribute.value.trim()
       if (name === 'xmlns' && value === SVG_NAMESPACE) continue
       if (
+        !SAFE_SVG_ATTRIBUTE_SET.has(name) ||
         name.startsWith('on') ||
         name === 'style' ||
         name === 'src' ||
@@ -214,9 +221,7 @@ function sanitizeSvg(path: string, bytes: Uint8Array): SanitizedBrandAsset {
   const verified = parseSvg(sanitized, path)
   assertSafeSvgDocument(verified)
   if (!verified.documentElement.querySelector('*')) throw new Error(`${path} has no renderable SVG content.`)
-  const sanitizedBytes = new TextEncoder().encode(sanitized)
-  if (sanitizedBytes.byteLength > MAX_BRAND_ASSET_BYTES) throw new Error(`${path} exceeds the 2 MiB asset limit.`)
-  return { path, mediaType: 'image/svg+xml', bytes: sanitizedBytes }
+  return { path, mediaType: 'image/svg+xml', bytes: bytes.slice() }
 }
 
 export function sanitizeBrandAsset(path: string, bytes: Uint8Array): SanitizedBrandAsset {

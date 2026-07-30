@@ -31,6 +31,12 @@ function native(overrides: Partial<BrandNativeBridge> = {}): BrandNativeBridge {
 }
 
 const SVG_BYTES = [...new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')]
+const PNG_BYTES = [
+  ...Uint8Array.from(
+    atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='),
+    (value) => value.charCodeAt(0),
+  ),
+]
 
 function stored(
   manifest = loadBundledBrand(),
@@ -275,6 +281,51 @@ describe('brand controller', () => {
     await controller.activate('loop24')
     expect(calls).toEqual(['activate:acme', 'icon:acme:sha256:exact', 'activate:loop24', 'icon:loop24:default'])
     expect(root.dataset.brand).toBe('loop24')
+  })
+
+  it('keeps a custom SVG brand active when native resets its prior PNG icon to the platform default', async () => {
+    const bundled = loadBundledBrand()
+    const pngBrand = {
+      ...bundled,
+      id: 'png-brand',
+      assets: { ...bundled.assets, windowIcon: 'icon.png' },
+    }
+    const svgBrand = {
+      ...bundled,
+      id: 'svg-brand',
+      assets: { ...bundled.assets, windowIcon: 'icon.svg' },
+    }
+    const pngPack = stored(pngBrand, 'sha256:png')
+    const exactPacks = new Map([
+      [
+        pngBrand.id,
+        {
+          ...pngPack,
+          assets: pngPack.assets.map((asset) => (asset.path === 'icon.png' ? { ...asset, bytes: PNG_BYTES } : asset)),
+        },
+      ],
+      [svgBrand.id, stored(svgBrand, 'sha256:svg')],
+    ])
+    const activate = vi.fn(async (id: string) => ({ id, pack: exactPacks.get(id) ?? null }))
+    const icon = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'applied' as const })
+      .mockResolvedValueOnce({ status: 'unsupported' as const })
+    const root = document.createElement('div')
+    const controller = createBrandController(native({ brandActivate: activate, setWindowIcon: icon }), root)
+    controller.registerForTest(pngBrand)
+    controller.registerForTest(svgBrand)
+
+    await controller.activate(pngBrand.id)
+    await controller.activate(svgBrand.id)
+
+    expect(activate.mock.calls).toEqual([[pngBrand.id], [svgBrand.id]])
+    expect(icon.mock.calls).toEqual([
+      [pngBrand.id, 'sha256:png'],
+      [svgBrand.id, 'sha256:svg'],
+    ])
+    expect(controller.state.get().activeId).toBe(svgBrand.id)
+    expect(root.dataset.brand).toBe(svgBrand.id)
   })
 
   it('reconciles renderer state when active removal reverts natively but cleanup reports failure', async () => {

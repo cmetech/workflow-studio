@@ -1,9 +1,14 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::ffi::OsString;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+use cap_std::ambient_authority;
+#[cfg(unix)]
+use cap_std::fs::Permissions as CapPermissions;
+use cap_std::fs::{Dir, File as CapFile, OpenOptions as CapOpenOptions};
 use getrandom::fill as random_fill;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
@@ -15,6 +20,8 @@ use tauri_plugin_dialog::DialogExt;
 
 const MAX_ASSET_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PACK_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PERSISTED_PACKS: usize = 16;
+const MAX_PERSISTED_BYTES: u64 = 32 * 1024 * 1024;
 const BUILTIN_BRAND_ID: &str = "loop24";
 const ACTIVE_FILE: &str = "active-brand-v1.json";
 const THEME_TOKEN_NAMES: [&str; 21] = [
@@ -183,9 +190,11 @@ pub struct BrandGrantState {
 }
 
 struct GrantedBrandSource {
-    parent_path: PathBuf,
-    parent_identity: Handle,
-    manifest_path: PathBuf,
+    source_parent: Dir,
+    source_name: OsString,
+    source_identity: Handle,
+    parent: Dir,
+    manifest_name: OsString,
     manifest_identity: Handle,
     manifest_sha256: String,
     source_manifest: Option<NativeBrandManifest>,
@@ -194,9 +203,19 @@ struct GrantedBrandSource {
 }
 
 struct BoundBrandAsset {
-    path: PathBuf,
+    parent: Dir,
+    name: OsString,
     identity: Handle,
     sha256: String,
+}
+
+struct BrandStorageScope {
+    app_parent: Dir,
+    app_name: OsString,
+    app_identity: Handle,
+    app: Dir,
+    brands_identity: Handle,
+    brands: Dir,
 }
 
 fn brand_error(code: &'static str, message: impl Into<String>) -> BrandError {
@@ -222,8 +241,49 @@ fn opaque_token() -> BrandResult<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn read_bounded_file(path: &Path, code: &'static str) -> BrandResult<(Vec<u8>, Handle)> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(code, error))?;
+fn cap_file_identity(file: &CapFile, code: &'static str) -> BrandResult<Handle> {
+    Handle::from_file(
+        file.try_clone()
+            .map_err(|error| io_error(code, error))?
+            .into_std(),
+    )
+    .map_err(|error| io_error(code, error))
+}
+
+fn cap_directory_identity(directory: &Dir, code: &'static str) -> BrandResult<Handle> {
+    Handle::from_file(
+        directory
+            .try_clone()
+            .map_err(|error| io_error(code, error))?
+            .into_std_file(),
+    )
+    .map_err(|error| io_error(code, error))
+}
+
+fn cap_named_file_identity(parent: &Dir, name: &Path, code: &'static str) -> BrandResult<Handle> {
+    let metadata = parent
+        .symlink_metadata(name)
+        .map_err(|error| io_error(code, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(brand_error(
+            code,
+            "Brand source files must be regular files.",
+        ));
+    }
+    cap_file_identity(
+        &parent.open(name).map_err(|error| io_error(code, error))?,
+        code,
+    )
+}
+
+fn read_bounded_cap_file(
+    parent: &Dir,
+    name: &Path,
+    code: &'static str,
+) -> BrandResult<(Vec<u8>, Handle)> {
+    let metadata = parent
+        .symlink_metadata(name)
+        .map_err(|error| io_error(code, error))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(brand_error(
             code,
@@ -236,11 +296,9 @@ fn read_bounded_file(path: &Path, code: &'static str) -> BrandResult<(Vec<u8>, H
             "Brand files cannot exceed 2 MiB.",
         ));
     }
-    let mut file = File::open(path).map_err(|error| io_error(code, error))?;
-    let identity = Handle::from_file(file.try_clone().map_err(|error| io_error(code, error))?)
-        .map_err(|error| io_error(code, error))?;
-    let named_identity = Handle::from_path(path).map_err(|error| io_error(code, error))?;
-    if identity != named_identity {
+    let mut file = parent.open(name).map_err(|error| io_error(code, error))?;
+    let identity = cap_file_identity(&file, code)?;
+    if cap_named_file_identity(parent, name, code)? != identity {
         return Err(brand_error(
             "brand_source_changed",
             "The selected brand source changed while it was opened.",
@@ -257,37 +315,76 @@ fn read_bounded_file(path: &Path, code: &'static str) -> BrandResult<(Vec<u8>, H
             "Brand files cannot exceed 2 MiB.",
         ));
     }
-    if Handle::from_path(path).map_err(|error| io_error(code, error))? != identity {
+    if cap_named_file_identity(parent, name, code)? != identity {
         return Err(brand_error(
             "brand_source_changed",
-            "The brand file path changed while its bytes were read.",
+            "The brand file name changed while its bytes were read.",
         ));
     }
     Ok((bytes, identity))
 }
 
-fn verify_regular_parent(parent: &Path, expected: &Handle) -> BrandResult<()> {
-    let metadata = fs::symlink_metadata(parent).map_err(|_| {
-        brand_error(
-            "brand_source_changed",
-            "The selected brand directory is no longer available.",
-        )
-    })?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || Handle::from_path(parent).map_err(|_| {
-            brand_error(
-                "brand_source_changed",
-                "The selected brand directory could not be identified.",
-            )
-        })? != *expected
-    {
+fn bind_relative_parent(
+    root: &Dir,
+    relative: &str,
+    code: &'static str,
+) -> BrandResult<(Dir, OsString)> {
+    if !safe_asset_path(relative) {
         return Err(brand_error(
-            "brand_source_changed",
-            "The selected brand directory changed.",
+            "brand_asset_path_invalid",
+            "Brand asset paths must be safe relative SVG or PNG paths.",
         ));
     }
-    Ok(())
+    let relative_path = Path::new(relative);
+    let name = relative_path
+        .file_name()
+        .ok_or_else(|| {
+            brand_error(
+                "brand_asset_path_invalid",
+                "Brand asset path has no file name.",
+            )
+        })?
+        .to_os_string();
+    let mut current = root.try_clone().map_err(|error| io_error(code, error))?;
+    if let Some(parent) = relative_path.parent() {
+        for component in parent.components() {
+            let Component::Normal(component_name) = component else {
+                return Err(brand_error(
+                    "brand_asset_path_invalid",
+                    "Brand asset paths must remain inside the selected directory.",
+                ));
+            };
+            let metadata = current.symlink_metadata(component_name).map_err(|_| {
+                brand_error(
+                    "brand_asset_missing",
+                    format!("Brand asset {relative} is missing."),
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(brand_error(
+                    code,
+                    "Brand source assets cannot traverse symbolic links or non-directories.",
+                ));
+            }
+            let next = current
+                .open_dir(component_name)
+                .map_err(|error| io_error(code, error))?;
+            let identity = cap_directory_identity(&next, code)?;
+            let rebound = current
+                .open_dir(component_name)
+                .and_then(|directory| directory.try_clone().map(Dir::into_std_file))
+                .ok()
+                .and_then(|directory| Handle::from_file(directory).ok());
+            if rebound.as_ref() != Some(&identity) {
+                return Err(brand_error(
+                    code,
+                    "A brand source directory changed while it was bound.",
+                ));
+            }
+            current = next;
+        }
+    }
+    Ok((current, name))
 }
 
 fn safe_asset_path(path: &str) -> bool {
@@ -482,7 +579,20 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
             )
         })?
         .to_path_buf();
-    let parent_metadata = fs::symlink_metadata(&parent_path)
+    let source_container_path = parent_path.parent().ok_or_else(|| {
+        brand_error(
+            "brand_source_invalid",
+            "The brand source directory has no capability parent.",
+        )
+    })?;
+    let source_name = parent_path
+        .file_name()
+        .ok_or_else(|| brand_error("brand_source_invalid", "The brand source has no name."))?
+        .to_os_string();
+    let source_parent = Dir::open_ambient_dir(source_container_path, ambient_authority())
+        .map_err(|error| io_error("brand_grant_failed", error))?;
+    let parent_metadata = source_parent
+        .symlink_metadata(&source_name)
         .map_err(|error| io_error("brand_source_invalid", error))?;
     if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
         return Err(brand_error(
@@ -490,10 +600,26 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
             "The brand source directory must be a regular directory.",
         ));
     }
-    let parent_identity =
-        Handle::from_path(&parent_path).map_err(|error| io_error("brand_grant_failed", error))?;
+    let parent = source_parent
+        .open_dir(&source_name)
+        .map_err(|error| io_error("brand_grant_failed", error))?;
+    let source_identity = cap_directory_identity(&parent, "brand_grant_failed")?;
+    let rebound_identity = source_parent
+        .open_dir(&source_name)
+        .map_err(|error| io_error("brand_source_invalid", error))
+        .and_then(|directory| cap_directory_identity(&directory, "brand_source_invalid"))?;
+    if rebound_identity != source_identity {
+        return Err(brand_error(
+            "brand_source_changed",
+            "The brand source directory changed while it was selected.",
+        ));
+    }
+    let manifest_name = canonical
+        .file_name()
+        .ok_or_else(|| brand_error("brand_source_invalid", "The manifest has no file name."))?
+        .to_os_string();
     let (manifest_bytes, manifest_identity) =
-        read_bounded_file(&canonical, "brand_source_invalid")?;
+        read_bounded_cap_file(&parent, Path::new(&manifest_name), "brand_source_invalid")?;
     let manifest_text = String::from_utf8(manifest_bytes.clone()).map_err(|_| {
         brand_error(
             "brand_manifest_invalid",
@@ -522,9 +648,11 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
         .insert(
             grant_token.clone(),
             GrantedBrandSource {
-                parent_path,
-                parent_identity,
-                manifest_path: canonical,
+                source_parent,
+                source_name,
+                source_identity,
+                parent,
+                manifest_name,
                 manifest_identity,
                 manifest_sha256: manifest_sha256.clone(),
                 source_manifest,
@@ -539,54 +667,66 @@ fn grant_brand_source(path: &Path, grants: &BrandGrantState) -> BrandResult<Bran
     })
 }
 
+fn verify_source_scope(grant: &GrantedBrandSource) -> BrandResult<()> {
+    let rebound = grant
+        .source_parent
+        .open_dir(&grant.source_name)
+        .map_err(|_| {
+            brand_error(
+                "brand_source_changed",
+                "The selected brand source directory is no longer present.",
+            )
+        })?;
+    if cap_directory_identity(&rebound, "brand_source_changed")? != grant.source_identity {
+        return Err(brand_error(
+            "brand_source_changed",
+            "The selected brand source directory changed after it was granted.",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_manifest(grant: &GrantedBrandSource) -> BrandResult<()> {
-    verify_regular_parent(&grant.parent_path, &grant.parent_identity)?;
-    let (bytes, identity) = read_bounded_file(&grant.manifest_path, "brand_source_changed")?;
+    verify_source_scope(grant)?;
+    let (bytes, identity) = read_bounded_cap_file(
+        &grant.parent,
+        Path::new(&grant.manifest_name),
+        "brand_source_changed",
+    )?;
     if identity != grant.manifest_identity || sha256(&bytes) != grant.manifest_sha256 {
         return Err(brand_error(
             "brand_source_changed",
             "The selected brand manifest changed after it was granted.",
         ));
     }
+    verify_source_scope(grant)?;
     Ok(())
-}
-
-fn checked_asset_path(parent: &Path, relative: &str) -> BrandResult<PathBuf> {
-    if !safe_asset_path(relative) {
-        return Err(brand_error(
-            "brand_asset_path_invalid",
-            "Brand asset paths must be safe relative SVG or PNG paths.",
-        ));
-    }
-    let mut current = parent.to_path_buf();
-    for component in Path::new(relative).components() {
-        let Component::Normal(name) = component else {
-            return Err(brand_error(
-                "brand_asset_path_invalid",
-                "Brand asset paths must remain inside the selected directory.",
-            ));
-        };
-        current.push(name);
-        let metadata = fs::symlink_metadata(&current).map_err(|_| {
-            brand_error(
-                "brand_asset_missing",
-                format!("Brand asset {relative} is missing."),
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(brand_error(
-                "brand_source_changed",
-                "Brand source assets cannot traverse symbolic links.",
-            ));
-        }
-    }
-    Ok(current)
 }
 
 fn read_brand_source_assets(
     token: &str,
     paths: &[String],
     grants: &BrandGrantState,
+) -> BrandResult<Vec<BrandSourceAsset>> {
+    read_brand_source_assets_impl(token, paths, grants, |_| {})
+}
+
+#[cfg(test)]
+#[cfg_attr(windows, allow(dead_code))]
+fn read_brand_source_assets_with_bound_hook(
+    token: &str,
+    paths: &[String],
+    grants: &BrandGrantState,
+    hook: impl FnMut(&str),
+) -> BrandResult<Vec<BrandSourceAsset>> {
+    read_brand_source_assets_impl(token, paths, grants, hook)
+}
+
+fn read_brand_source_assets_impl(
+    token: &str,
+    paths: &[String],
+    grants: &BrandGrantState,
+    mut bound_hook: impl FnMut(&str),
 ) -> BrandResult<Vec<BrandSourceAsset>> {
     if paths.is_empty()
         || paths.len() > 3
@@ -617,13 +757,16 @@ fn read_brand_source_assets(
     }
     let mut result = Vec::with_capacity(paths.len());
     for relative in paths {
-        let path = checked_asset_path(&grant.parent_path, relative)?;
-        let (bytes, identity) = read_bounded_file(&path, "brand_source_changed")?;
+        let (parent, name) = bind_relative_parent(&grant.parent, relative, "brand_source_changed")?;
+        bound_hook(relative);
+        let (bytes, identity) =
+            read_bounded_cap_file(&parent, Path::new(&name), "brand_source_changed")?;
         let digest = sha256(&bytes);
         grant.assets.insert(
             relative.clone(),
             BoundBrandAsset {
-                path,
+                parent,
+                name,
                 identity,
                 sha256: digest.clone(),
             },
@@ -1084,13 +1227,16 @@ fn verify_bound_asset(grant: &GrantedBrandSource, asset: &BrandImportAsset) -> B
             "Every imported asset must have been read through this exact source grant.",
         )
     })?;
-    let path = checked_asset_path(&grant.parent_path, &asset.path)?;
-    let (bytes, identity) = read_bounded_file(&path, "brand_source_changed")?;
+    let (bytes, identity) = read_bounded_cap_file(
+        &bound.parent,
+        Path::new(&bound.name),
+        "brand_source_changed",
+    )?;
     let digest = sha256(&bytes);
-    if path != bound.path
-        || identity != bound.identity
+    if identity != bound.identity
         || digest != bound.sha256
         || digest != asset.source_sha256
+        || bytes != asset.sanitized_bytes
     {
         return Err(brand_error(
             "brand_source_changed",
@@ -1100,84 +1246,253 @@ fn verify_bound_asset(grant: &GrantedBrandSource, asset: &BrandImportAsset) -> B
     Ok(())
 }
 
-fn prepare_storage_root(app_data: &Path) -> BrandResult<(PathBuf, Handle)> {
-    let app_metadata = fs::symlink_metadata(app_data)
-        .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
-    if app_metadata.file_type().is_symlink() || !app_metadata.is_dir() {
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "Application data must be a regular private directory.",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(app_data, fs::Permissions::from_mode(0o700))
-            .map_err(|error| io_error("brand_storage_failed", error))?;
-    }
-    let root = app_data.join("brands");
-    match fs::symlink_metadata(&root) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+impl BrandStorageScope {
+    fn bind(app_data: &Path) -> BrandResult<Self> {
+        match fs::symlink_metadata(app_data) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(brand_error(
+                    "brand_storage_scope_invalid",
+                    "Application data must be a regular private directory.",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(app_data)
+                    .map_err(|error| io_error("brand_storage_failed", error))?;
+            }
+            Err(error) => return Err(io_error("brand_storage_scope_invalid", error)),
+        }
+        let parent_path = app_data.parent().ok_or_else(|| {
+            brand_error(
+                "brand_storage_scope_invalid",
+                "Application data must have a regular parent directory.",
+            )
+        })?;
+        let app_name = app_data
+            .file_name()
+            .ok_or_else(|| {
+                brand_error(
+                    "brand_storage_scope_invalid",
+                    "Application data must have a directory name.",
+                )
+            })?
+            .to_os_string();
+        let app_parent = Dir::open_ambient_dir(parent_path, ambient_authority())
+            .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
+        let app_metadata = app_parent
+            .symlink_metadata(&app_name)
+            .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
+        if app_metadata.file_type().is_symlink() || !app_metadata.is_dir() {
             return Err(brand_error(
                 "brand_storage_scope_invalid",
-                "The private brand storage root is not a regular directory.",
+                "Application data must be a regular private directory.",
             ));
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&root).map_err(|error| io_error("brand_storage_failed", error))?;
+        let app = app_parent
+            .open_dir(&app_name)
+            .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
+        let app_identity = cap_directory_identity(&app, "brand_storage_scope_invalid")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            app_parent
+                .set_permissions(
+                    &app_name,
+                    CapPermissions::from_std(fs::Permissions::from_mode(0o700)),
+                )
+                .map_err(|error| io_error("brand_storage_failed", error))?;
         }
-        Err(error) => return Err(io_error("brand_storage_failed", error)),
+        match app.symlink_metadata("brands") {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(brand_error(
+                    "brand_storage_scope_invalid",
+                    "The private brand storage root is not a regular directory.",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => app
+                .create_dir("brands")
+                .map_err(|error| io_error("brand_storage_failed", error))?,
+            Err(error) => return Err(io_error("brand_storage_failed", error)),
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            app.set_permissions(
+                "brands",
+                CapPermissions::from_std(fs::Permissions::from_mode(0o700)),
+            )
+            .map_err(|error| io_error("brand_storage_failed", error))?;
+        }
+        let brands = app
+            .open_dir("brands")
+            .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
+        let brands_identity = cap_directory_identity(&brands, "brand_storage_scope_invalid")?;
+        let scope = Self {
+            app_parent,
+            app_name,
+            app_identity,
+            app,
+            brands_identity,
+            brands,
+        };
+        scope.verify()?;
+        Ok(scope)
     }
+
+    fn verify(&self) -> BrandResult<()> {
+        let app = self
+            .app_parent
+            .open_dir(&self.app_name)
+            .map_err(|_| brand_storage_scope_changed())?;
+        if cap_directory_identity(&app, "brand_storage_scope_invalid")? != self.app_identity {
+            return Err(brand_storage_scope_changed());
+        }
+        let brands = self
+            .app
+            .open_dir("brands")
+            .map_err(|_| brand_storage_scope_changed())?;
+        if cap_directory_identity(&brands, "brand_storage_scope_invalid")? != self.brands_identity {
+            return Err(brand_storage_scope_changed());
+        }
+        Ok(())
+    }
+
+    fn bind_pack(&self, id: &str) -> BrandResult<(Dir, Handle)> {
+        self.verify()?;
+        let metadata = self
+            .brands
+            .symlink_metadata(id)
+            .map_err(|_| brand_error("brand_not_found", "The custom brand does not exist."))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(brand_error(
+                "brand_storage_scope_invalid",
+                "The stored brand directory is unsafe.",
+            ));
+        }
+        let directory = self
+            .brands
+            .open_dir(id)
+            .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
+        let identity = cap_directory_identity(&directory, "brand_storage_scope_invalid")?;
+        if !self.named_pack_identity_matches(id, &identity) {
+            return Err(brand_storage_scope_changed());
+        }
+        Ok((directory, identity))
+    }
+
+    fn named_pack_identity_matches(&self, id: &str, expected: &Handle) -> bool {
+        self.brands
+            .symlink_metadata(id)
+            .ok()
+            .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
+            .and_then(|_| self.brands.open_dir(id).ok())
+            .and_then(|directory| {
+                cap_directory_identity(&directory, "brand_storage_scope_invalid").ok()
+            })
+            .as_ref()
+            == Some(expected)
+    }
+}
+
+fn brand_storage_scope_changed() -> BrandError {
+    brand_error(
+        "brand_storage_scope_invalid",
+        "The private brand storage capability changed during the operation.",
+    )
+}
+
+fn write_private_file_at(directory: &Dir, relative: &Path, bytes: &[u8]) -> BrandResult<()> {
+    if let Some(parent) = relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        directory
+            .create_dir_all(parent)
+            .map_err(|error| io_error("brand_storage_failed", error))?;
+    }
+    let mut options = CapOpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    let mut file = directory
+        .open_with(relative, &options)
+        .map_err(|error| io_error("brand_storage_failed", error))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        file.set_permissions(CapPermissions::from_std(fs::Permissions::from_mode(0o600)))
             .map_err(|error| io_error("brand_storage_failed", error))?;
     }
-    let identity =
-        Handle::from_path(&root).map_err(|error| io_error("brand_storage_failed", error))?;
-    Ok((root, identity))
-}
-
-fn write_private_file(path: &Path, bytes: &[u8]) -> BrandResult<()> {
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| io_error("brand_storage_failed", error))?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|error| io_error("brand_storage_failed", error))
 }
 
-fn write_staged_asset(root: &Path, relative: &str, bytes: &[u8]) -> BrandResult<()> {
-    let path = root.join(relative);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| io_error("brand_storage_failed", error))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut current = root.to_path_buf();
-            for component in Path::new(relative)
-                .parent()
-                .into_iter()
-                .flat_map(Path::components)
-            {
-                if let Component::Normal(name) = component {
-                    current.push(name);
-                    fs::set_permissions(&current, fs::Permissions::from_mode(0o700))
+struct StagedBrandDirectory<'a> {
+    parent: &'a Dir,
+    name: OsString,
+    directory: Dir,
+    identity: Handle,
+    active: bool,
+}
+
+impl<'a> StagedBrandDirectory<'a> {
+    fn new(parent: &'a Dir, id: &str) -> BrandResult<Self> {
+        for _ in 0..100 {
+            let name = OsString::from(format!(".{id}-{}.tmp", opaque_token()?));
+            match parent.create_dir(&name) {
+                Ok(()) => {
+                    let directory = parent
+                        .open_dir(&name)
                         .map_err(|error| io_error("brand_storage_failed", error))?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        parent
+                            .set_permissions(
+                                &name,
+                                CapPermissions::from_std(fs::Permissions::from_mode(0o700)),
+                            )
+                            .map_err(|error| io_error("brand_storage_failed", error))?;
+                    }
+                    let identity = cap_directory_identity(&directory, "brand_storage_failed")?;
+                    return Ok(Self {
+                        parent,
+                        name,
+                        directory,
+                        identity,
+                        active: true,
+                    });
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(io_error("brand_storage_failed", error)),
             }
         }
+        Err(brand_error(
+            "brand_storage_failed",
+            "A unique private brand staging directory could not be created.",
+        ))
     }
-    write_private_file(&path, bytes)
+
+    fn named_identity_matches(&self) -> bool {
+        self.parent
+            .open_dir(&self.name)
+            .ok()
+            .and_then(|directory| cap_directory_identity(&directory, "brand_storage_failed").ok())
+            .as_ref()
+            == Some(&self.identity)
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for StagedBrandDirectory<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.parent.remove_dir_all(&self.name);
+        }
+    }
 }
 
 fn import_brand_pack_at(
@@ -1258,40 +1573,50 @@ fn import_brand_pack_at_with_commit_hook(
         verify_bound_asset(grant, asset)?;
     }
 
-    let (storage, storage_identity) = prepare_storage_root(app_data)?;
-    let destination = storage.join(&request.manifest.id);
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Err(brand_error(
-            "brand_id_exists",
-            "A stored brand already uses this ID.",
-        ));
+    let new_pack_bytes = total_bytes.expect("the bounded pack size was validated") as u64;
+    let scope = BrandStorageScope::bind(app_data)?;
+    match scope.brands.symlink_metadata(&request.manifest.id) {
+        Ok(_) => {
+            return Err(brand_error(
+                "brand_id_exists",
+                "A stored brand already uses this ID.",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error("brand_storage_failed", error)),
     }
-    let staging = tempfile::Builder::new()
-        .prefix(&format!(".{}-", request.manifest.id))
-        .tempdir_in(&storage)
-        .map_err(|error| io_error("brand_storage_failed", error))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
-            .map_err(|error| io_error("brand_storage_failed", error))?;
-    }
-    write_private_file(&staging.path().join("brand.yaml"), &manifest_bytes)?;
+    enforce_storage_quota(&scope, new_pack_bytes, None)?;
+    let mut staging = StagedBrandDirectory::new(&scope.brands, &request.manifest.id)?;
+    write_private_file_at(&staging.directory, Path::new("brand.yaml"), &manifest_bytes)?;
     for asset in &request.assets {
-        write_staged_asset(staging.path(), &asset.path, &asset.sanitized_bytes)?;
+        write_private_file_at(
+            &staging.directory,
+            Path::new(&asset.path),
+            &asset.sanitized_bytes,
+        )?;
     }
-    before_commit(&storage);
-    if Handle::from_path(&storage).map_err(|error| io_error("brand_storage_failed", error))?
-        != storage_identity
-        || fs::symlink_metadata(&destination).is_ok()
-    {
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "Private brand storage changed before commit.",
-        ));
+    before_commit(&app_data.join("brands"));
+    scope.verify()?;
+    if !staging.named_identity_matches() {
+        return Err(brand_storage_scope_changed());
     }
-    fs::rename(staging.path(), &destination)
+    match scope.brands.symlink_metadata(&request.manifest.id) {
+        Ok(_) => {
+            return Err(brand_storage_scope_changed());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error("brand_storage_failed", error)),
+    }
+    enforce_storage_quota(&scope, new_pack_bytes, Some(&staging.name))?;
+    scope
+        .brands
+        .rename(&staging.name, &scope.brands, &request.manifest.id)
         .map_err(|error| io_error("brand_storage_failed", error))?;
+    staging.disarm();
+    scope.verify()?;
+    if !scope.named_pack_identity_matches(&request.manifest.id, &staging.identity) {
+        return Err(brand_storage_scope_changed());
+    }
     let id = request.manifest.id.clone();
     let display_name = request.manifest.display_name.clone();
     locked.remove(&request.grant_token);
@@ -1307,23 +1632,111 @@ struct ActiveBrandRecord {
     revision: Option<String>,
 }
 
-fn atomic_active_write(storage: &Path, id: &str, revision: Option<&str>) -> BrandResult<()> {
-    let storage_identity =
-        Handle::from_path(storage).map_err(|error| io_error("brand_storage_failed", error))?;
-    let token = opaque_token()?;
-    let temporary = storage.join(format!(".{ACTIVE_FILE}-{token}.tmp"));
+struct StagedActiveFile<'a> {
+    parent: &'a Dir,
+    name: OsString,
+    identity: Handle,
+    file: Option<CapFile>,
+    active: bool,
+}
+
+impl<'a> StagedActiveFile<'a> {
+    fn new(parent: &'a Dir) -> BrandResult<Self> {
+        for _ in 0..100 {
+            let name = OsString::from(format!(".{ACTIVE_FILE}-{}.tmp", opaque_token()?));
+            let mut options = CapOpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(windows)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+                use windows_sys::Win32::Storage::FileSystem::DELETE;
+
+                options.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+            }
+            match parent.open_with(&name, &options) {
+                Ok(file) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        file.set_permissions(CapPermissions::from_std(fs::Permissions::from_mode(
+                            0o600,
+                        )))
+                        .map_err(|error| io_error("brand_storage_failed", error))?;
+                    }
+                    let identity = cap_file_identity(&file, "brand_storage_failed")?;
+                    return Ok(Self {
+                        parent,
+                        name,
+                        identity,
+                        file: Some(file),
+                        active: true,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(io_error("brand_storage_failed", error)),
+            }
+        }
+        Err(brand_error(
+            "brand_storage_failed",
+            "A unique active-brand staging file could not be created.",
+        ))
+    }
+
+    fn file_mut(&mut self) -> &mut CapFile {
+        self.file
+            .as_mut()
+            .expect("active-brand staging file remains open")
+    }
+
+    fn file(&self) -> &CapFile {
+        self.file
+            .as_ref()
+            .expect("active-brand staging file remains open")
+    }
+
+    fn named_identity_matches(&self) -> bool {
+        cap_named_file_identity(self.parent, Path::new(&self.name), "brand_storage_failed")
+            .ok()
+            .as_ref()
+            == Some(&self.identity)
+    }
+
+    fn disarm(&mut self) {
+        self.file.take();
+        self.active = false;
+    }
+}
+
+impl Drop for StagedActiveFile<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.file.take();
+            let _ = self.parent.remove_file(&self.name);
+        }
+    }
+}
+
+fn atomic_active_write(
+    scope: &BrandStorageScope,
+    id: &str,
+    revision: Option<&str>,
+) -> BrandResult<()> {
     let bytes = serde_json::to_vec(&ActiveBrandRecord {
         schema_version: 1,
         id: id.to_owned(),
         revision: revision.map(str::to_owned),
     })
     .map_err(|error| brand_error("brand_storage_failed", error.to_string()))?;
-    write_private_file(&temporary, &bytes)?;
-    let destination = storage.join(ACTIVE_FILE);
-    let destination_exists = match fs::symlink_metadata(&destination) {
+    let mut temporary = StagedActiveFile::new(&scope.brands)?;
+    temporary
+        .file_mut()
+        .write_all(&bytes)
+        .and_then(|_| temporary.file_mut().sync_all())
+        .map_err(|error| io_error("brand_storage_failed", error))?;
+    let destination_exists = match scope.brands.symlink_metadata(ACTIVE_FILE) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                let _ = fs::remove_file(&temporary);
                 return Err(brand_error(
                     "brand_storage_scope_invalid",
                     "The active-brand record is not a regular private file.",
@@ -1332,28 +1745,33 @@ fn atomic_active_write(storage: &Path, id: &str, revision: Option<&str>) -> Bran
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(io_error("brand_storage_failed", error));
-        }
+        Err(error) => return Err(io_error("brand_storage_failed", error)),
     };
-    if Handle::from_path(storage).map_err(|error| io_error("brand_storage_failed", error))?
-        != storage_identity
-    {
-        let _ = fs::remove_file(&temporary);
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "Private brand storage changed before active-brand commit.",
-        ));
+    scope.verify()?;
+    if !temporary.named_identity_matches() {
+        return Err(brand_storage_scope_changed());
     }
     select_active_record_commit(
         destination_exists,
         || {
-            fs::rename(&temporary, &destination)
+            scope
+                .brands
+                .rename(&temporary.name, &scope.brands, ACTIVE_FILE)
                 .map_err(|error| io_error("brand_storage_failed", error))
         },
-        || replace_active_file(&temporary, &destination),
-    )
+        || replace_active_file(&scope.brands, &temporary.name, temporary.file()),
+    )?;
+    temporary.disarm();
+    scope.verify()?;
+    if cap_named_file_identity(
+        &scope.brands,
+        Path::new(ACTIVE_FILE),
+        "brand_storage_failed",
+    )? != temporary.identity
+    {
+        return Err(brand_storage_scope_changed());
+    }
+    Ok(())
 }
 
 fn select_active_record_commit(
@@ -1369,31 +1787,54 @@ fn select_active_record_commit(
 }
 
 #[cfg(not(windows))]
-fn replace_active_file(source: &Path, destination: &Path) -> BrandResult<()> {
-    fs::rename(source, destination).map_err(|error| io_error("brand_storage_failed", error))
+fn replace_active_file(
+    directory: &Dir,
+    source_name: &std::ffi::OsStr,
+    _source: &CapFile,
+) -> BrandResult<()> {
+    directory
+        .rename(source_name, directory, ACTIVE_FILE)
+        .map_err(|error| io_error("brand_storage_failed", error))
 }
 
 #[cfg(windows)]
-fn replace_active_file(source: &Path, destination: &Path) -> BrandResult<()> {
-    use std::os::windows::ffi::OsStrExt;
+fn replace_active_file(
+    directory: &Dir,
+    _source_name: &std::ffi::OsStr,
+    source: &CapFile,
+) -> BrandResult<()> {
+    use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
     };
 
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+    const TARGET_LENGTH: usize = ACTIVE_FILE.len();
+    #[repr(C)]
+    struct RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0,
+        root_directory: windows_sys::Win32::Foundation::HANDLE,
+        file_name_length: u32,
+        file_name: [u16; TARGET_LENGTH],
+    }
+    let mut file_name = [0_u16; TARGET_LENGTH];
+    for (destination, source) in file_name.iter_mut().zip(ACTIVE_FILE.encode_utf16()) {
+        *destination = source;
+    }
+    let rename = RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
+        root_directory: directory.as_raw_handle(),
+        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
+        file_name,
+    };
+    let renamed = unsafe {
+        SetFileInformationByHandle(
+            source.as_raw_handle(),
+            FileRenameInfo,
+            (&rename as *const RelativeRenameInfo).cast(),
+            std::mem::size_of::<RelativeRenameInfo>() as u32,
         )
     };
-    if moved == 0 {
+    if renamed == 0 {
         Err(io_error(
             "brand_storage_failed",
             std::io::Error::last_os_error(),
@@ -1404,9 +1845,13 @@ fn replace_active_file(source: &Path, destination: &Path) -> BrandResult<()> {
 }
 
 fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {
-    let (storage, _) = prepare_storage_root(app_data)?;
-    let path = storage.join(ACTIVE_FILE);
-    match fs::symlink_metadata(&path) {
+    let scope = BrandStorageScope::bind(app_data)?;
+    load_active_record_from_scope(&scope)
+}
+
+fn load_active_record_from_scope(scope: &BrandStorageScope) -> BrandResult<ActiveBrandRecord> {
+    scope.verify()?;
+    match scope.brands.symlink_metadata(ACTIVE_FILE) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4096 {
                 return Err(brand_error(
@@ -1414,7 +1859,11 @@ fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {
                     "The saved active brand record is not a bounded regular file.",
                 ));
             }
-            let (bytes, _) = read_bounded_file(&path, "brand_active_invalid")?;
+            let (bytes, _) = read_bounded_cap_file(
+                &scope.brands,
+                Path::new(ACTIVE_FILE),
+                "brand_active_invalid",
+            )?;
             let record: ActiveBrandRecord = serde_json::from_slice(&bytes).map_err(|_| {
                 brand_error(
                     "brand_active_invalid",
@@ -1435,6 +1884,7 @@ fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {
                     "The saved active brand is invalid; LOOP24 must be restored.",
                 ));
             }
+            scope.verify()?;
             Ok(record)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ActiveBrandRecord {
@@ -1489,25 +1939,47 @@ fn stored_pack_revision(
 }
 
 fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack> {
-    let (storage, _) = prepare_storage_root(app_data)?;
+    load_stored_pack_at_impl(app_data, id, || {})
+}
+
+#[cfg(test)]
+#[cfg_attr(windows, allow(dead_code))]
+fn load_stored_pack_at_with_bound_hook(
+    app_data: &Path,
+    id: &str,
+    hook: impl FnOnce(),
+) -> BrandResult<StoredBrandPack> {
+    load_stored_pack_at_impl(app_data, id, hook)
+}
+
+fn load_stored_pack_at_impl(
+    app_data: &Path,
+    id: &str,
+    bound_hook: impl FnOnce(),
+) -> BrandResult<StoredBrandPack> {
     if !validate_brand_id(id) || id == BUILTIN_BRAND_ID {
         return Err(brand_error(
             "brand_not_found",
             "The custom brand does not exist.",
         ));
     }
-    let directory = storage.join(id);
-    let metadata = fs::symlink_metadata(&directory)
-        .map_err(|_| brand_error("brand_not_found", "The custom brand does not exist."))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "The stored brand directory is unsafe.",
-        ));
+    let scope = BrandStorageScope::bind(app_data)?;
+    let (directory, directory_identity) = scope.bind_pack(id)?;
+    bound_hook();
+    if !scope.named_pack_identity_matches(id, &directory_identity) {
+        return Err(brand_storage_scope_changed());
     }
-    let directory_identity =
-        Handle::from_path(&directory).map_err(|error| io_error("brand_storage_invalid", error))?;
-    let (bytes, _) = read_bounded_file(&directory.join("brand.yaml"), "brand_storage_invalid")?;
+    load_stored_pack_from_directory(&scope, id, &directory, &directory_identity)
+}
+
+fn load_stored_pack_from_directory(
+    scope: &BrandStorageScope,
+    id: &str,
+    directory: &Dir,
+    directory_identity: &Handle,
+) -> BrandResult<StoredBrandPack> {
+    let (bytes, _) =
+        read_bounded_cap_file(directory, Path::new("brand.yaml"), "brand_storage_invalid")?;
     let manifest: NativeBrandManifest = serde_json::from_slice(&bytes).map_err(|_| {
         brand_error(
             "brand_storage_invalid",
@@ -1525,8 +1997,8 @@ fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack
     paths.sort();
     let mut assets = Vec::with_capacity(paths.len());
     for relative in paths {
-        let path = checked_asset_path(&directory, &relative)?;
-        let (bytes, _) = read_bounded_file(&path, "brand_storage_invalid")?;
+        let (parent, name) = bind_relative_parent(directory, &relative, "brand_storage_invalid")?;
+        let (bytes, _) = read_bounded_cap_file(&parent, Path::new(&name), "brand_storage_invalid")?;
         validate_sanitized_asset(&BrandImportAsset {
             path: relative.clone(),
             source_sha256: String::new(),
@@ -1542,13 +2014,9 @@ fn load_stored_pack_at(app_data: &Path, id: &str) -> BrandResult<StoredBrandPack
             bytes,
         });
     }
-    if Handle::from_path(&directory).map_err(|error| io_error("brand_storage_invalid", error))?
-        != directory_identity
-    {
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "The stored brand directory changed while it was loaded.",
-        ));
+    scope.verify()?;
+    if !scope.named_pack_identity_matches(id, directory_identity) {
+        return Err(brand_storage_scope_changed());
     }
     let revision = stored_pack_revision(&manifest, &assets)?;
     Ok(StoredBrandPack {
@@ -1571,12 +2039,127 @@ fn bounded_native_warning(message: impl AsRef<str>) -> String {
     }
 }
 
+fn stored_pack_bytes(pack: &StoredBrandPack) -> BrandResult<u64> {
+    let manifest = serde_json::to_vec_pretty(&pack.manifest)
+        .map_err(|error| brand_error("brand_storage_invalid", error.to_string()))?;
+    Ok(pack
+        .assets
+        .iter()
+        .fold(manifest.len() as u64, |total, asset| {
+            total.saturating_add(asset.bytes.len() as u64)
+        }))
+}
+
+fn directory_tree_bytes(directory: &Dir) -> BrandResult<u64> {
+    let mut total = 0_u64;
+    for entry in directory
+        .entries()
+        .map_err(|error| io_error("brand_storage_failed", error))?
+    {
+        let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| io_error("brand_storage_failed", error))?;
+        if file_type.is_symlink() {
+            return Ok(MAX_PERSISTED_BYTES.saturating_add(1));
+        }
+        if file_type.is_file() {
+            total = total.saturating_add(
+                entry
+                    .metadata()
+                    .map_err(|error| io_error("brand_storage_failed", error))?
+                    .len(),
+            );
+        } else if file_type.is_dir() {
+            let child = entry
+                .open_dir()
+                .map_err(|error| io_error("brand_storage_failed", error))?;
+            total = total.saturating_add(directory_tree_bytes(&child)?);
+        } else {
+            return Ok(MAX_PERSISTED_BYTES.saturating_add(1));
+        }
+        if total > MAX_PERSISTED_BYTES {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+fn persisted_storage_usage(
+    scope: &BrandStorageScope,
+    excluded_entry: Option<&std::ffi::OsStr>,
+) -> BrandResult<(usize, u64)> {
+    scope.verify()?;
+    let mut count = 0_usize;
+    let mut bytes = 0_u64;
+    for entry in scope
+        .brands
+        .entries()
+        .map_err(|error| io_error("brand_storage_failed", error))?
+    {
+        let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+        let name = entry.file_name();
+        if name == ACTIVE_FILE || excluded_entry.is_some_and(|excluded| name == excluded) {
+            continue;
+        }
+        count = count.saturating_add(1);
+        let file_type = entry
+            .file_type()
+            .map_err(|error| io_error("brand_storage_failed", error))?;
+        let entry_bytes = if file_type.is_symlink() {
+            MAX_PERSISTED_BYTES.saturating_add(1)
+        } else if file_type.is_file() {
+            entry
+                .metadata()
+                .map_err(|error| io_error("brand_storage_failed", error))?
+                .len()
+        } else if file_type.is_dir() {
+            directory_tree_bytes(
+                &entry
+                    .open_dir()
+                    .map_err(|error| io_error("brand_storage_failed", error))?,
+            )?
+        } else {
+            MAX_PERSISTED_BYTES.saturating_add(1)
+        };
+        bytes = bytes.saturating_add(entry_bytes);
+        if count > MAX_PERSISTED_PACKS || bytes > MAX_PERSISTED_BYTES {
+            break;
+        }
+    }
+    scope.verify()?;
+    Ok((count, bytes))
+}
+
+fn enforce_storage_quota(
+    scope: &BrandStorageScope,
+    new_pack_bytes: u64,
+    excluded_entry: Option<&std::ffi::OsStr>,
+) -> BrandResult<()> {
+    let (count, bytes) = persisted_storage_usage(scope, excluded_entry)?;
+    if count >= MAX_PERSISTED_PACKS {
+        return Err(brand_error(
+            "brand_pack_quota_exceeded",
+            "Private brand storage already contains the maximum of 16 pack entries.",
+        ));
+    }
+    if bytes.saturating_add(new_pack_bytes) > MAX_PERSISTED_BYTES {
+        return Err(brand_error(
+            "brand_storage_quota_exceeded",
+            "Private brand storage cannot exceed 32 MiB in aggregate.",
+        ));
+    }
+    Ok(())
+}
+
 fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
-    const MAX_LISTED_PACKS: usize = 16;
-    const MAX_LISTED_BYTES: usize = 32 * 1024 * 1024;
-    let (storage, _) = prepare_storage_root(app_data)?;
+    let scope = BrandStorageScope::bind(app_data)?;
     let mut ids = Vec::new();
-    for entry in fs::read_dir(&storage).map_err(|error| io_error("brand_storage_failed", error))? {
+    for entry in scope
+        .brands
+        .entries()
+        .map_err(|error| io_error("brand_storage_failed", error))?
+    {
         let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if validate_brand_id(&name) && name != BUILTIN_BRAND_ID {
@@ -1586,22 +2169,21 @@ fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
     ids.sort();
     let mut packs = Vec::new();
     let mut warnings = Vec::new();
-    let mut total_bytes = 0_usize;
+    let mut total_bytes = 0_u64;
     for id in ids {
-        if packs.len() >= MAX_LISTED_PACKS {
+        if packs.len() >= MAX_PERSISTED_PACKS {
             warnings.push(
                 "Additional stored brand packs were omitted from this bounded listing.".to_owned(),
             );
             break;
         }
-        match load_stored_pack_at(app_data, &id) {
+        let loaded = scope.bind_pack(&id).and_then(|(directory, identity)| {
+            load_stored_pack_from_directory(&scope, &id, &directory, &identity)
+        });
+        match loaded {
             Ok(pack) => {
-                let pack_bytes = pack
-                    .assets
-                    .iter()
-                    .map(|asset| asset.bytes.len())
-                    .sum::<usize>();
-                if total_bytes.saturating_add(pack_bytes) > MAX_LISTED_BYTES {
+                let pack_bytes = stored_pack_bytes(&pack)?;
+                if total_bytes.saturating_add(pack_bytes) > MAX_PERSISTED_BYTES {
                     warnings.push(
                         "Additional stored brand bytes were omitted from this bounded listing."
                             .to_owned(),
@@ -1694,18 +2276,38 @@ fn load_window_icon_for_revision_at(
         })
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+enum WindowIconSelection {
+    Default { status: &'static str },
+    Custom(Vec<u8>),
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn select_window_icon_for_revision_at(
+    app_data: &Path,
+    id: &str,
+    expected_revision: Option<&str>,
+) -> BrandResult<WindowIconSelection> {
+    match load_window_icon_for_revision_at(app_data, id, expected_revision)? {
+        Some(bytes) => Ok(WindowIconSelection::Custom(bytes)),
+        None if id == BUILTIN_BRAND_ID => Ok(WindowIconSelection::Default { status: "applied" }),
+        None => Ok(WindowIconSelection::Default {
+            status: "unsupported",
+        }),
+    }
+}
+
 fn activate_brand_pack_at(app_data: &Path, id: &str) -> BrandResult<BrandActivationResult> {
+    let scope = BrandStorageScope::bind(app_data)?;
     let pack = if id == BUILTIN_BRAND_ID {
         None
     } else {
-        Some(load_stored_pack_at(app_data, id)?)
+        let (directory, identity) = scope.bind_pack(id)?;
+        Some(load_stored_pack_from_directory(
+            &scope, id, &directory, &identity,
+        )?)
     };
-    let (storage, _) = prepare_storage_root(app_data)?;
-    atomic_active_write(
-        &storage,
-        id,
-        pack.as_ref().map(|pack| pack.revision.as_str()),
-    )?;
+    atomic_active_write(&scope, id, pack.as_ref().map(|pack| pack.revision.as_str()))?;
     Ok(BrandActivationResult {
         id: id.to_owned(),
         pack,
@@ -1750,20 +2352,28 @@ fn load_active_brand_with_recovery_at(app_data: &Path) -> BrandResult<BrandActiv
     }
 }
 
-fn reject_unsafe_tree(path: &Path) -> BrandResult<()> {
-    for entry in fs::read_dir(path).map_err(|error| io_error("brand_remove_failed", error))? {
+fn reject_unsafe_tree(directory: &Dir) -> BrandResult<()> {
+    for entry in directory
+        .entries()
+        .map_err(|error| io_error("brand_remove_failed", error))?
+    {
         let entry = entry.map_err(|error| io_error("brand_remove_failed", error))?;
-        let metadata = fs::symlink_metadata(entry.path())
+        let file_type = entry
+            .file_type()
             .map_err(|error| io_error("brand_remove_failed", error))?;
-        if metadata.file_type().is_symlink() {
+        if file_type.is_symlink() {
             return Err(brand_error(
                 "brand_storage_scope_invalid",
                 "Stored brand removal refused a symbolic link.",
             ));
         }
-        if metadata.is_dir() {
-            reject_unsafe_tree(&entry.path())?;
-        } else if !metadata.is_file() {
+        if file_type.is_dir() {
+            reject_unsafe_tree(
+                &entry
+                    .open_dir()
+                    .map_err(|error| io_error("brand_remove_failed", error))?,
+            )?;
+        } else if !file_type.is_file() {
             return Err(brand_error(
                 "brand_storage_scope_invalid",
                 "Stored brand removal refused a special file.",
@@ -1778,14 +2388,44 @@ fn remove_brand_pack_at(
     id: &str,
     revert_active: bool,
 ) -> BrandResult<BrandRemovalResult> {
-    remove_brand_pack_at_with_remover(app_data, id, revert_active, |path| fs::remove_dir_all(path))
+    remove_brand_pack_at_impl(
+        app_data,
+        id,
+        revert_active,
+        || {},
+        |directory| directory.remove_open_dir_all(),
+    )
 }
 
+#[cfg(test)]
 fn remove_brand_pack_at_with_remover(
     app_data: &Path,
     id: &str,
     revert_active: bool,
-    remover: impl FnOnce(&Path) -> std::io::Result<()>,
+    remover: impl FnOnce(Dir) -> std::io::Result<()>,
+) -> BrandResult<BrandRemovalResult> {
+    remove_brand_pack_at_impl(app_data, id, revert_active, || {}, remover)
+}
+
+#[cfg(test)]
+#[cfg_attr(windows, allow(dead_code))]
+fn remove_brand_pack_at_with_bound_hook(
+    app_data: &Path,
+    id: &str,
+    revert_active: bool,
+    bound_hook: impl FnOnce(),
+) -> BrandResult<BrandRemovalResult> {
+    remove_brand_pack_at_impl(app_data, id, revert_active, bound_hook, |directory| {
+        directory.remove_open_dir_all()
+    })
+}
+
+fn remove_brand_pack_at_impl(
+    app_data: &Path,
+    id: &str,
+    revert_active: bool,
+    bound_hook: impl FnOnce(),
+    remover: impl FnOnce(Dir) -> std::io::Result<()>,
 ) -> BrandResult<BrandRemovalResult> {
     if id == BUILTIN_BRAND_ID {
         return Err(brand_error(
@@ -1806,21 +2446,18 @@ fn remove_brand_pack_at_with_remover(
             "Revert to LOOP24 before removing the active custom brand.",
         ));
     }
-    let (storage, _) = prepare_storage_root(app_data)?;
-    let directory = storage.join(id);
-    let metadata = fs::symlink_metadata(&directory)
-        .map_err(|_| brand_error("brand_not_found", "The custom brand does not exist."))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(brand_error(
-            "brand_storage_scope_invalid",
-            "The stored brand directory is unsafe.",
-        ));
-    }
+    let scope = BrandStorageScope::bind(app_data)?;
+    let (directory, identity) = scope.bind_pack(id)?;
     reject_unsafe_tree(&directory)?;
+    bound_hook();
+    scope.verify()?;
+    if !scope.named_pack_identity_matches(id, &identity) {
+        return Err(brand_storage_scope_changed());
+    }
     if active == id {
         activate_brand_pack_at(app_data, BUILTIN_BRAND_ID)?;
     }
-    match remover(&directory) {
+    match remover(directory) {
         Ok(()) => Ok(BrandRemovalResult {
             active_id: if active == id {
                 BUILTIN_BRAND_ID.to_owned()
@@ -1942,32 +2579,26 @@ pub fn set_window_icon(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let image = if id == BUILTIN_BRAND_ID {
-            if expected_revision.is_some() {
-                return Err(brand_error(
-                    "brand_icon_revision_mismatch",
-                    "LOOP24 does not use a custom icon revision.",
-                ));
-            }
-            app.default_window_icon().cloned().ok_or_else(|| {
-                brand_error(
-                    "brand_icon_failed",
-                    "The bundled default window icon is unavailable.",
-                )
-            })?
-        } else {
-            let Some(bytes) = load_window_icon_for_revision_at(
-                &app_data(&app)?,
-                &id,
-                expected_revision.as_deref(),
-            )?
-            else {
-                return Ok(WindowIconResult {
-                    status: "unsupported",
-                });
-            };
-            tauri::image::Image::from_bytes(&bytes)
-                .map_err(|error| brand_error("brand_icon_failed", error.to_string()))?
+        let selection = select_window_icon_for_revision_at(
+            &app_data(&app)?,
+            &id,
+            expected_revision.as_deref(),
+        )?;
+        let (image, status) = match selection {
+            WindowIconSelection::Default { status } => (
+                app.default_window_icon().cloned().ok_or_else(|| {
+                    brand_error(
+                        "brand_icon_failed",
+                        "The bundled default window icon is unavailable.",
+                    )
+                })?,
+                status,
+            ),
+            WindowIconSelection::Custom(bytes) => (
+                tauri::image::Image::from_bytes(&bytes)
+                    .map_err(|error| brand_error("brand_icon_failed", error.to_string()))?,
+                "applied",
+            ),
         };
         let window = app.get_webview_window("main").ok_or_else(|| {
             brand_error(
@@ -1978,7 +2609,7 @@ pub fn set_window_icon(
         window
             .set_icon(image)
             .map_err(|error| brand_error("brand_icon_failed", error.to_string()))?;
-        Ok(WindowIconResult { status: "applied" })
+        Ok(WindowIconResult { status })
     }
 }
 
@@ -2024,6 +2655,21 @@ mod tests {
             8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 100, 248, 15,
             0, 1, 5, 1, 1, 39, 24, 227, 102, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
         ]
+    }
+
+    fn valid_png_with_text_chunk() -> Vec<u8> {
+        let source = valid_png();
+        let iend_offset = source.len() - 12;
+        let data = b"x\0";
+        let mut crc_input = b"tEXt".to_vec();
+        crc_input.extend_from_slice(data);
+        let mut result = source[..iend_offset].to_vec();
+        result.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        result.extend_from_slice(b"tEXt");
+        result.extend_from_slice(data);
+        result.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        result.extend_from_slice(&source[iend_offset..]);
+        result
     }
 
     fn manifest() -> NativeBrandManifest {
@@ -2175,6 +2821,45 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn source_reader_keeps_a_nested_directory_capability_when_its_name_is_swapped() {
+        use std::os::unix::fs::symlink;
+
+        let (source, path) = source_pack();
+        let nested = source.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        let expected = svg("#123456");
+        fs::write(nested.join("logo.svg"), &expected).unwrap();
+        let mut source_manifest = manifest();
+        source_manifest.assets.logo = "nested/logo.svg".to_owned();
+        fs::write(&path, serde_yaml::to_string(&source_manifest).unwrap()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("logo.svg"), svg("#DEAD00")).unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let parked = source.path().join("parked-nested");
+
+        let assets = read_brand_source_assets_with_bound_hook(
+            &selection.grant_token,
+            &["nested/logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+            |relative| {
+                if relative == "nested/logo.svg" {
+                    fs::rename(&nested, &parked).unwrap();
+                    symlink(outside.path(), &nested).unwrap();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(assets[0].bytes, expected);
+        assert_eq!(
+            fs::read(outside.path().join("logo.svg")).unwrap(),
+            svg("#DEAD00")
+        );
+    }
+
     #[test]
     fn imports_only_validated_referenced_bytes_into_private_app_data() {
         let (_source, path) = source_pack();
@@ -2251,6 +2936,71 @@ mod tests {
         assert!(listed.packs[0].revision.starts_with("sha256:"));
         assert_eq!(listed.warnings.len(), 1);
         assert!(listed.warnings[0].contains("corrupt"));
+    }
+
+    #[test]
+    fn import_rejects_a_seventeenth_persisted_entry_without_partial_storage_or_consuming_grant() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let storage = app_data.path().join("brands");
+        fs::create_dir(&storage).unwrap();
+        for index in 0..16 {
+            fs::create_dir(storage.join(format!("corrupt-{index}"))).unwrap();
+        }
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+
+        let error = import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants)
+            .unwrap_err();
+
+        assert_eq!(error.code, "brand_pack_quota_exceeded");
+        assert!(!storage.join("acme").exists());
+        assert!(fs::read_dir(&storage).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".acme-")));
+        fs::remove_dir(storage.join("corrupt-15")).unwrap();
+        assert!(
+            import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants,).is_ok()
+        );
+    }
+
+    #[test]
+    fn import_rejects_aggregate_persisted_bytes_conservatively_without_consuming_grant() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let storage = app_data.path().join("brands");
+        fs::create_dir(&storage).unwrap();
+        let quota_filler = storage.join("corrupt-bytes");
+        fs::File::create(&quota_filler)
+            .unwrap()
+            .set_len(32 * 1024 * 1024)
+            .unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+
+        let error = import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants)
+            .unwrap_err();
+
+        assert_eq!(error.code, "brand_storage_quota_exceeded");
+        assert!(!storage.join("acme").exists());
+        fs::remove_file(quota_filler).unwrap();
+        assert!(
+            import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants,).is_ok()
+        );
     }
 
     #[test]
@@ -2345,6 +3095,63 @@ mod tests {
         assert!(app_data.path().join("brands/acme").is_dir());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn stored_pack_load_and_removal_never_follow_a_replaced_pack_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        let storage = app_data.path().join("brands");
+        let pack_path = storage.join("acme");
+        let parked = storage.join("parked-acme");
+        let outside = tempfile::tempdir().unwrap();
+        fs::copy(
+            pack_path.join("brand.yaml"),
+            outside.path().join("brand.yaml"),
+        )
+        .unwrap();
+        fs::copy(pack_path.join("logo.svg"), outside.path().join("logo.svg")).unwrap();
+        fs::copy(pack_path.join("mark.svg"), outside.path().join("mark.svg")).unwrap();
+        fs::write(outside.path().join("sentinel"), b"outside").unwrap();
+
+        let loaded = load_stored_pack_at_with_bound_hook(app_data.path(), "acme", || {
+            fs::rename(&pack_path, &parked).unwrap();
+            symlink(outside.path(), &pack_path).unwrap();
+        })
+        .unwrap_err();
+
+        assert_eq!(loaded.code, "brand_storage_scope_invalid");
+        assert_eq!(
+            fs::read(outside.path().join("sentinel")).unwrap(),
+            b"outside"
+        );
+
+        fs::remove_file(&pack_path).unwrap();
+        fs::rename(&parked, &pack_path).unwrap();
+        let removal = remove_brand_pack_at_with_bound_hook(app_data.path(), "acme", false, || {
+            fs::rename(&pack_path, &parked).unwrap();
+            symlink(outside.path(), &pack_path).unwrap();
+        })
+        .unwrap_err();
+
+        assert_eq!(removal.code, "brand_storage_scope_invalid");
+        assert_eq!(
+            fs::read(outside.path().join("sentinel")).unwrap(),
+            b"outside"
+        );
+        assert!(parked.is_dir());
+    }
+
     #[test]
     fn icon_loading_is_revision_bound_and_loop24_selects_the_default_icon_path() {
         let (_source, path) = source_pack();
@@ -2369,6 +3176,13 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(matches!(
+            select_window_icon_for_revision_at(app_data.path(), "acme", Some(&pack.revision))
+                .unwrap(),
+            WindowIconSelection::Default {
+                status: "unsupported"
+            }
+        ));
         assert!(
             load_window_icon_for_revision_at(app_data.path(), BUILTIN_BRAND_ID, None)
                 .unwrap()
@@ -2395,6 +3209,87 @@ mod tests {
 
         assert_eq!(error.code, "brand_source_changed");
         assert!(!app_data.path().join("brands/acme").exists());
+    }
+
+    #[test]
+    fn import_rejects_different_safe_svg_and_png_bytes_for_an_exact_source_grant() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        let mut substituted_svg = request(&selection, &sources);
+        substituted_svg.assets[0].sanitized_bytes = svg("#ABCDEF");
+
+        assert_eq!(
+            import_brand_pack_at(app_data.path(), substituted_svg, &grants)
+                .unwrap_err()
+                .code,
+            "brand_source_changed"
+        );
+
+        let png_source = tempfile::tempdir().unwrap();
+        let mut png_manifest = manifest();
+        png_manifest.assets.window_icon = "icon.png".to_owned();
+        let png_manifest_path = png_source.path().join("brand.yaml");
+        fs::write(
+            &png_manifest_path,
+            serde_yaml::to_string(&png_manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(png_source.path().join("logo.svg"), svg("#112233")).unwrap();
+        fs::write(png_source.path().join("mark.svg"), svg("#445566")).unwrap();
+        fs::write(png_source.path().join("icon.png"), valid_png()).unwrap();
+        let png_grants = BrandGrantState::default();
+        let png_selection = grant_brand_source(&png_manifest_path, &png_grants).unwrap();
+        let png_sources = read_brand_source_assets(
+            &png_selection.grant_token,
+            &[
+                "logo.svg".to_owned(),
+                "mark.svg".to_owned(),
+                "icon.png".to_owned(),
+            ],
+            &png_grants,
+        )
+        .unwrap();
+        let mut substituted_png = BrandImportRequest {
+            grant_token: png_selection.grant_token.clone(),
+            manifest: png_manifest,
+            manifest_source_sha256: png_selection.manifest_sha256.clone(),
+            assets: png_sources
+                .iter()
+                .map(|source| BrandImportAsset {
+                    path: source.path.clone(),
+                    source_sha256: source.sha256.clone(),
+                    media_type: if source.path.ends_with(".png") {
+                        "image/png".to_owned()
+                    } else {
+                        "image/svg+xml".to_owned()
+                    },
+                    sanitized_bytes: source.bytes.clone(),
+                })
+                .collect(),
+        };
+        let alternate_png = valid_png_with_text_chunk();
+        assert!(validate_png(&alternate_png));
+        substituted_png
+            .assets
+            .iter_mut()
+            .find(|asset| asset.path == "icon.png")
+            .unwrap()
+            .sanitized_bytes = alternate_png;
+
+        assert_eq!(
+            import_brand_pack_at(app_data.path(), substituted_png, &png_grants)
+                .unwrap_err()
+                .code,
+            "brand_source_changed"
+        );
     }
 
     #[test]
@@ -2742,6 +3637,48 @@ mod tests {
         assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn import_never_commits_through_a_replaced_brands_capability() {
+        use std::os::unix::fs::symlink;
+
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        BrandStorageScope::bind(app_data.path()).unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        let parked = app_data.path().join("parked-brands");
+
+        let error = import_brand_pack_at_with_commit_hook(
+            app_data.path(),
+            request(&selection, &sources),
+            &grants,
+            |storage| {
+                fs::rename(storage, &parked).unwrap();
+                symlink(outside.path(), storage).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "brand_storage_scope_invalid");
+        assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
+        assert!(!parked.join("acme").exists());
+        assert!(fs::read_dir(&parked).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".acme-")
+        }));
+    }
+
     #[test]
     fn removal_protects_loop24_and_requires_atomic_revert_for_an_active_custom_pack() {
         let (_source, path) = source_pack();
@@ -2819,7 +3756,8 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let app_data = tempfile::tempdir().unwrap();
-        let (storage, _) = prepare_storage_root(app_data.path()).unwrap();
+        BrandStorageScope::bind(app_data.path()).unwrap();
+        let storage = app_data.path().join("brands");
         let outside = tempfile::NamedTempFile::new().unwrap();
         symlink(outside.path(), storage.join(ACTIVE_FILE)).unwrap();
         assert_eq!(

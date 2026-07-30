@@ -87,6 +87,25 @@ describe('sanitizeBrandAsset', () => {
     )
   })
 
+  it('returns the exact already-safe SVG source bytes after allowlist verification', () => {
+    const source = svg(
+      "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'>\n  <path fill='#112233' d='M0 0h2v2z'/>\n</svg>",
+    )
+
+    const result = sanitizeBrandAsset('logo.svg', source)
+
+    expect(result.bytes).toEqual(source)
+  })
+
+  it.each([
+    ['an unapproved element that DOMPurify could otherwise remove', '<a><path d="M0 0h1v1z"/></a>'],
+    ['an unapproved attribute that DOMPurify could otherwise remove', '<path class="brand" d="M0 0h1v1z"/>'],
+  ])('rejects rather than transforms %s', (_name, payload) => {
+    expect(() =>
+      sanitizeBrandAsset('logo.svg', svg(`<svg xmlns="http://www.w3.org/2000/svg">${payload}</svg>`)),
+    ).toThrow(/unsafe SVG/i)
+  })
+
   it('accepts a genuinely valid bounded PNG and reports its dimensions', () => {
     expect(sanitizeBrandAsset('icon.png', VALID_PNG)).toMatchObject({
       mediaType: 'image/png',
