@@ -157,6 +157,39 @@ describe('workflow YAML transactions', () => {
     )
   })
 
+  it('admits only an explicit empty node-kind draft while retaining blocking schema diagnostics', async () => {
+    const definitionSchema = structuredClone(mutationContract.definition_schema)
+    const nodesProperty = (definitionSchema.properties as Record<string, { items?: unknown }>).nodes
+    if (!nodesProperty) throw new Error('Expected the test node schema.')
+    const nodes = nodesProperty.items as {
+      properties: Record<string, Record<string, unknown>>
+    }
+    nodes.properties.command = { type: 'string', minLength: 1, examples: ['/review'] }
+    nodes.properties.prompt = { type: 'string', minLength: 1, examples: ['Review'] }
+    const strictContract: AuthoringContract = {
+      ...mutationContract,
+      contract_digest: `sha256:${'5'.repeat(64)}`,
+      definition_schema: definitionSchema,
+    }
+
+    const commandResult = await applyWorkflowMutation(
+      pair(),
+      { type: 'add-node', node: { id: 'draft', command: '' } },
+      strictContract,
+    )
+    const promptResult = await applyWorkflowMutation(
+      pair(),
+      { type: 'add-node', node: { id: 'draft', prompt: '' } },
+      strictContract,
+    )
+
+    expect(commandResult).toMatchObject({ ok: true })
+    expect(promptResult).toMatchObject({ ok: true })
+    if (!commandResult.ok || !promptResult.ok) return
+    expect(commandResult.pair.definition.text).toContain('  - id: draft\n    command: ""\n')
+    expect(promptResult.pair.definition.text).toContain('  - id: draft\n    prompt: ""\n')
+  })
+
   it('removes exact dependency occurrences when deleting an otherwise unreferenced node', async () => {
     const source = validSource.replace('    prompt: "Use $prepare.output"', '    prompt: consume')
     const result = await applyWorkflowMutation(

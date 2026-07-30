@@ -146,7 +146,6 @@ export function createUpdateController(
   let startOperation: Promise<void> | null = null
   const operations = new Map<string, Promise<unknown>>()
   let checkGeneration = 0
-  let streamingInstall = false
 
   const publish = (state: UpdateState): void => {
     if (disposed) return
@@ -162,10 +161,6 @@ export function createUpdateController(
     }
     const next = applyUpdateEvent(current, event)
     if (next !== current && next) publish(next)
-    else if (streamingInstall && event.runId === current.runId && event.sequence > current.sequence) {
-      buffered.push(event)
-      if (buffered.length > 1_000) buffered = buffered.slice(-1_000)
-    }
   }
   const reconcile = (snapshot: UpdateSnapshot): void => {
     let next = replaceUpdateSnapshot(current, snapshot)
@@ -262,20 +257,14 @@ export function createUpdateController(
         return Promise.resolve()
       }
       return once(`install:${runId}`, async () => {
-        streamingInstall = true
+        reconciling = true
         try {
           const next = await native.updateDownloadInstall(runId)
-          streamingInstall = false
+          reconciling = false
           if (disposed) return
-          if (next.runId === current.runId && next.sequence < current.sequence) {
-            for (const event of buffered) {
-              const replayed = applyUpdateEvent(current, event)
-              if (replayed && replayed !== current) publish(replayed)
-            }
-            buffered = []
-          } else reconcile(next)
+          reconcile(next)
         } catch (error: unknown) {
-          streamingInstall = false
+          reconciling = false
           buffered = []
           if (!disposed) {
             publish(transportState('failed', error))

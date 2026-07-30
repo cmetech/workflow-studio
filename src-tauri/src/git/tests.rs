@@ -6,7 +6,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 use super::parse::{parse_history, parse_status};
-use super::runner::{build_read_command, ReadOperation};
+use super::runner::{build_read_command, MutationOperation, ReadOperation};
 use super::{
     authorize_repository_root, detect_repository, diff_pair, history_pair, show_authorized_pair,
     show_from_authorization, show_pair, status, AuthorizedGitContext, GitState, HistoricalPaths,
@@ -2976,6 +2976,341 @@ fn runner_cleans_up_the_process_tree_on_injected_wait_and_reader_failures() {
         assert!(matches!(error.code, "git_wait_failed" | "git_read_failed"));
         assert!(started.elapsed() < Duration::from_secs(2));
     }
+}
+
+#[test]
+fn maps_every_closed_git_operation_to_exact_argv() {
+    let root = Path::new("workspace-root");
+    let paths = ["flows/main.yaml", "flows/main.hermes.yaml"];
+
+    assert_read_argv(root, ReadOperation::Version, &["--version"]);
+    assert_read_argv(
+        root,
+        ReadOperation::RepositoryRoot,
+        &["rev-parse", "--show-toplevel"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::GitDirectory,
+        &["rev-parse", "--absolute-git-dir"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::GitCommonDirectory,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::Branch,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::HeadReference,
+        &["symbolic-ref", "--quiet", "HEAD"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::ShortHead,
+        &["rev-parse", "--short=12", "HEAD"],
+    );
+    assert_read_argv(root, ReadOperation::FullHead, &["rev-parse", "HEAD"]);
+    assert_read_argv(
+        root,
+        ReadOperation::Status,
+        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::Diff {
+            cached: false,
+            paths: &paths,
+        },
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            paths[0],
+            paths[1],
+        ],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::Diff {
+            cached: true,
+            paths: &paths,
+        },
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            paths[0],
+            paths[1],
+        ],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::HeadDiff {
+            base: "0123456789abcdef",
+            paths: &paths,
+        },
+        &[
+            "diff",
+            "0123456789abcdef",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            paths[0],
+            paths[1],
+        ],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::EmptyTree,
+        &["hash-object", "-t", "tree", "--stdin"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::UntrackedDiff { path: paths[0] },
+        &[
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            "/dev/null",
+            paths[0],
+        ],
+    );
+    for follow in [false, true] {
+        let mut expected = vec!["log"];
+        if follow {
+            expected.push("--follow");
+        }
+        expected.extend([
+            "--format=%x00C%x00%H%x00%h%x00%an%x00%at%x00%aI%x00%s%x00",
+            "--name-status",
+            "-z",
+            "--",
+            paths[0],
+            paths[1],
+        ]);
+        assert_read_argv(
+            root,
+            ReadOperation::History {
+                follow,
+                paths: &paths,
+            },
+            &expected,
+        );
+    }
+    assert_read_argv(
+        root,
+        ReadOperation::Show {
+            oid: "0123456789abcdef",
+            path: paths[0],
+        },
+        &[
+            "show",
+            "--no-ext-diff",
+            "--no-color",
+            "0123456789abcdef:flows/main.yaml",
+        ],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::LocalConfig { key: "user.name" },
+        &["config", "--local", "--get", "user.name"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::ConfigBool {
+            key: "core.filemode",
+        },
+        &["config", "--bool", "--get", "core.filemode"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::PairStatus { paths: &paths },
+        &[
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            paths[0],
+            paths[1],
+        ],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::IsTracked { path: paths[0] },
+        &["ls-files", "--error-unmatch", "--", paths[0]],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::ResolveRef {
+            reference: "refs/heads/base",
+        },
+        &["rev-parse", "--verify", "refs/heads/base"],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::TreeEntry {
+            tree: "0123456789abcdef",
+            path: paths[0],
+        },
+        &["ls-tree", "-z", "0123456789abcdef", "--", paths[0]],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::RawTreeEntry {
+            tree: "0123456789abcdef",
+            path: paths[1],
+        },
+        &["ls-tree", "-z", "0123456789abcdef", "--", paths[1]],
+    );
+    assert_read_argv(
+        root,
+        ReadOperation::RawBlob {
+            oid: "0123456789abcdef",
+        },
+        &["cat-file", "blob", "0123456789abcdef"],
+    );
+
+    assert_mutation_argv(
+        root,
+        MutationOperation::Init {
+            workspace_root: Path::new("init-root"),
+        },
+        &["--literal-pathspecs", "init", "init-root"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::SetLocalConfig {
+            key: "user.name",
+            value: "Workflow Tester",
+        },
+        &["config", "--local", "user.name", "Workflow Tester"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::ReadTree {
+            tree: "0123456789abcdef",
+        },
+        &["read-tree", "0123456789abcdef"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::AddAll { paths: &paths },
+        &["add", "--all", "--", paths[0], paths[1]],
+    );
+    assert_mutation_suffix(root, MutationOperation::WriteTree, &["write-tree"]);
+    assert_mutation_suffix(
+        root,
+        MutationOperation::RunHook {
+            name: "pre-commit",
+            message_file: None,
+            source: None,
+        },
+        &["hook", "run", "--ignore-missing", "pre-commit"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::RunHook {
+            name: "commit-msg",
+            message_file: Some(Path::new("message.txt")),
+            source: Some("message"),
+        },
+        &[
+            "hook",
+            "run",
+            "--ignore-missing",
+            "commit-msg",
+            "--",
+            "message.txt",
+            "message",
+        ],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::CommitTree {
+            tree: "tree-oid",
+            parent: None,
+            message_file: Path::new("message.txt"),
+        },
+        &["commit-tree", "tree-oid", "-F", "message.txt"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::CommitTree {
+            tree: "tree-oid",
+            parent: Some("parent-oid"),
+            message_file: Path::new("message.txt"),
+        },
+        &[
+            "commit-tree",
+            "tree-oid",
+            "-p",
+            "parent-oid",
+            "-F",
+            "message.txt",
+        ],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::UpdateRef {
+            reference: "refs/heads/base",
+            new_oid: "new-oid",
+            old_oid: "old-oid",
+        },
+        &["update-ref", "refs/heads/base", "new-oid", "old-oid"],
+    );
+    assert_mutation_suffix(
+        root,
+        MutationOperation::Move {
+            source: paths[0],
+            destination: "flows/renamed.yaml",
+        },
+        &["mv", "--", paths[0], "flows/renamed.yaml"],
+    );
+}
+
+fn assert_read_argv(root: &Path, operation: ReadOperation<'_>, suffix: &[&str]) {
+    let mut expected = vec![
+        "--literal-pathspecs",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-C",
+        "workspace-root",
+    ];
+    expected.extend_from_slice(suffix);
+    assert_eq!(
+        super::runner::read_command_arguments_for_test(root, operation),
+        expected
+    );
+}
+
+fn assert_mutation_suffix(root: &Path, operation: MutationOperation<'_>, suffix: &[&str]) {
+    let mut expected = vec!["--literal-pathspecs", "-C", "workspace-root"];
+    expected.extend_from_slice(suffix);
+    assert_mutation_argv(root, operation, &expected);
+}
+
+fn assert_mutation_argv(root: &Path, operation: MutationOperation<'_>, expected: &[&str]) {
+    assert_eq!(
+        super::runner::mutation_command_arguments_for_test(root, operation),
+        expected
+    );
 }
 
 fn git_with_dates(root: &Path, arguments: &[&str], date: &str) {

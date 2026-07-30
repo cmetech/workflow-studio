@@ -111,7 +111,14 @@ export async function applyWorkflowMutation(
       },
       contract,
     )
-    if (!analysis.structurallyValid) {
+    if (
+      !analysis.structurallyValid &&
+      !(
+        mutation.type === 'add-node' &&
+        analysis.visuallyAuthorable &&
+        hasExplicitEmptyNodeKind(mutation.node, contract)
+      )
+    ) {
       return {
         ok: false,
         code: 'mutation_invalid_workflow',
@@ -137,6 +144,21 @@ export async function applyWorkflowMutation(
       selection: selectionHint(mutation),
     },
   }
+}
+
+function hasExplicitEmptyNodeKind(node: Readonly<Record<string, unknown>>, contract: AuthoringContract): boolean {
+  return contract.node_kinds.some((descriptor) => {
+    const tokens = descriptor.field_path.replaceAll('[]', '').split('.').filter(Boolean)
+    const relative = tokens[0] === 'nodes' ? tokens.slice(1) : tokens
+    let value: unknown = node
+    for (const token of relative) {
+      if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, token)) {
+        return false
+      }
+      value = (value as Record<string, unknown>)[token]
+    }
+    return value === ''
+  })
 }
 
 function requiresStructuralValidation(mutation: WorkflowMutation): boolean {

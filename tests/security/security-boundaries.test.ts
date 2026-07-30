@@ -117,6 +117,9 @@ describe('release security boundaries', () => {
       'UpdateRef',
       'Move',
     ])
+    expect(readFileSync('src-tauri/src/git/tests.rs', 'utf8')).toContain(
+      'fn maps_every_closed_git_operation_to_exact_argv()',
+    )
     const approvedMappings = [
       'ReadOperation::Version => strings(&["--version"])',
       'ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"])',

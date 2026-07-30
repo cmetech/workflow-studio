@@ -52,4 +52,5 @@ export interface DocumentAnalysis extends DocumentRevision {
   issues: readonly ValidationIssue[]
   projection?: unknown
   structurallyValid: boolean
+  visuallyAuthorable?: boolean
 }

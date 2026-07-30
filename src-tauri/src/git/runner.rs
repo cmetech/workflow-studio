@@ -523,6 +523,28 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Comm
     command
 }
 
+#[cfg(test)]
+pub(crate) fn read_command_arguments_for_test(
+    root: &Path,
+    operation: ReadOperation<'_>,
+) -> Vec<String> {
+    build_read_command(root, operation)
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn mutation_command_arguments_for_test(
+    root: &Path,
+    operation: MutationOperation<'_>,
+) -> Vec<String> {
+    build_mutation_command(root, operation)
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::Version => strings(&["--version"]),

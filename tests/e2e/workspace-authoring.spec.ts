@@ -53,9 +53,19 @@ test('adds, duplicates, connects, references, renames, deletes, saves, and reope
   const command = page.getByRole('group', { name: 'command node command' })
   await expect(command).toBeVisible()
   const afterAdd = `${SEEDED_YAML}  - id: command
-    command: /review
+    command: ""
 `
   await expectAuthoritativeYaml(page, afterAdd)
+
+  await command.focus()
+  await command.press('Enter')
+  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
+  await expect(commandField).toBeEnabled()
+  await commandField.fill('/review')
+  await page.getByRole('button', { name: 'Apply Command' }).click()
+  const afterCommand = afterAdd.replace('    command: ""\n', '    command: "/review"\n')
+  await expectAuthoritativeYaml(page, afterCommand)
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
 
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await prepare.focus()
@@ -74,7 +84,7 @@ nodes:
     command: /publish
     depends_on: [prepare]
   - id: command
-    command: /review
+    command: "/review"
   - id: prepare-2
     prompt: Prepare the release notes.
 `
@@ -135,7 +145,7 @@ nodes:
   await deleteDialog.getByRole('button', { name: 'Delete nodes' }).click()
   await expect(deleteDialog).toBeHidden()
   await expect(command).toHaveCount(0)
-  const afterDelete = afterRename.replace('  - id: command\n    command: /review\n', '')
+  const afterDelete = afterRename.replace('  - id: command\n    command: "/review"\n', '')
   await expectAuthoritativeYaml(page, afterDelete)
 
   const publish = page.getByRole('group', { name: 'command node publish' })

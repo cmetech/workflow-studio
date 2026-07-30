@@ -419,7 +419,6 @@ function collisionFreeId(baseValue: string, occupied: ReadonlySet<string>): stri
 function descriptorInitialValue(contract: AuthoringContract, descriptor: NodeKindDescriptor): unknown {
   const schema = schemaAtDescriptorPath(contract.definition_schema, descriptor.field_path)
   if (schema && Object.hasOwn(schema, 'default')) return structuredClone(schema.default)
-  if (Array.isArray(schema?.examples) && schema.examples.length > 0) return structuredClone(schema.examples[0])
   switch (schema?.type) {
     case 'array':
       return []

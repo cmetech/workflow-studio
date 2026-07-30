@@ -113,7 +113,7 @@ function updateSnapshot(phase: UpdateSnapshot['phase'], sequence?: number): Upda
     phase,
     cancellable: phase === 'downloading',
     release: UPDATE_RELEASE,
-    downloadedBytes: phase === 'downloading' ? UPDATE_RELEASE.size / 2 : 0,
+    downloadedBytes: 0,
     totalBytes: UPDATE_RELEASE.size,
     speedBytesPerSecond: null,
     logs: failed
@@ -146,7 +146,6 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateCancelled = false
   let updateInstalled = false
   let updateRelaunched = false
-  let finishUpdateDownload: (() => void) | null = null
   const updateHandlers = new Set<UpdateEventHandler>()
   let layout: string | null = null
   let brandSelection = 0
@@ -169,6 +168,48 @@ export async function installRuntimeBootstrap(): Promise<void> {
 
   const wait = (milliseconds: number): Promise<void> =>
     new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+
+  const runUpdateLifecycle = async (): Promise<void> => {
+    await emitUpdate({
+      type: 'download',
+      runId: 'e2e-update',
+      sequence: 7,
+      timestamp: 1_753_441_202_200,
+      downloadedBytes: UPDATE_RELEASE.size / 2,
+      totalBytes: UPDATE_RELEASE.size,
+      speedBytesPerSecond: 2_048,
+    })
+    if (scenario === 'setup-update-cancel' || updateCancelled) return
+
+    await wait(250)
+    await emitUpdate({
+      type: 'phase',
+      runId: 'e2e-update',
+      sequence: 8,
+      timestamp: 1_753_441_202_300,
+      phase: 'verifying',
+      cancellable: false,
+    })
+    await wait(250)
+    await emitUpdate({
+      type: 'phase',
+      runId: 'e2e-update',
+      sequence: 9,
+      timestamp: 1_753_441_202_400,
+      phase: 'installing',
+      cancellable: false,
+    })
+    await wait(250)
+    updateInstalled = true
+    await emitUpdate({
+      type: 'phase',
+      runId: 'e2e-update',
+      sequence: 10,
+      timestamp: 1_753_441_202_500,
+      phase: 'restart-required',
+      cancellable: false,
+    })
+  }
 
   const bridge: WorkspaceNativeBridge = {
     ...base,
@@ -197,65 +238,38 @@ export async function installRuntimeBootstrap(): Promise<void> {
       updateInstallRequests += 1
       updateCancelled = false
       await emitUpdate({
-        type: 'phase',
-        runId: 'e2e-update',
-        sequence: 5,
-        timestamp: 1_753_441_202_100,
-        phase: 'downloading',
-        cancellable: true,
-        release: UPDATE_RELEASE,
-      })
-      await emitUpdate({
-        type: 'download',
+        type: 'log',
         runId: 'e2e-update',
         sequence: 6,
-        timestamp: 1_753_441_202_200,
-        downloadedBytes: UPDATE_RELEASE.size / 2,
-        totalBytes: UPDATE_RELEASE.size,
-        speedBytesPerSecond: 2_048,
+        timestamp: 1_753_441_202_100,
+        line: 'Download claim established.',
       })
-
-      if (scenario === 'setup-update-cancel') {
-        await new Promise<void>((resolve) => {
-          finishUpdateDownload = resolve
-        })
-        return updateSnapshot('recheck-required', 8)
-      }
-
-      await wait(250)
-      await emitUpdate({
-        type: 'phase',
-        runId: 'e2e-update',
-        sequence: 7,
-        timestamp: 1_753_441_202_300,
-        phase: 'verifying',
-        cancellable: false,
-      })
-      await wait(250)
-      await emitUpdate({
-        type: 'phase',
-        runId: 'e2e-update',
-        sequence: 8,
-        timestamp: 1_753_441_202_400,
-        phase: 'installing',
-        cancellable: false,
-      })
-      await wait(250)
-      updateInstalled = true
-      return updateSnapshot('restart-required', 9)
+      window.setTimeout(() => void runUpdateLifecycle(), 50)
+      return updateSnapshot('downloading', 5)
     },
     updateCancel: async () => {
       updateCancelled = true
       await emitUpdate({
         type: 'phase',
         runId: 'e2e-update',
-        sequence: 7,
-        timestamp: 1_753_441_202_300,
+        sequence: 8,
+        timestamp: 1_753_441_202_350,
         phase: 'cancelling',
         cancellable: false,
       })
-      finishUpdateDownload?.()
-      finishUpdateDownload = null
+      window.setTimeout(
+        () =>
+          void emitUpdate({
+            type: 'phase',
+            runId: 'e2e-update',
+            sequence: 9,
+            timestamp: 1_753_441_202_450,
+            phase: 'recheck-required',
+            cancellable: false,
+            message: 'Cancellation finished. Run a fresh update check.',
+          }),
+        50,
+      )
       return true
     },
     updateRelaunch: async () => {

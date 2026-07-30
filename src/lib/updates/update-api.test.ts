@@ -348,6 +348,50 @@ describe('update controller', () => {
     await controller.downloadInstall('update-run-a')
     expect(controller.state()).toMatchObject({ phase: 'downloading', sequence: 3, downloadedBytes: 1_024 })
   })
+
+  it('buffers pre-response update events, reconciles the initial download snapshot, then streams later events', async () => {
+    let handler: (event: UpdateEvent) => void = () => undefined
+    const controller = createUpdateController(
+      bridge({
+        onUpdateEvent: async (next) => {
+          handler = next
+          return () => undefined
+        },
+        updateStatus: async () => ({
+          snapshot: snapshot({ phase: 'available', release, sequence: 4 }),
+          startupCheckEnabled: true,
+        }),
+        updateDownloadInstall: async () => {
+          await handler({
+            type: 'log',
+            runId: 'update-run-a',
+            sequence: 6,
+            timestamp: 120,
+            line: 'Download claim established.',
+          })
+          expect(controller.state().logs).toEqual([])
+          return snapshot({
+            phase: 'downloading',
+            release,
+            sequence: 5,
+            cancellable: true,
+            totalBytes: 4_096,
+          })
+        },
+      }),
+    )
+    await controller.start()
+
+    await controller.downloadInstall('update-run-a')
+    expect(controller.state()).toMatchObject({
+      phase: 'downloading',
+      sequence: 6,
+      logs: ['Download claim established.'],
+    })
+
+    await handler(download(7, 2_048, 4_096))
+    expect(controller.state()).toMatchObject({ sequence: 7, downloadedBytes: 2_048, progressPercent: 50 })
+  })
 })
 
 function download(sequence: number, downloadedBytes: number, totalBytes: number | null, speed = 64): UpdateEvent {

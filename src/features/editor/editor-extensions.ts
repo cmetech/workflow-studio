@@ -72,15 +72,15 @@ export function synchronizeEditorProjection(
 ): EditorProjectionState {
   const workflowId = session.pair?.workflowId ?? null
   let projection = previous?.workflowId === workflowId ? previous.projection : null
-  const currentValidProjection =
+  const currentUsableProjection =
     session.revision &&
-    session.analysis?.structurallyValid === true &&
+    (session.analysis?.structurallyValid === true || session.analysis?.visuallyAuthorable === true) &&
     isAnalysisCurrent(session.revision, session.analysis) &&
     isWorkflowProjection(session.analysis.projection)
       ? session.analysis.projection
       : null
-  if (currentValidProjection) projection = currentValidProjection
-  const stale = Boolean(session.pair && !currentValidProjection)
+  if (currentUsableProjection) projection = currentUsableProjection
+  const stale = Boolean(session.pair && !currentUsableProjection)
   return { workflowId, projection, stale, readOnly: stale }
 }
 

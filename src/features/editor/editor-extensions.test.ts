@@ -108,6 +108,35 @@ describe('authoritative editor synchronization', () => {
     expect(corrected).toMatchObject({ projection: correctedProjection, stale: false, readOnly: false })
   })
 
+  it('uses a current visually-authorable incomplete-node projection without declaring YAML structurally valid', () => {
+    const current = pair()
+    const revision = createDocumentRevision(current, `sha256:${'1'.repeat(64)}`)
+    const projection = workflowProjection('draft')
+
+    const state = synchronizeEditorProjection(null, {
+      pair: current,
+      revision,
+      analysis: {
+        ...revision,
+        structurallyValid: false,
+        visuallyAuthorable: true,
+        issues: [
+          {
+            code: 'schema_min_length',
+            layer: 'contract',
+            severity: 'error',
+            blocking: true,
+            message: 'Command must not be empty.',
+            document: 'definition',
+          },
+        ],
+        projection,
+      },
+    })
+
+    expect(state).toEqual({ workflowId: current.workflowId, projection, stale: false, readOnly: false })
+  })
+
   it('commits every edit immediately while dispatching only the latest debounced worker analysis', () => {
     vi.useFakeTimers()
     const worker = new FakeWorker()

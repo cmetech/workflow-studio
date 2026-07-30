@@ -641,7 +641,10 @@
     if ($documentWorkspaceState.missingChange) return 'A backing YAML file is missing.'
     const entry = $workspace.entries.find(({ id }) => id === $documentSessionStore.pair?.workflowId)
     if (entry?.readOnly) return 'This workflow is read-only.'
-    if (!inspectorContract || !$documentSessionStore.analysis?.structurallyValid) {
+    if (
+      !inspectorContract ||
+      (!$documentSessionStore.analysis?.structurallyValid && !$documentSessionStore.analysis?.visuallyAuthorable)
+    ) {
       return 'A current valid authoring contract and YAML projection are required.'
     }
     return undefined
