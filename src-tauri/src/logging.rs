@@ -39,10 +39,13 @@ fn native_log_level() -> LevelFilter {
 pub(crate) fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     let configuration = configuration(cfg!(debug_assertions));
     debug_assert_eq!(configuration.level, native_log_level());
-    let targets = configuration.targets.into_iter().map(|target| match target {
-        LogTarget::Stdout => Target::new(TargetKind::Stdout),
-        LogTarget::LogDirectory => Target::new(TargetKind::LogDir { file_name: None }),
-    });
+    let targets = configuration
+        .targets
+        .into_iter()
+        .map(|target| match target {
+            LogTarget::Stdout => Target::new(TargetKind::Stdout),
+            LogTarget::LogDirectory => Target::new(TargetKind::LogDir { file_name: None }),
+        });
 
     tauri_plugin_log::Builder::new()
         .level(native_log_level())
