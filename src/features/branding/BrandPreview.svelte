@@ -16,12 +16,69 @@
   let dialog: HTMLDialogElement
   let previewRoot: HTMLElement
   let closeButton: HTMLButtonElement
+  let fallbackModal = $state(false)
+
+  interface InertSnapshot {
+    node: HTMLElement
+    hadInert: boolean
+    ariaHidden: string | null
+  }
+
+  function isolateFallbackModal(node: HTMLDialogElement): () => void {
+    const snapshots: InertSnapshot[] = []
+    let branch: HTMLElement = node
+    while (branch !== document.body && branch.parentElement) {
+      const parent = branch.parentElement
+      for (const sibling of parent.children) {
+        if (!(sibling instanceof HTMLElement) || sibling === branch) continue
+        snapshots.push({
+          node: sibling,
+          hadInert: sibling.hasAttribute('inert'),
+          ariaHidden: sibling.getAttribute('aria-hidden'),
+        })
+        sibling.setAttribute('inert', '')
+        sibling.setAttribute('aria-hidden', 'true')
+      }
+      branch = parent
+    }
+    node.setAttribute('open', '')
+    fallbackModal = true
+
+    return () => {
+      fallbackModal = false
+      for (const snapshot of snapshots.reverse()) {
+        if (!snapshot.hadInert) snapshot.node.removeAttribute('inert')
+        if (snapshot.ariaHidden === null) snapshot.node.removeAttribute('aria-hidden')
+        else snapshot.node.setAttribute('aria-hidden', snapshot.ariaHidden)
+      }
+    }
+  }
 
   $effect(() => {
     if (previewRoot) applyBrandTheme(pack.manifest, mode, previewRoot)
   })
 
-  onMount(() => closeButton.focus())
+  onMount(() => {
+    let restoreFallback = () => {}
+    let openedModally = false
+    if (typeof dialog.showModal === 'function') {
+      try {
+        dialog.showModal()
+        openedModally = true
+      } catch {
+        restoreFallback = isolateFallbackModal(dialog)
+      }
+    } else {
+      restoreFallback = isolateFallbackModal(dialog)
+    }
+    closeButton.focus()
+
+    return () => {
+      restoreFallback()
+      if ((openedModally || dialog.open) && typeof dialog.close === 'function') dialog.close()
+      else dialog.removeAttribute('open')
+    }
+  })
   onDestroy(() => {
     if (opener?.isConnected) opener.focus()
   })
@@ -45,14 +102,20 @@
       first.focus()
     }
   }
+
+  function cancel(event: Event): void {
+    event.preventDefault()
+    if (!pending) onClose()
+  }
 </script>
 
 <dialog
   bind:this={dialog}
-  open
+  class:fallback-modal={fallbackModal}
   aria-modal="true"
   aria-labelledby="brand-preview-title"
   aria-busy={pending}
+  oncancel={cancel}
   onkeydown={keydown}
 >
   <section bind:this={previewRoot} data-testid="brand-preview-root" class="preview-root">
@@ -88,6 +151,15 @@
     border-radius: 0.625rem;
     color: var(--color-text);
     background: var(--color-surface);
+  }
+  dialog::backdrop {
+    background: color-mix(in srgb, var(--color-background) 72%, transparent);
+  }
+  dialog.fallback-modal {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    box-shadow: 0 0 0 100vmax color-mix(in srgb, var(--color-background) 72%, transparent);
   }
   .preview-root {
     display: grid;

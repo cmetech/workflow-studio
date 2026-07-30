@@ -22,6 +22,65 @@ function previewPack(): RuntimeBrandPack {
 }
 
 describe('BrandPreview', () => {
+  it('enters native modal presentation and closes the dialog during teardown', () => {
+    const existingShowModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    const existingClose = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'close')
+    const showModal = vi.fn(function (this: HTMLDialogElement) {
+      this.setAttribute('open', '')
+    })
+    const close = vi.fn(function (this: HTMLDialogElement) {
+      this.removeAttribute('open')
+    })
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: showModal })
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: close })
+
+    try {
+      const { unmount } = render(BrandPreview, {
+        pack: previewPack(),
+        mode: 'dark',
+        onClose: vi.fn(),
+        onActivate: vi.fn(),
+      })
+
+      expect(showModal).toHaveBeenCalledOnce()
+      expect(screen.getByRole('dialog')).toHaveAttribute('open')
+      unmount()
+      expect(close).toHaveBeenCalledOnce()
+    } finally {
+      if (existingShowModal) Object.defineProperty(HTMLDialogElement.prototype, 'showModal', existingShowModal)
+      else Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+      if (existingClose) Object.defineProperty(HTMLDialogElement.prototype, 'close', existingClose)
+      else Reflect.deleteProperty(HTMLDialogElement.prototype, 'close')
+    }
+  })
+
+  it('makes background siblings inert when native modal presentation is unavailable and restores them', () => {
+    const existingShowModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    const background = document.createElement('button')
+    background.textContent = 'Background action'
+    document.body.append(background)
+
+    try {
+      const { unmount } = render(BrandPreview, {
+        pack: previewPack(),
+        mode: 'dark',
+        onClose: vi.fn(),
+        onActivate: vi.fn(),
+      })
+
+      expect(screen.getByRole('dialog')).toHaveAttribute('open')
+      expect(background).toHaveAttribute('inert')
+      expect(background).toHaveAttribute('aria-hidden', 'true')
+      unmount()
+      expect(background).not.toHaveAttribute('inert')
+      expect(background).not.toHaveAttribute('aria-hidden')
+    } finally {
+      background.remove()
+      if (existingShowModal) Object.defineProperty(HTMLDialogElement.prototype, 'showModal', existingShowModal)
+    }
+  })
+
   it('applies preview tokens only to its isolated root and never mutates global CSS', () => {
     document.documentElement.style.setProperty('--color-background', '#ABCDEF')
     render(BrandPreview, { pack: previewPack(), mode: 'dark', onClose: vi.fn(), onActivate: vi.fn() })
@@ -56,9 +115,13 @@ describe('BrandPreview', () => {
     expect(screen.getByRole('button', { name: 'Sample focused control' })).toHaveFocus()
     await fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
+    await fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(onClose).toHaveBeenCalledTimes(2)
 
     await rerender({ pack: previewPack(), mode: 'dark', pending: true, opener, onClose, onActivate })
     expect(screen.getByRole('button', { name: 'Activate Preview Only Studio' })).toBeDisabled()
+    await fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    expect(onClose).toHaveBeenCalledTimes(2)
     unmount()
     expect(opener).toHaveFocus()
     opener.remove()

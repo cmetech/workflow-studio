@@ -22,6 +22,14 @@ const MAX_ASSET_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PACK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PERSISTED_PACKS: usize = 16;
 const MAX_PERSISTED_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_STORAGE_TREE_DEPTH: usize = 64;
+const MAX_STORAGE_TREE_DIRECTORIES: usize = 4_096;
+const MAX_STORAGE_TREE_ENTRIES: usize = 8_192;
+const MAX_LIST_CANDIDATES: usize = 256;
+const MAX_LIST_WARNINGS: usize = 16;
+const MAX_LIST_WARNING_BYTES: usize = 4_096;
+const LIST_TRUNCATION_WARNING: &str =
+    "Additional stored brand diagnostics were omitted from this bounded listing.";
 const BUILTIN_BRAND_ID: &str = "loop24";
 const ACTIVE_FILE: &str = "active-brand-v1.json";
 const THEME_TOKEN_NAMES: [&str; 21] = [
@@ -399,10 +407,12 @@ fn safe_asset_path(path: &str) -> bool {
         return false;
     }
     let value = Path::new(path);
+    let mut component_count = 0_usize;
     !value.is_absolute()
-        && value
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
+        && value.components().all(|component| {
+            component_count += 1;
+            component_count <= MAX_STORAGE_TREE_DEPTH && matches!(component, Component::Normal(_))
+        })
         && value
             .extension()
             .and_then(|extension| extension.to_str())
@@ -2048,39 +2058,67 @@ fn stored_pack_bytes(pack: &StoredBrandPack) -> BrandResult<u64> {
         }))
 }
 
-fn directory_tree_bytes(directory: &Dir) -> BrandResult<u64> {
+#[derive(Default)]
+struct StorageTraversalBudget {
+    directories: usize,
+    entries: usize,
+}
+
+impl StorageTraversalBudget {
+    fn enter_directory(&mut self, depth: usize) -> bool {
+        if depth > MAX_STORAGE_TREE_DEPTH || self.directories >= MAX_STORAGE_TREE_DIRECTORIES {
+            return false;
+        }
+        self.directories += 1;
+        true
+    }
+
+    fn visit_entry(&mut self) -> bool {
+        if self.entries >= MAX_STORAGE_TREE_ENTRIES {
+            return false;
+        }
+        self.entries += 1;
+        true
+    }
+}
+
+fn bounded_storage_tree_bytes(
+    directory: &Dir,
+    start_depth: usize,
+    budget: &mut StorageTraversalBudget,
+) -> Option<u64> {
+    if !budget.enter_directory(start_depth) {
+        return None;
+    }
     let mut total = 0_u64;
-    for entry in directory
-        .entries()
-        .map_err(|error| io_error("brand_storage_failed", error))?
-    {
-        let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| io_error("brand_storage_failed", error))?;
+    let mut stack = vec![(directory.entries().ok()?, start_depth)];
+    while let Some((mut entries, depth)) = stack.pop() {
+        let Some(next) = entries.next() else {
+            continue;
+        };
+        stack.push((entries, depth));
+        let entry = next.ok()?;
+        if !budget.visit_entry() {
+            return None;
+        }
+        let file_type = entry.file_type().ok()?;
         if file_type.is_symlink() {
-            return Ok(MAX_PERSISTED_BYTES.saturating_add(1));
+            return None;
         }
         if file_type.is_file() {
-            total = total.saturating_add(
-                entry
-                    .metadata()
-                    .map_err(|error| io_error("brand_storage_failed", error))?
-                    .len(),
-            );
+            total = total.saturating_add(entry.metadata().ok()?.len());
         } else if file_type.is_dir() {
-            let child = entry
-                .open_dir()
-                .map_err(|error| io_error("brand_storage_failed", error))?;
-            total = total.saturating_add(directory_tree_bytes(&child)?);
+            let child_depth = depth.saturating_add(1);
+            if !budget.enter_directory(child_depth) {
+                return None;
+            }
+            let child = entry.open_dir().ok()?;
+            stack.push((child.entries().ok()?, child_depth));
         } else {
-            return Ok(MAX_PERSISTED_BYTES.saturating_add(1));
-        }
-        if total > MAX_PERSISTED_BYTES {
-            break;
+            return None;
         }
     }
-    Ok(total)
+    Some(total)
 }
 
 fn persisted_storage_usage(
@@ -2090,12 +2128,20 @@ fn persisted_storage_usage(
     scope.verify()?;
     let mut count = 0_usize;
     let mut bytes = 0_u64;
+    let mut traversal = StorageTraversalBudget::default();
+    if !traversal.enter_directory(0) {
+        return Ok((MAX_PERSISTED_PACKS + 1, MAX_PERSISTED_BYTES + 1));
+    }
     for entry in scope
         .brands
         .entries()
         .map_err(|error| io_error("brand_storage_failed", error))?
     {
         let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+        if !traversal.visit_entry() {
+            bytes = MAX_PERSISTED_BYTES.saturating_add(1);
+            break;
+        }
         let name = entry.file_name();
         if name == ACTIVE_FILE || excluded_entry.is_some_and(|excluded| name == excluded) {
             continue;
@@ -2112,11 +2158,11 @@ fn persisted_storage_usage(
                 .map_err(|error| io_error("brand_storage_failed", error))?
                 .len()
         } else if file_type.is_dir() {
-            directory_tree_bytes(
-                &entry
-                    .open_dir()
-                    .map_err(|error| io_error("brand_storage_failed", error))?,
-            )?
+            entry
+                .open_dir()
+                .ok()
+                .and_then(|directory| bounded_storage_tree_bytes(&directory, 1, &mut traversal))
+                .unwrap_or_else(|| MAX_PERSISTED_BYTES.saturating_add(1))
         } else {
             MAX_PERSISTED_BYTES.saturating_add(1)
         };
@@ -2150,28 +2196,83 @@ fn enforce_storage_quota(
     Ok(())
 }
 
+fn push_list_warning(
+    warnings: &mut Vec<String>,
+    warning_bytes: &mut usize,
+    truncated: &mut bool,
+    message: impl Into<String>,
+) {
+    if *truncated {
+        return;
+    }
+    let message = message.into();
+    let reserve = LIST_TRUNCATION_WARNING.len();
+    if warnings.len() >= MAX_LIST_WARNINGS.saturating_sub(1)
+        || warning_bytes
+            .saturating_add(message.len())
+            .saturating_add(reserve)
+            > MAX_LIST_WARNING_BYTES
+    {
+        if warnings.len() < MAX_LIST_WARNINGS
+            && warning_bytes.saturating_add(reserve) <= MAX_LIST_WARNING_BYTES
+        {
+            warnings.push(LIST_TRUNCATION_WARNING.to_owned());
+            *warning_bytes += reserve;
+        }
+        *truncated = true;
+        return;
+    }
+    *warning_bytes += message.len();
+    warnings.push(message);
+}
+
 fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
     let scope = BrandStorageScope::bind(app_data)?;
     let mut ids = Vec::new();
+    let mut candidates_truncated = false;
+    let mut scanned_entries = 0_usize;
     for entry in scope
         .brands
         .entries()
         .map_err(|error| io_error("brand_storage_failed", error))?
     {
         let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+        scanned_entries += 1;
+        if scanned_entries > MAX_STORAGE_TREE_ENTRIES {
+            candidates_truncated = true;
+            break;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         if validate_brand_id(&name) && name != BUILTIN_BRAND_ID {
+            if ids.len() >= MAX_LIST_CANDIDATES {
+                candidates_truncated = true;
+                break;
+            }
             ids.push(name);
         }
     }
     ids.sort();
     let mut packs = Vec::new();
     let mut warnings = Vec::new();
+    let mut warning_bytes = 0_usize;
+    let mut warnings_truncated = false;
     let mut total_bytes = 0_u64;
+    if candidates_truncated {
+        push_list_warning(
+            &mut warnings,
+            &mut warning_bytes,
+            &mut warnings_truncated,
+            LIST_TRUNCATION_WARNING,
+        );
+        warnings_truncated = true;
+    }
     for id in ids {
         if packs.len() >= MAX_PERSISTED_PACKS {
-            warnings.push(
-                "Additional stored brand packs were omitted from this bounded listing.".to_owned(),
+            push_list_warning(
+                &mut warnings,
+                &mut warning_bytes,
+                &mut warnings_truncated,
+                "Additional stored brand packs were omitted from this bounded listing.",
             );
             break;
         }
@@ -2182,19 +2283,23 @@ fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
             Ok(pack) => {
                 let pack_bytes = stored_pack_bytes(&pack)?;
                 if total_bytes.saturating_add(pack_bytes) > MAX_PERSISTED_BYTES {
-                    warnings.push(
-                        "Additional stored brand bytes were omitted from this bounded listing."
-                            .to_owned(),
+                    push_list_warning(
+                        &mut warnings,
+                        &mut warning_bytes,
+                        &mut warnings_truncated,
+                        "Additional stored brand bytes were omitted from this bounded listing.",
                     );
                     break;
                 }
                 total_bytes += pack_bytes;
                 packs.push(pack);
             }
-            Err(error) => warnings.push(bounded_native_warning(format!(
-                "Stored brand {id} was ignored: {}",
-                error.message
-            ))),
+            Err(error) => push_list_warning(
+                &mut warnings,
+                &mut warning_bytes,
+                &mut warnings_truncated,
+                bounded_native_warning(format!("Stored brand {id} was ignored: {}", error.message)),
+            ),
         }
     }
     Ok(BrandPackListResult { packs, warnings })
@@ -2351,32 +2456,12 @@ fn load_active_brand_with_recovery_at(app_data: &Path) -> BrandResult<BrandActiv
 }
 
 fn reject_unsafe_tree(directory: &Dir) -> BrandResult<()> {
-    for entry in directory
-        .entries()
-        .map_err(|error| io_error("brand_remove_failed", error))?
-    {
-        let entry = entry.map_err(|error| io_error("brand_remove_failed", error))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| io_error("brand_remove_failed", error))?;
-        if file_type.is_symlink() {
-            return Err(brand_error(
-                "brand_storage_scope_invalid",
-                "Stored brand removal refused a symbolic link.",
-            ));
-        }
-        if file_type.is_dir() {
-            reject_unsafe_tree(
-                &entry
-                    .open_dir()
-                    .map_err(|error| io_error("brand_remove_failed", error))?,
-            )?;
-        } else if !file_type.is_file() {
-            return Err(brand_error(
-                "brand_storage_scope_invalid",
-                "Stored brand removal refused a special file.",
-            ));
-        }
+    let mut traversal = StorageTraversalBudget::default();
+    if bounded_storage_tree_bytes(directory, 0, &mut traversal).is_none() {
+        return Err(brand_error(
+            "brand_storage_scope_invalid",
+            "Stored brand removal refused an unsafe or over-budget directory tree.",
+        ));
     }
     Ok(())
 }
@@ -2831,6 +2916,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_asset_paths_are_bounded_to_the_storage_traversal_depth() {
+        let path = format!("{}/logo.svg", vec!["nested"; 65].join("/"));
+
+        assert!(!safe_asset_path(&path));
+    }
+
     #[cfg(unix)]
     #[test]
     fn source_reader_rejects_symlinks_and_paths_outside_the_granted_directory() {
@@ -2996,6 +3088,65 @@ mod tests {
         assert!(listed.packs[0].revision.starts_with("sha256:"));
         assert_eq!(listed.warnings.len(), 1);
         assert!(listed.warnings[0].contains("corrupt"));
+    }
+
+    #[test]
+    fn list_bounds_wide_corrupt_storage_and_preserves_an_accepted_pack() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+        let storage = app_data.path().join("brands");
+        for index in 0..300 {
+            let corrupt = storage.join(format!("z-corrupt-{index:03}"));
+            fs::create_dir(&corrupt).unwrap();
+            fs::write(corrupt.join("brand.yaml"), b"not-json").unwrap();
+        }
+
+        let listed = list_brand_packs_at(app_data.path()).unwrap();
+        let warning_bytes: usize = listed.warnings.iter().map(String::len).sum();
+
+        assert_eq!(listed.packs.len(), 1);
+        assert_eq!(listed.packs[0].manifest.id, "acme");
+        assert!(listed.warnings.len() <= 16);
+        assert!(warning_bytes <= 4096);
+        assert!(listed
+            .warnings
+            .last()
+            .is_some_and(|warning| warning.contains("omitted")));
+    }
+
+    #[test]
+    fn import_conservatively_rejects_a_deep_empty_persisted_tree() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let storage = app_data.path().join("brands");
+        let mut nested = storage.join("corrupt-deep");
+        for _ in 0..80 {
+            fs::create_dir_all(&nested).unwrap();
+            nested = nested.join("nested");
+        }
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+
+        let error = import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants)
+            .unwrap_err();
+
+        assert_eq!(error.code, "brand_storage_quota_exceeded");
+        assert!(!storage.join("acme").exists());
     }
 
     #[test]
@@ -3835,6 +3986,23 @@ mod tests {
         remove_brand_pack_at(app_data.path(), "acme", true).unwrap();
         assert_eq!(load_active_brand_at(app_data.path()).unwrap(), "loop24");
         assert!(!app_data.path().join("brands/acme").exists());
+    }
+
+    #[test]
+    fn removal_rejects_a_tree_beyond_the_shared_traversal_budget() {
+        let app_data = tempfile::tempdir().unwrap();
+        let storage = app_data.path().join("brands");
+        let corrupt = storage.join("corrupt-deep");
+        let mut nested = corrupt.clone();
+        for _ in 0..80 {
+            fs::create_dir_all(&nested).unwrap();
+            nested = nested.join("nested");
+        }
+
+        let error = remove_brand_pack_at(app_data.path(), "corrupt-deep", false).unwrap_err();
+
+        assert_eq!(error.code, "brand_storage_scope_invalid");
+        assert!(corrupt.is_dir());
     }
 
     #[test]

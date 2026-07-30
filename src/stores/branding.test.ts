@@ -9,6 +9,7 @@ afterEach(() => {
   activeBrand.set('loop24')
   activeBrandManifest.set(loadBundledBrand())
   themePreference.set('system')
+  vi.unstubAllGlobals()
 })
 
 function native(overrides: Partial<BrandNativeBridge> = {}): BrandNativeBridge {
@@ -380,6 +381,100 @@ describe('brand controller', () => {
     ])
     expect(controller.state.get().activeId).toBe('loop24')
     expect(root.dataset.brand).toBe('loop24')
+  })
+
+  it('releases every exact runtime pack created by repeated failed activations', async () => {
+    const custom = { ...loadBundledBrand(), id: 'acme' }
+    const created: string[] = []
+    const revoked: string[] = []
+    vi.stubGlobal('URL', {
+      createObjectURL: () => {
+        const url = `blob:activation-${created.length + 1}`
+        created.push(url)
+        return url
+      },
+      revokeObjectURL: (url: string) => revoked.push(url),
+    })
+    const activate = vi.fn(async (id: string) => ({ id, pack: id === 'loop24' ? null : stored(custom) }))
+    const icon = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first icon update failed'))
+      .mockResolvedValueOnce({ status: 'applied' })
+      .mockRejectedValueOnce(new Error('second icon update failed'))
+      .mockResolvedValueOnce({ status: 'applied' })
+    const controller = createBrandController(
+      native({ brandActivate: activate, setWindowIcon: icon }),
+      document.createElement('div'),
+    )
+    controller.registerForTest(custom)
+
+    await expect(controller.activate('acme')).rejects.toThrow(/first icon update failed/i)
+    await expect(controller.activate('acme')).rejects.toThrow(/second icon update failed/i)
+
+    expect(created).toHaveLength(6)
+    expect(new Set(revoked)).toEqual(new Set(created))
+    expect(controller.state.get().packs.find(({ manifest }) => manifest.id === 'acme')?.assetUrls).toEqual({
+      logo: 'blob:acme-logo',
+      mark: 'blob:acme-mark',
+      windowIcon: 'blob:acme-icon',
+    })
+  })
+
+  it('publishes a replacement pack before revoking URLs exposed by the prior state', async () => {
+    const custom = { ...loadBundledBrand(), id: 'acme' }
+    const revokedWhileVisible: string[] = []
+    const current = { controller: undefined as ReturnType<typeof createBrandController> | undefined }
+    vi.stubGlobal('URL', {
+      createObjectURL: vi
+        .fn()
+        .mockReturnValueOnce('blob:replacement-logo')
+        .mockReturnValueOnce('blob:replacement-mark')
+        .mockReturnValueOnce('blob:replacement-icon'),
+      revokeObjectURL: (url: string) => {
+        const visibleUrls = current.controller!.state.get().packs.flatMap((pack) => Object.values(pack.assetUrls))
+        if (visibleUrls.includes(url)) revokedWhileVisible.push(url)
+      },
+    })
+    const controller = createBrandController(
+      native({ brandListPacks: async () => ({ packs: [stored(custom)], warnings: [] }) }),
+      document.createElement('div'),
+    )
+    current.controller = controller
+    controller.registerForTest(custom)
+
+    await controller.initialize()
+
+    expect(revokedWhileVisible).toEqual([])
+    expect(controller.state.get().packs.find(({ manifest }) => manifest.id === 'acme')?.assetUrls).toEqual({
+      logo: 'blob:replacement-logo',
+      mark: 'blob:replacement-mark',
+      windowIcon: 'blob:replacement-icon',
+    })
+  })
+
+  it('releases partially constructed runtime pack URLs when a later URL creation throws', async () => {
+    const custom = { ...loadBundledBrand(), id: 'acme' }
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', {
+      createObjectURL: vi
+        .fn()
+        .mockReturnValueOnce('blob:partial-logo')
+        .mockImplementationOnce(() => {
+          throw new Error('object URL allocation failed')
+        }),
+      revokeObjectURL,
+    })
+    const controller = createBrandController(
+      native({ brandListPacks: async () => ({ packs: [stored(custom)], warnings: [] }) }),
+      document.createElement('div'),
+    )
+
+    await controller.initialize()
+
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:partial-logo')
+    expect(controller.state.get().reports).toEqual([
+      expect.objectContaining({ message: 'object URL allocation failed', safeToRender: false }),
+    ])
   })
 
   it('serializes activation so failed or stale work cannot leave a half-applied global theme', async () => {

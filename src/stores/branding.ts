@@ -61,23 +61,33 @@ function makeObjectUrl(bytes: Uint8Array, mediaType: string): string {
 }
 
 function runtimePack(validated: ValidatedBrandPack, previewOnly = false, revision?: string): RuntimeBrandPack {
+  const createdUrls: string[] = []
   const urlFor = (path: string): string => {
     const asset = validated.assets[path]
     if (!asset) throw new Error(`Validated brand asset ${path} is missing.`)
-    return makeObjectUrl(asset.bytes, asset.mediaType)
+    const url = makeObjectUrl(asset.bytes, asset.mediaType)
+    createdUrls.push(url)
+    return url
   }
-  return {
-    manifest: validated.manifest,
-    assetUrls: {
-      logo: urlFor(validated.manifest.assets.logo),
-      mark: urlFor(validated.manifest.assets.mark),
-      windowIcon: urlFor(validated.manifest.assets.windowIcon),
-    },
-    issues: validated.issues,
-    canActivate: validated.canActivate,
-    builtIn: false,
-    previewOnly,
-    ...(revision ? { revision } : {}),
+  try {
+    return {
+      manifest: validated.manifest,
+      assetUrls: {
+        logo: urlFor(validated.manifest.assets.logo),
+        mark: urlFor(validated.manifest.assets.mark),
+        windowIcon: urlFor(validated.manifest.assets.windowIcon),
+      },
+      issues: validated.issues,
+      canActivate: validated.canActivate,
+      builtIn: false,
+      previewOnly,
+      ...(revision ? { revision } : {}),
+    }
+  } catch (cause: unknown) {
+    if (typeof URL.revokeObjectURL === 'function') {
+      for (const url of new Set(createdUrls)) URL.revokeObjectURL(url)
+    }
+    throw cause
   }
 }
 
@@ -111,6 +121,20 @@ export function createBrandController(
 
   function publish(patch: Partial<BrandControllerState> = {}): void {
     state.set({ ...state.get(), packs: [...packs.values()], reports: [...reports], ...patch })
+  }
+
+  function releaseUnreferenced(...candidates: (RuntimeBrandPack | undefined)[]): void {
+    const retained = new Set(packs.values())
+    for (const pack of new Set(candidates)) {
+      if (pack && !retained.has(pack)) releasePack(pack)
+    }
+  }
+
+  function replacePack(pack: RuntimeBrandPack, announce: () => void = publish): void {
+    const previous = packs.get(pack.manifest.id)
+    packs.set(pack.manifest.id, pack)
+    announce()
+    releaseUnreferenced(previous)
   }
 
   function warningText(values: readonly unknown[]): string | null {
@@ -165,9 +189,7 @@ export function createBrandController(
         for (const stored of listed.packs) {
           try {
             const pack = loadStoredRuntimePack(stored)
-            const previous = packs.get(pack.manifest.id)
-            packs.set(pack.manifest.id, pack)
-            releasePack(previous)
+            replacePack(pack)
           } catch (cause: unknown) {
             addReport(cause)
             warnings.push(cause)
@@ -188,11 +210,10 @@ export function createBrandController(
                   throw new Error('The active custom brand did not include its exact stored revision.')
                 })()
         if (!pack.builtIn) {
-          const previous = packs.get(pack.manifest.id)
-          packs.set(pack.manifest.id, pack)
-          releasePack(previous)
+          replacePack(pack, () => commit(pack))
+        } else {
+          commit(pack)
         }
-        commit(pack)
         try {
           await native.setWindowIcon(pack.manifest.id, pack.revision ?? null)
         } catch (cause: unknown) {
@@ -252,8 +273,7 @@ export function createBrandController(
           await native.brandRevokeSourceGrant(selection.grantToken)
         }
         const pack = runtimePack(validated, !validated.canActivate)
-        packs.set(pack.manifest.id, pack)
-        publish()
+        replacePack(pack)
         return pack
       } catch (cause: unknown) {
         try {
@@ -295,10 +315,14 @@ export function createBrandController(
         if (!exact.builtIn) packs.set(exact.manifest.id, exact)
         commit(exact)
       } catch (cause: unknown) {
-        releasePack(exact)
         const rolledBack = exactActivationPack(await native.brandActivate(previous.manifest.id))
+        const displaced = rolledBack.builtIn ? undefined : packs.get(rolledBack.manifest.id)
+        if (exact && !exact.builtIn && exact.manifest.id !== rolledBack.manifest.id) {
+          packs.set(exact.manifest.id, pack)
+        }
         if (!rolledBack.builtIn) packs.set(rolledBack.manifest.id, rolledBack)
         commit(rolledBack)
+        releaseUnreferenced(exact, pack, displaced)
         throw cause
       }
       if (!exact) throw new Error('Native activation did not return a usable brand revision.')
@@ -306,8 +330,13 @@ export function createBrandController(
         await native.setWindowIcon(exact.manifest.id, exact.revision ?? null)
       } catch (cause: unknown) {
         const rolledBack = exactActivationPack(await native.brandActivate(previous.manifest.id))
+        const displaced = rolledBack.builtIn ? undefined : packs.get(rolledBack.manifest.id)
+        if (!exact.builtIn && exact.manifest.id !== rolledBack.manifest.id) {
+          packs.set(exact.manifest.id, pack)
+        }
         if (!rolledBack.builtIn) packs.set(rolledBack.manifest.id, rolledBack)
         commit(rolledBack)
+        releaseUnreferenced(exact, pack, displaced)
         try {
           await native.setWindowIcon(rolledBack.manifest.id, rolledBack.revision ?? null)
         } catch (rollbackIconCause: unknown) {
@@ -315,7 +344,7 @@ export function createBrandController(
         }
         throw cause
       }
-      if (exact !== pack) releasePack(pack)
+      releaseUnreferenced(pack)
     })
   }
 
