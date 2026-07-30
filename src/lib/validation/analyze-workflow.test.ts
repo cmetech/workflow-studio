@@ -13,6 +13,7 @@ import invalidCycle from '../../../tests/fixtures/workflows/invalid-cycle.yaml?r
 import invalidReference from '../../../tests/fixtures/workflows/invalid-reference.yaml?raw'
 import validMinimal from '../../../tests/fixtures/workflows/valid-minimal.yaml?raw'
 import { analyzeWorkflowPair } from './analyze-workflow'
+import { compiledContractValidatorCountForTest } from './schema-validator'
 
 let digestNumber = 100
 
@@ -147,6 +148,31 @@ function request(
 }
 
 describe('workflow pair analysis', () => {
+  it('keeps validator compilation bounded to one stable entry while draft subsets change', async () => {
+    const activeContract = contract('hermes-legacy')
+    const nodesSchema = (activeContract.definition_schema.properties as Record<string, { items?: unknown }>).nodes
+    if (!nodesSchema || !nodesSchema.items) throw new Error('Expected the test node schema.')
+    const nodeSchema = (nodesSchema.items as { properties: Record<string, Record<string, unknown>> }).properties
+    nodeSchema.command = { type: 'string', minLength: 1 }
+    nodeSchema.prompt = { type: 'string', minLength: 1 }
+    const before = compiledContractValidatorCountForTest()
+    const definitions = [
+      '  - id: command\n    command: ""\n',
+      '  - id: prompt\n    prompt: ""\n',
+      '  - id: command\n    command: ""\n  - id: prompt\n    prompt: ""\n',
+    ]
+
+    for (const nodes of definitions) {
+      const analysis = await analyzeWorkflowPair(
+        request(activeContract, `name: Drafts\ndescription: Cache bound\nnodes:\n${nodes}`),
+        activeContract,
+      )
+      expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    }
+
+    expect(compiledContractValidatorCountForTest() - before).toBe(1)
+  })
+
   it('selects legacy without a companion and returns a contract-driven immutable DAG projection', async () => {
     const activeContract = contract('hermes-legacy')
 

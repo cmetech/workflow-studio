@@ -1,6 +1,8 @@
 import { parse } from 'yaml'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract, NodeKindDescriptor } from '$src/lib/contract/types'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { applyWorkflowMutation } from '$src/lib/documents/transactions'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
@@ -260,6 +262,81 @@ describe('canvas YAML actions', () => {
     expect(result).toMatchObject({ status: 'committed', nodeId: 'command' })
     const added = parsedNodes(fixture.current().definition.text).find(({ id }) => id === 'command')
     expect(added).toEqual({ id: 'command', command: '' })
+  })
+
+  it('adds every bundled node kind as an inspectable incomplete draft without copying examples', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )
+    if (!productionContract) throw new Error('Expected the bundled Archon contract.')
+
+    const expectedDrafts: Readonly<Record<string, unknown>> = {
+      command: '',
+      prompt: '',
+      bash: '',
+      script: '',
+      loop: {},
+      approval: {},
+      cancel: '',
+    }
+    for (const descriptor of productionContract.node_kinds) {
+      const fixture = actionContext()
+      const productionContext: CanvasActionContext = {
+        ...fixture.context,
+        contract: productionContract,
+        pair: {
+          ...fixture.context.pair,
+          companion: {
+            id: 'companion',
+            kind: 'companion',
+            path: 'actions.hermes.yaml',
+            text: 'language_compatibility: archon-2026-07\n',
+            revision: 1,
+            savedRevision: 1,
+            diskHash: 'sha256:companion',
+          },
+        },
+      }
+
+      const result = await addNode(productionContext, descriptor, { viewportCenter: { x: 900, y: 420 } })
+
+      expect(result, descriptor.id).toMatchObject({ status: 'committed', nodeId: descriptor.id })
+      expect(parsedNodes(fixture.current().definition.text).find(({ id }) => id === descriptor.id)).toEqual({
+        id: descriptor.id,
+        [descriptor.id]: expectedDrafts[descriptor.id],
+      })
+      if (result.status !== 'committed') continue
+      const analysis = await analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: `bundled-${descriptor.id}`,
+          workflowId: result.pair.workflowId,
+          pairGeneration: result.pair.generation,
+          definition: {
+            path: result.pair.definition.path,
+            text: result.pair.definition.text,
+            revision: result.pair.definition.revision,
+          },
+          companion: result.pair.companion
+            ? {
+                path: result.pair.companion.path,
+                text: result.pair.companion.text,
+                revision: result.pair.companion.revision,
+              }
+            : null,
+          profile: productionContract.profile,
+          contractDigest: productionContract.contract_digest,
+          reason: 'explicit-validate',
+        },
+        productionContract,
+      )
+      expect(analysis, descriptor.id).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+      const draftProjection = analysis.projection as WorkflowProjection | undefined
+      expect(draftProjection?.nodes.find(({ id }) => id === descriptor.id)).toMatchObject({
+        id: descriptor.id,
+        kind: descriptor.id,
+      })
+    }
   })
 
   it('adds after selection to the right with one dependency and one YAML transaction', async () => {

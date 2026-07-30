@@ -111,14 +111,7 @@ export async function applyWorkflowMutation(
       },
       contract,
     )
-    if (
-      !analysis.structurallyValid &&
-      !(
-        mutation.type === 'add-node' &&
-        analysis.visuallyAuthorable &&
-        hasExplicitEmptyNodeKind(mutation.node, contract)
-      )
-    ) {
+    if (!analysis.structurallyValid && !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract))) {
       return {
         ok: false,
         code: 'mutation_invalid_workflow',
@@ -146,19 +139,19 @@ export async function applyWorkflowMutation(
   }
 }
 
-function hasExplicitEmptyNodeKind(node: Readonly<Record<string, unknown>>, contract: AuthoringContract): boolean {
-  return contract.node_kinds.some((descriptor) => {
-    const tokens = descriptor.field_path.replaceAll('[]', '').split('.').filter(Boolean)
-    const relative = tokens[0] === 'nodes' ? tokens.slice(1) : tokens
-    let value: unknown = node
-    for (const token of relative) {
-      if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, token)) {
-        return false
-      }
-      value = (value as Record<string, unknown>)[token]
-    }
-    return value === ''
-  })
+function progressiveDraftMutation(mutation: WorkflowMutation, contract: AuthoringContract): boolean {
+  if (mutation.type === 'add-node') return true
+  if (mutation.type !== 'set-field' && mutation.type !== 'delete-field') return false
+  if (mutation.document !== 'definition') return true
+  const dagRule = contract.semantic_rules.find(({ id }) => id === 'workflow-dag-v1')
+  const nodesPath =
+    typeof dagRule?.parameters.nodes_path === 'string' ? dagRule.parameters.nodes_path.split('.') : ['nodes']
+  const idField = typeof dagRule?.parameters.id_field === 'string' ? dagRule.parameters.id_field : 'id'
+  const dependenciesField =
+    typeof dagRule?.parameters.dependencies_field === 'string' ? dagRule.parameters.dependencies_field : 'depends_on'
+  if (!nodesPath.every((token, index) => mutation.path[index] === token)) return true
+  const field = mutation.path[nodesPath.length + 1]
+  return field !== idField && field !== dependenciesField
 }
 
 function requiresStructuralValidation(mutation: WorkflowMutation): boolean {

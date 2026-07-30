@@ -10,6 +10,10 @@ export interface CompiledContractValidators {
 }
 
 const validatorCache = new Map<AuthoringContract['contract_digest'], CompiledContractValidators>()
+
+export function compiledContractValidatorCountForTest(): number {
+  return validatorCache.size
+}
 const CONTRACT_ANNOTATION_KEYWORDS = [
   'x-hermes-unit',
   'x-hermes-section',

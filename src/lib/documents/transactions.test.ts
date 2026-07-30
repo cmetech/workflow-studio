@@ -3,6 +3,7 @@ import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$sr
 import type { WorkflowPairText } from './types'
 import { applyWorkflowMutation } from './transactions'
 import { createHistoryState, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 
 function field(path: string): FieldDescriptor {
   return {
@@ -188,6 +189,81 @@ describe('workflow YAML transactions', () => {
     if (!commandResult.ok || !promptResult.ok) return
     expect(commandResult.pair.definition.text).toContain('  - id: draft\n    command: ""\n')
     expect(promptResult.pair.definition.text).toContain('  - id: draft\n    prompt: ""\n')
+  })
+
+  it('allows progressive inspector edits while two explicit bundled object drafts remain incomplete', async () => {
+    const productionContract = (await loadBundledAuthoringContracts()).find(
+      ({ profile }) => profile === 'archon-2026-07',
+    )
+    if (!productionContract) throw new Error('Expected the bundled Archon contract.')
+    const incomplete = pair(
+      `name: Progressive drafts
+description: Keep both drafts inspectable.
+nodes:
+  - id: loop
+    loop: {}
+  - id: approval
+    approval: {}
+`,
+    )
+    const withProfile = {
+      ...incomplete,
+      companion: {
+        ...incomplete.companion!,
+        text: 'language_compatibility: archon-2026-07\n',
+      },
+    }
+
+    const progressive = await applyWorkflowMutation(
+      withProfile,
+      { type: 'set-field', document: 'definition', path: ['nodes', 0, 'loop', 'prompt'], value: 'Try again.' },
+      productionContract,
+    )
+    const unknown = await applyWorkflowMutation(
+      withProfile,
+      { type: 'set-field', document: 'definition', path: ['nodes', 0, 'loop', 'unexpected'], value: true },
+      productionContract,
+    )
+    const graphMutation = await applyWorkflowMutation(
+      withProfile,
+      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['loop'] },
+      productionContract,
+    )
+    const unresolved = await applyWorkflowMutation(
+      withProfile,
+      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['missing'] },
+      productionContract,
+    )
+    const cyclePair = {
+      ...withProfile,
+      definition: {
+        ...withProfile.definition,
+        text: withProfile.definition.text.replace('    loop: {}', '    loop: {}\n    depends_on: [approval]'),
+      },
+    }
+    const cycle = await applyWorkflowMutation(
+      cyclePair,
+      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['loop'] },
+      productionContract,
+    )
+    const duplicate = await applyWorkflowMutation(
+      withProfile,
+      { type: 'set-field', document: 'definition', path: ['nodes', 1, 'id'], value: 'loop' },
+      productionContract,
+    )
+    const missingKind = await applyWorkflowMutation(
+      withProfile,
+      { type: 'add-node', node: { id: 'missing-kind' } },
+      productionContract,
+    )
+
+    expect(progressive).toMatchObject({ ok: true })
+    expect(unknown).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    expect(graphMutation).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    expect(unresolved).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    expect(cycle).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    expect(duplicate).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
+    expect(missingKind).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
   })
 
   it('removes exact dependency occurrences when deleting an otherwise unreferenced node', async () => {
