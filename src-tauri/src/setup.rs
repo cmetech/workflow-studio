@@ -201,11 +201,15 @@ const STAGES: [(&str, &str); 5] = [
 type GitProbe = dyn Fn() -> Result<String, String> + Send + Sync;
 type LogRegistry = dyn Fn(Vec<SavedSetupLog>) -> SetupResult<()> + Send + Sync;
 type ReadinessCommitHook = dyn Fn() + Send + Sync;
+#[cfg(test)]
+type BeforeReadyTransitionHook = dyn Fn() + Send + Sync;
 
 pub(crate) struct SetupServices {
     git_probe: Box<GitProbe>,
     log_registry: Box<LogRegistry>,
     readiness_commit_hook: Box<ReadinessCommitHook>,
+    #[cfg(test)]
+    before_ready_transition_hook: Box<BeforeReadyTransitionHook>,
 }
 
 impl SetupServices {
@@ -214,6 +218,8 @@ impl SetupServices {
             git_probe: Box::new(probe),
             log_registry: Box::new(|_| Ok(())),
             readiness_commit_hook: Box::new(|| {}),
+            #[cfg(test)]
+            before_ready_transition_hook: Box::new(|| {}),
         }
     }
 
@@ -231,6 +237,15 @@ impl SetupServices {
         hook: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         self.readiness_commit_hook = Box::new(hook);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_before_ready_transition_hook(
+        mut self,
+        hook: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.before_ready_transition_hook = Box::new(hook);
         self
     }
 }
@@ -1363,6 +1378,10 @@ pub(crate) fn run_setup(
             );
             return Ok(snapshot);
         }
+        #[cfg(test)]
+        if *stage_id == "ready" {
+            (services.before_ready_transition_hook)();
+        }
         sequence += 1;
         emit_and_apply(
             &mut snapshot,
@@ -1376,6 +1395,20 @@ pub(crate) fn run_setup(
             ),
             sink,
         );
+        if *stage_id == "ready" && cancelled.load(Ordering::SeqCst) {
+            sequence += 1;
+            emit_and_apply(
+                &mut snapshot,
+                SetupEvent::Cancelled {
+                    run_id: run_id.to_owned(),
+                    sequence,
+                    timestamp: now_ms(),
+                    duration_ms: elapsed_ms(started),
+                },
+                sink,
+            );
+            return Ok(snapshot);
+        }
         let stage_started = Instant::now();
         let outcome: SetupResult<(SetupStageStatus, String)> = match *stage_id {
             "app-data" => (|| {

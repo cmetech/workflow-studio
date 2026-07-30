@@ -625,6 +625,49 @@ fn setup_cancel_acknowledged_before_readiness_prevents_the_commit() {
 }
 
 #[test]
+fn setup_cancel_acknowledged_after_ready_loop_check_prevents_the_commit() {
+    let app_data = tempdir().unwrap();
+    let app_data_path = app_data.path().to_path_buf();
+    let (resources, manifest) = resource_fixture();
+    let resource_root = resources.path().to_path_buf();
+    let state = SetupState::default();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    state
+        .claim_active_run("cancel-at-ready-transition", cancellation.clone())
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let hook_barrier = barrier.clone();
+    let worker_state = state.clone();
+    let worker = std::thread::spawn(move || {
+        run_setup(
+            &SetupPaths {
+                app_data: app_data_path,
+                resource_root,
+            },
+            "cancel-at-ready-transition",
+            "0.1.0",
+            &manifest,
+            &cancellation,
+            &SetupServices::new(|| Ok("git version 2.50".to_owned()))
+                .with_before_ready_transition_hook(move || {
+                    hook_barrier.wait();
+                    hook_barrier.wait();
+                }),
+            &|event| worker_state.record(event).unwrap(),
+        )
+        .unwrap()
+    });
+
+    barrier.wait();
+    assert!(state.cancel("cancel-at-ready-transition").unwrap());
+    barrier.wait();
+    let snapshot = worker.join().unwrap();
+
+    assert_eq!(snapshot.status, SetupRunStatus::Cancelled);
+    assert!(!is_ready(app_data.path(), "0.1.0"));
+}
+
+#[test]
 fn setup_cancel_is_rejected_while_readiness_commit_is_in_progress() {
     let app_data = tempdir().unwrap();
     let app_data_path = app_data.path().to_path_buf();
