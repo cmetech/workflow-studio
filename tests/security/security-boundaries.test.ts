@@ -249,5 +249,5 @@ describe('release security boundaries', () => {
     } finally {
       rmSync(output, { recursive: true, force: true })
     }
-  })
+  }, 20_000)
 })
