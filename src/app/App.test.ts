@@ -8,7 +8,7 @@ import { editDocumentText } from '$src/lib/documents/revisions'
 import { showActivity, showEditorMode } from '$src/stores/shell'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
-import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
+import { clearWorkspace, loadWorkspaceEntries, workspace } from '$src/stores/workspace'
 import {
   $documentSession,
   $documentSyncOrigins,
@@ -572,13 +572,16 @@ nodes:
       await fireEvent.click((await screen.findAllByRole('button', { name: /^Create Editable Copy:/ }))[0]!)
       await waitFor(() => expect(creationWriteStarted).toBe(true))
       await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
-      await fireEvent.click(screen.getByRole('treeitem', { name: /release-demo\.yaml/i }))
+      const releaseEntry = screen.getByRole('treeitem', { name: /release-demo\.yaml/i })
+      await fireEvent.click(releaseEntry)
       await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml'))
 
       allowCreationWrite.resolve()
-      await waitFor(() => expect(workspaceScan.mock.calls.length).toBeGreaterThanOrEqual(3))
+      await waitFor(() => expect(workspace.get().files.length).toBeGreaterThan(1))
       expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml')
       expect($documentSession.get().pair?.definition.text).toBe(releaseDemo)
+      expect(workspace.get().activeEntryId).toBe('workflow:browser-workspace:release-demo.yaml')
+      expect(screen.getByRole('treeitem', { name: /release-demo\.yaml/i })).toHaveAttribute('aria-current', 'page')
     } finally {
       allowCreationWrite.resolve()
       if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')

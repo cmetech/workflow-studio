@@ -293,6 +293,54 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues.map(({ code }) => code)).toContain('contract_schema_invalid')
   })
 
+  it('fails closed when an imported allOf scalar conjunction is contradictory', async () => {
+    const activeContract = importedComposedContract()
+    const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>
+    definitions.nonEmptyText = {
+      allOf: [
+        { type: 'string', minLength: 2 },
+        { type: 'string', maxLength: 1 },
+      ],
+    }
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        activeContract,
+        'name: Imported\ndescription: Contradictory scalar\nnodes:\n  - id: command\n    command: ""\n',
+      ),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues.map(({ code }) => code)).toContain('schema_min_length')
+  })
+
+  it('fails closed when an imported allOf object conjunction forbids its required kind field', async () => {
+    const activeContract = importedComposedContract()
+    const definitions = activeContract.definition_schema.$defs as Record<string, Record<string, unknown>>
+    definitions.commonNode = {
+      type: 'object',
+      properties: { id: { $ref: '#/$defs/id' } },
+      required: ['id'],
+      additionalProperties: false,
+    }
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        activeContract,
+        'name: Imported\ndescription: Contradictory object\nnodes:\n  - id: command\n    command: publish\n',
+      ),
+      activeContract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues.map(({ code }) => code)).toContain('schema_additional_properties')
+  })
+
   it('keeps validator compilation bounded to one stable entry while draft subsets change', async () => {
     const activeContract = contract('hermes-legacy')
     const nodesSchema = (activeContract.definition_schema.properties as Record<string, { items?: unknown }>).nodes

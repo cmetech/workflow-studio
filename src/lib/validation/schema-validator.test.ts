@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
-import { compileContractValidators, validateContractDocument } from './schema-validator'
+import { compileContractValidators, resolveContractSchema, validateContractDocument } from './schema-validator'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 
 let digestNumber = 0
@@ -36,6 +36,54 @@ function parsed(source: string) {
 }
 
 describe('contract schema validation', () => {
+  it('resolves local JSON Pointers through canonical array indices only', () => {
+    const root = {
+      $defs: {
+        wrapper: {
+          oneOf: [{ type: 'string', minLength: 1 }],
+        },
+      },
+    }
+
+    expect(resolveContractSchema({ $ref: '#/$defs/wrapper/oneOf/0' }, root)).toEqual({
+      type: 'string',
+      minLength: 1,
+    })
+    for (const reference of [
+      '#/$defs/wrapper/oneOf/00',
+      '#/$defs/wrapper/oneOf/01',
+      '#/$defs/wrapper/oneOf/-',
+      '#/$defs/wrapper/oneOf/1',
+      'https://attacker.invalid/schema.json',
+    ]) {
+      expect(resolveContractSchema({ $ref: reference }, root), reference).toBeNull()
+    }
+
+    const cyclicRoot = { $defs: { cycle: { $ref: '#/$defs/cycle' } } }
+    expect(resolveContractSchema({ $ref: '#/$defs/cycle' }, cyclicRoot)).toBeNull()
+  })
+
+  it('bounds local reference inspection while preserving ordinary nested references', () => {
+    const ordinaryDefinitions: Record<string, Record<string, unknown>> = {}
+    for (let index = 0; index < 32; index += 1) {
+      ordinaryDefinitions[`level${index}`] = index === 31 ? { type: 'string' } : { $ref: `#/$defs/level${index + 1}` }
+    }
+    const ordinaryRoot = { $defs: ordinaryDefinitions }
+    expect(resolveContractSchema({ $ref: '#/$defs/level0' }, ordinaryRoot)).toEqual({ type: 'string' })
+
+    const excessiveDefinitions: Record<string, Record<string, unknown>> = {}
+    for (let index = 0; index < 2_000; index += 1) {
+      excessiveDefinitions[`level${index}`] =
+        index === 1_999 ? { type: 'string' } : { $ref: `#/$defs/level${index + 1}` }
+    }
+    const excessiveRoot = { $defs: excessiveDefinitions }
+    let result: Record<string, unknown> | null = null
+    expect(() => {
+      result = resolveContractSchema({ $ref: '#/$defs/level0' }, excessiveRoot)
+    }).not.toThrow()
+    expect(result).toBeNull()
+  })
+
   it('strictly compiles both production schemas with descriptive Hermes annotations registered', async () => {
     const contracts = await loadBundledAuthoringContracts()
     expect(contracts).toHaveLength(2)

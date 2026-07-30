@@ -34,6 +34,11 @@ export function loadWorkspaceEntries(
 ): void {
   const copiedFiles = Object.freeze(files.map((entry) => Object.freeze({ ...entry })))
   const entries = pairWorkflowFiles(id, copiedFiles)
+  const current = $workspace.get()
+  const activeEntryId =
+    current.id === id && current.activeEntryId && entries.some((entry) => entry.id === current.activeEntryId)
+      ? current.activeEntryId
+      : null
   $workspace.set(
     Object.freeze({
       id,
@@ -42,7 +47,7 @@ export function loadWorkspaceEntries(
       files: copiedFiles,
       entries,
       tree: buildWorkspaceTree(entries),
-      activeEntryId: null,
+      activeEntryId,
     }),
   )
 }

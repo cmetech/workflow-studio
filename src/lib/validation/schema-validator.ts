@@ -336,39 +336,55 @@ function resolveSchema(value: unknown, root: Record<string, unknown>): Record<st
  * authoritative validation. Only local JSON Pointers are accepted. Invalid,
  * remote, unresolved, or cyclic references fail closed.
  */
-export function resolveContractSchema(
+export function resolveContractSchema(value: unknown, root: Record<string, unknown>): Record<string, unknown> | null {
+  return resolveContractSchemaWithin(value, root, new Set(), { remainingWork: 512 }, 0)
+}
+
+interface SchemaInspectionBudget {
+  remainingWork: number
+}
+
+function resolveContractSchemaWithin(
   value: unknown,
   root: Record<string, unknown>,
-  resolving: ReadonlySet<string> = new Set(),
+  resolving: Set<string>,
+  budget: SchemaInspectionBudget,
+  depth: number,
 ): Record<string, unknown> | null {
+  if (depth > 64 || !consumeInspectionWork(budget)) return null
   if (!isRecord(value)) return null
-  let resolved = value
+  let resolved: Record<string, unknown> = { ...value }
   if (Object.hasOwn(value, '$ref')) {
     if (typeof value.$ref !== 'string' || (value.$ref !== '#' && !value.$ref.startsWith('#/'))) return null
     if (resolving.has(value.$ref)) return null
-    let target: unknown = root
-    if (value.$ref !== '#') {
-      for (const segment of pointerTokens(value.$ref.slice(1))) {
-        if (!isRecord(target) || !Object.hasOwn(target, segment)) return null
-        target = target[segment]
-      }
+    const target = localPointerTarget(value.$ref, root, budget)
+    if (target === null) return null
+    resolving.add(value.$ref)
+    try {
+      const referenced = resolveContractSchemaWithin(target, root, resolving, budget, depth + 1)
+      if (!referenced) return null
+      const siblings = { ...value }
+      delete siblings.$ref
+      const resolvedSiblings = resolveContractSchemaWithin(siblings, root, resolving, budget, depth + 1)
+      if (!resolvedSiblings) return null
+      const conjunction = mergeInspectionSchemas(referenced, resolvedSiblings)
+      if (!conjunction) return null
+      resolved = conjunction
+    } finally {
+      resolving.delete(value.$ref)
     }
-    const nextResolving = new Set(resolving)
-    nextResolving.add(value.$ref)
-    const referenced = resolveContractSchema(target, root, nextResolving)
-    if (!referenced) return null
-    const siblings = { ...value }
-    delete siblings.$ref
-    resolved = mergeInspectionSchemas(referenced, siblings)
   }
 
   if (resolved.allOf !== undefined) {
     if (!Array.isArray(resolved.allOf)) return null
     let aggregate = { ...resolved }
+    delete aggregate.allOf
     for (const branch of resolved.allOf) {
-      const branchSchema = resolveContractSchema(branch, root, resolving)
+      const branchSchema = resolveContractSchemaWithin(branch, root, resolving, budget, depth + 1)
       if (!branchSchema) return null
-      aggregate = mergeInspectionSchemas(aggregate, branchSchema)
+      const conjunction = mergeInspectionSchemas(aggregate, branchSchema)
+      if (!conjunction) return null
+      aggregate = conjunction
     }
     resolved = aggregate
   }
@@ -378,20 +394,135 @@ export function resolveContractSchema(
 function mergeInspectionSchemas(
   left: Record<string, unknown>,
   right: Record<string, unknown>,
-): Record<string, unknown> {
+): Record<string, unknown> | null {
   const merged = { ...left, ...right }
+  const type = intersectSchemaTypes(left.type, right.type)
+  if (type === null) return null
+  if (type !== undefined) merged.type = type
+
+  if (!mergeBounds(merged, left, right, 'minLength', 'maxLength')) return null
+  if (!mergeBounds(merged, left, right, 'minItems', 'maxItems')) return null
+  if (!mergeBounds(merged, left, right, 'minProperties', 'maxProperties')) return null
+
   const leftProperties = recordValue(left.properties)
   const rightProperties = recordValue(right.properties)
-  if (leftProperties || rightProperties) {
-    merged.properties = { ...(leftProperties ?? {}), ...(rightProperties ?? {}) }
-  }
   const required = [
     ...(Array.isArray(left.required) ? left.required.filter((item): item is string => typeof item === 'string') : []),
     ...(Array.isArray(right.required) ? right.required.filter((item): item is string => typeof item === 'string') : []),
   ]
   if (required.length > 0) merged.required = [...new Set(required)]
-  if (left.additionalProperties === false || right.additionalProperties === false) merged.additionalProperties = false
+  const leftClosed = left.additionalProperties === false
+  const rightClosed = right.additionalProperties === false
+  if (leftClosed || rightClosed) {
+    if (hasPatternProperties(left) || hasPatternProperties(right)) return null
+    const leftKeys = new Set(Object.keys(leftProperties ?? {}))
+    const rightKeys = new Set(Object.keys(rightProperties ?? {}))
+    const allowedKeys = leftClosed
+      ? rightClosed
+        ? [...leftKeys].filter((key) => rightKeys.has(key))
+        : [...leftKeys]
+      : [...rightKeys]
+    if (required.some((key) => !allowedKeys.includes(key))) return null
+    merged.properties = Object.fromEntries(
+      allowedKeys.map((key) => [key, rightProperties?.[key] ?? leftProperties?.[key]]),
+    )
+    merged.additionalProperties = false
+  } else if (leftProperties || rightProperties) {
+    merged.properties = { ...(leftProperties ?? {}), ...(rightProperties ?? {}) }
+  }
   return merged
+}
+
+function consumeInspectionWork(budget: SchemaInspectionBudget): boolean {
+  if (budget.remainingWork <= 0) return false
+  budget.remainingWork -= 1
+  return true
+}
+
+function localPointerTarget(
+  reference: string,
+  root: Record<string, unknown>,
+  budget: SchemaInspectionBudget,
+): unknown | null {
+  if (reference === '#') return root
+  let target: unknown = root
+  for (const encoded of reference.slice(2).split('/')) {
+    if (!consumeInspectionWork(budget)) return null
+    const segment = decodePointerSegment(encoded)
+    if (segment === null) return null
+    if (Array.isArray(target)) {
+      if (!/^(?:0|[1-9][0-9]*)$/.test(segment)) return null
+      const index = Number(segment)
+      if (!Number.isSafeInteger(index) || index >= target.length || !Object.hasOwn(target, index)) return null
+      target = target[index]
+    } else if (isRecord(target) && Object.hasOwn(target, segment)) {
+      target = target[segment]
+    } else {
+      return null
+    }
+  }
+  return target
+}
+
+function decodePointerSegment(segment: string): string | null {
+  if (/(?:~[^01]|~$)/.test(segment)) return null
+  return segment.replaceAll('~1', '/').replaceAll('~0', '~')
+}
+
+function intersectSchemaTypes(left: unknown, right: unknown): string | readonly string[] | undefined | null {
+  const leftTypes = schemaTypes(left)
+  const rightTypes = schemaTypes(right)
+  if (leftTypes === null || rightTypes === null) return null
+  if (leftTypes === undefined) return rightTypes === undefined ? undefined : schemaTypeValue(rightTypes)
+  if (rightTypes === undefined) return schemaTypeValue(leftTypes)
+  const intersection = [...leftTypes].filter((type) => rightTypes.has(type))
+  if (intersection.length === 0) return null
+  return intersection.length === 1 ? intersection[0] : intersection
+}
+
+function schemaTypeValue(types: ReadonlySet<string>): string | readonly string[] {
+  const values = [...types]
+  return values.length === 1 ? values[0]! : values
+}
+
+function schemaTypes(value: unknown): Set<string> | undefined | null {
+  if (value === undefined) return undefined
+  if (typeof value === 'string') return new Set([value])
+  if (Array.isArray(value) && value.every((item): item is string => typeof item === 'string')) return new Set(value)
+  return null
+}
+
+function mergeBounds(
+  merged: Record<string, unknown>,
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  minimumKeyword: string,
+  maximumKeyword: string,
+): boolean {
+  const minimum = numericBound(left[minimumKeyword], right[minimumKeyword], Math.max)
+  const maximum = numericBound(left[maximumKeyword], right[maximumKeyword], Math.min)
+  if (minimum === null || maximum === null || (minimum !== undefined && maximum !== undefined && minimum > maximum)) {
+    return false
+  }
+  if (minimum !== undefined) merged[minimumKeyword] = minimum
+  if (maximum !== undefined) merged[maximumKeyword] = maximum
+  return true
+}
+
+function numericBound(
+  left: unknown,
+  right: unknown,
+  combine: (leftValue: number, rightValue: number) => number,
+): number | undefined | null {
+  if (left !== undefined && typeof left !== 'number') return null
+  if (right !== undefined && typeof right !== 'number') return null
+  if (typeof left === 'number' && typeof right === 'number') return combine(left, right)
+  return typeof left === 'number' ? left : typeof right === 'number' ? right : undefined
+}
+
+function hasPatternProperties(schema: Record<string, unknown>): boolean {
+  const patterns = recordValue(schema.patternProperties)
+  return patterns !== null && Object.keys(patterns).length > 0
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

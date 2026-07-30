@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '$src/app/App.svelte'
 import type { WorkspaceTreeEntry } from '$src/lib/workspace/types'
 import { showActivity } from '$src/stores/shell'
-import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
+import { clearWorkspace, loadWorkspaceEntries, selectWorkspaceEntry, workspace } from '$src/stores/workspace'
 import Explorer from './Explorer.svelte'
 
 const tree: readonly WorkspaceTreeEntry[] = [
@@ -201,5 +201,32 @@ describe('Explorer', () => {
       screen.getByRole('tree', { name: 'Workspace workflows' }),
     )
     expect(screen.getByRole('treeitem', { name: 'release.yaml, legacy workflow' })).toBeVisible()
+  })
+
+  it('preserves an active entry atomically when the same workspace scan still contains it', () => {
+    const release = {
+      relativePath: 'release.yaml',
+      kind: 'file' as const,
+      size: 120,
+      modifiedAt: '2026-07-25T12:00:00.000Z',
+      symlink: 'none' as const,
+      readOnly: false,
+    }
+    loadWorkspaceEntries('workspace-1', 'Project', [release])
+    selectWorkspaceEntry('workflow:workspace-1:release.yaml')
+
+    loadWorkspaceEntries('workspace-1', 'Project', [
+      release,
+      {
+        relativePath: 'new.yaml',
+        kind: 'file',
+        size: 80,
+        modifiedAt: '2026-07-25T12:01:00.000Z',
+        symlink: 'none',
+        readOnly: false,
+      },
+    ])
+
+    expect(workspace.get().activeEntryId).toBe('workflow:workspace-1:release.yaml')
   })
 })
