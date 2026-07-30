@@ -5,10 +5,13 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
+#[cfg(unix)]
+use crate::setup::ResourceScope;
 use crate::setup::{
-    atomic_persist_readiness, load_remembered_workspace, redact_log_line, run_setup,
-    verify_resource_tree, BoundedSetupLog, IntegrityEntry, IntegrityManifest, SetupEvent,
-    SetupPaths, SetupRunStatus, SetupServices, SetupState,
+    atomic_persist_readiness, initialize_setup_status, is_ready, load_remembered_workspace,
+    redact_log_line, run_setup, verify_resource_tree, AppDataScope, BoundedSetupLog,
+    IntegrityEntry, IntegrityManifest, SetupEvent, SetupPaths, SetupRunStatus, SetupServices,
+    SetupState,
 };
 
 fn digest(bytes: &[u8]) -> String {
@@ -120,10 +123,11 @@ fn resource_verification_rejects_symlinks_and_special_entries() {
 fn setup_logs_are_private_bounded_and_redacted_before_sink_and_storage() {
     let root = tempdir().unwrap();
     let mut log = BoundedSetupLog::create(root.path(), "opaque-run-1", 1_234).unwrap();
-    log.push("GET https://example.test/install?token=secret&x=1");
-    log.push("Authorization: Bearer top-secret");
-    log.push("prompt: reveal workflow content");
-    log.push(&"x".repeat(20_000));
+    log.push("GET https://example.test/install?token=secret&x=1")
+        .unwrap();
+    log.push("Authorization: Bearer top-secret").unwrap();
+    log.push("prompt: reveal workflow content").unwrap();
+    log.push(&"x".repeat(20_000)).unwrap();
     let lines = log.lines();
 
     assert_eq!(lines.len(), 4);
@@ -258,12 +262,77 @@ fn cancellation_is_run_specific_and_observed_only_between_stages() {
     let state = SetupState::default();
     let cancellation = Arc::new(AtomicBool::new(false));
     state
-        .install_active_run("new-run", cancellation.clone())
+        .claim_active_run("new-run", cancellation.clone())
         .unwrap();
     assert!(!state.cancel("old-run").unwrap());
     assert!(!cancellation.load(Ordering::SeqCst));
     assert!(state.cancel("new-run").unwrap());
     assert!(cancellation.load(Ordering::SeqCst));
+}
+
+#[test]
+fn concurrent_run_claims_install_exactly_one_active_run() {
+    let state = SetupState::default();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for run_id in ["claim-one", "claim-two"] {
+        let state = state.clone();
+        let barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            state
+                .claim_active_run(run_id, Arc::new(AtomicBool::new(false)))
+                .unwrap()
+        }));
+    }
+    barrier.wait();
+    let claims = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(claims.iter().filter(|claim| claim.claimed).count(), 1);
+    assert_eq!(claims[0].snapshot.run_id, claims[1].snapshot.run_id);
+}
+
+#[test]
+fn cancellation_after_readiness_commit_cannot_disagree_with_terminal_status() {
+    let app_data = tempdir().unwrap();
+    let (resources, manifest) = resource_fixture();
+    let cancelled = AtomicBool::new(false);
+    let events = std::sync::Mutex::new(Vec::new());
+    let snapshot = run_setup(
+        &SetupPaths {
+            app_data: app_data.path().to_path_buf(),
+            resource_root: resources.path().to_path_buf(),
+        },
+        "commit-run",
+        "0.1.0",
+        &manifest,
+        &cancelled,
+        &SetupServices::new(|| Ok("git version 2.50".to_owned())),
+        &|event| {
+            if matches!(
+                event,
+                SetupEvent::Stage {
+                    stage_id: "ready",
+                    status: crate::setup::SetupStageStatus::Succeeded,
+                    ..
+                }
+            ) {
+                cancelled.store(true, Ordering::SeqCst);
+            }
+            events.lock().unwrap().push(event.clone());
+        },
+    )
+    .unwrap();
+
+    assert!(is_ready(app_data.path(), "0.1.0"));
+    assert_eq!(snapshot.status, SetupRunStatus::Succeeded);
+    assert!(matches!(
+        events.lock().unwrap().last(),
+        Some(SetupEvent::Complete { .. })
+    ));
 }
 
 #[test]
@@ -295,4 +364,309 @@ fn app_data_failure_emits_a_terminal_failure_snapshot_event() {
             ..
         })
     ));
+}
+
+#[test]
+fn app_data_scope_rejects_replaced_root_and_ancestor_names_for_read_write_and_prune() {
+    let outer = tempdir().unwrap();
+    let ancestor = outer.path().join("private");
+    let app_data = ancestor.join("workflow-studio");
+    fs::create_dir_all(&app_data).unwrap();
+    let scope = AppDataScope::bind(&app_data).unwrap();
+
+    fs::rename(&ancestor, outer.path().join("private-old")).unwrap();
+    fs::create_dir_all(&app_data).unwrap();
+
+    assert_eq!(
+        scope.load_remembered_workspace().unwrap_err().code,
+        "setup_app_data_changed"
+    );
+    assert_eq!(
+        scope.persist_readiness(1, "0.1.0").unwrap_err().code,
+        "setup_app_data_changed"
+    );
+    assert_eq!(
+        scope.prune_setup_logs(None).err().unwrap().code,
+        "setup_app_data_changed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn app_data_scope_rejects_recent_readiness_and_log_leaf_swaps() {
+    use std::os::unix::fs::symlink;
+
+    let app_data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let workspace_path = workspace.path().canonicalize().unwrap();
+    fs::write(
+        app_data.path().join("recent-workspaces-v1.json"),
+        format!(
+            "[{{\"rootPath\":{},\"lastOpenedAt\":\"now\"}}]",
+            serde_json::to_string(workspace_path.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    let scope = AppDataScope::bind(app_data.path()).unwrap();
+    let outside = app_data
+        .path()
+        .parent()
+        .unwrap()
+        .join("outside-setup-target");
+    fs::write(&outside, "outside").unwrap();
+
+    let recent = app_data.path().join("recent-workspaces-v1.json");
+    assert_eq!(
+        scope
+            .load_remembered_workspace_with_open_hook(|| {
+                fs::remove_file(&recent).unwrap();
+                symlink(&outside, &recent).unwrap();
+            })
+            .unwrap_err()
+            .code,
+        "setup_workspace_record_changed"
+    );
+    fs::remove_file(&recent).unwrap();
+
+    assert_eq!(
+        scope
+            .persist_readiness_with_commit_hook(1, "0.1.0", || {
+                symlink(&outside, app_data.path().join("setup-ready-v1.json")).unwrap();
+            })
+            .unwrap_err()
+            .code,
+        "setup_ready_destination_changed"
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+
+    let (mut log, saved) = scope.create_log("leaf-run", 1_234).unwrap();
+    let logs = app_data.path().join("setup-logs");
+    fs::rename(&logs, app_data.path().join("setup-logs-old")).unwrap();
+    fs::create_dir(&logs).unwrap();
+    symlink(&outside, logs.join(saved.file_name())).unwrap();
+    assert_eq!(
+        saved.validate_for_open().unwrap_err().code,
+        "setup_app_data_changed"
+    );
+    assert_eq!(
+        log.push("must stay private").unwrap_err().code,
+        "setup_app_data_changed"
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_scope_rejects_root_and_leaf_name_swaps() {
+    use std::os::unix::fs::symlink;
+
+    let (root, manifest) = resource_fixture();
+    let resource_path = root.path().to_path_buf();
+    let scope = ResourceScope::bind(&resource_path).unwrap();
+    let moved = resource_path.with_extension("moved");
+    fs::rename(&resource_path, &moved).unwrap();
+    fs::create_dir_all(&resource_path).unwrap();
+    assert_eq!(
+        scope.verify(&manifest).unwrap_err().code,
+        "setup_resource_root_changed"
+    );
+
+    fs::remove_dir_all(&resource_path).unwrap();
+    fs::rename(&moved, &resource_path).unwrap();
+    let scope = ResourceScope::bind(&resource_path).unwrap();
+    let contract = resource_path.join("contracts/contract.json");
+    let target = resource_path.join("brands/loop24/brand.yaml");
+    assert_eq!(
+        scope
+            .verify_with_entry_hook(&manifest, |relative| {
+                if relative == "contracts/contract.json" {
+                    fs::remove_file(&contract).unwrap();
+                    symlink(&target, &contract).unwrap();
+                }
+            })
+            .unwrap_err()
+            .code,
+        "setup_resource_invalid_type"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_scope_rejects_a_symbolic_link_root() {
+    use std::os::unix::fs::symlink;
+
+    let (root, _) = resource_fixture();
+    let link_parent = tempdir().unwrap();
+    let link = link_parent.path().join("resources");
+    symlink(root.path(), &link).unwrap();
+
+    assert_eq!(
+        ResourceScope::bind(&link).err().unwrap().code,
+        "setup_resource_root_changed"
+    );
+}
+
+#[test]
+fn setup_registers_the_current_log_before_renderer_log_events() {
+    let app_data = tempdir().unwrap();
+    let (resources, manifest) = resource_fixture();
+    let state = SetupState::default();
+    state
+        .claim_active_run("registered-run", Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    let callback_state = state.clone();
+    let registered = Arc::new(AtomicBool::new(false));
+    let callback_registered = registered.clone();
+    let services =
+        SetupServices::new(|| Ok("git version 2.50".to_owned())).with_log_registry(move |logs| {
+            callback_state.replace_logs(logs)?;
+            if let Some(saved) = callback_state.saved_log("registered-run")? {
+                saved.validate_for_open()?;
+                callback_registered.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+
+    run_setup(
+        &SetupPaths {
+            app_data: app_data.path().to_path_buf(),
+            resource_root: resources.path().to_path_buf(),
+        },
+        "registered-run",
+        "0.1.0",
+        &manifest,
+        &AtomicBool::new(false),
+        &services,
+        &|event| {
+            if matches!(event, SetupEvent::Log { .. }) {
+                assert!(registered.load(Ordering::SeqCst));
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(registered.load(Ordering::SeqCst));
+}
+
+#[test]
+fn startup_prunes_and_rehydrates_persisted_log_capabilities() {
+    let app_data = tempdir().unwrap();
+    let scope = AppDataScope::bind(app_data.path()).unwrap();
+    let (_log, saved) = scope.create_log("restart-run", 1_234).unwrap();
+    saved
+        .open_with(|path| {
+            assert!(path.is_file());
+            Ok(())
+        })
+        .unwrap();
+    drop(scope);
+    let state = SetupState::default();
+
+    assert!(!initialize_setup_status(app_data.path(), &state, "0.1.0").unwrap());
+    assert!(state.saved_log("restart-run").unwrap().is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn persisted_logs_are_pruned_across_retries_and_restart_by_count_and_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::fs::symlink;
+
+    let app_data = tempdir().unwrap();
+    let scope = AppDataScope::bind(app_data.path()).unwrap();
+    let logs = app_data.path().join("setup-logs");
+    for index in 0..25 {
+        fs::write(
+            logs.join(format!("{:013}-retry-{index}.log", index + 1)),
+            vec![b'x'; 120 * 1_024],
+        )
+        .unwrap();
+    }
+    let current = "0000000000000-current.log";
+    fs::write(logs.join(current), vec![b'c'; 200 * 1_024]).unwrap();
+    fs::write(logs.join("not-a-log.txt"), b"corrupt").unwrap();
+    fs::write(
+        logs.join("9999999999998-oversized.log"),
+        vec![b'o'; 256 * 1_024 + 1],
+    )
+    .unwrap();
+    let outside = app_data.path().parent().unwrap().join("outside-log-target");
+    fs::write(&outside, "outside").unwrap();
+    symlink(&outside, logs.join("9999999999999-symlink.log")).unwrap();
+
+    let retained = scope.prune_setup_logs(Some(OsStr::new(current))).unwrap();
+    assert!(logs.join(current).is_file());
+    assert!(retained.len() <= 20);
+    assert!(
+        retained
+            .iter()
+            .map(|saved| fs::metadata(saved.validate_for_open().unwrap())
+                .unwrap()
+                .len())
+            .sum::<u64>()
+            <= 2 * 1024 * 1024
+    );
+    assert!(!logs.join("not-a-log.txt").exists());
+    assert!(!logs.join("9999999999998-oversized.log").exists());
+    assert!(!logs.join("9999999999999-symlink.log").exists());
+
+    drop(scope);
+    let restarted = AppDataScope::bind(app_data.path()).unwrap();
+    let retained_after_restart = restarted
+        .prune_setup_logs(Some(OsStr::new(current)))
+        .unwrap();
+    assert!(retained_after_restart.len() <= 20);
+    assert!(logs.join(current).is_file());
+}
+
+#[test]
+fn log_writes_enforce_the_aggregate_persisted_byte_bound() {
+    let app_data = tempdir().unwrap();
+    let scope = AppDataScope::bind(app_data.path()).unwrap();
+    let logs = app_data.path().join("setup-logs");
+    for index in 0..8 {
+        fs::write(
+            logs.join(format!("{:013}-older-{index}.log", index + 1)),
+            vec![b'o'; 255 * 1_024],
+        )
+        .unwrap();
+    }
+    let (mut current, saved) = scope.create_log("write-run", 9_999_999_999_999).unwrap();
+
+    current.push(&"x".repeat(4_096)).unwrap();
+    current.push(&"y".repeat(4_096)).unwrap();
+
+    let total = fs::read_dir(&logs)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum::<u64>();
+    assert!(total <= 2 * 1024 * 1024);
+    assert!(saved.validate_for_open().unwrap().is_file());
+}
+
+#[test]
+fn failed_pruning_does_not_accumulate_a_new_log_on_each_retry() {
+    let app_data = tempdir().unwrap();
+    let scope = AppDataScope::bind(app_data.path()).unwrap();
+    let logs = app_data.path().join("setup-logs");
+    fs::create_dir(logs.join("unexpected-directory")).unwrap();
+
+    for timestamp in 1..=3 {
+        assert_eq!(
+            scope
+                .create_log("bounded-retry", timestamp)
+                .err()
+                .unwrap()
+                .code,
+            "setup_log_invalid"
+        );
+    }
+
+    assert_eq!(
+        fs::read_dir(&logs)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_type().unwrap().is_file())
+            .count(),
+        0
+    );
 }

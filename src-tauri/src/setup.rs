@@ -1,12 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File, OpenOptions};
+use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, File as CapabilityFile, OpenOptions as CapabilityOpenOptions};
 use getrandom::fill as random_fill;
+use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -20,6 +24,7 @@ const MAX_LOG_LINE_BYTES: usize = 4 * 1024;
 const MAX_LOG_BYTES: usize = 256 * 1024;
 const MAX_RENDERER_LINES: usize = 500;
 const MAX_SAVED_RUNS: usize = 20;
+const MAX_SAVED_LOG_BYTES: u64 = 2 * 1024 * 1024;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize)]
@@ -188,16 +193,27 @@ const STAGES: [(&str, &str); 5] = [
 ];
 
 type GitProbe = dyn Fn() -> Result<String, String> + Send + Sync;
+type LogRegistry = dyn Fn(Vec<SavedSetupLog>) -> SetupResult<()> + Send + Sync;
 
 pub(crate) struct SetupServices {
     git_probe: Box<GitProbe>,
+    log_registry: Box<LogRegistry>,
 }
 
 impl SetupServices {
     pub(crate) fn new(probe: impl Fn() -> Result<String, String> + Send + Sync + 'static) -> Self {
         Self {
             git_probe: Box::new(probe),
+            log_registry: Box::new(|_| Ok(())),
         }
+    }
+
+    pub(crate) fn with_log_registry(
+        mut self,
+        registry: impl Fn(Vec<SavedSetupLog>) -> SetupResult<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.log_registry = Box::new(registry);
+        self
     }
 }
 
@@ -211,23 +227,41 @@ struct ActiveRun {
 #[derive(Default, Clone)]
 pub struct SetupState {
     active: Arc<Mutex<Option<ActiveRun>>>,
-    logs: Arc<Mutex<VecDeque<(String, PathBuf)>>>,
+    logs: Arc<Mutex<VecDeque<(String, SavedSetupLog)>>>,
+}
+
+pub(crate) struct ActiveRunClaim {
+    pub(crate) claimed: bool,
+    pub(crate) snapshot: SetupSnapshot,
 }
 
 impl SetupState {
-    pub(crate) fn install_active_run(
+    pub(crate) fn claim_active_run(
         &self,
         run_id: &str,
         cancellation: Arc<AtomicBool>,
-    ) -> SetupResult<()> {
+    ) -> SetupResult<ActiveRunClaim> {
         validate_run_id(run_id)?;
         let mut active = self.lock_active()?;
+        if let Some(existing) = active
+            .as_ref()
+            .filter(|existing| existing.snapshot.status == SetupRunStatus::Running)
+        {
+            return Ok(ActiveRunClaim {
+                claimed: false,
+                snapshot: existing.snapshot.clone(),
+            });
+        }
+        let snapshot = initial_snapshot(run_id, now_ms());
         *active = Some(ActiveRun {
             run_id: run_id.to_owned(),
             cancellation,
-            snapshot: initial_snapshot(run_id, now_ms()),
+            snapshot: snapshot.clone(),
         });
-        Ok(())
+        Ok(ActiveRunClaim {
+            claimed: true,
+            snapshot,
+        })
     }
 
     pub(crate) fn cancel(&self, run_id: &str) -> SetupResult<bool> {
@@ -259,19 +293,22 @@ impl SetupState {
         Ok(())
     }
 
-    fn remember_log(&self, run_id: &str, path: PathBuf) -> SetupResult<()> {
+    pub(crate) fn replace_logs(&self, saved: Vec<SavedSetupLog>) -> SetupResult<()> {
         let mut logs = self.logs.lock().map_err(|_| {
             setup_error("setup_state_unavailable", "Setup log state is unavailable.")
         })?;
-        logs.retain(|(known, _)| known != run_id);
-        logs.push_back((run_id.to_owned(), path));
-        while logs.len() > MAX_SAVED_RUNS {
-            logs.pop_front();
+        let mut replacement = VecDeque::new();
+        let skip = saved.len().saturating_sub(MAX_SAVED_RUNS);
+        for log in saved.into_iter().skip(skip) {
+            let run_id = log.run_id()?;
+            replacement.retain(|(known, _)| known != &run_id);
+            replacement.push_back((run_id, log));
         }
+        *logs = replacement;
         Ok(())
     }
 
-    fn log_for(&self, run_id: &str) -> SetupResult<Option<PathBuf>> {
+    pub(crate) fn saved_log(&self, run_id: &str) -> SetupResult<Option<SavedSetupLog>> {
         validate_run_id(run_id)?;
         let logs = self.logs.lock().map_err(|_| {
             setup_error("setup_state_unavailable", "Setup log state is unavailable.")
@@ -279,7 +316,7 @@ impl SetupState {
         Ok(logs
             .iter()
             .find(|(known, _)| known == run_id)
-            .map(|(_, path)| path.clone()))
+            .map(|(_, saved)| saved.clone()))
     }
 
     fn lock_active(&self) -> SetupResult<std::sync::MutexGuard<'_, Option<ActiveRun>>> {
@@ -289,43 +326,539 @@ impl SetupState {
     }
 }
 
+pub(crate) struct AppDataScope {
+    root_path: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: Handle,
+    parent: Dir,
+    root_name: OsString,
+    root_identity: Handle,
+    root: Dir,
+    logs_identity: Handle,
+    logs: Dir,
+}
+
+impl AppDataScope {
+    pub(crate) fn bind(app_data: &Path) -> SetupResult<Arc<Self>> {
+        ensure_private_directory(app_data)?;
+        let root_path = app_data
+            .canonicalize()
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        let parent_path = root_path
+            .parent()
+            .ok_or_else(app_data_changed)?
+            .to_path_buf();
+        let root_name = root_path
+            .file_name()
+            .ok_or_else(app_data_changed)?
+            .to_os_string();
+        let parent = Dir::open_ambient_dir(&parent_path, ambient_authority())
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        let root_metadata = parent
+            .symlink_metadata(&root_name)
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(app_data_changed());
+        }
+        let root = parent
+            .open_dir(&root_name)
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        let parent_identity = directory_identity(&parent, "setup_app_data_failed")?;
+        let root_identity = directory_identity(&root, "setup_app_data_failed")?;
+        #[cfg(unix)]
+        {
+            use cap_std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            parent
+                .set_permissions(
+                    &root_name,
+                    Permissions::from_std(fs::Permissions::from_mode(0o700)),
+                )
+                .map_err(|error| io_error("setup_app_data_failed", error))?;
+        }
+        match root.symlink_metadata("setup-logs") {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(app_data_changed())
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => root
+                .create_dir("setup-logs")
+                .map_err(|error| io_error("setup_app_data_failed", error))?,
+            Err(error) => return Err(io_error("setup_app_data_failed", error)),
+        }
+        #[cfg(unix)]
+        {
+            use cap_std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            root.set_permissions(
+                "setup-logs",
+                Permissions::from_std(fs::Permissions::from_mode(0o700)),
+            )
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        }
+        let logs = root
+            .open_dir("setup-logs")
+            .map_err(|error| io_error("setup_app_data_failed", error))?;
+        let logs_identity = directory_identity(&logs, "setup_app_data_failed")?;
+        let scope = Arc::new(Self {
+            root_path,
+            parent_path,
+            parent_identity,
+            parent,
+            root_name,
+            root_identity,
+            root,
+            logs_identity,
+            logs,
+        });
+        scope.verify()?;
+        Ok(scope)
+    }
+
+    fn verify(&self) -> SetupResult<()> {
+        let current_parent =
+            Handle::from_path(&self.parent_path).map_err(|_| app_data_changed())?;
+        if current_parent != self.parent_identity {
+            return Err(app_data_changed());
+        }
+        let current_root = self
+            .parent
+            .open_dir(&self.root_name)
+            .map_err(|_| app_data_changed())?;
+        if directory_identity(&current_root, "setup_app_data_changed")? != self.root_identity {
+            return Err(app_data_changed());
+        }
+        let current_logs = self
+            .root
+            .open_dir("setup-logs")
+            .map_err(|_| app_data_changed())?;
+        if directory_identity(&current_logs, "setup_app_data_changed")? != self.logs_identity {
+            return Err(app_data_changed());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn create_log(
+        self: &Arc<Self>,
+        run_id: &str,
+        timestamp: u64,
+    ) -> SetupResult<(BoundedSetupLog, SavedSetupLog)> {
+        validate_run_id(run_id)?;
+        self.verify()?;
+        self.prune_setup_logs(None)?;
+        let name = OsString::from(format!("{timestamp}-{run_id}.log"));
+        let mut options = CapabilityOpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+            use windows_sys::Win32::Storage::FileSystem::DELETE;
+            options.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+        }
+        let file = self
+            .logs
+            .open_with(&name, &options)
+            .map_err(|error| io_error("setup_log_create_failed", error))?;
+        #[cfg(unix)]
+        {
+            use cap_std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(Permissions::from_std(fs::Permissions::from_mode(0o600)))
+                .map_err(|error| io_error("setup_log_create_failed", error))?;
+        }
+        let identity = Arc::new(file_identity(&file, "setup_log_create_failed")?);
+        let saved = SavedSetupLog {
+            scope: self.clone(),
+            name: name.clone(),
+            identity: identity.clone(),
+        };
+        let log = BoundedSetupLog {
+            #[cfg(test)]
+            path: self.root_path.join("setup-logs").join(&name),
+            file,
+            saved: saved.clone(),
+            lines: VecDeque::new(),
+            persisted_bytes: 0,
+            full: false,
+        };
+        if let Err(error) = self.prune_setup_logs(Some(&name)) {
+            drop(log);
+            let _ = self.logs.remove_file(&name);
+            return Err(error);
+        }
+        self.verify()?;
+        Ok((log, saved))
+    }
+
+    pub(crate) fn load_remembered_workspace(&self) -> SetupResult<Option<PathBuf>> {
+        self.load_remembered_workspace_impl(|| {})
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn load_remembered_workspace_with_open_hook(
+        &self,
+        hook: impl FnOnce(),
+    ) -> SetupResult<Option<PathBuf>> {
+        self.load_remembered_workspace_impl(hook)
+    }
+
+    fn load_remembered_workspace_impl(&self, hook: impl FnOnce()) -> SetupResult<Option<PathBuf>> {
+        self.verify()?;
+        let metadata = match self.root.symlink_metadata(RECENT_FILE) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("setup_workspace_record_failed", error)),
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_RECENT_BYTES
+        {
+            return Ok(None);
+        }
+        let file = self
+            .root
+            .open(RECENT_FILE)
+            .map_err(|error| io_error("setup_workspace_record_failed", error))?;
+        let identity = file_identity(&file, "setup_workspace_record_failed")?;
+        hook();
+        if !named_file_identity_matches(
+            &self.root,
+            OsStr::new(RECENT_FILE),
+            &identity,
+            MAX_RECENT_BYTES,
+        ) {
+            return Err(setup_error(
+                "setup_workspace_record_changed",
+                "The app-owned remembered workspace record changed while it was read.",
+            ));
+        }
+        let mut text = String::new();
+        file.take(MAX_RECENT_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|error| io_error("setup_workspace_record_failed", error))?;
+        self.verify()?;
+        if !named_file_identity_matches(
+            &self.root,
+            OsStr::new(RECENT_FILE),
+            &identity,
+            MAX_RECENT_BYTES,
+        ) {
+            return Err(setup_error(
+                "setup_workspace_record_changed",
+                "The app-owned remembered workspace record changed while it was read.",
+            ));
+        }
+        let records: Vec<RecentWorkspace> = match serde_json::from_str(&text) {
+            Ok(records) => records,
+            Err(_) => return Ok(None),
+        };
+        for record in records {
+            let requested = PathBuf::from(record.root_path);
+            let Ok(canonical) = requested.canonicalize() else {
+                continue;
+            };
+            if canonical == requested && canonical.is_dir() {
+                return Ok(Some(canonical));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn persist_readiness(
+        &self,
+        schema_version: u32,
+        app_version: &str,
+    ) -> SetupResult<()> {
+        self.persist_readiness_impl(schema_version, app_version, || {})
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn persist_readiness_with_commit_hook(
+        &self,
+        schema_version: u32,
+        app_version: &str,
+        hook: impl FnOnce(),
+    ) -> SetupResult<()> {
+        self.persist_readiness_impl(schema_version, app_version, hook)
+    }
+
+    fn persist_readiness_impl(
+        &self,
+        schema_version: u32,
+        app_version: &str,
+        hook: impl FnOnce(),
+    ) -> SetupResult<()> {
+        self.verify()?;
+        let destination_identity = regular_destination_identity(&self.root, READY_FILE)?;
+        let temporary = OsString::from(format!(
+            ".setup-ready-{}-{}.tmp",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let bytes = serde_json::to_vec(&ReadinessRecord {
+            schema_version,
+            app_version,
+        })
+        .map_err(|_| {
+            setup_error(
+                "setup_ready_write_failed",
+                "Setup readiness could not be encoded.",
+            )
+        })?;
+        let mut options = CapabilityOpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+            use windows_sys::Win32::Storage::FileSystem::DELETE;
+            options.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+        }
+        let result = (|| -> SetupResult<()> {
+            let mut file = self
+                .root
+                .open_with(&temporary, &options)
+                .map_err(|error| io_error("setup_ready_write_failed", error))?;
+            #[cfg(unix)]
+            {
+                use cap_std::fs::Permissions;
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(Permissions::from_std(fs::Permissions::from_mode(0o600)))
+                    .map_err(|error| io_error("setup_ready_write_failed", error))?;
+            }
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|error| io_error("setup_ready_write_failed", error))?;
+            hook();
+            self.verify()?;
+            let current_destination = regular_destination_identity(&self.root, READY_FILE)
+                .map_err(|_| readiness_destination_changed())?;
+            if current_destination != destination_identity {
+                return Err(setup_error(
+                    "setup_ready_destination_changed",
+                    "Setup readiness changed before the atomic commit.",
+                ));
+            }
+            commit_readiness(
+                &self.root,
+                &temporary,
+                &file,
+                destination_identity.is_some(),
+            )?;
+            sync_cap_directory(&self.root, "setup_ready_write_failed")?;
+            self.verify()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = self.root.remove_file(&temporary);
+        }
+        result
+    }
+
+    fn readiness_matches(&self, app_version: &str) -> bool {
+        if self.verify().is_err() {
+            return false;
+        }
+        let Ok(metadata) = self.root.symlink_metadata(READY_FILE) else {
+            return false;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4_096 {
+            return false;
+        }
+        let Ok(file) = self.root.open(READY_FILE) else {
+            return false;
+        };
+        let Ok(identity) = file_identity(&file, "setup_ready_read_failed") else {
+            return false;
+        };
+        let mut bytes = Vec::new();
+        if file.take(4_097).read_to_end(&mut bytes).is_err()
+            || bytes.len() > 4_096
+            || !named_file_identity_matches(&self.root, OsStr::new(READY_FILE), &identity, 4_096)
+            || self.verify().is_err()
+        {
+            return false;
+        }
+        let Ok(record) = serde_json::from_slice::<ReadinessRecord<'_>>(&bytes) else {
+            return false;
+        };
+        record.schema_version == SETUP_SCHEMA_VERSION && record.app_version == app_version
+    }
+
+    pub(crate) fn prune_setup_logs(
+        self: &Arc<Self>,
+        current: Option<&OsStr>,
+    ) -> SetupResult<Vec<SavedSetupLog>> {
+        self.verify()?;
+        let mut logs = Vec::new();
+        let mut removed = false;
+        for entry in self
+            .logs
+            .entries()
+            .map_err(|error| io_error("setup_log_prune_failed", error))?
+        {
+            let entry = entry.map_err(|error| io_error("setup_log_prune_failed", error))?;
+            let name = entry.file_name();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| io_error("setup_log_prune_failed", error))?;
+            let valid_name = parse_log_run_id(&name).is_some();
+            if file_type.is_symlink() || (file_type.is_file() && !valid_name) {
+                entry
+                    .remove_file()
+                    .map_err(|error| io_error("setup_log_prune_failed", error))?;
+                removed = true;
+                continue;
+            }
+            if !file_type.is_file() {
+                return Err(setup_error(
+                    "setup_log_invalid",
+                    "The private setup log directory contains an unexpected entry.",
+                ));
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(|error| io_error("setup_log_prune_failed", error))?;
+            if metadata.len() > MAX_LOG_BYTES as u64 {
+                entry
+                    .remove_file()
+                    .map_err(|error| io_error("setup_log_prune_failed", error))?;
+                removed = true;
+                continue;
+            }
+            let file = entry
+                .open()
+                .map_err(|error| io_error("setup_log_prune_failed", error))?;
+            let identity = Arc::new(file_identity(&file, "setup_log_prune_failed")?);
+            if !named_file_identity_matches(&self.logs, &name, &identity, MAX_LOG_BYTES as u64) {
+                return Err(setup_error(
+                    "setup_log_changed",
+                    "A private setup log changed while it was inspected.",
+                ));
+            }
+            logs.push((
+                name.clone(),
+                metadata.len(),
+                SavedSetupLog {
+                    scope: self.clone(),
+                    name,
+                    identity,
+                },
+            ));
+        }
+        logs.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut total = logs.iter().map(|(_, bytes, _)| *bytes).sum::<u64>();
+        while logs.len() > MAX_SAVED_RUNS || total > MAX_SAVED_LOG_BYTES {
+            let Some(index) = logs
+                .iter()
+                .position(|(name, _, _)| current.map_or(true, |current| name != current))
+            else {
+                break;
+            };
+            let (name, bytes, _) = logs.remove(index);
+            self.logs
+                .remove_file(name)
+                .map_err(|error| io_error("setup_log_prune_failed", error))?;
+            total = total.saturating_sub(bytes);
+            removed = true;
+        }
+        if removed {
+            sync_cap_directory(&self.logs, "setup_log_prune_failed")?;
+        }
+        self.verify()?;
+        Ok(logs.into_iter().map(|(_, _, saved)| saved).collect())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SavedSetupLog {
+    scope: Arc<AppDataScope>,
+    name: OsString,
+    identity: Arc<Handle>,
+}
+
+impl SavedSetupLog {
+    #[cfg(all(test, unix))]
+    pub(crate) fn file_name(&self) -> &OsStr {
+        &self.name
+    }
+
+    pub(crate) fn validate_for_open(&self) -> SetupResult<PathBuf> {
+        let (_file, path) = self.verified_file()?;
+        Ok(path)
+    }
+
+    pub(crate) fn open_with(
+        &self,
+        opener: impl FnOnce(&Path) -> SetupResult<()>,
+    ) -> SetupResult<()> {
+        let (_file, path) = self.verified_file()?;
+        opener(&path)?;
+        self.verified_file().map(|_| ())
+    }
+
+    fn verified_file(&self) -> SetupResult<(CapabilityFile, PathBuf)> {
+        self.scope.verify()?;
+        let metadata = self
+            .scope
+            .logs
+            .symlink_metadata(&self.name)
+            .map_err(|_| app_data_changed())?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_LOG_BYTES as u64
+        {
+            return Err(app_data_changed());
+        }
+        let file = self
+            .scope
+            .logs
+            .open(&self.name)
+            .map_err(|_| app_data_changed())?;
+        if file_identity(&file, "setup_log_changed")? != *self.identity
+            || !named_file_identity_matches(
+                &self.scope.logs,
+                &self.name,
+                &self.identity,
+                MAX_LOG_BYTES as u64,
+            )
+        {
+            return Err(app_data_changed());
+        }
+        Ok((
+            file,
+            self.scope.root_path.join("setup-logs").join(&self.name),
+        ))
+    }
+
+    fn run_id(&self) -> SetupResult<String> {
+        parse_log_run_id(&self.name)
+            .map(str::to_owned)
+            .ok_or_else(|| setup_error("setup_log_invalid", "The saved setup log name is invalid."))
+    }
+}
+
 pub(crate) struct BoundedSetupLog {
     #[cfg(test)]
     path: PathBuf,
-    file: File,
+    file: CapabilityFile,
+    saved: SavedSetupLog,
     lines: VecDeque<String>,
     persisted_bytes: usize,
     full: bool,
 }
 
 impl BoundedSetupLog {
+    #[cfg(test)]
     pub(crate) fn create(app_data: &Path, run_id: &str, timestamp: u64) -> SetupResult<Self> {
-        validate_run_id(run_id)?;
-        ensure_private_directory(app_data)?;
-        let root = app_data.join("setup-logs");
-        ensure_private_directory(&root)?;
-        let path = root.join(format!("{timestamp}-{run_id}.log"));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|error| io_error("setup_log_create_failed", error))?;
-        Ok(Self {
-            #[cfg(test)]
-            path,
-            file,
-            lines: VecDeque::new(),
-            persisted_bytes: 0,
-            full: false,
-        })
+        AppDataScope::bind(app_data)?
+            .create_log(run_id, timestamp)
+            .map(|(log, _)| log)
     }
 
-    pub(crate) fn push(&mut self, input: &str) -> String {
+    pub(crate) fn push(&mut self, input: &str) -> SetupResult<String> {
+        self.saved.validate_for_open()?;
         let line = redact_log_line(input);
         if !self.full {
             let required = line.len().saturating_add(1);
@@ -343,7 +876,9 @@ impl BoundedSetupLog {
         while self.lines.len() > MAX_RENDERER_LINES {
             self.lines.pop_front();
         }
-        line
+        self.saved.scope.prune_setup_logs(Some(&self.saved.name))?;
+        self.saved.validate_for_open()?;
+        Ok(line)
     }
 
     #[cfg(test)]
@@ -396,104 +931,225 @@ pub(crate) fn redact_log_line(input: &str) -> String {
     truncate_utf8(value, MAX_LOG_LINE_BYTES)
 }
 
-pub(crate) fn verify_resource_tree(root: &Path, manifest: &IntegrityManifest) -> SetupResult<()> {
-    if manifest.schema_version != 1 || manifest.files.is_empty() {
-        return Err(setup_error(
-            "setup_integrity_manifest_invalid",
-            "The bundled resource integrity manifest is invalid.",
-        ));
-    }
-    let mut expected = HashMap::new();
-    for entry in &manifest.files {
-        if !safe_resource_path(&entry.path)
-            || entry.max_bytes == 0
-            || entry.max_bytes > MAX_RESOURCE_BYTES
-            || !is_sha256(&entry.sha256)
-            || expected.insert(entry.path.as_str(), entry).is_some()
-        {
-            return Err(setup_error(
-                "setup_integrity_manifest_invalid",
-                "The bundled resource integrity manifest is invalid.",
-            ));
-        }
-    }
-
-    let mut found = HashSet::new();
-    for top in ["contracts", "examples", "brands"] {
-        let directory = root.join(top);
-        walk_resources(root, &directory, &expected, &mut found)?;
-    }
-    if found.len() != expected.len() {
-        return Err(setup_error(
-            "setup_resource_missing",
-            "A required bundled resource is missing.",
-        ));
-    }
-    Ok(())
+pub(crate) struct ResourceScope {
+    requested_root: PathBuf,
+    parent_path: PathBuf,
+    parent_identity: Handle,
+    parent: Dir,
+    root_name: OsString,
+    root_identity: Handle,
+    root: Dir,
 }
 
-fn walk_resources<'a>(
-    root: &Path,
-    directory: &Path,
+impl ResourceScope {
+    pub(crate) fn bind(root: &Path) -> SetupResult<Self> {
+        let requested_metadata = fs::symlink_metadata(root)
+            .map_err(|error| io_error("setup_resource_root_unavailable", error))?;
+        if requested_metadata.file_type().is_symlink() || !requested_metadata.is_dir() {
+            return Err(resource_root_changed());
+        }
+        let root_path = root
+            .canonicalize()
+            .map_err(|error| io_error("setup_resource_root_unavailable", error))?;
+        let parent_path = root_path.parent().ok_or_else(resource_root_changed)?;
+        let root_name = root_path
+            .file_name()
+            .ok_or_else(resource_root_changed)?
+            .to_os_string();
+        let parent = Dir::open_ambient_dir(parent_path, ambient_authority())
+            .map_err(|error| io_error("setup_resource_root_unavailable", error))?;
+        let metadata = parent
+            .symlink_metadata(&root_name)
+            .map_err(|error| io_error("setup_resource_root_unavailable", error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(resource_root_changed());
+        }
+        let directory = parent
+            .open_dir(&root_name)
+            .map_err(|error| io_error("setup_resource_root_unavailable", error))?;
+        let parent_identity = directory_identity(&parent, "setup_resource_root_unavailable")?;
+        let root_identity = directory_identity(&directory, "setup_resource_root_unavailable")?;
+        let scope = Self {
+            requested_root: root.to_path_buf(),
+            parent_path: parent_path.to_path_buf(),
+            parent_identity,
+            parent,
+            root_name,
+            root_identity,
+            root: directory,
+        };
+        scope.verify_root()?;
+        Ok(scope)
+    }
+
+    fn verify_root(&self) -> SetupResult<()> {
+        let requested_metadata =
+            fs::symlink_metadata(&self.requested_root).map_err(|_| resource_root_changed())?;
+        if requested_metadata.file_type().is_symlink() || !requested_metadata.is_dir() {
+            return Err(resource_root_changed());
+        }
+        let requested_identity =
+            Handle::from_path(&self.requested_root).map_err(|_| resource_root_changed())?;
+        if requested_identity != self.root_identity {
+            return Err(resource_root_changed());
+        }
+        let current_parent =
+            Handle::from_path(&self.parent_path).map_err(|_| resource_root_changed())?;
+        if current_parent != self.parent_identity {
+            return Err(resource_root_changed());
+        }
+        let current = self
+            .parent
+            .open_dir(&self.root_name)
+            .map_err(|_| resource_root_changed())?;
+        if directory_identity(&current, "setup_resource_root_changed")? != self.root_identity {
+            return Err(resource_root_changed());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify(&self, manifest: &IntegrityManifest) -> SetupResult<()> {
+        self.verify_impl(manifest, &mut |_| {})
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn verify_with_entry_hook(
+        &self,
+        manifest: &IntegrityManifest,
+        mut hook: impl FnMut(&str),
+    ) -> SetupResult<()> {
+        self.verify_impl(manifest, &mut hook)
+    }
+
+    fn verify_impl(
+        &self,
+        manifest: &IntegrityManifest,
+        hook: &mut dyn FnMut(&str),
+    ) -> SetupResult<()> {
+        self.verify_root()?;
+        if manifest.schema_version != 1 || manifest.files.is_empty() {
+            return Err(invalid_integrity_manifest());
+        }
+        let mut expected = HashMap::new();
+        for entry in &manifest.files {
+            if !safe_resource_path(&entry.path)
+                || entry.max_bytes == 0
+                || entry.max_bytes > MAX_RESOURCE_BYTES
+                || !is_sha256(&entry.sha256)
+                || expected.insert(entry.path.as_str(), entry).is_some()
+            {
+                return Err(invalid_integrity_manifest());
+            }
+        }
+        let mut found = HashSet::new();
+        for top in ["contracts", "examples", "brands"] {
+            let metadata = self.root.symlink_metadata(top).map_err(|_| {
+                setup_error(
+                    "setup_resource_missing",
+                    "A bundled resource directory is missing.",
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(invalid_resource_type());
+            }
+            let directory = self
+                .root
+                .open_dir(top)
+                .map_err(|error| io_error("setup_resource_read_failed", error))?;
+            let identity = directory_identity(&directory, "setup_resource_read_failed")?;
+            walk_cap_resources(&directory, top, &expected, &mut found, hook)?;
+            if !named_directory_identity_matches(&self.root, OsStr::new(top), &identity) {
+                return Err(setup_error(
+                    "setup_resource_changed",
+                    "A bundled resource directory changed during verification.",
+                ));
+            }
+        }
+        self.verify_root()?;
+        if found.len() != expected.len() {
+            return Err(setup_error(
+                "setup_resource_missing",
+                "A required bundled resource is missing.",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn verify_resource_tree(root: &Path, manifest: &IntegrityManifest) -> SetupResult<()> {
+    ResourceScope::bind(root)?.verify(manifest)
+}
+
+fn walk_cap_resources<'a>(
+    directory: &Dir,
+    relative_directory: &str,
     expected: &HashMap<&'a str, &'a IntegrityEntry>,
     found: &mut HashSet<&'a str>,
+    hook: &mut dyn FnMut(&str),
 ) -> SetupResult<()> {
-    let metadata = fs::symlink_metadata(directory).map_err(|_| {
-        setup_error(
-            "setup_resource_missing",
-            "A bundled resource directory is missing.",
-        )
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(setup_error(
-            "setup_resource_invalid_type",
-            "Bundled resource directories must be regular directories.",
-        ));
-    }
-    for entry in
-        fs::read_dir(directory).map_err(|error| io_error("setup_resource_read_failed", error))?
+    for entry in directory
+        .entries()
+        .map_err(|error| io_error("setup_resource_read_failed", error))?
     {
         let entry = entry.map_err(|error| io_error("setup_resource_read_failed", error))?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| io_error("setup_resource_read_failed", error))?;
-        if metadata.file_type().is_symlink() {
-            return Err(setup_error(
-                "setup_resource_invalid_type",
-                "Bundled resources cannot contain symbolic links.",
-            ));
-        }
-        if metadata.is_dir() {
-            walk_resources(root, &path, expected, found)?;
-            continue;
-        }
-        if !metadata.is_file() {
-            return Err(setup_error(
-                "setup_resource_invalid_type",
-                "Bundled resources must be regular files.",
-            ));
-        }
-        let relative = path.strip_prefix(root).map_err(|_| {
+        let name = entry.file_name();
+        let name_text = name.to_str().ok_or_else(|| {
             setup_error(
-                "setup_resource_scope_invalid",
-                "Bundled resources escaped their resource root.",
+                "setup_resource_path_invalid",
+                "Bundled resource paths must be Unicode.",
             )
         })?;
-        let relative = relative
-            .to_str()
-            .ok_or_else(|| {
-                setup_error(
-                    "setup_resource_path_invalid",
-                    "Bundled resource paths must be Unicode.",
-                )
-            })?
-            .replace('\\', "/");
+        let relative = format!("{relative_directory}/{name_text}");
+        let file_type = entry
+            .file_type()
+            .map_err(|error| io_error("setup_resource_read_failed", error))?;
+        if file_type.is_symlink() {
+            return Err(invalid_resource_type());
+        }
+        if file_type.is_dir() {
+            let child = entry
+                .open_dir()
+                .map_err(|error| io_error("setup_resource_read_failed", error))?;
+            let identity = directory_identity(&child, "setup_resource_read_failed")?;
+            walk_cap_resources(&child, &relative, expected, found, hook)?;
+            if !named_directory_identity_matches(directory, &name, &identity) {
+                return Err(setup_error(
+                    "setup_resource_changed",
+                    "A bundled resource directory changed during verification.",
+                ));
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(invalid_resource_type());
+        }
         let Some(expected_entry) = expected.get(relative.as_str()).copied() else {
             return Err(setup_error(
                 "setup_resource_unexpected",
                 "An unexpected bundled resource was found.",
             ));
         };
+        let file = entry
+            .open()
+            .map_err(|error| io_error("setup_resource_read_failed", error))?;
+        let identity = file_identity(&file, "setup_resource_read_failed")?;
+        hook(&relative);
+        let named_metadata = directory
+            .symlink_metadata(&name)
+            .map_err(|error| io_error("setup_resource_read_failed", error))?;
+        if named_metadata.file_type().is_symlink() || !named_metadata.is_file() {
+            return Err(invalid_resource_type());
+        }
+        if !named_file_identity_matches(directory, &name, &identity, MAX_RESOURCE_BYTES) {
+            return Err(setup_error(
+                "setup_resource_changed",
+                "A bundled resource changed during verification.",
+            ));
+        }
+        let metadata = file
+            .metadata()
+            .map_err(|error| io_error("setup_resource_read_failed", error))?;
         if metadata.len() > expected_entry.max_bytes {
             return Err(setup_error(
                 "setup_resource_too_large",
@@ -501,11 +1157,8 @@ fn walk_resources<'a>(
             ));
         }
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        File::open(&path)
-            .and_then(|file| {
-                file.take(expected_entry.max_bytes + 1)
-                    .read_to_end(&mut bytes)
-            })
+        file.take(expected_entry.max_bytes + 1)
+            .read_to_end(&mut bytes)
             .map_err(|error| io_error("setup_resource_read_failed", error))?;
         if bytes.len() as u64 > expected_entry.max_bytes {
             return Err(setup_error(
@@ -513,11 +1166,16 @@ fn walk_resources<'a>(
                 "A bundled resource exceeds its committed size limit.",
             ));
         }
-        let actual = format!("{:x}", Sha256::digest(&bytes));
-        if actual != expected_entry.sha256 {
+        if format!("{:x}", Sha256::digest(&bytes)) != expected_entry.sha256 {
             return Err(setup_error(
                 "setup_resource_digest_mismatch",
                 "A bundled resource did not match its committed digest.",
+            ));
+        }
+        if !named_file_identity_matches(directory, &name, &identity, MAX_RESOURCE_BYTES) {
+            return Err(setup_error(
+                "setup_resource_changed",
+                "A bundled resource changed during verification.",
             ));
         }
         found.insert(expected_entry.path.as_str());
@@ -525,35 +1183,9 @@ fn walk_resources<'a>(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn load_remembered_workspace(app_data: &Path) -> SetupResult<Option<PathBuf>> {
-    let path = app_data.join(RECENT_FILE);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_error("setup_workspace_record_failed", error)),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_RECENT_BYTES
-    {
-        return Ok(None);
-    }
-    let mut text = String::new();
-    File::open(path)
-        .and_then(|file| file.take(MAX_RECENT_BYTES + 1).read_to_string(&mut text))
-        .map_err(|error| io_error("setup_workspace_record_failed", error))?;
-    let records: Vec<RecentWorkspace> = match serde_json::from_str(&text) {
-        Ok(records) => records,
-        Err(_) => return Ok(None),
-    };
-    for record in records {
-        let requested = PathBuf::from(record.root_path);
-        let Ok(canonical) = requested.canonicalize() else {
-            continue;
-        };
-        if canonical == requested && canonical.is_dir() {
-            return Ok(Some(canonical));
-        }
-    }
-    Ok(None)
+    AppDataScope::bind(app_data)?.load_remembered_workspace()
 }
 
 #[derive(Deserialize)]
@@ -564,53 +1196,13 @@ struct RecentWorkspace {
     last_opened_at: String,
 }
 
+#[cfg(test)]
 pub(crate) fn atomic_persist_readiness(
     app_data: &Path,
     schema_version: u32,
     app_version: &str,
 ) -> SetupResult<()> {
-    ensure_private_directory(app_data)?;
-    let destination = app_data.join(READY_FILE);
-    reject_non_regular_destination(&destination)?;
-    let temporary = app_data.join(format!(
-        ".setup-ready-{}-{}.tmp",
-        std::process::id(),
-        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-    ));
-    let bytes = serde_json::to_vec(&ReadinessRecord {
-        schema_version,
-        app_version,
-    })
-    .map_err(|_| {
-        setup_error(
-            "setup_ready_write_failed",
-            "Setup readiness could not be encoded.",
-        )
-    })?;
-    let result = (|| -> SetupResult<()> {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temporary)
-            .map_err(|error| io_error("setup_ready_write_failed", error))?;
-        file.write_all(&bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| io_error("setup_ready_write_failed", error))?;
-        drop(file);
-        fs::rename(&temporary, &destination)
-            .map_err(|error| io_error("setup_ready_write_failed", error))?;
-        sync_directory(app_data)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
+    AppDataScope::bind(app_data)?.persist_readiness(schema_version, app_version)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -621,21 +1213,19 @@ struct ReadinessRecord<'a> {
     app_version: &'a str,
 }
 
-fn is_ready(app_data: &Path, app_version: &str) -> bool {
-    let path = app_data.join(READY_FILE);
-    let Ok(metadata) = fs::symlink_metadata(&path) else {
-        return false;
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4_096 {
-        return false;
-    }
-    let Ok(bytes) = fs::read(path) else {
-        return false;
-    };
-    let Ok(record) = serde_json::from_slice::<ReadinessRecord<'_>>(&bytes) else {
-        return false;
-    };
-    record.schema_version == SETUP_SCHEMA_VERSION && record.app_version == app_version
+#[cfg(test)]
+pub(crate) fn is_ready(app_data: &Path, app_version: &str) -> bool {
+    AppDataScope::bind(app_data).is_ok_and(|scope| scope.readiness_matches(app_version))
+}
+
+pub(crate) fn initialize_setup_status(
+    app_data: &Path,
+    state: &SetupState,
+    app_version: &str,
+) -> SetupResult<bool> {
+    let scope = AppDataScope::bind(app_data)?;
+    state.replace_logs(scope.prune_setup_logs(None)?)?;
+    Ok(scope.readiness_matches(app_version))
 }
 
 pub(crate) fn run_setup(
@@ -658,8 +1248,9 @@ pub(crate) fn run_setup(
         sink,
     );
     let mut log: Option<BoundedSetupLog> = None;
+    let mut app_scope: Option<Arc<AppDataScope>> = None;
 
-    for (index, (stage_id, _)) in STAGES.iter().enumerate() {
+    for (stage_id, _) in &STAGES {
         if cancelled.load(Ordering::SeqCst) {
             sequence += 1;
             emit_and_apply(
@@ -690,20 +1281,24 @@ pub(crate) fn run_setup(
         let stage_started = Instant::now();
         let outcome: SetupResult<(SetupStageStatus, String)> = match *stage_id {
             "app-data" => (|| {
-                ensure_private_directory(&paths.app_data)?;
-                let created = BoundedSetupLog::create(&paths.app_data, run_id, started_at)?;
+                let scope = AppDataScope::bind(&paths.app_data)?;
+                let (created, saved) = scope.create_log(run_id, started_at)?;
+                let retained = scope.prune_setup_logs(Some(&saved.name))?;
+                (services.log_registry)(retained)?;
                 log = Some(created);
+                app_scope = Some(scope);
                 Ok((
                     SetupStageStatus::Succeeded,
                     "Private application data is ready.".to_owned(),
                 ))
             })(),
-            "resources" => verify_resource_tree(&paths.resource_root, manifest).map(|_| {
-                (
+            "resources" => (|| {
+                ResourceScope::bind(&paths.resource_root)?.verify(manifest)?;
+                Ok((
                     SetupStageStatus::Succeeded,
                     "Bundled resources match their committed digests.".to_owned(),
-                )
-            }),
+                ))
+            })(),
             "git" => match (services.git_probe)() {
                 Ok(version) => Ok((
                     SetupStageStatus::Succeeded,
@@ -714,8 +1309,12 @@ pub(crate) fn run_setup(
                     "Git is unavailable; local version control remains optional.".to_owned(),
                 )),
             },
-            "workspace" => {
-                load_remembered_workspace(&paths.app_data).map(|workspace| match workspace {
+            "workspace" => (|| {
+                let workspace = app_scope
+                    .as_ref()
+                    .ok_or_else(app_data_changed)?
+                    .load_remembered_workspace()?;
+                Ok(match workspace {
                     Some(_) => (
                         SetupStageStatus::Succeeded,
                         "A valid app-owned remembered workspace is available.".to_owned(),
@@ -725,14 +1324,17 @@ pub(crate) fn run_setup(
                         "Workspace selection is required after setup.".to_owned(),
                     ),
                 })
-            }
-            "ready" => atomic_persist_readiness(&paths.app_data, SETUP_SCHEMA_VERSION, app_version)
-                .map(|_| {
-                    (
-                        SetupStageStatus::Succeeded,
-                        "Setup readiness was persisted atomically.".to_owned(),
-                    )
-                }),
+            })(),
+            "ready" => (|| {
+                app_scope
+                    .as_ref()
+                    .ok_or_else(app_data_changed)?
+                    .persist_readiness(SETUP_SCHEMA_VERSION, app_version)?;
+                Ok((
+                    SetupStageStatus::Succeeded,
+                    "Setup readiness was persisted atomically.".to_owned(),
+                ))
+            })(),
             _ => unreachable!(),
         };
         let (status, message) = match outcome {
@@ -795,20 +1397,6 @@ pub(crate) fn run_setup(
             sequence += 1;
             emit_log(&mut snapshot, log, run_id, &mut sequence, &message, sink);
         }
-        if index == STAGES.len() - 1 && cancelled.load(Ordering::SeqCst) {
-            sequence += 1;
-            emit_and_apply(
-                &mut snapshot,
-                SetupEvent::Cancelled {
-                    run_id: run_id.to_owned(),
-                    sequence,
-                    timestamp: now_ms(),
-                    duration_ms: elapsed_ms(started),
-                },
-                sink,
-            );
-            return Ok(snapshot);
-        }
     }
 
     sequence += 1;
@@ -833,7 +1421,9 @@ fn emit_log(
     message: &str,
     sink: &(dyn Fn(&SetupEvent) + Sync),
 ) {
-    let line = log.push(message);
+    let Ok(line) = log.push(message) else {
+        return;
+    };
     emit_and_apply(
         snapshot,
         SetupEvent::Log {
@@ -1009,19 +1599,17 @@ pub fn setup_status(
         )
     })?;
     Ok(SetupStatusResponse {
-        ready: is_ready(&app_data, app.package_info().version.to_string().as_str()),
+        ready: initialize_setup_status(
+            &app_data,
+            state.inner(),
+            app.package_info().version.to_string().as_str(),
+        )?,
         snapshot: state.snapshot()?,
     })
 }
 
 #[tauri::command]
 pub fn setup_start(app: AppHandle, state: State<'_, SetupState>) -> SetupResult<SetupSnapshot> {
-    if let Some(snapshot) = state
-        .snapshot()?
-        .filter(|snapshot| snapshot.status == SetupRunStatus::Running)
-    {
-        return Ok(snapshot);
-    }
     let paths = resolve_setup_paths(&app)?;
     let manifest: IntegrityManifest = serde_json::from_str(include_str!(
         "../resources/setup-integrity-v1.json"
@@ -1036,13 +1624,18 @@ pub fn setup_start(app: AppHandle, state: State<'_, SetupState>) -> SetupResult<
     let run_id = opaque_run_id()?;
     let cancellation = Arc::new(AtomicBool::new(false));
     let owned_state = state.inner().clone();
-    owned_state.install_active_run(&run_id, cancellation.clone())?;
-    let initial = owned_state.snapshot()?.expect("active run installed");
+    let claim = owned_state.claim_active_run(&run_id, cancellation.clone())?;
+    if !claim.claimed {
+        return Ok(claim.snapshot);
+    }
+    let initial = claim.snapshot;
     let app_for_run = app.clone();
     let run_id_for_run = run_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let git_root = paths.app_data.clone();
-        let services = SetupServices::new(move || crate::git::probe_version(&git_root));
+        let registry_state = owned_state.clone();
+        let services = SetupServices::new(move || crate::git::probe_version(&git_root))
+            .with_log_registry(move |logs| registry_state.replace_logs(logs));
         let sink = |event: &SetupEvent| {
             let _ = owned_state.record(event);
             let _ = app_for_run.emit("setup://event", event);
@@ -1056,9 +1649,6 @@ pub fn setup_start(app: AppHandle, state: State<'_, SetupState>) -> SetupResult<
             &services,
             &sink,
         );
-        if let Ok(log_path) = setup_log_path(&paths.app_data, &run_id_for_run) {
-            let _ = owned_state.remember_log(&run_id_for_run, log_path);
-        }
         if let Err(error) = result {
             let _ = app_for_run.emit("setup://error", error);
         }
@@ -1073,34 +1663,19 @@ pub fn setup_cancel(run_id: String, state: State<'_, SetupState>) -> SetupResult
 
 #[tauri::command]
 pub fn setup_open_log(run_id: String, state: State<'_, SetupState>) -> SetupResult<()> {
-    let path = state.log_for(&run_id)?.ok_or_else(|| {
+    let saved = state.saved_log(&run_id)?.ok_or_else(|| {
         setup_error(
             "setup_log_not_found",
             "No saved setup log is available for this run.",
         )
     })?;
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|error| io_error("setup_log_read_failed", error))?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_LOG_BYTES as u64
-    {
-        return Err(setup_error(
-            "setup_log_invalid",
-            "The saved setup log is invalid.",
-        ));
-    }
-    path.to_str().ok_or_else(|| {
-        setup_error(
-            "setup_log_path_invalid",
-            "The saved setup log path is not Unicode.",
-        )
-    })?;
-    open::that_detached(&path).map_err(|error| {
-        setup_error(
-            "setup_log_open_failed",
-            format!("The saved setup log could not be opened: {error}"),
-        )
+    saved.open_with(|path| {
+        open::that_detached(path).map_err(|error| {
+            setup_error(
+                "setup_log_open_failed",
+                format!("The saved setup log could not be opened: {error}"),
+            )
+        })
     })
 }
 
@@ -1136,28 +1711,6 @@ fn resolve_setup_paths(app: &AppHandle) -> SetupResult<SetupPaths> {
     })
 }
 
-fn setup_log_path(app_data: &Path, run_id: &str) -> SetupResult<PathBuf> {
-    validate_run_id(run_id)?;
-    let root = app_data.join("setup-logs");
-    let suffix = format!("-{run_id}.log");
-    let mut found = None;
-    for entry in fs::read_dir(&root).map_err(|error| io_error("setup_log_read_failed", error))? {
-        let entry = entry.map_err(|error| io_error("setup_log_read_failed", error))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if name.ends_with(&suffix) {
-            if found.is_some() {
-                return Err(setup_error(
-                    "setup_log_invalid",
-                    "Multiple setup logs matched one run.",
-                ));
-            }
-            found = Some(entry.path());
-        }
-    }
-    found.ok_or_else(|| setup_error("setup_log_not_found", "The setup log was not found."))
-}
-
 fn ensure_private_directory(path: &Path) -> SetupResult<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -1181,18 +1734,193 @@ fn ensure_private_directory(path: &Path) -> SetupResult<()> {
     Ok(())
 }
 
-fn reject_non_regular_destination(path: &Path) -> SetupResult<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(setup_error(
-                "setup_ready_destination_invalid",
-                "Setup readiness cannot replace a non-regular file.",
-            ))
-        }
-        Ok(_) | Err(_) if !path.exists() => Ok(()),
-        Ok(_) => Ok(()),
-        Err(error) => Err(io_error("setup_ready_write_failed", error)),
+fn regular_destination_identity(directory: &Dir, name: &str) -> SetupResult<Option<Handle>> {
+    let metadata = match directory.symlink_metadata(name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error("setup_ready_write_failed", error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4_096 {
+        return Err(setup_error(
+            "setup_ready_destination_invalid",
+            "Setup readiness cannot replace an unsafe file.",
+        ));
     }
+    let file = directory
+        .open(name)
+        .map_err(|error| io_error("setup_ready_write_failed", error))?;
+    let identity = file_identity(&file, "setup_ready_write_failed")?;
+    if !named_file_identity_matches(directory, OsStr::new(name), &identity, 4_096) {
+        return Err(setup_error(
+            "setup_ready_destination_changed",
+            "Setup readiness changed while it was inspected.",
+        ));
+    }
+    Ok(Some(identity))
+}
+
+#[cfg(not(windows))]
+fn commit_readiness(
+    directory: &Dir,
+    temporary: &OsStr,
+    _file: &CapabilityFile,
+    _destination_exists: bool,
+) -> SetupResult<()> {
+    directory
+        .rename(temporary, directory, READY_FILE)
+        .map_err(|error| io_error("setup_ready_write_failed", error))
+}
+
+#[cfg(windows)]
+fn commit_readiness(
+    directory: &Dir,
+    temporary: &OsStr,
+    file: &CapabilityFile,
+    destination_exists: bool,
+) -> SetupResult<()> {
+    if !destination_exists {
+        return directory
+            .rename(temporary, directory, READY_FILE)
+            .map_err(|error| io_error("setup_ready_write_failed", error));
+    }
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
+    };
+
+    const TARGET_LENGTH: usize = READY_FILE.len();
+    #[repr(C)]
+    struct RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0,
+        root_directory: windows_sys::Win32::Foundation::HANDLE,
+        file_name_length: u32,
+        file_name: [u16; TARGET_LENGTH],
+    }
+    let mut file_name = [0_u16; TARGET_LENGTH];
+    for (destination, source) in file_name.iter_mut().zip(READY_FILE.encode_utf16()) {
+        *destination = source;
+    }
+    let rename = RelativeRenameInfo {
+        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
+        root_directory: directory.as_raw_handle(),
+        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
+        file_name,
+    };
+    let replaced = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileRenameInfo,
+            std::ptr::addr_of!(rename).cast(),
+            std::mem::size_of_val(&rename) as u32,
+        )
+    };
+    if replaced == 0 {
+        Err(io_error(
+            "setup_ready_write_failed",
+            std::io::Error::last_os_error(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn file_identity(file: &CapabilityFile, code: &'static str) -> SetupResult<Handle> {
+    Handle::from_file(
+        file.try_clone()
+            .map_err(|error| io_error(code, error))?
+            .into_std(),
+    )
+    .map_err(|error| io_error(code, error))
+}
+
+fn directory_identity(directory: &Dir, code: &'static str) -> SetupResult<Handle> {
+    Handle::from_file(
+        directory
+            .try_clone()
+            .map_err(|error| io_error(code, error))?
+            .into_std_file(),
+    )
+    .map_err(|error| io_error(code, error))
+}
+
+fn named_file_identity_matches(
+    directory: &Dir,
+    name: &OsStr,
+    expected: &Handle,
+    max_bytes: u64,
+) -> bool {
+    let Ok(metadata) = directory.symlink_metadata(name) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max_bytes {
+        return false;
+    }
+    directory
+        .open(name)
+        .ok()
+        .and_then(|file| file_identity(&file, "setup_file_changed").ok())
+        .is_some_and(|identity| identity == *expected)
+}
+
+fn named_directory_identity_matches(directory: &Dir, name: &OsStr, expected: &Handle) -> bool {
+    let Ok(metadata) = directory.symlink_metadata(name) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return false;
+    }
+    directory
+        .open_dir(name)
+        .ok()
+        .and_then(|child| directory_identity(&child, "setup_directory_changed").ok())
+        .is_some_and(|identity| identity == *expected)
+}
+
+fn parse_log_run_id(name: &OsStr) -> Option<&str> {
+    let text = name.to_str()?.strip_suffix(".log")?;
+    let (timestamp, run_id) = text.split_once('-')?;
+    if timestamp.is_empty()
+        || !timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        || validate_run_id(run_id).is_err()
+    {
+        return None;
+    }
+    Some(run_id)
+}
+
+fn invalid_integrity_manifest() -> SetupError {
+    setup_error(
+        "setup_integrity_manifest_invalid",
+        "The bundled resource integrity manifest is invalid.",
+    )
+}
+
+fn invalid_resource_type() -> SetupError {
+    setup_error(
+        "setup_resource_invalid_type",
+        "Bundled resources must contain only regular directories and files.",
+    )
+}
+
+fn resource_root_changed() -> SetupError {
+    setup_error(
+        "setup_resource_root_changed",
+        "The installed resource root changed during setup.",
+    )
+}
+
+fn app_data_changed() -> SetupError {
+    setup_error(
+        "setup_app_data_changed",
+        "The private application-data capability changed during setup.",
+    )
+}
+
+fn readiness_destination_changed() -> SetupError {
+    setup_error(
+        "setup_ready_destination_changed",
+        "Setup readiness changed before the atomic commit.",
+    )
 }
 
 fn safe_resource_path(value: &str) -> bool {
@@ -1266,14 +1994,16 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> SetupResult<()> {
-    File::open(path)
+fn sync_cap_directory(directory: &Dir, code: &'static str) -> SetupResult<()> {
+    directory
+        .try_clone()
+        .map(Dir::into_std_file)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error("setup_ready_write_failed", error))
+        .map_err(|error| io_error(code, error))
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> SetupResult<()> {
+fn sync_cap_directory(_directory: &Dir, _code: &'static str) -> SetupResult<()> {
     Ok(())
 }
 

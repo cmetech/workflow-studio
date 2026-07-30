@@ -1833,9 +1833,9 @@
 {#if setupProgress && setupProgress.status !== 'succeeded'}
   <SetupOverlay
     state={setupProgress}
-    oncancel={(runId) => void setupController.cancel(runId)}
-    onretry={() => void setupController.retry()}
-    onopenlog={(runId) => void setupController.openLog(runId)}
+    oncancel={(runId) => setupController.cancel(runId)}
+    onretry={() => setupController.retry()}
+    onopenlog={(runId) => setupController.openLog(runId)}
     copyText={(text) => navigator.clipboard.writeText(text)}
   />
 {/if}

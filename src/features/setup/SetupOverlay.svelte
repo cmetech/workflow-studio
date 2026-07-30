@@ -8,9 +8,9 @@
     state: ProgressState
     now?: number
     copyText?: (text: string) => Promise<void>
-    oncancel?: (runId: string) => void
-    onretry?: () => void
-    onopenlog?: (runId: string) => void
+    oncancel?: (runId: string) => void | Promise<void>
+    onretry?: () => void | Promise<void>
+    onopenlog?: (runId: string) => void | Promise<void>
   }
 
   let {
@@ -26,11 +26,28 @@
   let expanded = $state(false)
   let fallbackModal = $state(false)
   let clock = $state(Date.now())
+  let retryPending = $state(false)
+  let openLogPending = $state(false)
+  let copyPending = $state(false)
+  let cancelPending = $state(false)
+  let actionGeneration = 0
+  let observedActionIdentity = ''
   const currentStage = $derived(progress.stages.find(({ id }) => id === progress.currentStageId))
   const elapsed = $derived(Math.max(0, (fixedNow ?? clock) - progress.startedAt))
+  const actionIdentity = $derived(`${progress.runId}\0${progress.status}`)
 
   $effect(() => {
     if (progress.logExpanded) expanded = true
+  })
+
+  $effect(() => {
+    if (actionIdentity === observedActionIdentity) return
+    observedActionIdentity = actionIdentity
+    actionGeneration += 1
+    retryPending = false
+    openLogPending = false
+    copyPending = false
+    cancelPending = false
   })
 
   onMount(() => {
@@ -100,6 +117,58 @@
       first.focus()
     }
   }
+
+  async function retry(): Promise<void> {
+    if (retryPending) return
+    retryPending = true
+    const generation = actionGeneration
+    try {
+      await onretry()
+    } catch {
+      // The controller surfaces native setup failures in the setup state.
+    } finally {
+      if (generation === actionGeneration) retryPending = false
+    }
+  }
+
+  async function openLog(): Promise<void> {
+    if (openLogPending) return
+    openLogPending = true
+    const generation = actionGeneration
+    try {
+      await onopenlog(progress.runId)
+    } catch {
+      // The application error surface reports native open failures.
+    } finally {
+      if (generation === actionGeneration) openLogPending = false
+    }
+  }
+
+  async function copyOutput(): Promise<void> {
+    if (copyPending) return
+    copyPending = true
+    const generation = actionGeneration
+    try {
+      await copyText(progress.logs.join('\n'))
+    } catch {
+      // The application clipboard surface may be unavailable.
+    } finally {
+      if (generation === actionGeneration) copyPending = false
+    }
+  }
+
+  async function cancel(): Promise<void> {
+    if (cancelPending) return
+    cancelPending = true
+    const generation = actionGeneration
+    try {
+      await oncancel(progress.runId)
+    } catch {
+      // The application error surface reports native cancellation failures.
+    } finally {
+      if (generation === actionGeneration) cancelPending = false
+    }
+  }
 </script>
 
 <dialog
@@ -139,18 +208,29 @@
     >
     <ExpandableLog {expanded} lines={progress.logs} />
     <footer>
-      {#if expanded}<button type="button" onclick={() => void copyText(progress.logs.join('\n'))}>Copy Output</button
+      {#if expanded}<button
+          type="button"
+          disabled={copyPending}
+          aria-busy={copyPending}
+          onclick={() => void copyOutput()}>{copyPending ? 'Copying output' : 'Copy Output'}</button
         >{/if}
-      {#if progress.savedLogAvailable}<button type="button" onclick={() => onopenlog(progress.runId)}
-          >Open Saved Log</button
+      {#if progress.savedLogAvailable}<button
+          type="button"
+          disabled={openLogPending}
+          aria-busy={openLogPending}
+          onclick={() => void openLog()}>{openLogPending ? 'Opening saved log' : 'Open Saved Log'}</button
         >{/if}
-      {#if progress.status === 'failed' || progress.status === 'cancelled'}<button type="button" onclick={onretry}
-          >Retry</button
+      {#if progress.status === 'failed' || progress.status === 'cancelled'}<button
+          type="button"
+          disabled={retryPending}
+          aria-busy={retryPending}
+          onclick={() => void retry()}>{retryPending ? 'Retrying setup' : 'Retry'}</button
         >{/if}
       {#if progress.status === 'running'}<button
           type="button"
-          disabled={!progress.cancellable}
-          onclick={() => oncancel(progress.runId)}>Cancel setup</button
+          disabled={!progress.cancellable || cancelPending}
+          aria-busy={cancelPending}
+          onclick={() => void cancel()}>{cancelPending ? 'Cancelling setup' : 'Cancel setup'}</button
         >{/if}
     </footer>
   </section>

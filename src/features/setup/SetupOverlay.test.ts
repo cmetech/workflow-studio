@@ -115,4 +115,120 @@ describe('SetupOverlay', () => {
     await fireEvent.click(cancelButton)
     expect(cancel).toHaveBeenCalledWith('opaque-run-a')
   })
+
+  it('disables retry, open, and copy while pending and suppresses repeated activation', async () => {
+    const retryResult = deferred<void>()
+    const openResult = deferred<void>()
+    const copyResult = deferred<void>()
+    const retry = vi.fn(() => retryResult.promise)
+    const openLog = vi.fn(() => openResult.promise)
+    const copyText = vi.fn(() => copyResult.promise)
+    render(SetupOverlay, {
+      props: {
+        state: state({
+          status: 'failed',
+          cancellable: false,
+          logExpanded: true,
+          failure: { code: 'setup_failed', message: 'Setup failed.' },
+        }),
+        now: 3_500,
+        onretry: retry,
+        onopenlog: openLog,
+        copyText,
+      },
+    })
+
+    const retryButton = screen.getByRole('button', { name: 'Retry' })
+    const openButton = screen.getByRole('button', { name: 'Open Saved Log' })
+    const copyButton = screen.getByRole('button', { name: 'Copy Output' })
+    await fireEvent.click(retryButton)
+    await fireEvent.click(openButton)
+    await fireEvent.click(copyButton)
+    await fireEvent.click(retryButton)
+    await fireEvent.click(openButton)
+    await fireEvent.click(copyButton)
+
+    expect(retry).toHaveBeenCalledOnce()
+    expect(openLog).toHaveBeenCalledOnce()
+    expect(copyText).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Retrying setup' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Opening saved log' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('button', { name: 'Copying output' })).toBeDisabled()
+
+    retryResult.resolve()
+    openResult.resolve()
+    copyResult.resolve()
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled())
+  })
+
+  it('guards cancellation while pending and clears the guard when the run becomes terminal', async () => {
+    const cancellation = deferred<void>()
+    const cancel = vi.fn(() => cancellation.promise)
+    const view = render(SetupOverlay, { props: { state: state(), now: 3_500, oncancel: cancel } })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel setup' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancelling setup' }))
+
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Cancelling setup' })).toBeDisabled()
+
+    await view.rerender({
+      state: state({ status: 'cancelled', cancellable: false, sequence: 5 }),
+      now: 3_500,
+      oncancel: cancel,
+    })
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    cancellation.resolve()
+  })
+
+  it('clears copy pending state when the clipboard rejects', async () => {
+    render(SetupOverlay, {
+      props: {
+        state: state({ logExpanded: true }),
+        now: 3_500,
+        copyText: async () => {
+          throw new Error('clipboard unavailable')
+        },
+      },
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy Output' }))
+
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Copy Output' })).toBeEnabled())
+  })
+
+  it('clears open and copy guards when retry replaces the run', async () => {
+    const opening = deferred<void>()
+    const copying = deferred<void>()
+    const view = render(SetupOverlay, {
+      props: {
+        state: state({ status: 'failed', logExpanded: true }),
+        now: 3_500,
+        onopenlog: () => opening.promise,
+        copyText: () => copying.promise,
+      },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Open Saved Log' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy Output' }))
+
+    await view.rerender({
+      state: state({ runId: 'opaque-run-b', status: 'failed', logExpanded: true }),
+      now: 3_500,
+      onopenlog: () => opening.promise,
+      copyText: () => copying.promise,
+    })
+
+    expect(screen.getByRole('button', { name: 'Open Saved Log' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Copy Output' })).toBeEnabled()
+    opening.resolve()
+    copying.resolve()
+  })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}

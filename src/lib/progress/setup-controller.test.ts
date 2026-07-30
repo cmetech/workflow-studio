@@ -151,6 +151,128 @@ describe('setup controller', () => {
 
     expect(ready).toHaveBeenCalledOnce()
   })
+
+  it('publishes a bounded retryable failure when initial status cannot be read, then recovers', async () => {
+    const oversized = `status unavailable ${'x'.repeat(2_000)}`
+    const setupStatus = vi
+      .fn<SetupNativeBridge['setupStatus']>()
+      .mockRejectedValueOnce(new Error(oversized))
+      .mockResolvedValueOnce({ ready: false, snapshot: null })
+    const controller = createSetupController(
+      bridge({ setupStatus, setupStart: async () => snapshot({ runId: 'recovered-run' }) }),
+    )
+
+    await controller.start()
+
+    expect(controller.state()?.status).toBe('failed')
+    expect(controller.state()?.failure?.message).toContain('status unavailable')
+    expect(controller.state()?.failure?.message.length).toBeLessThanOrEqual(1_024)
+
+    await controller.retry()
+
+    expect(setupStatus).toHaveBeenCalledTimes(2)
+    expect(controller.state()?.runId).toBe('recovered-run')
+    expect(controller.state()?.status).toBe('running')
+  })
+
+  it('re-subscribes after listener registration fails and retry recovers setup', async () => {
+    const onSetupEvent = vi
+      .fn<SetupNativeBridge['onSetupEvent']>()
+      .mockRejectedValueOnce(new Error('event channel unavailable'))
+      .mockResolvedValueOnce(() => undefined)
+    const setupStart = vi.fn(async () => snapshot({ runId: 'listener-recovered' }))
+    const controller = createSetupController(
+      bridge({
+        onSetupEvent,
+        setupStatus: async () => ({ ready: false, snapshot: null }),
+        setupStart,
+      }),
+    )
+
+    await controller.start()
+    expect(controller.state()?.failure?.message).toContain('event channel unavailable')
+
+    await controller.retry()
+
+    expect(onSetupEvent).toHaveBeenCalledTimes(2)
+    expect(setupStart).toHaveBeenCalledOnce()
+    expect(controller.state()?.runId).toBe('listener-recovered')
+  })
+
+  it('turns a start rejection into visible failure and permits a successful retry', async () => {
+    const setupStart = vi
+      .fn<SetupNativeBridge['setupStart']>()
+      .mockRejectedValueOnce(new Error('native setup did not start'))
+      .mockResolvedValueOnce(snapshot({ runId: 'retry-success' }))
+    const controller = createSetupController(
+      bridge({ setupStatus: async () => ({ ready: false, snapshot: null }), setupStart }),
+    )
+
+    await controller.start()
+    expect(controller.state()?.status).toBe('failed')
+    expect(controller.state()?.failure?.message).toContain('native setup did not start')
+
+    await controller.retry()
+
+    expect(setupStart).toHaveBeenCalledTimes(2)
+    expect(controller.state()?.runId).toBe('retry-success')
+  })
+
+  it('suppresses duplicate retry, cancel, and open-log operations while each action is pending', async () => {
+    const retryResult = deferred<ProgressSnapshot>()
+    const cancelResult = deferred<boolean>()
+    const openResult = deferred<void>()
+    const setupStart = vi.fn(() => retryResult.promise)
+    const setupCancel = vi.fn(() => cancelResult.promise)
+    const setupOpenLog = vi.fn(() => openResult.promise)
+    const controller = createSetupController(
+      bridge({
+        setupStatus: async () => ({ ready: false, snapshot: snapshot({ status: 'failed' }) }),
+        setupStart,
+        setupCancel,
+        setupOpenLog,
+      }),
+    )
+    await controller.start()
+
+    const retryOne = controller.retry()
+    const retryTwo = controller.retry()
+    const cancelOne = controller.cancel('run-new')
+    const cancelTwo = controller.cancel('run-new')
+    const openOne = controller.openLog('run-new')
+    const openTwo = controller.openLog('run-new')
+
+    await vi.waitFor(() => {
+      expect(setupStart).toHaveBeenCalledOnce()
+      expect(setupCancel).toHaveBeenCalledOnce()
+      expect(setupOpenLog).toHaveBeenCalledOnce()
+    })
+
+    retryResult.resolve(snapshot({ runId: 'next-run' }))
+    cancelResult.resolve(true)
+    openResult.resolve()
+    await Promise.all([retryOne, retryTwo, cancelOne, cancelTwo, openOne, openTwo])
+  })
+
+  it('does not publish transport failure or retain late operations after disposal', async () => {
+    const status = deferred<{ ready: boolean; snapshot: ProgressSnapshot | null }>()
+    const onState = vi.fn()
+    const onError = vi.fn()
+    const controller = createSetupController(bridge({ setupStatus: () => status.promise }), {
+      onState,
+      onError,
+    })
+
+    const starting = controller.start()
+    await vi.waitFor(() => expect(onState).not.toHaveBeenCalled())
+    controller.dispose()
+    status.reject(new Error('late status failure'))
+    await starting
+
+    expect(onState).not.toHaveBeenCalled()
+    expect(onError).not.toHaveBeenCalled()
+    expect(controller.state()).toBeNull()
+  })
 })
 
 function bridge(overrides: Partial<SetupNativeBridge> = {}): SetupNativeBridge {
@@ -167,8 +289,10 @@ function bridge(overrides: Partial<SetupNativeBridge> = {}): SetupNativeBridge {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
