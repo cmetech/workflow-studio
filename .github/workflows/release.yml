@@ -24,21 +24,12 @@ jobs:
       application_commit: ${{ steps.release-ref.outputs.application_commit }}
       tooling_commit: ${{ github.sha }}
     steps:
-      - name: Checkout pinned release tooling
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.sha }}
-          path: .release-tooling
-          persist-credentials: false
-      - name: Validate dispatch ref and resolve immutable tag
-        id: release-ref
+      - name: Validate dispatch ref and tag syntax
+        id: requested-ref
         env:
           DISPATCH_REF: ${{ github.ref }}
           REQUESTED_TAG: ${{ inputs.tag }}
-          TOOLING_COMMIT: ${{ github.sha }}
         shell: bash
-        working-directory: .release-tooling
         run: |
           set -euo pipefail
           if ! [[ "$DISPATCH_REF" == "refs/heads/base" ]]; then
@@ -46,8 +37,40 @@ jobs:
             exit 1
           fi
           TAG="$REQUESTED_TAG"
-          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+          SEMVER_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG" =~ $SEMVER_PATTERN ]]; then
             echo "Invalid version tag: $TAG" >&2
+            exit 1
+          fi
+          VERSION_WITHOUT_BUILD=${TAG%%+*}
+          if [[ "$VERSION_WITHOUT_BUILD" == *-* ]]; then
+            PRERELEASE=${VERSION_WITHOUT_BUILD#*-}
+            IFS='.' read -r -a PRERELEASE_IDENTIFIERS <<< "$PRERELEASE"
+            for IDENTIFIER in "${PRERELEASE_IDENTIFIERS[@]}"; do
+              if [[ "$IDENTIFIER" =~ ^0[0-9]+$ ]]; then
+                echo "Invalid version tag: $TAG" >&2
+                exit 1
+              fi
+            done
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Checkout immutable tagged application
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}
+          persist-credentials: false
+      - name: Validate immutable application and tooling commits
+        id: release-ref
+        env:
+          TAG: ${{ steps.requested-ref.outputs.tag }}
+          TOOLING_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if [[ "$(git rev-parse HEAD)" != "$TAG_COMMIT" ]]; then
+            echo "Application checkout does not match immutable tag $TAG" >&2
             exit 1
           fi
           git fetch --no-tags origin base:refs/remotes/origin/base
@@ -55,8 +78,6 @@ jobs:
             echo "Release tooling commit $TOOLING_COMMIT does not belong to base" >&2
             exit 1
           fi
-          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
-          TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
           if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/base"; then
             echo "Tag $TAG is not on base" >&2
             exit 1
@@ -69,13 +90,6 @@ jobs:
             echo "- Application commit: \`$TAG_COMMIT\`"
             echo "- Release tooling commit: \`$TOOLING_COMMIT\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Checkout immutable tagged application
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ steps.release-ref.outputs.application_commit }}
-          persist-credentials: false
-          clean: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22.13.0
@@ -96,6 +110,13 @@ jobs:
             echo "Tag $TAG does not match Tauri version $CONFIG_VERSION" >&2
             exit 1
           fi
+      - name: Checkout pinned release tooling
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: .release-tooling
+          persist-credentials: false
       - name: Check existing release state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,9 +305,13 @@ jobs:
             }
 
             $applicationRoot = Split-Path -Parent $resourceRoots[0].FullName
-            $executables = @(Get-ChildItem -LiteralPath $applicationRoot -File -Filter '*.exe')
+            $expectedApplicationName = 'workflow-studio.exe'
+            $executables = @(
+              Get-ChildItem -LiteralPath $applicationRoot -File -Recurse |
+                Where-Object { $_.Name -ieq $expectedApplicationName }
+            )
             if ($executables.Count -ne 1) {
-              throw "Expected exactly one application executable beside _up_, found $($executables.Count)"
+              throw "Expected exactly one $expectedApplicationName application executable, found $($executables.Count)"
             }
 
             & node .release-tooling/scripts/verify-release-assets.mjs `

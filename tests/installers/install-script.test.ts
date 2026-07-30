@@ -691,14 +691,18 @@ describe('release workflow contract', () => {
       application_commit: '${{ steps.release-ref.outputs.application_commit }}',
       tooling_commit: '${{ github.sha }}',
     })
-    const resolution = namedStep('validate', 'Validate dispatch ref and resolve immutable tag')
-    expect(resolution.env).toEqual({
+    const request = namedStep('validate', 'Validate dispatch ref and tag syntax')
+    expect(request.env).toEqual({
       DISPATCH_REF: '${{ github.ref }}',
       REQUESTED_TAG: '${{ inputs.tag }}',
+    })
+    expect(request.run).toContain('[[ "$DISPATCH_REF" == "refs/heads/base" ]]')
+    const resolution = namedStep('validate', 'Validate immutable application and tooling commits')
+    expect(resolution.env).toEqual({
+      TAG: '${{ steps.requested-ref.outputs.tag }}',
       TOOLING_COMMIT: '${{ github.sha }}',
     })
-    expect(resolution['working-directory']).toBe('.release-tooling')
-    expect(resolution.run).toContain('[[ "$DISPATCH_REF" == "refs/heads/base" ]]')
+    expect(resolution['working-directory']).toBeUndefined()
     expect(resolution.run).toContain('git merge-base --is-ancestor "$TOOLING_COMMIT" "origin/base"')
     expect(resolution.run).toContain('TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")')
     expect(resolution.run).toContain('application_commit=$TAG_COMMIT')
@@ -706,8 +710,58 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('Application commit')
   })
 
-  it('executes the dispatch boundary and rejects both a non-base ref and tooling outside base', () => {
-    const run = namedStep('validate', 'Validate dispatch ref and resolve immutable tag').run!
+  it.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0+build.5'], ['v1.2.3+build.001']])(
+    'executes strict SemVer validation for valid tag %s',
+    (tag) => {
+      const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
+      const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-'))
+      try {
+        const result = spawnSync('bash', ['-c', run], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            DISPATCH_REF: 'refs/heads/base',
+            REQUESTED_TAG: tag,
+            GITHUB_OUTPUT: join(root, 'output'),
+          },
+        })
+        expect(result.status, result.stderr).toBe(0)
+        expect(readFileSync(join(root, 'output'), 'utf8')).toContain(`tag=${tag}`)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.each([
+    ['refs/heads/feature', 'v1.2.3'],
+    ['refs/heads/base', 'v1.2.3-01'],
+    ['refs/heads/base', 'v1.2.3-a..b'],
+    ['refs/heads/base', 'v1.2.3-a.'],
+    ['refs/heads/base', 'v1.2.3+build..5'],
+    ['refs/heads/base', 'v01.2.3'],
+  ])('rejects invalid dispatch/tag pair %s %s before checkout', (dispatchRef, tag) => {
+    const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
+    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-invalid-'))
+    try {
+      const result = spawnSync('bash', ['-c', run], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          DISPATCH_REF: dispatchRef,
+          REQUESTED_TAG: tag,
+          GITHUB_OUTPUT: join(root, 'output'),
+        },
+      })
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/must be dispatched from base|Invalid version tag/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('executes commit resolution and rejects tooling outside base', () => {
+    const run = namedStep('validate', 'Validate immutable application and tooling commits').run!
     const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-boundary-'))
     const origin = join(root, 'origin')
     const checkout = join(root, 'checkout')
@@ -741,30 +795,26 @@ describe('release workflow contract', () => {
       const unrelatedCommit = git(origin, 'rev-parse', 'HEAD')
       git(origin, 'checkout', 'base')
       git(root, 'clone', origin, checkout)
+      git(checkout, 'checkout', '--detach', 'v1.2.3')
 
-      const invoke = (dispatchRef: string, commit: string) =>
+      const invoke = (commit: string) =>
         spawnSync('bash', ['-c', run], {
           cwd: checkout,
           encoding: 'utf8',
           env: {
             ...process.env,
-            DISPATCH_REF: dispatchRef,
-            REQUESTED_TAG: 'v1.2.3',
+            TAG: 'v1.2.3',
             TOOLING_COMMIT: commit,
             GITHUB_OUTPUT: output,
             GITHUB_STEP_SUMMARY: summary,
           },
         })
 
-      const wrongRef = invoke('refs/heads/feature', toolingCommit)
-      expect(wrongRef.status).toBe(1)
-      expect(wrongRef.stderr).toContain('must be dispatched from base')
-
-      const unrelated = invoke('refs/heads/base', unrelatedCommit)
+      const unrelated = invoke(unrelatedCommit)
       expect(unrelated.status).toBe(1)
       expect(unrelated.stderr).toContain('does not belong to base')
 
-      const accepted = invoke('refs/heads/base', toolingCommit)
+      const accepted = invoke(toolingCommit)
       expect(accepted.status, accepted.stderr).toBe(0)
       expect(readFileSync(output, 'utf8')).toContain(`application_commit=${applicationCommit}`)
       expect(readFileSync(summary, 'utf8')).toContain(toolingCommit)
@@ -776,7 +826,7 @@ describe('release workflow contract', () => {
   it('uses separate credential-free application and pinned release-tooling checkouts in every job', () => {
     const expectedRefs = {
       validate: {
-        application: '${{ steps.release-ref.outputs.application_commit }}',
+        application: "${{ format('refs/tags/{0}', steps.requested-ref.outputs.tag) }}",
         tooling: '${{ github.sha }}',
       },
       build: {
@@ -805,8 +855,22 @@ describe('release workflow contract', () => {
         'fetch-depth': 0,
         'persist-credentials': false,
       })
-      if (job === 'validate') expect(application?.with?.clean).toBe(false)
     }
+  })
+
+  it('checks out tagged application root before the final validation tooling checkout', () => {
+    const steps = jobSteps('validate')
+    const application = steps.findIndex((step) => step.uses === 'actions/checkout@v7' && step.with?.path === undefined)
+    const resolution = steps.findIndex((step) => step.name === 'Validate immutable application and tooling commits')
+    const tooling = steps.findIndex(
+      (step) => step.uses === 'actions/checkout@v7' && step.with?.path === '.release-tooling',
+    )
+
+    expect(application).toBeGreaterThan(-1)
+    expect(resolution).toBeGreaterThan(application)
+    expect(tooling).toBeGreaterThan(resolution)
+    expect(steps[application]?.with?.clean).toBeUndefined()
+    expect(steps.slice(tooling + 1).some((step) => step.uses === 'actions/checkout@v7')).toBe(false)
   })
 
   it('pins reviewed actions and exposes signing credentials only to the native draft build', () => {
@@ -945,9 +1009,87 @@ npm run examples:check`)
     expect(windows.run).toContain('& 7z x')
     expect(windows.run).toContain('$resourceRoots.Count -ne 1')
     expect(windows.run).toContain('$executables.Count -ne 1')
+    expect(windows.run).toContain("$expectedApplicationName = 'workflow-studio.exe'")
     expect(windows.run).toContain('--packaged-resource-root')
     expect(windows.run).toContain('--pe-executable')
     expect(windows.run).toContain('--integrity-manifest src-tauri/resources/setup-integrity-v1.json')
+  })
+
+  it('selects workflow-studio.exe from an NSIS payload that also contains uninstall.exe', () => {
+    const powershellProbe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion'])
+    if (powershellProbe.error) return
+
+    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-nsis-gate-'))
+    const bundleDirectory = join(root, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release', 'bundle', 'nsis')
+    const sentinel = join(root, 'verifier-arguments')
+    const harnessPath = join(root, 'nsis-gate.ps1')
+    mkdirSync(bundleDirectory, { recursive: true })
+    writeFileSync(join(bundleDirectory, 'workflow-studio_1.0.1_x64-setup.exe'), 'fixture')
+    const gate = namedStep('build', 'Verify extracted Windows NSIS payload').run!.replaceAll(
+      '${{ matrix.rust_target }}',
+      'x86_64-pc-windows-msvc',
+    )
+    const harness = `function global:7z {
+  $outputArgument = @($args | Where-Object { "$_" -like '-o*' })[0]
+  $destination = "$outputArgument".Substring(2)
+  $payload = Join-Path $destination 'payload'
+  $resources = Join-Path $payload '_up_'
+  New-Item -ItemType Directory -Path $resources -Force | Out-Null
+  New-Item -ItemType File -Path (Join-Path $payload 'uninstall.exe') -Force | Out-Null
+  if ($env:NSIS_FIXTURE_MODE -ne 'missing') {
+    New-Item -ItemType File -Path (Join-Path $payload 'workflow-studio.exe') -Force | Out-Null
+  }
+  if ($env:NSIS_FIXTURE_MODE -eq 'ambiguous') {
+    $duplicate = Join-Path $payload 'duplicate'
+    New-Item -ItemType Directory -Path $duplicate -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $duplicate 'workflow-studio.exe') -Force | Out-Null
+  }
+  $global:LASTEXITCODE = 0
+}
+function global:node {
+  [IO.File]::WriteAllLines($env:VERIFIER_SENTINEL, [string[]]$args)
+  $global:LASTEXITCODE = 0
+}
+try {
+${gate}
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}`
+    writeFileSync(harnessPath, harness)
+
+    const invoke = (mode: 'accepted' | 'missing' | 'ambiguous') => {
+      rmSync(sentinel, { force: true })
+      return spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-File', harnessPath], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NSIS_FIXTURE_MODE: mode,
+          RUNNER_TEMP: root,
+          VERIFIER_SENTINEL: sentinel,
+        },
+      })
+    }
+
+    try {
+      const accepted = invoke('accepted')
+      expect(accepted.status, accepted.stderr).toBe(0)
+      const verifierArguments = readFileSync(sentinel, 'utf8')
+      expect(verifierArguments).toContain('--pe-executable')
+      expect(verifierArguments).toMatch(/workflow-studio\.exe/i)
+      expect(verifierArguments).not.toMatch(/uninstall\.exe/i)
+
+      const missing = invoke('missing')
+      expect(missing.status).toBe(1)
+      expect(missing.stderr).toContain('found 0')
+
+      const ambiguous = invoke('ambiguous')
+      expect(ambiguous.status).toBe(1)
+      expect(ambiguous.stderr).toContain('found 2')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('keeps the extracted-package gates valid in their native command languages', () => {
