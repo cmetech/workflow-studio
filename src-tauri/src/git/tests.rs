@@ -689,13 +689,17 @@ fn safe_symlink_binding_tracks_link_and_target_identity_but_not_target_content()
         .verify()
         .expect("Git symlink entries do not include resolved target content");
 
-    fs::remove_file(root.join("flow.yaml")).unwrap();
-    symlink("targets/one.yaml", root.join("flow.yaml")).unwrap();
+    symlink("targets/one.yaml", root.join("replacement-flow.yaml")).unwrap();
+    fs::rename(root.join("replacement-flow.yaml"), root.join("flow.yaml")).unwrap();
     assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
 
     let binding = super::mutate::PairPathBinding::capture(root, &["flow.yaml"]).unwrap();
-    fs::remove_file(root.join("targets/one.yaml")).unwrap();
-    fs::write(root.join("targets/one.yaml"), "name: replacement\n").unwrap();
+    fs::write(root.join("targets/replacement.yaml"), "name: replacement\n").unwrap();
+    fs::rename(
+        root.join("targets/replacement.yaml"),
+        root.join("targets/one.yaml"),
+    )
+    .unwrap();
     assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
 }
 
