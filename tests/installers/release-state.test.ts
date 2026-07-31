@@ -26,8 +26,15 @@ function release(overrides: Partial<Release> = {}): Release {
 }
 
 function invoke(
-  pages: Release[][],
-  options: { mode?: 'absent' | 'exact-draft'; output?: 'id' | 'json'; tag?: string } = {},
+  response: unknown,
+  options: {
+    mode?: 'absent' | 'exact-draft'
+    output?: 'id' | 'json'
+    tag?: string
+    expectedId?: string
+    rawResponse?: string
+    ghStatus?: number
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-state-'))
   const bin = join(root, 'bin')
@@ -42,6 +49,10 @@ writeFileSync(process.env.FAKE_GH_ARGUMENTS, JSON.stringify(args))
 if (args.some((argument) => argument.includes('/releases/tags/'))) {
   process.stderr.write('tag endpoint returned 404\\n')
   process.exit(44)
+}
+if (process.env.FAKE_GH_STATUS !== '0') {
+  process.stderr.write('fake gh failed\\n')
+  process.exit(Number(process.env.FAKE_GH_STATUS))
 }
 process.stdout.write(process.env.FAKE_GH_RESPONSE)
 `,
@@ -66,13 +77,15 @@ process.stdout.write(process.env.FAKE_GH_RESPONSE)
     EXPECTED_COMMIT,
   ]
   if (options.output) args.push('--output', options.output)
+  if (options.expectedId) args.push('--expected-id', options.expectedId)
   const result = spawnSync(process.execPath, args, {
     encoding: 'utf8',
     env: {
       ...process.env,
       PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`,
       FAKE_GH_ARGUMENTS: argumentsPath,
-      FAKE_GH_RESPONSE: JSON.stringify(pages),
+      FAKE_GH_RESPONSE: options.rawResponse ?? JSON.stringify(response),
+      FAKE_GH_STATUS: String(options.ghStatus ?? 0),
     },
   })
   const ghArguments = existsSync(argumentsPath) ? (JSON.parse(readFileSync(argumentsPath, 'utf8')) as string[]) : []
@@ -112,6 +125,17 @@ describe('authenticated release-list resolution', () => {
     }
   })
 
+  it('requires later lookups to resolve the original validated release ID', () => {
+    const invocation = invoke([[release({ id: 73 })]], { expectedId: '72' })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/release id/i)
+      expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
   it.each([
     [
       'duplicate exact tags',
@@ -120,6 +144,7 @@ describe('authenticated release-list resolution', () => {
     ],
     ['wrong commit', [[release({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
     ['non-draft release', [[release({ draft: false })]], /must be a draft/i],
+    ['string release ID', [[release({ id: '73' as unknown as number })]], /release id/i],
   ] as const)('fails closed for %s', (_name, pages, expectedError) => {
     const invocation = invoke(pages.map((page) => [...page]))
     try {
@@ -157,6 +182,73 @@ describe('authenticated release-list resolution', () => {
     } finally {
       rmSync(invocation.root, { recursive: true, force: true })
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['a non-object asset', [null]],
+    ['a string asset ID', [{ id: '1', name: 'latest.json' }]],
+    ['a zero asset ID', [{ id: 0, name: 'latest.json' }]],
+    ['a fractional asset ID', [{ id: 1.5, name: 'latest.json' }]],
+    ['an unsafe integer asset ID', [{ id: Number.MAX_SAFE_INTEGER + 1, name: 'latest.json' }]],
+    ['an empty asset name', [{ id: 1, name: '' }]],
+    ['a slash in an asset name', [{ id: 1, name: 'nested/latest.json' }]],
+    ['a backslash in an asset name', [{ id: 1, name: 'nested\\latest.json' }]],
+    ['a dot asset name', [{ id: 1, name: '.' }]],
+    ['a dot-dot asset name', [{ id: 1, name: '..' }]],
+    ['a control character in an asset name', [{ id: 1, name: 'latest\n.json' }]],
+    ['an excessively long asset name', [{ id: 1, name: `${'a'.repeat(256)}.json` }]],
+    [
+      'duplicate asset names',
+      [
+        { id: 1, name: 'latest.json' },
+        { id: 2, name: 'latest.json' },
+      ],
+    ],
+  ] as const)('rejects exact drafts containing %s', (_name, assets) => {
+    const invocation = invoke([[release({ assets: [...assets] })]])
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/asset/i)
+      expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects malformed release-list JSON', () => {
+    const invocation = invoke(undefined, { rawResponse: '{"draft":' })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/invalid json/i)
+      expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['a non-array response', { releases: [] }],
+    ['a non-array page', [[release()], { release: release() }]],
+  ])('rejects unexpected pagination shape: %s', (_name, response) => {
+    const invocation = invoke(response)
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/paginated arrays/i)
+      expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('propagates a nonzero gh release-list status without emitting release data', () => {
+    const invocation = invoke([[release()]], { ghStatus: 23 })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/status 23/i)
+      expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
     }
   })
 })

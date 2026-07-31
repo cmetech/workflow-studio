@@ -91,12 +91,18 @@ describe('version one release metadata', () => {
     expect(installing).not.toContain('/v1.0.1/scripts/install')
   })
 
-  it('records v1.0.1 as an unpublished failed draft and v1.0.2 as the recovery release', () => {
+  it('records the recovery history and current release-verification totals', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
       expect(document).toMatch(/v1\.0\.2[^\n]*recovery release/i)
     }
+
+    const acceptance = readFileSync('docs/verification/version-1-release-acceptance.md', 'utf8')
+    expect(acceptance).toContain('1,010 TypeScript unit/component/integration tests')
+    expect(acceptance).toContain('236 Rust unit tests')
+    expect(acceptance).toContain('24 real Git integration tests')
+    expect(acceptance).toContain('9 Playwright E2E scenarios')
   })
 
   it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {

@@ -4,9 +4,10 @@ import { spawnSync } from 'node:child_process'
 
 const MODES = new Set(['absent', 'exact-draft'])
 const OUTPUTS = new Set(['id', 'json'])
-const OPTION_NAMES = new Set(['mode', 'repository', 'tag', 'expected-commit', 'output'])
+const OPTION_NAMES = new Set(['mode', 'repository', 'tag', 'expected-commit', 'expected-id', 'output'])
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
+const ASSET_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/
 
 function parseOptions(arguments_) {
   const options = new Map()
@@ -62,6 +63,45 @@ function listReleases(repository) {
   return pages.flat()
 }
 
+function positiveSafeInteger(value, label) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive decimal safe integer`)
+  }
+  return value
+}
+
+function parsePositiveSafeInteger(value, label) {
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`${label} must be a positive decimal safe integer`)
+  }
+  return positiveSafeInteger(Number(value), label)
+}
+
+function validateAssets(assets, tag) {
+  if (!Array.isArray(assets)) {
+    throw new Error(`Release tagged ${tag} has an invalid asset list`)
+  }
+  const names = new Set()
+  for (const asset of assets) {
+    if (
+      !asset ||
+      typeof asset !== 'object' ||
+      Array.isArray(asset) ||
+      Object.getPrototypeOf(asset) !== Object.prototype
+    ) {
+      throw new Error(`Release tagged ${tag} contains a non-object asset`)
+    }
+    positiveSafeInteger(asset.id, `Release asset ID for ${tag}`)
+    if (typeof asset.name !== 'string' || !ASSET_NAME_PATTERN.test(asset.name)) {
+      throw new Error(`Release tagged ${tag} contains an unsafe asset name`)
+    }
+    if (names.has(asset.name)) {
+      throw new Error(`Release tagged ${tag} contains a duplicate asset name: ${asset.name}`)
+    }
+    names.add(asset.name)
+  }
+}
+
 function validateRelease(release, tag, expectedCommit) {
   if (!release || typeof release !== 'object') {
     throw new Error(`Release tagged ${tag} is not an object`)
@@ -72,12 +112,8 @@ function validateRelease(release, tag, expectedCommit) {
   if (release.target_commitish !== expectedCommit) {
     throw new Error(`Release tagged ${tag} has the wrong target commit`)
   }
-  if (!Number.isSafeInteger(release.id) || release.id <= 0) {
-    throw new Error(`Release tagged ${tag} has an invalid numeric ID`)
-  }
-  if (!Array.isArray(release.assets)) {
-    throw new Error(`Release tagged ${tag} has an invalid asset list`)
-  }
+  positiveSafeInteger(release.id, `Release ID for ${tag}`)
+  validateAssets(release.assets, tag)
   return release
 }
 
@@ -87,6 +123,7 @@ function main() {
   const repository = required(options, 'repository')
   const tag = required(options, 'tag')
   const expectedCommit = required(options, 'expected-commit')
+  const expectedIdOption = options.get('expected-id')
   const output = options.get('output') ?? 'json'
 
   if (!MODES.has(mode)) throw new Error(`Unsupported mode: ${mode}`)
@@ -106,6 +143,12 @@ function main() {
   }
 
   const release = validateRelease(matching[0], tag, expectedCommit)
+  if (
+    expectedIdOption !== undefined &&
+    release.id !== parsePositiveSafeInteger(expectedIdOption, 'Expected release ID')
+  ) {
+    throw new Error(`Release ID for ${tag} does not match the validated release ID`)
+  }
   process.stdout.write(output === 'id' ? `${release.id}\n` : `${JSON.stringify(release)}\n`)
 }
 

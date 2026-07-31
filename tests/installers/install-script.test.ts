@@ -705,6 +705,7 @@ describe('release workflow contract', () => {
       tag: '${{ steps.release-ref.outputs.tag }}',
       application_commit: '${{ steps.release-ref.outputs.application_commit }}',
       tooling_commit: '${{ github.sha }}',
+      release_id: '${{ steps.draft-release.outputs.release_id }}',
     })
     const request = namedStep('validate', 'Validate dispatch ref and tag syntax')
     expect(request.env).toEqual({
@@ -723,6 +724,93 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('application_commit=$TAG_COMMIT')
     expect(resolution.run).toContain('Release tooling commit')
     expect(resolution.run).toContain('Application commit')
+  })
+
+  it('creates one exact draft after proving absence and exports its validated numeric ID', () => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-draft-lifecycle-'))
+    const bin = join(root, 'bin')
+    const tooling = join(root, '.release-tooling', 'scripts')
+    const statePath = join(root, 'state.json')
+    const outputPath = join(root, 'github-output')
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(tooling, { recursive: true })
+    writeFileSync(join(tooling, 'resolve-release.mjs'), readFileSync('scripts/resolve-release.mjs', 'utf8'))
+    writeFileSync(statePath, JSON.stringify({ release: null, calls: [] }))
+    writeFileSync(
+      join(bin, 'fake-gh.mjs'),
+      `import { readFileSync, writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+const state = JSON.parse(readFileSync(process.env.FAKE_GH_STATE, 'utf8'))
+state.calls.push(args)
+if (args.includes('--paginate')) {
+  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
+  process.stdout.write(JSON.stringify(state.release ? [[state.release]] : [[]]))
+  process.exit(0)
+}
+if (args[0] === 'api' && args.includes('--method') && args.includes('POST') && args.at(-1) === '-') {
+  const payload = JSON.parse(readFileSync(0, 'utf8'))
+  state.release = {
+    id: 73,
+    tag_name: payload.tag_name,
+    target_commitish: payload.target_commitish,
+    draft: payload.draft,
+    prerelease: payload.prerelease,
+    name: payload.name,
+    body: payload.body,
+    assets: [],
+  }
+  state.payload = payload
+  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
+  process.stdout.write(JSON.stringify(state.release))
+  process.exit(0)
+}
+process.stderr.write('unexpected gh arguments: ' + JSON.stringify(args) + '\\n')
+process.exit(64)
+`,
+    )
+    const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
+    if (process.platform === 'win32') {
+      writeFileSync(executable, '@node "%~dp0\\fake-gh.mjs" %*\r\n')
+    } else {
+      writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
+      chmodSync(executable, 0o700)
+    }
+
+    try {
+      const result = spawnSync('bash', ['-c', run], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          FAKE_GH_STATE: statePath,
+          GH_TOKEN: 'test-token',
+          GITHUB_OUTPUT: outputPath,
+          GITHUB_REPOSITORY: 'cmetech/workflow-studio',
+          TAG: 'v1.0.2',
+          EXPECTED_COMMIT: 'a'.repeat(40),
+        },
+      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(readFileSync(outputPath, 'utf8')).toBe('release_id=73\n')
+      const state = JSON.parse(readFileSync(statePath, 'utf8')) as {
+        payload: Record<string, unknown>
+        calls: string[][]
+      }
+      expect(state.payload).toEqual({
+        tag_name: 'v1.0.2',
+        target_commitish: 'a'.repeat(40),
+        name: 'LOOP24 Workflow Studio v1.0.2',
+        body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
+        draft: true,
+        prerelease: false,
+      })
+      expect(state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+      expect(state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0']])(
@@ -944,7 +1032,7 @@ npm run test:rust
 npm run contracts:check
 npm run examples:check`)
     expect(buildSteps.find((step) => step.id === 'tauri')?.with).toMatchObject({
-      releaseCommitish: '${{ needs.validate.outputs.application_commit }}',
+      releaseId: '${{ needs.validate.outputs.release_id }}',
     })
   })
 
@@ -1204,22 +1292,45 @@ if ($errors.Count -ne 0) {
     expect(finalValidation).toContain('Draft release verified; publish it manually after review.')
 
     const release = workflow()
-    expect(release.jobs?.validate?.permissions).toBeUndefined()
+    expect(release.jobs?.validate?.permissions).toEqual({ contents: 'write' })
     expect(release.jobs?.build?.permissions).toEqual({ contents: 'write' })
     expect(release.jobs?.verify?.permissions).toEqual({ contents: 'write' })
     const tauri = jobSteps('build').find((step) => step.id === 'tauri')
-    expect(tauri?.with).toMatchObject({ releaseDraft: true, prerelease: false })
+    expect(tauri?.with).toMatchObject({ releaseId: '${{ needs.validate.outputs.release_id }}' })
     expect(steps.map((step) => step.run ?? '').join('\n')).not.toMatch(/gh release edit[^\n]*--draft=false/)
   })
 
-  it('uses the pinned paginated release-list resolver for absent and exact draft lookups', () => {
-    const check = namedStep('validate', 'Check existing release state').run
-    expect(check).toContain('node .release-tooling/scripts/resolve-release.mjs')
-    expect(check).toContain('--mode absent')
+  it('uses one validated numeric release ID for every draft mutation', () => {
+    const release = workflow()
+    const lifecycle = namedStep('validate', 'Create and validate exact draft release')
+    expect(lifecycle.id).toBe('draft-release')
+    expect(lifecycle.run).toContain('--mode absent')
+    expect(lifecycle.run).toContain('--method POST')
+    expect(lifecycle.run).toContain('"repos/${GITHUB_REPOSITORY}/releases"')
+    expect(lifecycle.run).toContain('--mode exact-draft')
+    expect(lifecycle.run).toContain('--output id')
+
+    for (const job of ['build', 'verify']) {
+      const validation = namedStep(job, 'Validate draft release ID')
+      expect(validation.env).toEqual({ RELEASE_ID: '${{ needs.validate.outputs.release_id }}' })
+      expect(validation.run).toContain('Number.isSafeInteger')
+      expect(validation.run).toContain('^[1-9][0-9]*$')
+    }
+
+    const tauri = jobSteps('build').find((step) => step.id === 'tauri')
+    expect(tauri?.with).toEqual({
+      releaseId: '${{ needs.validate.outputs.release_id }}',
+      releaseBody: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
+      updaterJsonPreferNsis: true,
+      releaseAssetNamePattern: 'LOOP24-Workflow-Studio_[version]_${{ matrix.platform }}_${{ matrix.arch }}[setup][ext]',
+      args: '--target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}',
+    })
 
     for (const name of [
       'Download draft assets for metadata normalization',
+      'Upload normalized updater metadata',
       'Re-download published updater bytes',
+      'Upload checksum manifest',
       'Re-download completed draft',
     ]) {
       const lookup = namedStep('verify', name).run!
@@ -1228,13 +1339,34 @@ if ($errors.Count -ne 0) {
       expect(lookup).toContain('--repository "$GITHUB_REPOSITORY"')
       expect(lookup).toContain('--tag "$TAG"')
       expect(lookup).toContain('--expected-commit "$EXPECTED_COMMIT"')
+      expect(lookup).toContain('--expected-id "$RELEASE_ID"')
       expect(lookup).toContain('--output json')
     }
+
+    for (const name of ['Upload normalized updater metadata', 'Upload checksum manifest']) {
+      const upload = namedStep('verify', name)
+      expect(upload.env).toMatchObject({ RELEASE_ID: '${{ needs.validate.outputs.release_id }}' })
+      expect(upload.run).toContain(
+        'https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets?name=',
+      )
+      expect(upload.run).toContain('curl --fail-with-body')
+      expect(upload.run).toContain('--request POST')
+      expect(upload.run).toContain('releases/assets/$EXISTING_ASSET_ID')
+      expect(upload.run).toContain('--method DELETE')
+    }
+
     const allRuns = Object.values(workflow().jobs ?? {})
       .flatMap((job) => job.steps ?? [])
       .map((step) => step.run ?? '')
       .join('\n')
     expect(allRuns).not.toContain('/releases/tags/')
+    expect(allRuns).not.toContain('gh release upload')
+    expect(tauri?.with).not.toHaveProperty('tagName')
+    expect(tauri?.with).not.toHaveProperty('releaseCommitish')
+    expect(tauri?.with).not.toHaveProperty('releaseName')
+    expect(tauri?.with).not.toHaveProperty('releaseDraft')
+    expect(tauri?.with).not.toHaveProperty('prerelease')
+    expect(release.jobs?.validate?.outputs?.release_id).toBe('${{ steps.draft-release.outputs.release_id }}')
   })
 
   it('installs Linux native libraries only in final verification before compiling the tagged Rust verifier', () => {

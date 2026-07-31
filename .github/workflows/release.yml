@@ -23,6 +23,9 @@ jobs:
       tag: ${{ steps.release-ref.outputs.tag }}
       application_commit: ${{ steps.release-ref.outputs.application_commit }}
       tooling_commit: ${{ github.sha }}
+      release_id: ${{ steps.draft-release.outputs.release_id }}
+    permissions:
+      contents: write
     steps:
       - name: Validate dispatch ref and tag syntax
         id: requested-ref
@@ -116,7 +119,8 @@ jobs:
           ref: ${{ github.sha }}
           path: .release-tooling
           persist-credentials: false
-      - name: Check existing release state
+      - name: Create and validate exact draft release
+        id: draft-release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release-ref.outputs.tag }}
@@ -129,6 +133,22 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT"
+          RELEASE_BODY='Native operating-system artifacts are unsigned. Review docs/installing.md before installation.'
+          jq -n \
+            --arg tag "$TAG" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --arg name "LOOP24 Workflow Studio $TAG" \
+            --arg body "$RELEASE_BODY" \
+            '{tag_name: $tag, target_commitish: $commit, name: $name, body: $body, draft: true, prerelease: false}' \
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input - > /dev/null
+          RELEASE_ID=$(node .release-tooling/scripts/resolve-release.mjs \
+            --mode exact-draft \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --output id)
+          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.platform }} ${{ matrix.arch }}
@@ -206,6 +226,11 @@ jobs:
           ref: ${{ needs.validate.outputs.tooling_commit }}
           path: .release-tooling
           persist-credentials: false
+      - name: Validate draft release ID
+        env:
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+        run: |
+          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
       - name: Build and upload unsigned native bundle to a draft release
         id: tauri
         # tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f
@@ -215,12 +240,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ needs.validate.outputs.tag }}
-          releaseCommitish: ${{ needs.validate.outputs.application_commit }}
-          releaseName: LOOP24 Workflow Studio ${{ needs.validate.outputs.tag }}
+          releaseId: ${{ needs.validate.outputs.release_id }}
           releaseBody: Native operating-system artifacts are unsigned. Review docs/installing.md before installation.
-          releaseDraft: true
-          prerelease: false
           updaterJsonPreferNsis: true
           releaseAssetNamePattern: LOOP24-Workflow-Studio_[version]_${{ matrix.platform }}_${{ matrix.arch }}[setup][ext]
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
@@ -360,11 +381,17 @@ jobs:
           ref: ${{ needs.validate.outputs.tooling_commit }}
           path: .release-tooling
           persist-credentials: false
+      - name: Validate draft release ID
+        env:
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+        run: |
+          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
       - name: Download draft assets for metadata normalization
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
           EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -376,17 +403,12 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT" \
+            --expected-id "$RELEASE_ID" \
             --output json)
           while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
             if [[ ! "$ASSET_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
               echo "Unsafe release asset name: $ASSET_NAME" >&2
               exit 1
-            fi
-            if [[ "$ASSET_NAME" == "SHA256SUMS" ]]; then
-              # A rerun may find this exact draft's prior generated manifest.
-              # Delete only that known asset, then regenerate it over current bytes.
-              gh api "repos/${GITHUB_REPOSITORY}/releases/assets/$ASSET_ID" --method DELETE
-              continue
             fi
             gh api "repos/${GITHUB_REPOSITORY}/releases/assets/$ASSET_ID" \
               -H 'Accept: application/octet-stream' > "$ASSET_DIR/$ASSET_NAME"
@@ -402,14 +424,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+        shell: bash
         run: |
+          set -euo pipefail
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
-          gh release upload "$TAG" "$ASSET_DIR/latest.json" --clobber
+          RELEASE=$(node .release-tooling/scripts/resolve-release.mjs \
+            --mode exact-draft \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-id "$RELEASE_ID" \
+            --output json)
+          EXISTING_ASSET_ID=$(jq -r '.assets[] | select(.name == "latest.json") | .id' <<< "$RELEASE")
+          if [[ -z "$EXISTING_ASSET_ID" ]]; then
+            echo 'Validated draft is missing latest.json' >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/assets/$EXISTING_ASSET_ID" --method DELETE
+          curl --fail-with-body --silent --show-error --location \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Content-Type: application/octet-stream' \
+            --data-binary "@$ASSET_DIR/latest.json" \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets?name=latest.json" \
+            > /dev/null
       - name: Re-download published updater bytes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
           EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -420,6 +466,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT" \
+            --expected-id "$RELEASE_ID" \
             --output json)
           while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
             [[ "$ASSET_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
@@ -438,14 +485,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+        shell: bash
         run: |
+          set -euo pipefail
           ASSET_DIR="$RUNNER_TEMP/workflow-studio-release-assets"
-          gh release upload "$TAG" "$ASSET_DIR/SHA256SUMS"
+          RELEASE=$(node .release-tooling/scripts/resolve-release.mjs \
+            --mode exact-draft \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-id "$RELEASE_ID" \
+            --output json)
+          EXISTING_ASSET_ID=$(jq -r '.assets[] | select(.name == "SHA256SUMS") | .id' <<< "$RELEASE")
+          if [[ -n "$EXISTING_ASSET_ID" ]]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/assets/$EXISTING_ASSET_ID" --method DELETE
+          fi
+          curl --fail-with-body --silent --show-error --location \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Content-Type: application/octet-stream' \
+            --data-binary "@$ASSET_DIR/SHA256SUMS" \
+            "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/$RELEASE_ID/assets?name=SHA256SUMS" \
+            > /dev/null
       - name: Re-download completed draft
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
           EXPECTED_COMMIT: ${{ needs.validate.outputs.application_commit }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -456,6 +525,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT" \
+            --expected-id "$RELEASE_ID" \
             --output json)
           while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
             [[ "$ASSET_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
