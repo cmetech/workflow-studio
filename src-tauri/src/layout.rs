@@ -541,10 +541,7 @@ fn directory_identity(directory: &Dir, code: &'static str) -> LayoutResult<Handl
 
 #[cfg(unix)]
 fn sync_directory(directory: &Dir) -> LayoutResult<()> {
-    directory
-        .try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|directory| directory.sync_all())
+    crate::native_fs::sync_capability_directory(directory)
         .map_err(|error| io_error("layout_sync_failed", error))
 }
 

@@ -2185,11 +2185,7 @@ fn now_ms() -> u64 {
 
 #[cfg(unix)]
 fn sync_cap_directory(directory: &Dir, code: &'static str) -> SetupResult<()> {
-    directory
-        .try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error(code, error))
+    crate::native_fs::sync_capability_directory(directory).map_err(|error| io_error(code, error))
 }
 
 #[cfg(not(unix))]

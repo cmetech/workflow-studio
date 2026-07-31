@@ -1574,16 +1574,12 @@ fn commit_update_preferences(
 
 #[cfg(unix)]
 fn sync_cap_directory(directory: &Dir) -> UpdateResult<()> {
-    directory
-        .try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| {
-            update_error(
-                "update_settings_write_failed",
-                "Update settings could not be synchronized.",
-            )
-        })
+    crate::native_fs::sync_capability_directory(directory).map_err(|_| {
+        update_error(
+            "update_settings_write_failed",
+            "Update settings could not be synchronized.",
+        )
+    })
 }
 
 #[cfg(not(unix))]

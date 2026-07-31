@@ -4,6 +4,8 @@ mod contracts;
 pub mod git;
 mod layout;
 mod logging;
+#[cfg(unix)]
+mod native_fs;
 mod recovery;
 mod setup;
 mod startup;

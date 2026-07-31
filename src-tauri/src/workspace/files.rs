@@ -1885,10 +1885,7 @@ fn modified_timestamp(metadata: &Metadata) -> String {
 
 fn sync_parent(parent: &Dir) -> WorkspaceResult<()> {
     #[cfg(unix)]
-    parent
-        .try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|directory| directory.sync_all())
+    crate::native_fs::sync_capability_directory(parent)
         .map_err(|error| io_error("workspace_write_failed", error))?;
     Ok(())
 }

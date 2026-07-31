@@ -726,6 +726,9 @@ fn setup_cancel_is_rejected_while_readiness_commit_is_in_progress() {
 
 #[test]
 fn setup_cancel_is_rejected_after_ready_stage_success_before_complete() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     let app_data = tempdir().unwrap();
     let app_data_path = app_data.path().to_path_buf();
     let (resources, manifest) = resource_fixture();
@@ -735,8 +738,9 @@ fn setup_cancel_is_rejected_after_ready_stage_success_before_complete() {
     state
         .claim_active_run("cancel-after-ready", cancellation.clone())
         .unwrap();
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-    let worker_barrier = barrier.clone();
+    let (ready_reached_sender, ready_reached_receiver) = mpsc::sync_channel(0);
+    let (release_worker_sender, release_worker_receiver) = mpsc::sync_channel(0);
+    let release_worker_receiver = std::sync::Mutex::new(release_worker_receiver);
     let worker_state = state.clone();
     let worker = std::thread::spawn(move || {
         run_setup(
@@ -759,17 +763,23 @@ fn setup_cancel_is_rejected_after_ready_stage_success_before_complete() {
                         ..
                     }
                 ) {
-                    worker_barrier.wait();
-                    worker_barrier.wait();
+                    ready_reached_sender.send(()).unwrap();
+                    release_worker_receiver
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
                 }
             },
         )
         .unwrap()
     });
 
-    barrier.wait();
+    ready_reached_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the ready stage must complete without leaving the test blocked");
     assert!(!state.cancel("cancel-after-ready").unwrap());
-    barrier.wait();
+    release_worker_sender.send(()).unwrap();
     let snapshot = worker.join().unwrap();
 
     assert_eq!(snapshot.status, SetupRunStatus::Succeeded);
