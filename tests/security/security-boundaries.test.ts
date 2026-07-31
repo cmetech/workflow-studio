@@ -186,7 +186,8 @@ describe('release security boundaries', () => {
     const ciConfig = json('src-tauri/tauri.ci.conf.json')
     expect((releaseConfig.bundle as { createUpdaterArtifacts: boolean | string }).createUpdaterArtifacts).toBe(true)
     expect((ciConfig.bundle as { createUpdaterArtifacts: boolean }).createUpdaterArtifacts).toBe(false)
-    expect(workflow).toContain('npm run tauri -- build --debug --config src-tauri/tauri.ci.conf.json')
+    expect(workflow).toContain('npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json')
+    expect(workflow).not.toContain('npm run tauri -- build --debug --config')
     expect(workflow).not.toMatch(/native-bundle:[\s\S]*TAURI_SIGNING_PRIVATE_KEY/)
   })
 

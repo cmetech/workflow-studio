@@ -28,7 +28,7 @@ function release(overrides: Partial<Release> = {}): Release {
 function invoke(
   response: unknown,
   options: {
-    mode?: 'absent' | 'exact-draft'
+    mode?: 'absent' | 'exact-draft' | 'validate-json'
     output?: 'id' | 'json'
     tag?: string
     expectedId?: string
@@ -92,6 +92,50 @@ process.stdout.write(process.env.FAKE_GH_RESPONSE)
   return { root, result, ghArguments }
 }
 
+function invokeJson(
+  response: unknown,
+  options: { expectedId?: string; fromFile?: boolean; rawResponse?: string; output?: 'id' | 'json' } = {},
+) {
+  const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-json-'))
+  const bin = join(root, 'bin')
+  const ghSentinel = join(root, 'gh-invoked')
+  const inputPath = join(root, 'release.json')
+  mkdirSync(bin)
+  const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
+  if (process.platform === 'win32') {
+    writeFileSync(executable, `@echo invoked>"${ghSentinel}"\r\n@exit /b 97\r\n`)
+  } else {
+    writeFileSync(executable, `#!/bin/sh\nprintf invoked > '${ghSentinel}'\nexit 97\n`)
+    chmodSync(executable, 0o700)
+  }
+
+  const serialized = options.rawResponse ?? JSON.stringify(response)
+  if (options.fromFile) writeFileSync(inputPath, serialized)
+  const args = [
+    'scripts/resolve-release.mjs',
+    '--mode',
+    'validate-json',
+    '--input',
+    options.fromFile ? inputPath : '-',
+    '--tag',
+    'v1.0.2',
+    '--expected-commit',
+    EXPECTED_COMMIT,
+    '--output',
+    options.output ?? 'id',
+  ]
+  if (options.expectedId) args.push('--expected-id', options.expectedId)
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    input: options.fromFile ? undefined : serialized,
+    env: {
+      ...process.env,
+      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`,
+    },
+  })
+  return { root, result, ghInvoked: existsSync(ghSentinel) }
+}
+
 describe('authenticated release-list resolution', () => {
   it('finds one exact draft across paginated release-list results without using the tag endpoint', () => {
     const invocation = invoke([[release({ id: 11, tag_name: 'v9.9.9' })], [release({ id: 73 })]])
@@ -120,6 +164,17 @@ describe('authenticated release-list resolution', () => {
     try {
       expect(invocation.result.status, invocation.result.stderr).toBe(0)
       expect(invocation.result.stdout).toBe('73\n')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses a distinct no-match status so workflow fallback cannot mask malformed release state', () => {
+    const invocation = invoke([[]])
+    try {
+      expect(invocation.result.status).toBe(3)
+      expect(invocation.result.stderr).toMatch(/exactly one release tagged v1\.0\.2; found 0/i)
+      expect(invocation.result.stdout).toBe('')
     } finally {
       rmSync(invocation.root, { recursive: true, force: true })
     }
@@ -247,6 +302,52 @@ describe('authenticated release-list resolution', () => {
       expect(invocation.result.status).toBe(1)
       expect(invocation.result.stderr).toMatch(/status 23/i)
       expect(invocation.result.stdout).toBe('')
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('release JSON validation without GitHub lookup', () => {
+  it.each([
+    ['stdin', false],
+    ['a file', true],
+  ])('validates a zero-asset draft from %s without invoking gh', (_source, fromFile) => {
+    const invocation = invokeJson(release({ id: 73 }), { expectedId: '73', fromFile })
+    try {
+      expect(invocation.result.status, invocation.result.stderr).toBe(0)
+      expect(invocation.result.stdout).toBe('73\n')
+      expect(invocation.ghInvoked).toBe(false)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['a nonempty asset list', release({ assets: [{ id: 1, name: 'latest.json' }] }), undefined, /zero assets/i],
+    ['the wrong tag', release({ tag_name: 'v1.0.3' }), undefined, /wrong tag/i],
+    ['the wrong commit', release({ target_commitish: 'b'.repeat(40) }), undefined, /target commit/i],
+    ['a published release', release({ draft: false }), undefined, /must be a draft/i],
+    ['a mismatched expected ID', release({ id: 73 }), '72', /release id/i],
+  ] as const)('rejects created JSON containing %s without invoking gh', (_name, response, expectedId, error) => {
+    const invocation = invokeJson(response, { expectedId })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(error)
+      expect(invocation.result.stdout).toBe('')
+      expect(invocation.ghInvoked).toBe(false)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects malformed created JSON without invoking gh', () => {
+    const invocation = invokeJson(undefined, { rawResponse: '{"draft":' })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/invalid json/i)
+      expect(invocation.result.stdout).toBe('')
+      expect(invocation.ghInvoked).toBe(false)
     } finally {
       rmSync(invocation.root, { recursive: true, force: true })
     }

@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 
-const MODES = new Set(['absent', 'exact-draft'])
+const MODES = new Set(['absent', 'exact-draft', 'validate-json'])
 const OUTPUTS = new Set(['id', 'json'])
-const OPTION_NAMES = new Set(['mode', 'repository', 'tag', 'expected-commit', 'expected-id', 'output'])
+const OPTION_NAMES = new Set(['mode', 'repository', 'tag', 'expected-commit', 'expected-id', 'input', 'output'])
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
 const ASSET_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/
+
+class NoMatchingReleaseError extends Error {}
 
 function parseOptions(arguments_) {
   const options = new Map()
@@ -103,8 +106,16 @@ function validateAssets(assets, tag) {
 }
 
 function validateRelease(release, tag, expectedCommit) {
-  if (!release || typeof release !== 'object') {
+  if (
+    !release ||
+    typeof release !== 'object' ||
+    Array.isArray(release) ||
+    Object.getPrototypeOf(release) !== Object.prototype
+  ) {
     throw new Error(`Release tagged ${tag} is not an object`)
+  }
+  if (release.tag_name !== tag) {
+    throw new Error(`Release JSON has the wrong tag; expected ${tag}`)
   }
   if (release.draft !== true) {
     throw new Error(`Release tagged ${tag} must be a draft`)
@@ -117,20 +128,60 @@ function validateRelease(release, tag, expectedCommit) {
   return release
 }
 
+function validateExpectedId(release, expectedIdOption, tag) {
+  if (
+    expectedIdOption !== undefined &&
+    release.id !== parsePositiveSafeInteger(expectedIdOption, 'Expected release ID')
+  ) {
+    throw new Error(`Release ID for ${tag} does not match the validated release ID`)
+  }
+}
+
+function writeRelease(release, output) {
+  process.stdout.write(output === 'id' ? `${release.id}\n` : `${JSON.stringify(release)}\n`)
+}
+
+function readReleaseJson(input) {
+  let serialized
+  try {
+    serialized = readFileSync(input === '-' ? 0 : input, 'utf8')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not read release JSON: ${message}`)
+  }
+  try {
+    return JSON.parse(serialized)
+  } catch {
+    throw new Error('Release input returned invalid JSON')
+  }
+}
+
 function main() {
   const options = parseOptions(process.argv.slice(2))
   const mode = required(options, 'mode')
-  const repository = required(options, 'repository')
   const tag = required(options, 'tag')
   const expectedCommit = required(options, 'expected-commit')
   const expectedIdOption = options.get('expected-id')
   const output = options.get('output') ?? 'json'
 
   if (!MODES.has(mode)) throw new Error(`Unsupported mode: ${mode}`)
-  if (!REPOSITORY_PATTERN.test(repository)) throw new Error(`Invalid repository: ${repository}`)
   if (!COMMIT_PATTERN.test(expectedCommit)) throw new Error('Expected commit must be a lowercase 40-character SHA')
   if (!OUTPUTS.has(output)) throw new Error(`Unsupported output: ${output}`)
 
+  if (mode === 'validate-json') {
+    if (options.has('repository')) throw new Error('--repository is not supported in validate-json mode')
+    const release = validateRelease(readReleaseJson(required(options, 'input')), tag, expectedCommit)
+    validateExpectedId(release, expectedIdOption, tag)
+    if (release.assets.length !== 0) {
+      throw new Error(`Release tagged ${tag} must contain exactly zero assets`)
+    }
+    writeRelease(release, output)
+    return
+  }
+
+  if (options.has('input')) throw new Error('--input is supported only in validate-json mode')
+  const repository = required(options, 'repository')
+  if (!REPOSITORY_PATTERN.test(repository)) throw new Error(`Invalid repository: ${repository}`)
   const matching = listReleases(repository).filter((release) => release?.tag_name === tag)
   if (mode === 'absent') {
     if (matching.length !== 0) {
@@ -139,17 +190,15 @@ function main() {
     return
   }
   if (matching.length !== 1) {
+    if (matching.length === 0) {
+      throw new NoMatchingReleaseError(`Expected exactly one release tagged ${tag}; found 0`)
+    }
     throw new Error(`Expected exactly one release tagged ${tag}; found ${matching.length}`)
   }
 
   const release = validateRelease(matching[0], tag, expectedCommit)
-  if (
-    expectedIdOption !== undefined &&
-    release.id !== parsePositiveSafeInteger(expectedIdOption, 'Expected release ID')
-  ) {
-    throw new Error(`Release ID for ${tag} does not match the validated release ID`)
-  }
-  process.stdout.write(output === 'id' ? `${release.id}\n` : `${JSON.stringify(release)}\n`)
+  validateExpectedId(release, expectedIdOption, tag)
+  writeRelease(release, output)
 }
 
 try {
@@ -157,5 +206,5 @@ try {
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(`Release resolution failed: ${message}\n`)
-  process.exitCode = 1
+  process.exitCode = error instanceof NoMatchingReleaseError ? 3 : 1
 }

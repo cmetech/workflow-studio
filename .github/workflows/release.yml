@@ -128,25 +128,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node .release-tooling/scripts/resolve-release.mjs \
-            --mode absent \
-            --repository "$GITHUB_REPOSITORY" \
-            --tag "$TAG" \
-            --expected-commit "$EXPECTED_COMMIT"
-          RELEASE_BODY='Native operating-system artifacts are unsigned. Review docs/installing.md before installation.'
-          jq -n \
-            --arg tag "$TAG" \
-            --arg commit "$EXPECTED_COMMIT" \
-            --arg name "LOOP24 Workflow Studio $TAG" \
-            --arg body "$RELEASE_BODY" \
-            '{tag_name: $tag, target_commitish: $commit, name: $name, body: $body, draft: true, prerelease: false}' \
-            | gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input - > /dev/null
-          RELEASE_ID=$(node .release-tooling/scripts/resolve-release.mjs \
+          EXISTING_RELEASE=''
+          RESOLUTION_STATUS=0
+          EXISTING_RELEASE=$(node .release-tooling/scripts/resolve-release.mjs \
             --mode exact-draft \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT" \
-            --output id)
+            --output json) || RESOLUTION_STATUS=$?
+          if [[ "$RESOLUTION_STATUS" -eq 0 ]]; then
+            RELEASE_JSON="$EXISTING_RELEASE"
+          elif [[ "$RESOLUTION_STATUS" -eq 3 ]]; then
+            node .release-tooling/scripts/resolve-release.mjs \
+              --mode absent \
+              --repository "$GITHUB_REPOSITORY" \
+              --tag "$TAG" \
+              --expected-commit "$EXPECTED_COMMIT"
+            RELEASE_BODY='Native operating-system artifacts are unsigned. Review docs/installing.md before installation.'
+            RELEASE_JSON=$(jq -n \
+              --arg tag "$TAG" \
+              --arg commit "$EXPECTED_COMMIT" \
+              --arg name "LOOP24 Workflow Studio $TAG" \
+              --arg body "$RELEASE_BODY" \
+              '{tag_name: $tag, target_commitish: $commit, name: $name, body: $body, draft: true, prerelease: false}' \
+              | gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" --input -)
+          else
+            exit "$RESOLUTION_STATUS"
+          fi
+          RELEASE_ID=$(node .release-tooling/scripts/resolve-release.mjs \
+            --mode validate-json \
+            --input - \
+            --tag "$TAG" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --output id <<< "$RELEASE_JSON")
           node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 

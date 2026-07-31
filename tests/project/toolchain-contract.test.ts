@@ -23,6 +23,7 @@ interface GithubWorkflow {
 
 const NODE_MINIMUM = '22.13.0'
 const RUST_MINIMUM = '1.77.2'
+const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 
 function readPackageManifest(): PackageManifest {
   return JSON.parse(readFileSync('package.json', 'utf8')) as PackageManifest
@@ -54,7 +55,7 @@ describe('minimum toolchain contract', () => {
     expect(readme).toContain(`Node \`>=${NODE_MINIMUM}\``)
     expect(exactMinimumJob).toBeDefined()
     expect(exactMinimumCommands).toContain('npm ci')
-    expect(exactMinimumCommands).toContain('npm run test:unit')
+    expect(exactMinimumCommands).toContain(CI_UNIT_COMMAND)
   })
 
   it('keeps the advertised Rust floor synchronized with exact-minimum locked CI coverage', () => {

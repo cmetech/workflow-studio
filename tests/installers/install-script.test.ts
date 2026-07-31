@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -106,7 +106,7 @@ describe('release asset verification', () => {
       'verify_release_signature',
     ])
     expect(build.status, build.stderr?.toString()).toBe(0)
-  }, 60_000)
+  }, 600_000)
   it.each([
     ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_1.0.2_macos_aarch64.dmg'],
     ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_1.0.2_macos_x86_64.dmg'],
@@ -685,6 +685,108 @@ interface ReleaseWorkflow {
   jobs?: Record<string, WorkflowJob>
 }
 
+interface DraftLifecycleRelease {
+  id: number
+  tag_name: string
+  target_commitish: string
+  draft: boolean
+  prerelease: boolean
+  name: string
+  body: string
+  assets: Array<{ id: number; name: string }>
+}
+
+interface DraftLifecycleState {
+  listResponses: unknown[]
+  postResponse?: unknown
+  calls: string[][]
+  payloads: Record<string, unknown>[]
+  listIndex?: number
+}
+
+function draftLifecycleRelease(overrides: Partial<DraftLifecycleRelease> = {}): DraftLifecycleRelease {
+  return {
+    id: 73,
+    tag_name: 'v1.0.2',
+    target_commitish: 'a'.repeat(40),
+    draft: true,
+    prerelease: false,
+    name: 'LOOP24 Workflow Studio v1.0.2',
+    body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
+    assets: [],
+    ...overrides,
+  }
+}
+
+function executeDraftLifecycle(run: string, initialState: DraftLifecycleState) {
+  const root = mkdtempSync(join(tmpdir(), 'workflow-studio-draft-lifecycle-'))
+  const bin = join(root, 'bin')
+  const tooling = join(root, '.release-tooling', 'scripts')
+  const statePath = join(root, 'state.json')
+  const outputPath = join(root, 'github-output')
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(tooling, { recursive: true })
+  writeFileSync(join(tooling, 'resolve-release.mjs'), readFileSync('scripts/resolve-release.mjs', 'utf8'))
+  writeFileSync(statePath, JSON.stringify(initialState))
+  writeFileSync(
+    join(bin, 'fake-gh.mjs'),
+    `import { readFileSync, writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+const state = JSON.parse(readFileSync(process.env.FAKE_GH_STATE, 'utf8'))
+state.calls.push(args)
+if (args.includes('--paginate')) {
+  const index = state.listIndex ?? 0
+  const response = state.listResponses[Math.min(index, state.listResponses.length - 1)]
+  state.listIndex = index + 1
+  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
+  process.stdout.write(typeof response === 'string' ? response : JSON.stringify(response))
+  process.exit(0)
+}
+if (args[0] === 'api' && args.includes('--method') && args.includes('POST') && args.at(-1) === '-') {
+  const payload = JSON.parse(readFileSync(0, 'utf8'))
+  state.payloads.push(payload)
+  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
+  if (state.postResponse === undefined) {
+    process.stderr.write('unexpected release creation\\n')
+    process.exit(65)
+  }
+  process.stdout.write(typeof state.postResponse === 'string' ? state.postResponse : JSON.stringify(state.postResponse))
+  process.exit(0)
+}
+process.stderr.write('unexpected gh arguments: ' + JSON.stringify(args) + '\\n')
+process.exit(64)
+`,
+  )
+  const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
+  if (process.platform === 'win32') {
+    writeFileSync(executable, '@node "%~dp0\\fake-gh.mjs" %*\r\n')
+  } else {
+    writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
+    chmodSync(executable, 0o700)
+  }
+
+  const result = spawnSync('bash', ['-c', run], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      FAKE_GH_STATE: statePath,
+      GH_TOKEN: 'test-token',
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_REPOSITORY: 'cmetech/workflow-studio',
+      TAG: 'v1.0.2',
+      EXPECTED_COMMIT: 'a'.repeat(40),
+    },
+  })
+  return {
+    root,
+    result,
+    output: existsSync(outputPath) ? readFileSync(outputPath, 'utf8') : '',
+    state: JSON.parse(readFileSync(statePath, 'utf8')) as DraftLifecycleState,
+  }
+}
+
 describe('release workflow contract', () => {
   const workflow = () => parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow
   const jobSteps = (job: string) => workflow().jobs?.[job]?.steps ?? []
@@ -726,90 +828,129 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('Application commit')
   })
 
-  it('creates one exact draft after proving absence and exports its validated numeric ID', () => {
+  it('validates the create response when the paginated list remains stale', () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
-    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-draft-lifecycle-'))
-    const bin = join(root, 'bin')
-    const tooling = join(root, '.release-tooling', 'scripts')
-    const statePath = join(root, 'state.json')
-    const outputPath = join(root, 'github-output')
-    mkdirSync(bin, { recursive: true })
-    mkdirSync(tooling, { recursive: true })
-    writeFileSync(join(tooling, 'resolve-release.mjs'), readFileSync('scripts/resolve-release.mjs', 'utf8'))
-    writeFileSync(statePath, JSON.stringify({ release: null, calls: [] }))
-    writeFileSync(
-      join(bin, 'fake-gh.mjs'),
-      `import { readFileSync, writeFileSync } from 'node:fs'
-const args = process.argv.slice(2)
-const state = JSON.parse(readFileSync(process.env.FAKE_GH_STATE, 'utf8'))
-state.calls.push(args)
-if (args.includes('--paginate')) {
-  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
-  process.stdout.write(JSON.stringify(state.release ? [[state.release]] : [[]]))
-  process.exit(0)
-}
-if (args[0] === 'api' && args.includes('--method') && args.includes('POST') && args.at(-1) === '-') {
-  const payload = JSON.parse(readFileSync(0, 'utf8'))
-  state.release = {
-    id: 73,
-    tag_name: payload.tag_name,
-    target_commitish: payload.target_commitish,
-    draft: payload.draft,
-    prerelease: payload.prerelease,
-    name: payload.name,
-    body: payload.body,
-    assets: [],
-  }
-  state.payload = payload
-  writeFileSync(process.env.FAKE_GH_STATE, JSON.stringify(state))
-  process.stdout.write(JSON.stringify(state.release))
-  process.exit(0)
-}
-process.stderr.write('unexpected gh arguments: ' + JSON.stringify(args) + '\\n')
-process.exit(64)
-`,
-    )
-    const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
-    if (process.platform === 'win32') {
-      writeFileSync(executable, '@node "%~dp0\\fake-gh.mjs" %*\r\n')
-    } else {
-      writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
-      chmodSync(executable, 0o700)
-    }
-
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [[[]], [[]]],
+      postResponse: draftLifecycleRelease(),
+      calls: [],
+      payloads: [],
+    })
     try {
-      const result = spawnSync('bash', ['-c', run], {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH ?? ''}`,
-          FAKE_GH_STATE: statePath,
-          GH_TOKEN: 'test-token',
-          GITHUB_OUTPUT: outputPath,
-          GITHUB_REPOSITORY: 'cmetech/workflow-studio',
-          TAG: 'v1.0.2',
-          EXPECTED_COMMIT: 'a'.repeat(40),
+      expect(invocation.result.status, invocation.result.stderr).toBe(0)
+      expect(invocation.output).toBe('release_id=73\n')
+      expect(invocation.state.payloads).toEqual([
+        {
+          tag_name: 'v1.0.2',
+          target_commitish: 'a'.repeat(40),
+          name: 'LOOP24 Workflow Studio v1.0.2',
+          body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
+          draft: true,
+          prerelease: false,
         },
-      })
-      expect(result.status, result.stderr).toBe(0)
-      expect(readFileSync(outputPath, 'utf8')).toBe('release_id=73\n')
-      const state = JSON.parse(readFileSync(statePath, 'utf8')) as {
-        payload: Record<string, unknown>
-        calls: string[][]
-      }
-      expect(state.payload).toEqual({
-        tag_name: 'v1.0.2',
-        target_commitish: 'a'.repeat(40),
-        name: 'LOOP24 Workflow Studio v1.0.2',
-        body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
-        draft: true,
-        prerelease: false,
-      })
-      expect(state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
-      expect(state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
+      ])
+      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses an existing exact empty draft without creating a second release', () => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [[[draftLifecycleRelease()]]],
+      calls: [],
+      payloads: [],
+    })
+    try {
+      expect(invocation.result.status, invocation.result.stderr).toBe(0)
+      expect(invocation.output).toBe('release_id=73\n')
+      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(1)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects an existing nonempty exact draft without attempting creation', () => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [[[draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] })]]],
+      calls: [],
+      payloads: [],
+    })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/zero assets/i)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    [
+      'duplicate exact releases',
+      [[draftLifecycleRelease({ id: 72 }), draftLifecycleRelease({ id: 73 })]],
+      /expected exactly one release tagged v1\.0\.2; found 2/i,
+    ],
+    ['a wrong-commit release', [[draftLifecycleRelease({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
+    ['a published release', [[draftLifecycleRelease({ draft: false })]], /must be a draft/i],
+    ['malformed release-list JSON', '{"draft":', /invalid json/i],
+  ] as const)('fails closed for %s without attempting absence or creation', (_name, listResponse, error) => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [listResponse],
+      calls: [],
+      payloads: [],
+    })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(error)
+      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(1)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it('requires a second clean absence result before creating', () => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [[[]], '{"draft":'],
+      postResponse: draftLifecycleRelease(),
+      calls: [],
+      payloads: [],
+    })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(/invalid json/i)
+      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['malformed JSON', '{"draft":', /invalid json/i],
+    ['a nonempty asset list', draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] }), /zero assets/i],
+  ] as const)('rejects a created response containing %s without a list retry', (_name, postResponse, error) => {
+    const run = namedStep('validate', 'Create and validate exact draft release').run!
+    const invocation = executeDraftLifecycle(run, {
+      listResponses: [[[]], [[]]],
+      postResponse,
+      calls: [],
+      payloads: [],
+    })
+    try {
+      expect(invocation.result.status).toBe(1)
+      expect(invocation.result.stderr).toMatch(error)
+      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
+    } finally {
+      rmSync(invocation.root, { recursive: true, force: true })
     }
   })
 
@@ -1304,10 +1445,13 @@ if ($errors.Count -ne 0) {
     const release = workflow()
     const lifecycle = namedStep('validate', 'Create and validate exact draft release')
     expect(lifecycle.id).toBe('draft-release')
+    expect(lifecycle.run).toContain('--mode exact-draft')
     expect(lifecycle.run).toContain('--mode absent')
+    expect(lifecycle.run!.indexOf('--mode exact-draft')).toBeLessThan(lifecycle.run!.indexOf('--mode absent'))
     expect(lifecycle.run).toContain('--method POST')
     expect(lifecycle.run).toContain('"repos/${GITHUB_REPOSITORY}/releases"')
-    expect(lifecycle.run).toContain('--mode exact-draft')
+    expect(lifecycle.run).toContain('--mode validate-json')
+    expect(lifecycle.run).toContain('--input -')
     expect(lifecycle.run).toContain('--output id')
 
     for (const job of ['build', 'verify']) {

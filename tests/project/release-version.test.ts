@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 
 const RELEASE_VERSION = '1.0.2'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
+const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
+const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
 
 function json(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
@@ -29,11 +31,41 @@ describe('version one release metadata', () => {
     }
     const steps = workflow.jobs?.quality?.steps ?? []
     const checkoutIndex = steps.findIndex((step) => step.uses?.startsWith('actions/checkout@'))
-    const versionTestsIndex = steps.findIndex((step) => step.run === 'npm run test:unit')
+    const versionTestsIndex = steps.findIndex((step) => step.run === CI_UNIT_COMMAND)
 
     expect(checkoutIndex).toBeGreaterThanOrEqual(0)
     expect(versionTestsIndex).toBeGreaterThan(checkoutIndex)
     expect(steps[checkoutIndex]?.with?.['fetch-depth']).toBe(0)
+  })
+
+  it('uses the canonical cold-run unit profile and cross-platform native Tauri invocation in CI', () => {
+    const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs?: {
+        quality?: { steps?: Array<{ run?: string }> }
+        'native-bundle'?: {
+          strategy?: { matrix?: { os?: string[] } }
+          steps?: Array<{ run?: string }>
+        }
+      }
+    }
+    const qualityCommands = (workflow.jobs?.quality?.steps ?? [])
+      .map((step) => step.run)
+      .filter((command) => command?.startsWith('npm run test:unit -- --testTimeout'))
+    expect(qualityCommands).toEqual([CI_UNIT_COMMAND])
+
+    const native = workflow.jobs?.['native-bundle']
+    expect(native?.strategy?.matrix?.os).toEqual(['macos-latest', 'windows-latest', 'ubuntu-24.04'])
+    expect(native?.steps?.map((step) => step.run).filter((command) => command?.includes('tauri build'))).toEqual([
+      CI_NATIVE_COMMAND,
+    ])
+  })
+
+  it('gives the intentional cold Rust release-verifier hook its full ten-minute budget', () => {
+    const source = readFileSync('tests/installers/install-script.test.ts', 'utf8')
+    const releaseVerifierBlock = source.match(
+      /describe\('release asset verification'[\s\S]*?beforeAll\([\s\S]*?\},\s*([\d_]+)\)/,
+    )
+    expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
   it('keeps every package and native release version synchronized at 1.0.2', () => {
@@ -99,7 +131,7 @@ describe('version one release metadata', () => {
     }
 
     const acceptance = readFileSync('docs/verification/version-1-release-acceptance.md', 'utf8')
-    expect(acceptance).toContain('1,010 TypeScript unit/component/integration tests')
+    expect(acceptance).toContain('1,030 TypeScript unit/component/integration tests')
     expect(acceptance).toContain('236 Rust unit tests')
     expect(acceptance).toContain('24 real Git integration tests')
     expect(acceptance).toContain('9 Playwright E2E scenarios')
