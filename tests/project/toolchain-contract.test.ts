@@ -22,7 +22,7 @@ interface GithubWorkflow {
 }
 
 const NODE_MINIMUM = '22.13.0'
-const RUST_MINIMUM = '1.77.2'
+const RUST_MINIMUM = '1.88.0'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 
 function readPackageManifest(): PackageManifest {

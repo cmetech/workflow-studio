@@ -6,7 +6,7 @@ This repository contains the application foundation and approved product and imp
 
 ## Development
 
-Workflow Studio supports Node `>=22.13.0`, npm `>=10`, and Rust `>=1.77.2`.
+Workflow Studio supports Node `>=22.13.0`, npm `>=10`, and Rust `>=1.88.0`.
 
 ```bash
 npm ci

@@ -6,12 +6,12 @@
 
 **Architecture:** YAML text is the only workflow authority. Pure TypeScript parses, validates, projects, and patches YAML; Svelte renders derived views; a thin Tauri/Rust boundary owns scoped native operations. Hermes supplies a versioned authoring contract but is not a runtime dependency.
 
-**Tech Stack:** Tauri 2.11, Rust 1.77.2+, Svelte 5.56, TypeScript 6.0, Vite 8, Svelte Flow, CodeMirror 6, `yaml`, Ajv 8, Nanostores, Vitest, fast-check, Svelte Testing Library, Playwright.
+**Tech Stack:** Tauri 2.11, Rust 1.88.0+, Svelte 5.56, TypeScript 6.0, Vite 8, Svelte Flow, CodeMirror 6, `yaml`, Ajv 8, Nanostores, Vitest, fast-check, Svelte Testing Library, Playwright.
 
 ## Global constraints
 
 - Work from the `base` branch and keep each task as an atomic commit.
-- Use Node `>=22.12.0`, npm `>=10`, and Rust `>=1.77.2`.
+- Use Node `>=22.12.0`, npm `>=10`, and Rust `>=1.88.0`.
 - Keep the committed npm and Cargo lockfiles authoritative after initial scaffolding.
 - YAML is the only workflow input/output format and the sole source of truth.
 - Support `.yaml` and `.yml` definitions with canonical `.hermes.yaml` companions.

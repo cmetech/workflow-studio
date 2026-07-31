@@ -6,13 +6,13 @@
 
 **Architecture:** Svelte owns presentation, pure TypeScript owns application contracts, and a thin Tauri/Rust host exposes typed native capabilities. A browser bridge makes renderer behavior testable without Tauri. Production workflow fields come only from bundled Hermes authoring contracts.
 
-**Tech Stack:** Tauri 2.11.5, Rust 1.77.2+, Svelte 5.56.8, TypeScript 6.0.3, Vite 8.1.5, Nanostores 1.4.1, YAML 2.9.0, Ajv 8.20.0, Vitest 4.1.10, Svelte Testing Library 5.4.2.
+**Tech Stack:** Tauri 2.11.5, Rust 1.88.0+, Svelte 5.56.8, TypeScript 6.0.3, Vite 8.1.5, Nanostores 1.4.1, YAML 2.9.0, Ajv 8.20.0, Vitest 4.1.10, Svelte Testing Library 5.4.2.
 
 ## Global constraints
 
 - Execute from the standalone `workflow-studio` repository on a feature branch created from `base`.
 - Preserve all existing documentation and the `base` branch history.
-- Use Node `>=22.12.0`, npm `>=10`, and Rust `>=1.77.2`.
+- Use Node `>=22.12.0`, npm `>=10`, and Rust `>=1.88.0`.
 - Use the neutral bundle identifier `com.cmetech.workflowstudio`; LOOP24 is the build-time/default display brand.
 - Do not add Electron, SvelteKit, a local HTTP server, Python, or a Hermes runtime dependency.
 - Keep route/shell components thin and shared state in feature-owned Nanostores.
@@ -160,7 +160,7 @@ Create `src-tauri/Cargo.toml` with:
 name = "workflow-studio"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88.0"
 
 [lib]
 name = "workflow_studio_lib"
