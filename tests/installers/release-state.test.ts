@@ -10,6 +10,7 @@ interface Release {
   id: number
   tag_name: string
   draft: boolean
+  prerelease: boolean
   target_commitish: string
   assets: unknown[]
 }
@@ -19,6 +20,7 @@ function release(overrides: Partial<Release> = {}): Release {
     id: 42,
     tag_name: 'v1.0.2',
     draft: true,
+    prerelease: false,
     target_commitish: EXPECTED_COMMIT,
     assets: [],
     ...overrides,
@@ -199,6 +201,7 @@ describe('authenticated release-list resolution', () => {
     ],
     ['wrong commit', [[release({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
     ['non-draft release', [[release({ draft: false })]], /must be a draft/i],
+    ['prerelease draft', [[release({ prerelease: true })]], /must not be a prerelease/i],
     ['string release ID', [[release({ id: '73' as unknown as number })]], /release id/i],
   ] as const)('fails closed for %s', (_name, pages, expectedError) => {
     const invocation = invoke(pages.map((page) => [...page]))
@@ -328,6 +331,7 @@ describe('release JSON validation without GitHub lookup', () => {
     ['the wrong tag', release({ tag_name: 'v1.0.3' }), undefined, /wrong tag/i],
     ['the wrong commit', release({ target_commitish: 'b'.repeat(40) }), undefined, /target commit/i],
     ['a published release', release({ draft: false }), undefined, /must be a draft/i],
+    ['a prerelease draft', release({ prerelease: true }), undefined, /must not be a prerelease/i],
     ['a mismatched expected ID', release({ id: 73 }), '72', /release id/i],
   ] as const)('rejects created JSON containing %s without invoking gh', (_name, response, expectedId, error) => {
     const invocation = invokeJson(response, { expectedId })

@@ -120,6 +120,9 @@ function validateRelease(release, tag, expectedCommit) {
   if (release.draft !== true) {
     throw new Error(`Release tagged ${tag} must be a draft`)
   }
+  if (release.prerelease !== false) {
+    throw new Error(`Release tagged ${tag} must not be a prerelease`)
+  }
   if (release.target_commitish !== expectedCommit) {
     throw new Error(`Release tagged ${tag} has the wrong target commit`)
   }
