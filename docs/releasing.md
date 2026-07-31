@@ -6,8 +6,8 @@ Releases are native, updater-signed, and manually published. The GitHub Actions 
 
 1. Begin with a clean checkout on `base` and pull the intended public repository state.
 2. Set the same semantic version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
-3. Complete the v1.0.2 local verification record and prepare the macOS/Windows clean-machine acceptance record for post-publication follow-up.
-4. Create an annotated `v1.0.2` tag on a commit contained in `origin/base`, then push that exact tag.
+3. Complete the v1.0.3 local verification record and prepare the macOS/Windows clean-machine acceptance record for post-publication follow-up.
+4. Create an annotated `v1.0.3` tag on a commit contained in `origin/base`, then push that exact tag.
 
 Manual workflow dispatch accepts only an existing version tag. The workflow resolves the tag to a commit, confirms it is an ancestor of `origin/base`, and confirms the tag matches the Tauri configuration. Branch names, arbitrary SHAs, invalid tags, and previously published releases are rejected.
 
@@ -19,13 +19,13 @@ Manual workflow dispatch accepts only an existing version tag. The workflow reso
 | `macos-15-intel` | `x86_64-apple-darwin` | DMG plus updater archive/signature |
 | `windows-latest` | `x86_64-pc-windows-msvc` | NSIS executable plus its updater signature |
 
-These are the exact three v1.0.2 targets; Linux and Windows ARM64 artifacts are deferred. Every native job uses `npm ci` and runs the same formatting, lint, Svelte check, TypeScript unit-test, Rust-test, authoring-contract, and example gates as `npm run verify` before Tauri builds. Release CI runs Vitest with one worker to prevent cross-file CPU contention from starving UI timing assertions on slower native runners, and gives the recovery storage-limit test 20 seconds because it intentionally serializes nearly 64 MiB. These settings change only scheduling and timeout allowances, not assertions or coverage. The operating-system artifacts are deliberately unsigned: there is no Apple notarization/Developer ID or Microsoft Authenticode identity in the workflow.
+These are the exact three v1.0.3 targets; Linux and Windows ARM64 artifacts are deferred. Every native job uses `npm ci` and runs the same formatting, lint, Svelte check, TypeScript unit-test, Rust-test, authoring-contract, and example gates as `npm run verify` before Tauri builds. Release CI runs Vitest with one worker to prevent cross-file CPU contention from starving UI timing assertions on slower native runners, and gives the recovery storage-limit test 20 seconds because it intentionally serializes nearly 64 MiB. These settings change only scheduling and timeout allowances, not assertions or coverage. The operating-system artifacts are deliberately unsigned: there is no Apple notarization/Developer ID or Microsoft Authenticode identity in the workflow.
 
 The release Tauri configuration uses native Tauri v2 updater artifacts with `createUpdaterArtifacts: true`. Each macOS build requests both `app,dmg`, producing a DMG plus an app updater archive and signature. On Windows the NSIS installer is also the updater artifact, so the two Windows updater aliases share `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.exe` and its `.exe.sig` companion. The legacy `.nsis.zip` shape is rejected. The completed draft contains exactly 10 assets, and `SHA256SUMS` contains exactly nine entries for every other asset.
 
 ## Recovery history
 
-v1.0.1 remains unpublished as a failed draft after its final metadata-normalization job used GitHub's release-by-tag endpoint, which returns 404 for drafts; its immutable tag and draft are retained as failure evidence. v1.0.2 is the recovery release and uses a paginated authenticated release-list lookup. Validation reuses one exact empty, non-prerelease draft with the expected commit when present. If none exists, it confirms complete absence, creates one draft, and validates the REST POST response directly so GitHub's eventually consistent release list cannot invalidate a successful creation.
+v1.0.1 remains unpublished as a failed draft after its final metadata-normalization job used GitHub's release-by-tag endpoint, which returns 404 for drafts; its immutable tag and draft are retained as failure evidence. v1.0.2 remains unpublished as a failed draft with seven assets after its Windows build used a positional shell variable in the default PowerShell shell; its immutable tag, draft, and assets are retained as failure evidence. v1.0.3 is the recovery release. Its first run must begin with no v1.0.3 release, while later safe retries may reuse only one exact empty, non-prerelease draft with the expected commit. Validation reads the numeric release ID from the step environment on every shell. If no v1.0.3 release exists, it confirms complete absence, creates one draft, and validates the REST POST response directly so GitHub's eventually consistent release list cannot invalidate a successful creation.
 
 ## Updater-key custody
 

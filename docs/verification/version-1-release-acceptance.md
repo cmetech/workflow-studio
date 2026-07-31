@@ -1,8 +1,8 @@
 # Workflow Studio version 1 release acceptance
 
-Status: **FOLLOW-UP — v1.0.2 local and draft-release verification must be recorded; clean-machine evidence is post-publication follow-up.**
+Status: **FOLLOW-UP — v1.0.3 local and draft-release verification must be recorded; clean-machine evidence is post-publication follow-up.**
 
-Recorded: 2026-07-30. v1.0.1 is unpublished as a failed draft: its three native builds and payload gates passed, but final metadata normalization failed because the release-by-tag API returned 404 for the draft. Its immutable tag and seven-asset draft remain unchanged as failure evidence. v1.0.2 is the recovery release; it replaces that lookup with an authenticated paginated release-list resolver and corrects the native Tauri v2 updater artifact contract before any new tag or draft is created.
+Recorded: 2026-07-30. v1.0.1 is unpublished as a failed draft: its three native builds and payload gates passed, but final metadata normalization failed because the release-by-tag API returned 404 for the draft. Its immutable tag and seven-asset draft remain unchanged as failure evidence. v1.0.2 is unpublished as a failed draft with seven assets: its Windows build failed because default PowerShell expanded an unset positional shell variable instead of the valid release ID environment variable. Its immutable tag, draft, and assets remain unchanged as failure evidence. v1.0.3 is the recovery release; it reads the numeric release ID directly from the environment on every shell and requires initial v1.0.3 release absence before creating its draft.
 
 ## Evidence available in the repository
 
@@ -18,7 +18,7 @@ Recorded: 2026-07-30. v1.0.1 is unpublished as a failed draft: its three native 
 
 These blockers cannot be satisfied by browser fixtures, local cross-checks, or an unexecuted workflow:
 
-1. Create the immutable `v1.0.2` tag and draft release from the approved commit, without publishing it.
+1. Create the immutable `v1.0.3` tag and draft release from the approved commit, without publishing it.
 2. Download and verify the actual three-target draft artifacts, extracted package payloads, checksum manifest, updater metadata, companion signatures, and first-party Minisign verification job.
 3. On clean macOS Apple Silicon and Intel machines, install through the documented unsigned Gatekeeper path and record all template behaviors.
 4. On a clean Windows x64 machine, install through the documented SmartScreen path and record all template behaviors.

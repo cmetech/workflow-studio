@@ -161,7 +161,8 @@ jobs:
             --tag "$TAG" \
             --expected-commit "$EXPECTED_COMMIT" \
             --output id <<< "$RELEASE_JSON")
-          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
+          export RELEASE_ID
+          node -e 'const value = process.env.RELEASE_ID; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)'
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
   build:
@@ -244,7 +245,7 @@ jobs:
         env:
           RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         run: |
-          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
+          node -e 'const value = process.env.RELEASE_ID; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)'
       - name: Build and upload unsigned native bundle to a draft release
         id: tauri
         # tauri-apps/tauri-action v1 resolved and reviewed at 1deb371b0cd8bd54025b384f1cd735e725c4060f
@@ -399,7 +400,7 @@ jobs:
         env:
           RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         run: |
-          node -e 'const value = process.argv[1]; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)' "$RELEASE_ID"
+          node -e 'const value = process.env.RELEASE_ID; if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) process.exit(1)'
       - name: Download draft assets for metadata normalization
         env:
           GH_TOKEN: ${{ github.token }}

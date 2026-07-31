@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '1.0.2'
+const RELEASE_VERSION = '1.0.3'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
@@ -68,7 +68,7 @@ describe('version one release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 1.0.2', () => {
+  it('keeps every package and native release version synchronized at 1.0.3', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -80,14 +80,14 @@ describe('version one release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "1\.0\.2"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.2"/)
+    expect(cargoManifest).toMatch(/^version = "1\.0\.3"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.3"/)
   })
 
   it('changes only the two npm lockfile root version fields', () => {
     const expected = preReleaseFile('package-lock.json')
-      .replace('  "version": "1.0.1",', '  "version": "1.0.2",')
-      .replace('      "version": "1.0.1",', '      "version": "1.0.2",')
+      .replace('  "version": "1.0.1",', '  "version": "1.0.3",')
+      .replace('      "version": "1.0.1",', '      "version": "1.0.3",')
 
     expect(readFileSync('package-lock.json', 'utf8')).toBe(expected)
   })
@@ -96,20 +96,20 @@ describe('version one release metadata', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "1.0.2"',
+      'name = "workflow-studio"\nversion = "1.0.3"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
-  it('documents the v1.0.2 bootstrap contract and unsigned platform warnings', () => {
+  it('documents the v1.0.3 bootstrap contract and unsigned platform warnings', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
-      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.2/scripts/install.ps1')",
+      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.3/scripts/install.ps1')",
     )
     expect(installing).toContain(
-      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.2/scripts/install.sh | sh',
+      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.3/scripts/install.sh | sh',
     )
     expect(installing).toContain(
       'does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature',
@@ -121,13 +121,15 @@ describe('version one release metadata', () => {
     expect(installing).not.toContain('install it automatically')
     expect(installing).not.toContain('v1.0.0')
     expect(installing).not.toContain('/v1.0.1/scripts/install')
+    expect(installing).not.toContain('/v1.0.2/scripts/install')
   })
 
   it('records the recovery history and current release-verification totals', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
-      expect(document).toMatch(/v1\.0\.2[^\n]*recovery release/i)
+      expect(document).toMatch(/v1\.0\.2[^\n]*unpublished[^\n]*failed draft/i)
+      expect(document).toMatch(/v1\.0\.3[^\n]*recovery release/i)
     }
 
     const acceptance = readFileSync('docs/verification/version-1-release-acceptance.md', 'utf8')
