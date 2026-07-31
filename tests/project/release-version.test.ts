@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '1.0.1'
+const RELEASE_VERSION = '1.0.2'
+const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 
 function json(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
@@ -14,8 +16,27 @@ function baseCargoLock(): string {
   return result.stdout
 }
 
+function preReleaseFile(path: string): string {
+  const result = spawnSync('git', ['show', `${PRE_RELEASE_COMMIT}:${path}`], { encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
+}
+
 describe('version one release metadata', () => {
-  it('keeps every package and native release version synchronized at 1.0.1', () => {
+  it('checks out full Git history before running lockfile provenance tests in CI', () => {
+    const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs?: { quality?: { steps?: Array<{ uses?: string; run?: string; with?: Record<string, unknown> }> } }
+    }
+    const steps = workflow.jobs?.quality?.steps ?? []
+    const checkoutIndex = steps.findIndex((step) => step.uses?.startsWith('actions/checkout@'))
+    const versionTestsIndex = steps.findIndex((step) => step.run === 'npm run test:unit')
+
+    expect(checkoutIndex).toBeGreaterThanOrEqual(0)
+    expect(versionTestsIndex).toBeGreaterThan(checkoutIndex)
+    expect(steps[checkoutIndex]?.with?.['fetch-depth']).toBe(0)
+  })
+
+  it('keeps every package and native release version synchronized at 1.0.2', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -27,28 +48,36 @@ describe('version one release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "1\.0\.1"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.1"/)
+    expect(cargoManifest).toMatch(/^version = "1\.0\.2"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.2"/)
+  })
+
+  it('changes only the two npm lockfile root version fields', () => {
+    const expected = preReleaseFile('package-lock.json')
+      .replace('  "version": "1.0.1",', '  "version": "1.0.2",')
+      .replace('      "version": "1.0.1",', '      "version": "1.0.2",')
+
+    expect(readFileSync('package-lock.json', 'utf8')).toBe(expected)
   })
 
   it('changes no Cargo lockfile package record except the workflow-studio release version', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "1.0.1"',
+      'name = "workflow-studio"\nversion = "1.0.2"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
-  it('documents the v1.0.1 bootstrap contract and unsigned platform warnings', () => {
+  it('documents the v1.0.2 bootstrap contract and unsigned platform warnings', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
-      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.1/scripts/install.ps1')",
+      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.2/scripts/install.ps1')",
     )
     expect(installing).toContain(
-      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.1/scripts/install.sh | sh',
+      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.2/scripts/install.sh | sh',
     )
     expect(installing).toContain(
       'does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature',
@@ -59,6 +88,15 @@ describe('version one release metadata', () => {
     expect(installing).toContain('drag Workflow Studio to Applications')
     expect(installing).not.toContain('install it automatically')
     expect(installing).not.toContain('v1.0.0')
+    expect(installing).not.toContain('/v1.0.1/scripts/install')
+  })
+
+  it('records v1.0.1 as an unpublished failed draft and v1.0.2 as the recovery release', () => {
+    for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
+      const document = readFileSync(path, 'utf8')
+      expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
+      expect(document).toMatch(/v1\.0\.2[^\n]*recovery release/i)
+    }
   })
 
   it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {
