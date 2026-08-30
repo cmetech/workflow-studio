@@ -189,6 +189,67 @@ describe('App', () => {
     expect(explorer).toHaveFocus()
   })
 
+  it('leaves an open compact drawer and modal focus unchanged when Escape occurs inside the active modal', async () => {
+    closeTransientPanels()
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: dirty\n',
+          revision: 1,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'0'.repeat(64)}`,
+    )
+    const { container } = render(App)
+    await waitForSetupReady()
+    const workbench = container.querySelector('.workbench')!
+    const editor = screen.getByRole('region', { name: 'Workflow workspace' })
+
+    await publishResize(workbench, 1024)
+    await publishResize(editor, 976)
+    await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
+    const workspacePanel = screen.getByRole('complementary', { name: 'Workspace panel', hidden: true })
+    expect(workspacePanel).not.toHaveAttribute('inert')
+
+    const pair = $documentSession.get().pair!
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      conflict: {
+        pair,
+        document: 'definition',
+        disk: {
+          relativePath: 'flow.yaml',
+          text: 'name: changed on disk\n',
+          sha256: 'b'.repeat(64),
+          size: 22,
+          modifiedAt: '2026-08-30T12:00:00.000Z',
+          readOnly: false,
+        },
+        choices: ['keep-mine', 'reload-disk', 'compare'],
+        diffViewed: false,
+      },
+    })
+    await tick()
+
+    const compare = screen.getByRole('button', { name: 'Compare' })
+    expect(compare).toHaveFocus()
+    await fireEvent.keyDown(compare, { key: 'Escape' })
+    await tick()
+
+    expect($workspacePanelOpen.get()).toBe(true)
+    expect(workspacePanel).not.toHaveAttribute('inert')
+    expect(compare).toHaveFocus()
+  })
+
   it('marks titlebar authoring and workspace actions with their control semantics', async () => {
     render(App)
     await waitForSetupReady()

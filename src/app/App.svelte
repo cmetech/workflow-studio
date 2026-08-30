@@ -551,9 +551,12 @@
     inspectorPanelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
     openInspectorPanel()
     await tick()
-    const target = document.querySelector<HTMLElement>(
-      '.inspector-panel .inspector button, .inspector-panel .inspector input, .inspector-panel .inspector [tabindex]',
-    )
+    const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
+    const target =
+      inspector?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+      inspector?.querySelector<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      )
     target?.focus()
   }
 
@@ -1386,13 +1389,16 @@
             return
           }
         }
+        const activeModal = document.querySelector('[aria-modal="true"]')
         const escape = [
           ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
           ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
           ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
           ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
           ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
-          ...(workbenchPresentation.panels === 'drawers' && ($inspectorPanelOpen || $workspacePanelOpen)
+          ...(activeModal === null &&
+          workbenchPresentation.panels === 'drawers' &&
+          ($inspectorPanelOpen || $workspacePanelOpen)
             ? [{ priority: 50, cancel: closeOpenDrawer }]
             : []),
         ]

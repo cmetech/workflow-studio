@@ -85,6 +85,27 @@ test('compact drawer cycles preserve unsaved YAML and node selection', async ({ 
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(UNSAVED_YAML)
 })
 
+test('compact Inspector restores focus to its non-General active tab after reopening', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await prepare.press('Enter')
+
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const advanced = inspector.getByRole('tab', { name: 'Advanced' })
+  await advanced.click()
+  await expect(advanced).toHaveAttribute('aria-selected', 'true')
+  await expect(advanced).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(prepare).toBeFocused()
+  await prepare.press('Enter')
+
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(advanced).toHaveAttribute('aria-selected', 'true')
+  await expect(advanced).toBeFocused()
+})
+
 test('compact Split switches mounted surfaces without changing Split mode or scroll state', async ({ page }) => {
   const pageErrors: string[] = []
   const consoleErrors: string[] = []
