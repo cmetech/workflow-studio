@@ -1,10 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import ImportExportDialog from './ImportExportDialog.svelte'
 
 describe('ImportExportDialog', () => {
   it('shows structural blockers and never offers export while blocked', () => {
     render(ImportExportDialog, { mode: 'export', blockingIssues: ['Dependency cycle'] })
+    const dialog = screen.getByRole('dialog', { name: 'Export workflow' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     expect(screen.getByRole('alert')).toHaveTextContent('Dependency cycle')
     expect(screen.queryByRole('button', { name: 'Export YAML Pair' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Close' })).toHaveAttribute('data-variant', 'secondary')
@@ -33,12 +36,14 @@ describe('ImportExportDialog', () => {
     const onCancel = vi.fn()
     const view = render(ImportExportDialog, { mode: 'import', onCancel, opener })
 
-    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus())
     await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(opener).toHaveFocus()
 
-    const backdrop = view.container.querySelector('[data-dialog-backdrop]')
+    view.unmount()
+    const backdropView = render(ImportExportDialog, { mode: 'import', onCancel, opener })
+    const backdrop = backdropView.container.querySelector('[data-dialog-backdrop]')
     expect(backdrop).not.toBeNull()
     await fireEvent.click(backdrop!)
     expect(onCancel).toHaveBeenCalledTimes(2)

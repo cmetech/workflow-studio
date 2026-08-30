@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import ExternalChangeDialog from './ExternalChangeDialog.svelte'
@@ -17,6 +17,7 @@ describe('ExternalChangeDialog', () => {
     await tick()
 
     expect(screen.getByRole('dialog', { name: 'Workflow changed on disk' })).toBeVisible()
+    expect(screen.getByRole('dialog', { name: 'Workflow changed on disk' }).tagName).toBe('DIALOG')
     expect(screen.getByText('flows/release.yaml')).toBeVisible()
     expect(screen.getByText('2026-07-25T13:00:00.000Z')).toHaveAttribute('datetime', '2026-07-25T13:00:00.000Z')
     expect(screen.getByRole('button', { name: 'Compare' })).toHaveFocus()
@@ -52,7 +53,7 @@ describe('ExternalChangeDialog', () => {
     expect(onChoice).not.toHaveBeenCalled()
 
     unmount()
-    expect(opener).toHaveFocus()
+    await waitFor(() => expect(opener).toHaveFocus())
     opener.remove()
   })
 })

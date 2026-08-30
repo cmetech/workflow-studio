@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { ExternalChangeChoice } from './document-actions'
 
   interface ChangedFile {
@@ -11,52 +11,20 @@
     files: readonly ChangedFile[]
     diffViewed: boolean
     onChoice: (choice: ExternalChangeChoice) => void
+    opener?: HTMLElement | null
   }
 
-  let { files, diffViewed, onChoice }: Props = $props()
-  let compareButton: HTMLButtonElement
-  let dialog: HTMLDivElement
-
-  onMount(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    compareButton.focus()
-    return () => {
-      if (opener?.isConnected) opener.focus()
-    }
-  })
-
-  function trapFocus(event: KeyboardEvent): void {
-    if (event.key !== 'Tab') return
-    const focusable = [...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
-    const first = focusable[0]
-    const last = focusable.at(-1)
-    if (!first || !last) return
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
+  let { files, diffViewed, onChoice, opener }: Props = $props()
 </script>
 
-<section
-  class="backdrop"
-  role="presentation"
-  data-modal-background="blocked"
-  onclick={(event) => event.stopPropagation()}
-  onpointerdown={(event) => event.stopPropagation()}
+<ModalShell
+  titleId="external-change-title"
+  opener={opener ?? null}
+  dismissible={false}
+  onCancel={() => undefined}
+  initialFocusSelector="[data-modal-initial-focus]"
 >
-  <div
-    bind:this={dialog}
-    class="dialog"
-    role="dialog"
-    tabindex="-1"
-    aria-modal="true"
-    aria-labelledby="external-change-title"
-    onkeydown={trapFocus}
-  >
+  <div class="external-change-body" data-modal-background="blocked">
     <header>
       <p class="eyebrow">External change</p>
       <h2 id="external-change-title">Workflow changed on disk</h2>
@@ -73,41 +41,22 @@
     {#if !diffViewed}
       <p class="hint">Compare the versions before choosing Keep Mine.</p>
     {/if}
-    <footer>
-      <button type="button" class="secondary" onclick={() => onChoice('reload-disk')}>Reload Disk</button>
-      <button type="button" class="secondary" disabled={!diffViewed} onclick={() => onChoice('keep-mine')}
-        >Keep Mine</button
-      >
-      <button bind:this={compareButton} type="button" class="primary" onclick={() => onChoice('compare')}
-        >Compare</button
-      >
-    </footer>
   </div>
-</section>
+  {#snippet actions()}
+    <button type="button" class="secondary" onclick={() => onChoice('reload-disk')}>Reload Disk</button>
+    <button type="button" class="secondary" disabled={!diffViewed} onclick={() => onChoice('keep-mine')}
+      >Keep Mine</button
+    >
+    <button data-modal-initial-focus type="button" class="primary" onclick={() => onChoice('compare')}>Compare</button>
+  {/snippet}
+</ModalShell>
 
 <style>
-  .backdrop {
-    position: fixed;
-    z-index: 20;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    padding: 1rem;
-    background: color-mix(in srgb, var(--color-background) 72%, transparent);
+  .external-change-body {
+    min-width: 0;
   }
 
-  .dialog {
-    width: min(34rem, 100%);
-    padding: 1.25rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.625rem;
-    color: var(--color-text);
-    background: var(--color-surface);
-    box-shadow: 0 1.25rem 4rem var(--color-shadow);
-  }
-
-  header,
-  footer {
+  header {
     display: flex;
     gap: 0.75rem;
     align-items: center;
@@ -134,7 +83,7 @@
     text-transform: uppercase;
   }
 
-  .dialog > p,
+  .external-change-body > p,
   ul {
     margin-top: 1rem;
   }
@@ -160,11 +109,6 @@
   .hint {
     color: var(--color-text-muted);
     font-size: 0.75rem;
-  }
-
-  footer {
-    justify-content: flex-end;
-    margin-top: 1.25rem;
   }
 
   button {

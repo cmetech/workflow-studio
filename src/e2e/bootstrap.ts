@@ -1,5 +1,5 @@
 import loop24ManifestSource from '../../brands/loop24/brand.yaml?raw'
-import type { WorkspaceNativeBridge } from '$src/lib/native/types'
+import type { WorkspaceChangedHandler, WorkspaceNativeBridge } from '$src/lib/native/types'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import type { ProgressSnapshot } from '$src/lib/progress/types'
@@ -61,7 +61,10 @@ interface E2EState {
 
 declare global {
   interface Window {
-    __WORKFLOW_STUDIO_E2E__?: { snapshot(): Promise<E2EState> }
+    __WORKFLOW_STUDIO_E2E__?: {
+      snapshot(): Promise<E2EState>
+      triggerExternalChange(): Promise<void>
+    }
   }
 }
 
@@ -166,6 +169,7 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateInstalled = false
   let updateRelaunched = false
   const updateHandlers = new Set<UpdateEventHandler>()
+  const workspaceChangeHandlers = new Set<WorkspaceChangedHandler>()
   let layout: string | null = largeCanvasFixture
     ? JSON.stringify([
         {
@@ -400,11 +404,25 @@ export async function installRuntimeBootstrap(): Promise<void> {
     layoutSave: async (content) => {
       layout = content
     },
-    onWorkspaceChanged: async () => () => undefined,
+    onWorkspaceChanged: async (handler) => {
+      workspaceChangeHandlers.add(handler)
+      return () => workspaceChangeHandlers.delete(handler)
+    },
   }
 
   setNativeBridgeForTest(bridge)
   window.__WORKFLOW_STUDIO_E2E__ = {
+    async triggerExternalChange(): Promise<void> {
+      const current = await base.workspaceRead(DEFINITION_PATH)
+      await base.workspaceWrite({
+        relativePath: DEFINITION_PATH,
+        text: AUTHORING_FILES[DEFINITION_PATH].replace('Release demo', 'External release demo'),
+        expectedCurrentHash: current.sha256,
+      })
+      await Promise.all(
+        [...workspaceChangeHandlers].map((handler) => handler({ paths: [DEFINITION_PATH], kind: 'modify' })),
+      )
+    },
     async snapshot(): Promise<E2EState> {
       const openPair = $documentSession.get().pair
       const definitionText = openPair?.definition.text ?? (await bridge.workspaceRead(DEFINITION_PATH)).text

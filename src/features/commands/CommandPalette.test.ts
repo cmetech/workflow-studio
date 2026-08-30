@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
+import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import CommandPalette from './CommandPalette.svelte'
 import { createCommandRegistry } from '$src/lib/commands/registry'
@@ -29,12 +30,16 @@ describe('CommandPalette', () => {
       props: { registry, context: { surface: 'canvas', canMutate: true, hasSelection: false }, onClose: close },
     })
     const input = screen.getByRole('combobox', { name: 'Search commands' })
+    const dialog = screen.getByRole('dialog', { name: 'Command palette' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
     expect(screen.getByRole('heading', { name: 'Canvas' })).toBeVisible()
     await fireEvent.input(input, { target: { value: 'delete' } })
     expect(screen.getByText('Select a node first.')).toBeVisible()
     await fireEvent.input(input, { target: { value: 'add' } })
+    await tick()
     await fireEvent.keyDown(input, { key: 'Enter' })
-    expect(run).toHaveBeenCalledOnce()
+    await waitFor(() => expect(run).toHaveBeenCalledOnce())
     expect(close).toHaveBeenCalledOnce()
   })
 

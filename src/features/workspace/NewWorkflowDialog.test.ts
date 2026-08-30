@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import NewWorkflowDialog from './NewWorkflowDialog.svelte'
@@ -37,6 +37,10 @@ describe('NewWorkflowDialog', () => {
   it('renders profile/kind/required values from active contracts and submits only a complete form', async () => {
     const onCreate = vi.fn()
     render(NewWorkflowDialog, { contracts: [contract], onCreate })
+    const dialog = screen.getByRole('dialog', { name: 'New Workflow' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     const create = screen.getByRole('button', { name: 'Create Workflow' })
     expect(create).toBeDisabled()
     await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Review' } })
@@ -92,7 +96,7 @@ describe('NewWorkflowDialog', () => {
     const onCancel = vi.fn()
     render(NewWorkflowDialog, { contracts: [contract], onCancel, opener })
 
-    expect(screen.getByLabelText('Name')).toHaveFocus()
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveFocus())
     await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(opener).toHaveFocus()

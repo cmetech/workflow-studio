@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { displayKeybindings } from '$src/lib/commands/keybindings'
   import type { CommandContext } from '$src/lib/commands/types'
@@ -13,8 +13,6 @@
   let { registry, context, onClose, opener }: Props = $props()
   let query = $state('')
   let activeIndex = $state(0)
-  let input = $state<HTMLInputElement>()
-  let retainedOpener: HTMLElement | undefined
   const commands = $derived(
     registry.listCommands().filter((command) => fuzzy(query, `${command.label} ${command.category}`)),
   )
@@ -49,7 +47,6 @@
   }
   function close(): void {
     onClose?.()
-    if (retainedOpener?.isConnected) retainedOpener.focus()
   }
   function keydown(event: KeyboardEvent): void {
     if (event.key === 'ArrowDown') {
@@ -61,9 +58,6 @@
     } else if (event.key === 'Enter') {
       event.preventDefault()
       void execute()
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      close()
     }
   }
   function reason(index: number): string | undefined {
@@ -72,19 +66,18 @@
       ? (command.disabledReason?.(context) ?? `${command.label} is unavailable.`)
       : undefined
   }
-  onMount(() => {
-    retainedOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined)
-    input?.focus()
-  })
-  onDestroy(() => {
-    if (retainedOpener?.isConnected) retainedOpener.focus()
-  })
 </script>
 
-<div class="backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && close()}>
-  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette" tabindex="-1" onkeydown={keydown}>
+<ModalShell
+  titleId="command-palette-title"
+  opener={opener ?? null}
+  onCancel={close}
+  initialFocusSelector="[data-modal-initial-focus]"
+>
+  <div class="palette-body" role="presentation" onkeydown={keydown}>
+    <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
     <input
-      bind:this={input}
+      data-modal-initial-focus
       role="combobox"
       aria-label="Search commands"
       aria-controls="palette-results"
@@ -120,25 +113,21 @@
       {/each}
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
-  .backdrop {
-    position: fixed;
-    z-index: 70;
-    inset: 0;
-    display: grid;
-    place-items: start center;
-    padding-top: 12vh;
-    background: color-mix(in srgb, var(--color-shadow) 64%, transparent);
+  .palette-body {
+    min-width: 0;
   }
-  .palette {
-    width: min(42rem, calc(100% - 2rem));
-    padding: 0.7rem;
-    border: 1px solid var(--color-edge);
-    border-radius: 0.6rem;
-    background: var(--color-surface);
-    box-shadow: 0 1rem 3rem var(--color-shadow);
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   input {
     box-sizing: border-box;
@@ -147,8 +136,6 @@
     padding: 0.5rem 0.65rem;
   }
   [role='listbox'] {
-    max-height: 60vh;
-    overflow: auto;
     margin-top: 0.4rem;
   }
   [role='option'] {

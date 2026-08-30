@@ -38,6 +38,9 @@ describe('AddNodePicker', () => {
     const search = screen.getByRole('combobox', { name: 'Search node kinds' })
     await tick()
 
+    const dialog = screen.getByRole('dialog', { name: 'Add node' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     expect(search).toHaveFocus()
     expect(screen.getByRole('option', { name: /Command.*supported/i })).toHaveTextContent('Run an agent command')
     expect(screen.getByRole('option', { name: /Loop.*deferred/i })).toHaveAttribute('aria-disabled', 'true')

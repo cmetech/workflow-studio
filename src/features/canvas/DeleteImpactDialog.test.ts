@@ -34,7 +34,10 @@ describe('DeleteImpactDialog', () => {
   it('lists exact dependency and textual-reference nodes and fields without offering an unsafe delete', () => {
     render(DeleteImpactDialog, { impact: referencedImpact })
 
-    expect(screen.getByRole('dialog', { name: 'Delete selected nodes' })).toHaveTextContent('middle')
+    const dialog = screen.getByRole('dialog', { name: 'Delete selected nodes' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
+    expect(dialog).toHaveTextContent('middle')
     expect(screen.getByText('leaf · depends_on')).toBeVisible()
     expect(screen.getByText('leaf · prompt')).toBeVisible()
     expect(screen.getByText('Use $middle.output')).toBeVisible()

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { requiredFirstNodeFields, type NewWorkflowInput } from './workspace-actions'
 
@@ -12,9 +12,6 @@
   }
 
   let { contracts, activeContract: resolveActiveContract, onCreate, onCancel, opener }: Props = $props()
-  let retainedOpener: HTMLElement | undefined
-  let dialog = $state<HTMLDivElement>()
-  let nameInput = $state<HTMLInputElement>()
   function contractFor(profile: WorkflowProfile): AuthoringContract | undefined {
     const resolved = resolveActiveContract?.(profile)
     if (
@@ -65,61 +62,25 @@
 
   async function submit(): Promise<void> {
     if (!complete || !descriptor) return
+    const focusTarget = opener
     await onCreate?.({ name, description, profile, firstNodeId, firstNodeKind: descriptor.id, firstNodeValues })
-    retainedOpener?.focus()
+    focusTarget?.focus()
   }
 
   function cancel(): void {
     onCancel?.()
-    retainedOpener?.focus()
   }
-
-  function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      cancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const focusable = [
-      ...(dialog?.querySelectorAll<HTMLElement>('input, textarea, select, button:not(:disabled)') ?? []),
-    ]
-    if (focusable.length === 0) return
-    const first = focusable[0]!
-    const last = focusable.at(-1)!
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  onMount(() => {
-    retainedOpener = opener
-    nameInput?.focus()
-  })
-  onDestroy(() => retainedOpener?.focus())
 </script>
 
-<div
-  role="presentation"
-  class="backdrop"
-  data-dialog-backdrop
-  onclick={(event) => event.target === event.currentTarget && cancel()}
+<ModalShell
+  titleId="new-workflow-title"
+  opener={opener ?? null}
+  onCancel={cancel}
+  initialFocusSelector="[data-modal-initial-focus]"
 >
-  <div
-    bind:this={dialog}
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="new-workflow-title"
-    tabindex="-1"
-    onkeydown={handleKeydown}
-  >
+  <div class="new-workflow-body">
     <h2 id="new-workflow-title">New Workflow</h2>
-    <label>Name <input bind:this={nameInput} bind:value={name} /></label>
+    <label>Name <input data-modal-initial-focus bind:value={name} /></label>
     <label>Description <textarea bind:value={description}></textarea></label>
     <label>
       Profile
@@ -145,32 +106,18 @@
         />
       </label>
     {/each}
-    <footer>
-      <button type="button" class="secondary" onclick={cancel}>Cancel</button>
-      <button type="button" disabled={!complete} onclick={() => void submit()}>Create Workflow</button>
-    </footer>
   </div>
-</div>
+  {#snippet actions()}
+    <button type="button" class="secondary" onclick={cancel}>Cancel</button>
+    <button type="button" disabled={!complete} onclick={() => void submit()}>Create Workflow</button>
+  {/snippet}
+</ModalShell>
 
 <style>
-  .backdrop {
-    position: fixed;
-    z-index: 50;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: color-mix(in srgb, var(--color-shadow) 65%, transparent);
-  }
-
-  .dialog {
+  .new-workflow-body {
     display: grid;
     gap: 0.75rem;
-    width: min(32rem, calc(100% - 2rem));
-    padding: 1rem;
-    border: 1px solid var(--color-edge);
-    border-radius: 0.625rem;
-    color: var(--color-text);
-    background: var(--color-surface);
+    min-width: 0;
   }
 
   h2 {
@@ -193,12 +140,6 @@
     border: 1px solid var(--color-border);
     color: var(--color-text);
     background: var(--color-background);
-  }
-
-  footer {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: flex-end;
   }
 
   .secondary {

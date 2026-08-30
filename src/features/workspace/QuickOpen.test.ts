@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkspaceEntry } from '$src/lib/workspace/types'
@@ -40,9 +40,12 @@ describe('QuickOpen', () => {
   it('keeps forward and reverse Tab focus within the overlay', async () => {
     render(QuickOpen, { entries })
     await tick()
+    const dialog = screen.getByRole('dialog', { name: 'Quick Open' })
     const search = screen.getByRole('combobox', { name: 'Quick Open workflows' })
     const lastResult = screen.getAllByRole('option').at(-1)!
 
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
     expect(search).toHaveFocus()
     lastResult.focus()
     await fireEvent.keyDown(lastResult, { key: 'Tab' })
@@ -90,7 +93,7 @@ describe('QuickOpen', () => {
 
     view.unmount()
 
-    expect(opener).toHaveFocus()
+    await waitFor(() => expect(opener).toHaveFocus())
     opener.remove()
   })
 

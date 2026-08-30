@@ -1657,6 +1657,7 @@
       const drawerEscapeSnapshots = new WeakMap<KeyboardEvent, DrawerEscapeSnapshot>()
       const escapeKeydown = (event: KeyboardEvent) => {
         if (event.key !== 'Escape') return
+        if (event.target instanceof Element && event.target.closest('dialog[open]')) return
         const cancellation = appEscapeCancellations().sort((left, right) => right.priority - left.priority)[0]
         if (cancellation) {
           event.preventDefault()

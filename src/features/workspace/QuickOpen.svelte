@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { WorkspaceEntry } from '$src/lib/workspace/types'
 
   interface Props {
@@ -10,11 +10,8 @@
   }
 
   let { entries, onOpen, onClose, opener }: Props = $props()
-  let retainedOpener: HTMLElement | undefined
   let query = $state('')
   let activeIndex = $state(0)
-  let overlay: HTMLElement
-  let searchInput: HTMLInputElement
   const results = $derived(
     entries
       .filter((entry) => entry.kind === 'workflow')
@@ -29,27 +26,20 @@
     return id.replace(/[^a-zA-Z0-9_-]/g, '-')
   }
 
-  function restoreOpener(): void {
-    if (retainedOpener?.isConnected) retainedOpener.focus()
-  }
-
   function close(): void {
     onClose?.()
-    restoreOpener()
   }
 
   async function open(index: number): Promise<void> {
     const entry = results[index]
     if (!entry) return
+    const focusTarget = opener
     await onOpen?.(entry)
-    restoreOpener()
+    focusTarget?.focus()
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      close()
-    } else if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown') {
       event.preventDefault()
       activeIndex = Math.min(activeIndex + 1, results.length - 1)
     } else if (event.key === 'ArrowUp') {
@@ -60,40 +50,17 @@
       void open(activeIndex)
     }
   }
-
-  function trapFocus(event: KeyboardEvent): void {
-    if (event.key !== 'Tab') return
-    const focusable = [...overlay.querySelectorAll<HTMLElement>('input, button:not(:disabled)')]
-    const first = focusable[0]
-    const last = focusable.at(-1)
-    if (!first || !last) return
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  onMount(() => {
-    retainedOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined)
-    searchInput.focus()
-  })
-  onDestroy(restoreOpener)
 </script>
 
-<div
-  bind:this={overlay}
-  class="quick-open"
-  role="dialog"
-  tabindex="-1"
-  aria-modal="true"
-  aria-label="Quick Open"
-  onkeydown={trapFocus}
+<ModalShell
+  titleId="quick-open-title"
+  opener={opener ?? null}
+  onCancel={close}
+  initialFocusSelector="[data-modal-initial-focus]"
 >
+  <h2 id="quick-open-title" class="visually-hidden">Quick Open</h2>
   <input
-    bind:this={searchInput}
+    data-modal-initial-focus
     role="combobox"
     aria-label="Quick Open workflows"
     aria-controls="quick-open-results"
@@ -119,21 +86,18 @@
       </button>
     {/each}
   </div>
-</div>
+</ModalShell>
 
 <style>
-  .quick-open {
+  .visually-hidden {
     position: absolute;
-    z-index: 30;
-    top: 4rem;
-    left: 50%;
-    width: min(38rem, calc(100% - 2rem));
-    padding: 0.5rem;
-    transform: translateX(-50%);
-    border: 1px solid var(--color-edge);
-    border-radius: 0.5rem;
-    background: var(--color-surface);
-    box-shadow: 0 1rem 3rem var(--color-shadow);
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   input,
@@ -151,8 +115,7 @@
   }
 
   [role='listbox'] {
-    max-height: 20rem;
-    overflow: auto;
+    min-width: 0;
   }
 
   [role='option'] {
@@ -173,15 +136,13 @@
 
   [role='option'] span {
     min-width: 0;
-    overflow: hidden;
     color: var(--color-text-muted);
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .quick-open {
-      scroll-behavior: auto;
+  @media (max-width: 30rem) {
+    [role='option'] {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 </style>

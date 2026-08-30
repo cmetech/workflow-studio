@@ -290,11 +290,16 @@ describe('App', () => {
     })
     await tick()
 
+    const dialog = screen.getByRole('dialog', { name: 'Workflow changed on disk' })
     const compare = screen.getByRole('button', { name: 'Compare' })
-    expect(compare).toHaveFocus()
+    const modalKeydown = vi.fn()
+    dialog.addEventListener('keydown', modalKeydown, { capture: true })
+    expect(dialog.tagName).toBe('DIALOG')
+    await waitFor(() => expect(compare).toHaveFocus())
     await fireEvent.keyDown(compare, { key: 'Escape' })
     await tick()
 
+    expect(modalKeydown).toHaveBeenCalledOnce()
     expect($workspacePanelOpen.get()).toBe(true)
     expect(workspacePanel).not.toHaveAttribute('inert')
     expect(compare).toHaveFocus()
