@@ -90,8 +90,8 @@
         </ul>
       {/if}
       <footer>
-        <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Cancel</button>
-        <button type="button" onclick={() => void confirm()}>{buttonLabel}</button>
+        <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
+        <button type="button" data-variant={collision ? 'danger' : 'primary'} onclick={() => void confirm()}>{buttonLabel}</button>
       </footer>
     {/if}
   </div>
@@ -132,8 +132,4 @@
     justify-content: flex-end;
   }
 
-  .secondary {
-    color: var(--color-text);
-    background: var(--color-node);
-  }
 </style>

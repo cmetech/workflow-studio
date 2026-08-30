@@ -66,6 +66,8 @@ describe('Explorer', () => {
     await tick()
 
     expect(screen.getByRole('heading', { name: 'Explorer' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'New Workflow' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Import' })).toBeVisible()
     expect(screen.getByRole('tree', { name: 'Workspace workflows' })).toBeVisible()
     expect(screen.getByRole('treeitem', { name: 'flows folder' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })).toBeVisible()

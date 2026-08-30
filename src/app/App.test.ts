@@ -120,6 +120,14 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it('marks titlebar authoring and workspace actions with their control semantics', async () => {
+    render(App)
+    await waitForSetupReady()
+
+    expect(screen.getByRole('button', { name: 'New Workflow' })).toHaveAttribute('data-variant', 'primary')
+    expect(screen.getAllByRole('button', { name: 'Open Folder' })[0]).toHaveAttribute('data-variant', 'secondary')
+  })
+
   it('mounts runtime brand management in Settings', async () => {
     showActivity('settings')
     render(App)
@@ -1084,7 +1092,7 @@ nodes:
       'var(--color-yaml-gutter)',
     )
     expect(screen.getByRole('status', { name: 'Application status' }).style.backgroundColor).toBe(
-      'var(--color-node-selected)',
+      'var(--color-surface-elevated)',
     )
   })
 })

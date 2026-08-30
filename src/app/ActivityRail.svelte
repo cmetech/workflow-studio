@@ -3,6 +3,12 @@
   import { resolveCommand } from '$src/lib/commands/surface'
   import type { ActivityId, CommandContext } from '$src/lib/commands/types'
   import { activeActivity } from '$src/stores/shell'
+  import Files from 'lucide-svelte/icons/files'
+  import Workflow from 'lucide-svelte/icons/workflow'
+  import GalleryVerticalEnd from 'lucide-svelte/icons/gallery-vertical-end'
+  import BookOpen from 'lucide-svelte/icons/book-open'
+  import GitBranch from 'lucide-svelte/icons/git-branch'
+  import Settings from 'lucide-svelte/icons/settings'
 
   const activityContext: CommandContext = {
     surface: 'global',
@@ -15,13 +21,13 @@
   }
   let { commandSurface }: Props = $props()
 
-  const activities: readonly { id: ActivityId; symbol: string }[] = [
-    { id: 'explorer', symbol: '▤' },
-    { id: 'nodes', symbol: '◇' },
-    { id: 'examples', symbol: '☆' },
-    { id: 'documentation', symbol: 'ⓘ' },
-    { id: 'git', symbol: '⑂' },
-    { id: 'settings', symbol: '⚙' },
+  const activities: readonly { id: ActivityId; icon: typeof Files }[] = [
+    { id: 'explorer', icon: Files },
+    { id: 'nodes', icon: Workflow },
+    { id: 'examples', icon: GalleryVerticalEnd },
+    { id: 'documentation', icon: BookOpen },
+    { id: 'git', icon: GitBranch },
+    { id: 'settings', icon: Settings },
   ]
 </script>
 
@@ -34,6 +40,8 @@
     {#if command}
       <button
         type="button"
+        data-variant="ghost"
+        data-activity={activity.id}
         aria-label={command.label}
         aria-pressed={$activeActivity === activity.id}
         class:active={$activeActivity === activity.id}
@@ -41,7 +49,7 @@
         disabled={!command.enabled}
         onclick={() => void commandSurface.executeCommand(command.id, activityContext)}
       >
-        <span aria-hidden="true">{activity.symbol}</span>
+        <activity.icon aria-hidden="true" size={17} strokeWidth={1.75} />
       </button>
     {/if}
   {/each}
@@ -51,30 +59,30 @@
   .activity-rail {
     display: flex;
     flex-direction: column;
-    gap: 0.3125rem;
+    gap: var(--space-1);
     align-items: center;
     min-height: 0;
-    padding: 0.5rem 0.375rem;
+    padding: var(--space-2) var(--space-1);
     border-right: 1px solid var(--color-border);
     background: var(--color-yaml-gutter);
   }
 
   button {
     display: grid;
-    width: 2.125rem;
-    min-width: 2.125rem;
-    height: 2.125rem;
-    min-height: 2.125rem;
+    width: var(--control-md);
+    min-width: var(--control-md);
+    height: var(--control-md);
+    min-height: var(--control-md);
     padding: 0;
     border: 1px solid transparent;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
     background: transparent;
   }
 
   button:hover {
     color: var(--color-text);
-    background: var(--color-node);
+    background: var(--color-surface-elevated);
   }
 
   button.active {
@@ -84,8 +92,7 @@
   }
 
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
+    box-shadow: var(--focus-ring);
   }
 
   .spacer {

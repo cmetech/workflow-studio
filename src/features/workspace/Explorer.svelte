@@ -154,10 +154,10 @@
   <header>
     <h2 id="workspace-explorer-heading">Explorer</h2>
     <div class="header-actions">
-      <button type="button" disabled={!contractAvailable} onclick={(event) => onNew?.(event.currentTarget)}
+      <button type="button" data-variant="secondary" disabled={!contractAvailable} onclick={(event) => onNew?.(event.currentTarget)}
         >New Workflow</button
       >
-      <button type="button" disabled={!contractAvailable} onclick={(event) => onImport?.(event.currentTarget)}
+      <button type="button" data-variant="ghost" disabled={!contractAvailable} onclick={(event) => onImport?.(event.currentTarget)}
         >Import</button
       >
     </div>
@@ -211,7 +211,7 @@
 <style>
   .explorer {
     display: grid;
-    grid-template-rows: 2.625rem minmax(0, 1fr);
+    grid-template-rows: var(--control-md) minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     color: var(--color-text);
@@ -221,7 +221,7 @@
   header {
     display: flex;
     align-items: center;
-    padding: 0 0.75rem;
+    padding: 0 var(--space-3);
     border-bottom: 1px solid var(--color-border);
     justify-content: space-between;
   }
@@ -229,26 +229,26 @@
   h2 {
     margin: 0;
     color: var(--color-text-muted);
-    font-size: 0.625rem;
-    font-weight: 800;
+    font-size: 0.6875rem;
+    font-weight: 700;
     letter-spacing: 0.13em;
     text-transform: uppercase;
   }
 
   .header-actions {
     display: flex;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .header-actions button {
     width: auto;
-    min-height: 1.75rem;
-    padding: 0.125rem 0.375rem;
+    min-height: var(--control-sm);
+    padding: var(--space-1) var(--space-2);
   }
 
   .tree {
     min-height: 0;
-    padding: 0.625rem 0.5rem;
+    padding: var(--space-2);
     overflow: auto;
   }
 
@@ -262,7 +262,7 @@
     padding-right: 0.4375rem;
     padding-bottom: 0.1875rem;
     border: 1px solid transparent;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-sm);
     color: var(--color-text);
     background: transparent;
     cursor: default;
@@ -271,11 +271,11 @@
   }
 
   button:hover {
-    background: var(--color-node);
+    background: var(--color-surface-elevated);
   }
 
   button.active {
-    border-color: var(--color-edge);
+    border-color: var(--color-accent);
     color: var(--color-accent-strong);
     background: var(--color-node-selected);
   }

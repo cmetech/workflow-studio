@@ -20,6 +20,7 @@ describe('ImportExportDialog', () => {
     expect(screen.getByText('/exports/flow.yaml')).toBeVisible()
     expect(screen.getByText('/exports/flow.hermes.yaml')).toBeVisible()
     expect(screen.queryByText(/layout|settings|contract|brand/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace YAML Pair' })).toHaveAttribute('data-variant', 'danger')
     await fireEvent.click(screen.getByRole('button', { name: 'Replace YAML Pair' }))
     expect(onConfirm).toHaveBeenCalledTimes(1)
   })

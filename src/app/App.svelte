@@ -1406,6 +1406,7 @@
     <div class="title-actions">
       <button
         type="button"
+        data-variant="primary"
         disabled={!contractsLoaded || contracts.length === 0}
         onclick={(event) => {
           newDialogOpener = event.currentTarget
@@ -1415,6 +1416,7 @@
       <button
         type="button"
         class="open-folder"
+        data-variant="secondary"
         disabled={!setupReady}
         onclick={() => setupReady && void runCommand('workspace.open-folder')}>Open Folder</button
       >
@@ -2007,40 +2009,39 @@
     align-items: center;
     justify-content: space-between;
     min-height: 3rem;
-    padding: 0.5rem 0.875rem;
+    padding: var(--space-2) var(--space-4);
     border-bottom: 1px solid var(--color-border);
-    background: var(--color-yaml-gutter);
-    box-shadow: 0 0.75rem 2.5rem var(--color-shadow);
+    background: var(--color-surface);
   }
 
   .brand-lockup {
     display: flex;
-    gap: 0.625rem;
+    gap: var(--space-2);
     align-items: center;
   }
 
   .title-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .brand-lockup img {
-    width: 2rem;
-    height: 2rem;
+    width: var(--control-md);
+    height: var(--control-md);
     object-fit: contain;
     object-position: left center;
   }
 
   .title-copy {
-    padding-left: 0.625rem;
+    padding-left: var(--space-3);
     border-left: 1px solid var(--color-border);
   }
 
   .eyebrow {
     margin: 0;
-    color: var(--color-accent);
+    color: var(--color-text-muted);
     font-size: 0.625rem;
-    font-weight: 800;
+    font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
   }
@@ -2051,18 +2052,15 @@
     line-height: 1.2;
   }
 
-  .open-folder,
+  .title-actions button,
   .editor-tabs button {
-    min-height: 2rem;
-    border-radius: 0.375rem;
+    min-height: var(--control-sm);
+    border-radius: var(--radius-sm);
     cursor: pointer;
   }
 
-  .open-folder {
-    padding: 0.375rem 0.625rem;
-    border: 1px solid var(--color-edge);
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+  .title-actions button {
+    padding-inline: var(--space-3);
   }
 
   .workbench {
@@ -2100,29 +2098,24 @@
 
   .editor-tabs {
     display: flex;
-    gap: 0.1875rem;
+    gap: var(--space-1);
     align-items: center;
-    padding: 0 0.625rem;
+    padding: 0 var(--space-3);
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
   }
 
   .editor-tabs button {
-    padding: 0.25rem 0.625rem;
+    padding: var(--space-1) var(--space-3);
     border: 1px solid transparent;
     color: var(--color-text-muted);
     background: transparent;
   }
 
   .editor-tabs button.active {
-    border-color: var(--color-edge);
+    border-color: var(--color-accent);
     color: var(--color-accent-strong);
     background: var(--color-node-selected);
-  }
-
-  button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
   }
 
   .editor-region {

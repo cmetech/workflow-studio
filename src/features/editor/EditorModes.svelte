@@ -202,7 +202,7 @@
 <style>
   .editor-modes {
     display: grid;
-    grid-template-rows: 2.25rem minmax(0, 1fr);
+    grid-template-rows: var(--control-md) minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     background: var(--color-surface);
@@ -215,24 +215,24 @@
 
   .yaml-tabs {
     display: flex;
-    gap: 0.25rem;
+    gap: var(--space-1);
     align-items: center;
-    padding: 0 0.5rem;
+    padding: 0 var(--space-2);
     border-bottom: 1px solid var(--color-border);
     background: var(--color-yaml-gutter);
   }
 
   .yaml-tabs button {
-    min-height: 1.75rem;
-    padding: 0.2rem 0.5rem;
+    min-height: var(--control-sm);
+    padding: var(--space-1) var(--space-2);
     border: 1px solid transparent;
-    border-radius: 0.25rem;
+    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
     background: transparent;
   }
 
   .yaml-tabs button[aria-selected='true'] {
-    border-color: var(--color-edge);
+    border-color: var(--color-accent);
     color: var(--color-text);
     background: var(--color-node-selected);
   }

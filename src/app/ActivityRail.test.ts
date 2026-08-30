@@ -27,8 +27,11 @@ describe('ActivityRail', () => {
 
     const documentation = screen.getByRole('button', { name: 'Registry Knowledge' })
     const settings = screen.getByRole('button', { name: 'Registry Preferences' })
+    const explorer = screen.getByRole('button', { name: 'Explorer' })
     expect(settings).toBeDisabled()
     expect(settings).toHaveAttribute('title', 'Preferences are locked.')
+    expect(explorer).toHaveAttribute('data-activity', 'explorer')
+    expect(settings.querySelector('svg')).not.toBeNull()
     await fireEvent.click(documentation)
 
     expect(runDocumentation).toHaveBeenCalledOnce()

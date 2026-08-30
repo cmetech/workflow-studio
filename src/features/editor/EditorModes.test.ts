@@ -216,6 +216,7 @@ describe('EditorModes', () => {
       onTextChange: () => undefined,
     })
     const definition = screen.getByRole('tab', { name: 'Definition YAML' })
+    expect(definition).toHaveAttribute('aria-selected', 'true')
     const companion = screen.getByRole('tab', { name: 'Companion YAML' })
     const definitionId = definition.id
     const companionId = companion.id

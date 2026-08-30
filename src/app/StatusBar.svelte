@@ -39,7 +39,7 @@
   class="status-bar"
   role="status"
   aria-label="Application status"
-  style:background-color="var(--color-node-selected)"
+  style:background-color="var(--color-surface-elevated)"
 >
   <span>{gitLabel}</span>
   <span>YAML: pending</span>
@@ -50,18 +50,19 @@
 <style>
   .status-bar {
     display: flex;
-    gap: 1rem;
+    gap: var(--space-4);
     align-items: center;
-    min-height: 1.75rem;
-    padding: 0 0.75rem;
+    min-height: var(--control-sm);
+    padding: 0 var(--space-3);
     border-top: 1px solid var(--color-border);
     color: var(--color-text);
-    background: var(--color-node-selected);
+    background: var(--color-surface-elevated);
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
   }
 
   .update {
     margin-left: auto;
-    color: var(--color-focus);
+    color: var(--color-text-muted);
   }
 </style>

@@ -40,6 +40,7 @@ describe('DeleteImpactDialog', () => {
     expect(screen.getByText('Use $middle.output')).toBeVisible()
     expect(screen.getByRole('status')).toHaveTextContent(/resolve.*reference/i)
     expect(screen.getByRole('button', { name: 'Delete nodes' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Delete nodes' })).toHaveAttribute('data-variant', 'danger')
   })
 
   it('confirms dependency-only deletion and restores focus to the opener', async () => {

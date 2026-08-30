@@ -65,6 +65,7 @@ describe('BrandSettings', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Import brand pack' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Preview acme Studio' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Activate acme Studio' }))
+    expect(screen.getByRole('button', { name: 'Remove acme Studio' })).toHaveAttribute('data-variant', 'danger')
     await fireEvent.click(screen.getByRole('button', { name: 'Remove acme Studio' }))
 
     expect(onImport).toHaveBeenCalledOnce()
@@ -126,6 +127,7 @@ describe('BrandSettings', () => {
     const confirm = screen.getByRole('button', { name: 'Revert to LOOP24 and remove' })
 
     expect(dialog).toHaveAttribute('open')
+    expect(confirm).toHaveAttribute('data-variant', 'danger')
     await waitFor(() => expect(cancel).toHaveFocus())
     await fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })
     expect(confirm).toHaveFocus()

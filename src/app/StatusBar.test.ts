@@ -26,6 +26,8 @@ describe('StatusBar', () => {
 
     render(StatusBar)
 
+    expect(screen.getByRole('status', { name: 'Application status' })).toHaveTextContent('YAML: pending')
+    expect(screen.getByRole('status', { name: 'Application status' })).toHaveTextContent('DAG: pending')
     expect(screen.getByText('Git: feature/workflow · 2 pair changes')).toBeVisible()
   })
 
