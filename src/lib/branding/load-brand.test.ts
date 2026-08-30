@@ -23,13 +23,25 @@ describe('LOOP24 bundled brand', () => {
     }
   })
 
-  it('uses the approved default identity and LOOP24 accent family', () => {
+  it('uses the approved LOOP24 identity with the modern operational palette', () => {
     const brand = loadBundledBrand()
 
     expect(brand.id).toBe('loop24')
     expect(brand.displayName).toBe('LOOP24 Workflow Studio')
-    expect(brand.themes.dark.accent).toBe('#FAD22D')
-    expect(brand.themes.dark['accent-contrast']).toBe('#0C0C0C')
+    expect(brand.themes.dark).toMatchObject({
+      background: '#0B0D12',
+      accent: '#5B50E6',
+      'accent-contrast': '#FFFFFF',
+      'node-selected': '#252143',
+      'edge-selected': '#8A80FF',
+    })
+    expect(brand.themes.light).toMatchObject({
+      background: '#F5F7FB',
+      accent: '#5145CD',
+      'accent-contrast': '#FFFFFF',
+      'node-selected': '#EFEDFF',
+      'edge-selected': '#5145CD',
+    })
   })
 
   it('keeps bundled assets relative and free of path traversal', () => {
@@ -103,9 +115,9 @@ describe('LOOP24 bundled brand', () => {
 
     expect(root.dataset.brand).toBe('loop24')
     expect(root.dataset.theme).toBe('dark')
-    expect(root.style.getPropertyValue('--color-background')).toBe('#090A0D')
-    expect(root.style.getPropertyValue('--color-node-selected')).toBe('#2B260D')
-    expect(root.style.getPropertyValue('--color-yaml-gutter')).toBe('#0D0F14')
+    expect(root.style.getPropertyValue('--color-background')).toBe('#0B0D12')
+    expect(root.style.getPropertyValue('--color-node-selected')).toBe('#252143')
+    expect(root.style.getPropertyValue('--color-yaml-gutter')).toBe('#0E1118')
   })
 
   it('starts with only the active brand ID and system theme preference in shared state', () => {

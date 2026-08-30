@@ -1999,7 +1999,7 @@
   }
 
   .workspace-error {
-    border-color: var(--color-danger);
+    border-color: var(--color-error);
   }
 
   .titlebar {

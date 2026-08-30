@@ -84,12 +84,34 @@ describe('version one release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.3"/)
   })
 
-  it('changes only the two npm lockfile root version fields', () => {
-    const expected = preReleaseFile('package-lock.json')
-      .replace('  "version": "1.0.1",', '  "version": "1.0.3",')
-      .replace('      "version": "1.0.1",', '      "version": "1.0.3",')
+  it('changes the npm lockfile only for the synchronized version and pinned local Geist packages', () => {
+    const expected = JSON.parse(preReleaseFile('package-lock.json')) as {
+      version: string
+      packages: Record<string, { version?: string; dependencies?: Record<string, string> }>
+    }
+    expected.version = RELEASE_VERSION
+    expected.packages['']!.version = RELEASE_VERSION
+    expected.packages['']!.dependencies = {
+      ...expected.packages['']!.dependencies,
+      '@fontsource-variable/geist': '5.3.0',
+      '@fontsource-variable/geist-mono': '5.3.0',
+    }
+    expected.packages['node_modules/@fontsource-variable/geist'] = {
+      version: '5.3.0',
+      resolved: 'https://registry.npmjs.org/@fontsource-variable/geist/-/geist-5.3.0.tgz',
+      integrity: 'sha512-j0m+vLQuG5XAYoHtGCVu0spvlGreR3EzpECUVzkFmI1mTVnAO38l/NEPDCFgZ177JxzYJCLSmTQibIiYPilGrA==',
+      license: 'OFL-1.1',
+      funding: { url: 'https://github.com/sponsors/ayuhito' },
+    }
+    expected.packages['node_modules/@fontsource-variable/geist-mono'] = {
+      version: '5.3.0',
+      resolved: 'https://registry.npmjs.org/@fontsource-variable/geist-mono/-/geist-mono-5.3.0.tgz',
+      integrity: 'sha512-vBbuwDEo9AkrqADMXOrlAR3DFcJi4/JxeuU43FoiQERnNwsfXNnvxvReZG02cQKmyk4DZkZdBZX3oTDvy2zBAw==',
+      license: 'OFL-1.1',
+      funding: { url: 'https://github.com/sponsors/ayuhito' },
+    }
 
-    expect(readFileSync('package-lock.json', 'utf8')).toBe(expected)
+    expect(json('package-lock.json')).toEqual(expected)
   })
 
   it('changes no Cargo lockfile package record except the workflow-studio release version', () => {

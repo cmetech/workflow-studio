@@ -41,6 +41,6 @@
     width: 100%;
   }
   span {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
 </style>

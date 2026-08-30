@@ -64,7 +64,7 @@
     border: 1px solid var(--color-border);
     border-radius: 0.625rem;
     color: var(--color-text);
-    background: var(--color-surface-raised, var(--color-surface));
+    background: var(--color-surface-elevated, var(--color-surface));
     box-shadow: 0 0.55rem 1.35rem var(--color-shadow);
   }
 
@@ -139,7 +139,7 @@
 
   .error {
     color: var(--color-background);
-    background: var(--color-danger);
+    background: var(--color-error);
   }
 
   :global(.workflow-port) {

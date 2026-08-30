@@ -122,7 +122,7 @@
 
   [role='alert'] {
     padding: 0.75rem;
-    border-left: 0.25rem solid var(--color-danger);
+    border-left: 0.25rem solid var(--color-error);
     background: var(--color-node);
   }
 

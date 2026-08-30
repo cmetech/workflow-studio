@@ -1078,8 +1078,8 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    expect(document.documentElement.style.getPropertyValue('--color-yaml-gutter')).toBe('#ECE8D7')
-    expect(document.documentElement.style.getPropertyValue('--color-node-selected')).toBe('#FFF4B8')
+    expect(document.documentElement.style.getPropertyValue('--color-yaml-gutter')).toBe('#F0F2F7')
+    expect(document.documentElement.style.getPropertyValue('--color-node-selected')).toBe('#EFEDFF')
     expect(screen.getByRole('navigation', { name: 'Activities' }).style.backgroundColor).toBe(
       'var(--color-yaml-gutter)',
     )

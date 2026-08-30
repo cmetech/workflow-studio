@@ -32,6 +32,6 @@
     font-family: ui-monospace, monospace;
   }
   span {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
 </style>
