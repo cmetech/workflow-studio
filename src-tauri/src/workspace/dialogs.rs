@@ -669,17 +669,16 @@ fn io_error(code: &'static str, cause: std::io::Error) -> WorkspaceError {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::fs;
+    use std::future::Future;
 
     use tauri::AppHandle;
     use tempfile::tempdir;
 
     use super::{
-        dialog_choose_workspace,
-        export_granted_yaml_pair, export_granted_yaml_pair_with_commit_hook,
-        grant_export_directory, grant_import_pair, read_granted_yaml, revoke_export_grant,
-        DialogGrantState, ExportYamlFile, WorkspaceResult,
+        dialog_choose_workspace, export_granted_yaml_pair,
+        export_granted_yaml_pair_with_commit_hook, grant_export_directory, grant_import_pair,
+        read_granted_yaml, revoke_export_grant, DialogGrantState, ExportYamlFile, WorkspaceResult,
     };
 
     #[test]
