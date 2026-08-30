@@ -243,7 +243,13 @@ describe('GraphCanvas', () => {
     expect(viewport).not.toBeNull()
     expect(viewport).not.toContainElement(tools)
     expect(viewport?.parentElement).toBe(tools.parentElement)
+    expect(viewport?.querySelector('.svelte-flow__controls')).toBeNull()
+    expect(viewport?.querySelector('.svelte-flow__minimap')).toBeNull()
     expect(screen.getByText(/create edge from collect/i).closest('[data-canvas-chrome]')).not.toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Zoom In' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Fit Graph' })).toBeVisible()
+    await fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Zoom In' }), { key: 'Escape' })
     for (const chrome of container.querySelectorAll<HTMLElement>('[data-canvas-chrome]')) {
       expect(viewport).not.toContainElement(chrome)
     }
@@ -252,19 +258,18 @@ describe('GraphCanvas', () => {
     expect(screen.getByText(/last valid graph.*read-only/i).closest('[data-canvas-chrome]')).not.toBeNull()
   })
 
-  it('renders read-only stale affordances, canvas controls, minimap toggle, and explicit Arrange', async () => {
+  it('renders read-only stale affordances with viewport commands and explicit Arrange in normal-flow chrome', async () => {
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
     renderCanvas({ projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
 
     expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
     expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeDisabled()
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Show minimap' })).toBeEnabled()
-
-    await fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Show minimap' }))
-    await tick()
-    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Zoom In' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Zoom Out' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Actual Size' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Fit Graph' })).toBeEnabled()
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument()
   })
 
   it('labels a current invalid read-only projection without calling it the last valid graph', () => {
@@ -534,7 +539,7 @@ describe('GraphCanvas', () => {
     ])
   })
 
-  it('exposes stable node and focusable 32px dependency-port hooks for keyboard and touch users', async () => {
+  it('exposes stable node and truthful 32px dependency-port hooks for pointer and screen-reader users', async () => {
     const rendered = renderCanvas({ projection, layout })
     const { container } = rendered
     await tick()
@@ -548,23 +553,23 @@ describe('GraphCanvas', () => {
       ])
     }
 
-    const incoming = screen.getByRole('button', { name: 'Dependencies entering collect' })
+    const incoming = screen.getByLabelText('Dependencies entering collect')
     expect(incoming).toHaveAttribute('data-port', 'input')
-    expect(incoming).toHaveAttribute('tabindex', '0')
+    expect(incoming).not.toHaveAttribute('role', 'button')
+    expect(incoming).not.toHaveAttribute('tabindex', '0')
     expect(incoming).toHaveAttribute('title', 'Dependencies entering collect')
     expect(getComputedStyle(incoming).width).toBe('32px')
     expect(getComputedStyle(incoming).height).toBe('32px')
 
-    const outgoing = screen.getByRole('button', { name: 'Dependencies leaving collect' })
+    const outgoing = screen.getByLabelText('Dependencies leaving collect')
     expect(outgoing).toHaveAttribute('data-port', 'output')
+    expect(outgoing).not.toHaveAttribute('role', 'button')
+    expect(outgoing).not.toHaveAttribute('tabindex', '0')
     expect(outgoing).toHaveAttribute('title', 'Dependencies leaving collect')
 
     await rendered.rerender({ commandSurface: commandRegistry, projection, layout, readOnly: true })
-    expect(screen.getByRole('button', { name: 'Dependencies entering collect' })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    )
-    expect(screen.getByRole('button', { name: 'Dependencies leaving collect' })).toHaveAttribute('tabindex', '-1')
+    expect(screen.getByLabelText('Dependencies entering collect')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByLabelText('Dependencies leaving collect')).not.toHaveAttribute('tabindex', '0')
   })
 
   it('retargets a collapsed node Inspector button before toggling that selected node closed', async () => {

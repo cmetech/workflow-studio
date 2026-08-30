@@ -3,27 +3,36 @@
   import Copy from 'lucide-svelte/icons/copy'
   import Ellipsis from 'lucide-svelte/icons/ellipsis'
   import Link from 'lucide-svelte/icons/link'
-  import Map from 'lucide-svelte/icons/map'
+  import Maximize from 'lucide-svelte/icons/maximize'
   import Network from 'lucide-svelte/icons/network'
   import Plus from 'lucide-svelte/icons/plus'
+  import Scan from 'lucide-svelte/icons/scan'
   import Trash2 from 'lucide-svelte/icons/trash-2'
+  import ZoomIn from 'lucide-svelte/icons/zoom-in'
+  import ZoomOut from 'lucide-svelte/icons/zoom-out'
   import type { ResolvedCommand } from '$src/lib/commands/surface'
 
   interface Props {
     commands: readonly ResolvedCommand[]
-    minimapVisible: boolean
     onExecute: (id: string) => unknown | Promise<unknown>
-    onToggleMinimap: () => unknown | Promise<unknown>
   }
 
-  let { commands, minimapVisible, onExecute, onToggleMinimap }: Props = $props()
+  let { commands, onExecute }: Props = $props()
   let moreOpen = $state(false)
   let moreTrigger: HTMLButtonElement
   let moreActions = $state<HTMLDivElement>()
   let moreMenu = $state<HTMLDivElement>()
 
   const directCommandIds = ['canvas.add-node', 'canvas.create-edge'] as const
-  const overflowCommandIds = ['canvas.duplicate-selection', 'canvas.delete-selection', 'canvas.arrange'] as const
+  const overflowCommandIds = [
+    'canvas.duplicate-selection',
+    'canvas.delete-selection',
+    'canvas.arrange',
+    'canvas.zoom-in',
+    'canvas.zoom-out',
+    'canvas.actual-size',
+    'canvas.fit-graph',
+  ] as const
 
   function resolved(id: string): ResolvedCommand | undefined {
     return commands.find((command) => command.id === id)
@@ -38,7 +47,15 @@
           ? Copy
           : id === 'canvas.delete-selection'
             ? Trash2
-            : Network
+            : id === 'canvas.arrange'
+              ? Network
+              : id === 'canvas.zoom-in'
+                ? ZoomIn
+                : id === 'canvas.zoom-out'
+                  ? ZoomOut
+                  : id === 'canvas.actual-size'
+                    ? Scan
+                    : Maximize
   }
 
   function executeDirect(command: ResolvedCommand): void {
@@ -70,11 +87,6 @@
     if (!command.enabled) return
     await closeMore()
     await onExecute(command.id)
-  }
-
-  async function toggleMinimap(): Promise<void> {
-    await closeMore()
-    await onToggleMinimap()
   }
 
   function handleMenuKeydown(event: KeyboardEvent): void {
@@ -170,18 +182,6 @@
             </button>
           {/if}
         {/each}
-        <button
-          type="button"
-          data-variant="ghost"
-          role="menuitemcheckbox"
-          aria-checked={minimapVisible}
-          aria-label={minimapVisible ? 'Hide minimap' : 'Show minimap'}
-          title={minimapVisible ? 'Hide minimap' : 'Show minimap'}
-          onclick={() => void toggleMinimap()}
-        >
-          <Map size={15} aria-hidden="true" />
-          Map
-        </button>
       </div>
     {/if}
   </div>
@@ -193,7 +193,7 @@
     z-index: 2;
     display: flex;
     gap: 0.35rem;
-    align-items: center;
+    align-items: flex-start;
     justify-content: flex-end;
     min-width: 0;
     padding: 0.5rem 0.625rem;
@@ -222,7 +222,9 @@
 
   .more-actions {
     position: relative;
+    display: grid;
     flex: none;
+    justify-items: end;
   }
 
   .more-trigger {
@@ -232,15 +234,13 @@
   }
 
   .more-menu {
-    position: absolute;
-    z-index: 10;
-    top: calc(100% + 0.35rem);
-    right: 0;
+    position: static;
     display: grid;
     gap: 0.2rem;
     width: max-content;
     min-width: 12rem;
     max-width: min(18rem, calc(100vw - 2rem));
+    margin-top: 0.35rem;
     padding: 0.35rem;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);

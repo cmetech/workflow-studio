@@ -1,14 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, setContext } from 'svelte'
-  import {
-    Background,
-    BackgroundVariant,
-    Controls,
-    MiniMap,
-    SelectionMode,
-    SvelteFlow,
-    type Viewport,
-  } from '@xyflow/svelte'
+  import { Background, BackgroundVariant, SelectionMode, SvelteFlow, type Viewport } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand, type ResolvedCommand } from '$src/lib/commands/surface'
@@ -119,7 +111,6 @@
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
-  let minimapVisible = $state(false)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
   let authoringFeedback = $state('')
   let edgeSourceId = $state<string | null>(null)
@@ -146,10 +137,22 @@
   const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
   const deleteCommand = $derived(resolveCommand(commandSurface, 'canvas.delete-selection', canvasCommandContext))
   const arrangeCommand = $derived(resolveCommand(commandSurface, 'canvas.arrange', canvasCommandContext))
+  const zoomInCommand = $derived(resolveCommand(commandSurface, 'canvas.zoom-in', canvasCommandContext))
+  const zoomOutCommand = $derived(resolveCommand(commandSurface, 'canvas.zoom-out', canvasCommandContext))
+  const actualSizeCommand = $derived(resolveCommand(commandSurface, 'canvas.actual-size', canvasCommandContext))
+  const fitGraphCommand = $derived(resolveCommand(commandSurface, 'canvas.fit-graph', canvasCommandContext))
   const toolbarCommands = $derived.by<readonly ResolvedCommand[]>(() =>
-    [addCommand, edgeCommand, duplicateCommand, deleteCommand, arrangeCommand].filter(
-      (command): command is ResolvedCommand => command !== undefined,
-    ),
+    [
+      addCommand,
+      edgeCommand,
+      duplicateCommand,
+      deleteCommand,
+      arrangeCommand,
+      zoomInCommand,
+      zoomOutCommand,
+      actualSizeCommand,
+      fitGraphCommand,
+    ].filter((command): command is ResolvedCommand => command !== undefined),
   )
 
   function executeToolbar(
@@ -606,12 +609,7 @@
   aria-busy={transitionLocked}
   bind:this={root}
 >
-  <CanvasToolbar
-    commands={toolbarCommands}
-    {minimapVisible}
-    onExecute={executeToolbarId}
-    onToggleMinimap={() => (minimapVisible = !minimapVisible)}
-  />
+  <CanvasToolbar commands={toolbarCommands} onExecute={executeToolbarId} />
 
   {#if stale}
     <div class="stale-overlay" role="status" data-canvas-chrome>
@@ -687,16 +685,6 @@
       onmoveend={(_event, viewport) => viewportChanged(viewport)}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-      <Controls showLock={false} aria-label="Canvas zoom controls" />
-      {#if minimapVisible}
-        <MiniMap
-          ariaLabel="Workflow minimap"
-          pannable={true}
-          zoomable={true}
-          nodeColor="var(--color-accent)"
-          maskColor="color-mix(in srgb, var(--color-background) 74%, transparent)"
-        />
-      {/if}
     </SvelteFlow>
   </div>
   <p class="sr-only" role="status" aria-label="Canvas authoring feedback" aria-live="polite">

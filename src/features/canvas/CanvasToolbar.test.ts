@@ -17,6 +17,10 @@ function command(id: string, label: string, overrides: Partial<ResolvedCommand> 
 const commands = [
   command('canvas.add-node', 'Add Node'),
   command('canvas.create-edge', 'Create Edge'),
+  command('canvas.zoom-in', 'Zoom In'),
+  command('canvas.zoom-out', 'Zoom Out'),
+  command('canvas.actual-size', 'Actual Size'),
+  command('canvas.fit-graph', 'Fit Graph'),
   command('canvas.duplicate-selection', 'Duplicate Selection'),
   command('canvas.delete-selection', 'Delete Selection', {
     enabled: false,
@@ -29,7 +33,7 @@ const commands = [
 describe('CanvasToolbar', () => {
   it('keeps primary canvas commands visible and routes resolved command IDs with their enablement and tooltips', async () => {
     const onExecute = vi.fn()
-    render(CanvasToolbar, { commands, minimapVisible: false, onExecute, onToggleMinimap: vi.fn() })
+    render(CanvasToolbar, { commands, onExecute })
 
     const add = screen.getByRole('button', { name: 'Add Node' })
     const edge = screen.getByRole('button', { name: 'Create Edge' })
@@ -47,41 +51,54 @@ describe('CanvasToolbar', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete Selection' })).toHaveAttribute('title', 'Select a node first.')
   })
 
-  it('keeps duplicate, delete, arrange, and minimap in More and restores focus after an action closes it', async () => {
+  it.each([
+    ['Zoom In', 'canvas.zoom-in'],
+    ['Zoom Out', 'canvas.zoom-out'],
+    ['Actual Size', 'canvas.actual-size'],
+    ['Fit Graph', 'canvas.fit-graph'],
+  ])('executes %s from More and restores focus after the action closes it', async (label, id) => {
     const onExecute = vi.fn()
-    const onToggleMinimap = vi.fn()
-    render(CanvasToolbar, { commands, minimapVisible: true, onExecute, onToggleMinimap })
+    render(CanvasToolbar, { commands, onExecute })
 
     const more = screen.getByRole('button', { name: 'More canvas actions' })
     await fireEvent.click(more)
-    expect(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' })).toHaveAttribute('aria-checked', 'true')
+    await fireEvent.click(screen.getByRole('menuitem', { name: label }))
+    expect(onExecute).toHaveBeenCalledWith(id)
+    expect(screen.queryByRole('menu', { name: 'More canvas actions' })).not.toBeInTheDocument()
+    expect(more).toHaveFocus()
+  })
+
+  it('keeps duplicate, delete, and arrange in More without a minimap toggle', async () => {
+    const onExecute = vi.fn()
+    render(CanvasToolbar, { commands, onExecute })
+
+    const more = screen.getByRole('button', { name: 'More canvas actions' })
+    await fireEvent.click(more)
+    expect(screen.getByRole('menuitem', { name: 'Duplicate Selection' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Delete Selection' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeEnabled()
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument()
 
     await fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate Selection' }))
     expect(onExecute).toHaveBeenCalledWith('canvas.duplicate-selection')
-    expect(screen.queryByRole('menu', { name: 'More canvas actions' })).not.toBeInTheDocument()
-    expect(more).toHaveFocus()
-
-    await fireEvent.click(more)
-    await fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' }))
-    expect(onToggleMinimap).toHaveBeenCalledOnce()
     expect(more).toHaveFocus()
   })
 
   it('moves focus into More, skips disabled items during keyboard navigation, and restores focus on Escape', async () => {
-    render(CanvasToolbar, { commands, minimapVisible: false, onExecute: vi.fn(), onToggleMinimap: vi.fn() })
+    render(CanvasToolbar, { commands, onExecute: vi.fn() })
 
     const more = screen.getByRole('button', { name: 'More canvas actions' })
     await fireEvent.click(more)
     const duplicate = screen.getByRole('menuitem', { name: 'Duplicate Selection' })
     const arrange = screen.getByRole('menuitem', { name: 'Arrange Graph' })
-    const minimap = screen.getByRole('menuitemcheckbox', { name: 'Show minimap' })
+    const fitGraph = screen.getByRole('menuitem', { name: 'Fit Graph' })
     await waitFor(() => expect(duplicate).toHaveFocus())
 
     await fireEvent.keyDown(duplicate, { key: 'ArrowDown' })
     expect(arrange).toHaveFocus()
     await fireEvent.keyDown(arrange, { key: 'End' })
-    expect(minimap).toHaveFocus()
-    await fireEvent.keyDown(minimap, { key: 'Home' })
+    expect(fitGraph).toHaveFocus()
+    await fireEvent.keyDown(fitGraph, { key: 'Home' })
     expect(duplicate).toHaveFocus()
 
     await fireEvent.keyDown(duplicate, { key: 'Escape' })
@@ -90,7 +107,7 @@ describe('CanvasToolbar', () => {
   })
 
   it('dismisses More on click-away without stealing focus from the clicked surface', async () => {
-    render(CanvasToolbar, { commands, minimapVisible: false, onExecute: vi.fn(), onToggleMinimap: vi.fn() })
+    render(CanvasToolbar, { commands, onExecute: vi.fn() })
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
     await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Duplicate Selection' })).toHaveFocus())
 

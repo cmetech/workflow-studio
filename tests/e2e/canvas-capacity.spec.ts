@@ -76,8 +76,11 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   await openSeededPair(page, '?scenario=large-canvas')
   const nodeLocator = page.locator('[data-node-id]')
   const edgeLocator = page.locator('.svelte-flow__edge')
+  const pointerViewport = page.locator('[data-testid="workflow-canvas-viewport"]')
   await expect(nodeLocator).toHaveCount(LARGE_WORKFLOW_NODE_COUNT)
   await expect(edgeLocator).toHaveCount(LARGE_WORKFLOW_EDGE_COUNT)
+  await expect(pointerViewport.locator('.svelte-flow__controls')).toHaveCount(0)
+  await expect(pointerViewport.locator('.svelte-flow__minimap')).toHaveCount(0)
 
   const fontState = await page.evaluate(async () => {
     const [sans, mono] = await Promise.all([

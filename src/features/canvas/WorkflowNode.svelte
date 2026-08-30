@@ -29,8 +29,7 @@
     class="workflow-port"
     style="width: 32px; height: 32px;"
     data-port="input"
-    role="button"
-    tabindex={data.readOnly ? -1 : 0}
+    role={undefined}
     aria-label={`Dependencies entering ${data.id}`}
     aria-disabled={data.readOnly}
     title={`Dependencies entering ${data.id}`}
@@ -71,8 +70,7 @@
     class="workflow-port"
     style="width: 32px; height: 32px;"
     data-port="output"
-    role="button"
-    tabindex={data.readOnly ? -1 : 0}
+    role={undefined}
     aria-label={`Dependencies leaving ${data.id}`}
     aria-disabled={data.readOnly}
     title={`Dependencies leaving ${data.id}`}

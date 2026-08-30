@@ -44,9 +44,21 @@ async function dragNodeBy(
   delta: { readonly x: number; readonly y: number },
 ): Promise<void> {
   const node = page.getByRole('group', { name: new RegExp(`node ${nodeId}$`) })
-  const bounds = await node.boundingBox()
-  if (!bounds) throw new Error(`Expected visible node ${nodeId}.`)
-  const start = { x: bounds.x + bounds.width / 2, y: bounds.y + 40 }
+  const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  const [bounds, viewportBounds] = await Promise.all([node.boundingBox(), viewport.boundingBox()])
+  if (!bounds || !viewportBounds) throw new Error(`Expected visible node ${nodeId} and canvas viewport.`)
+  const visibleTop = Math.max(bounds.y, viewportBounds.y)
+  const visibleBottom = Math.min(bounds.y + bounds.height, viewportBounds.y + viewportBounds.height)
+  if (visibleBottom - visibleTop < 16) throw new Error(`Expected a draggable visible body for node ${nodeId}.`)
+  const start = {
+    x: bounds.x + bounds.width / 2,
+    y: Math.min(visibleBottom - 8, Math.max(visibleTop + 8, bounds.y + 40)),
+  }
+  const hitNodeId = await page.evaluate(
+    ({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-node-id]')?.getAttribute('data-node-id') ?? null,
+    start,
+  )
+  expect(hitNodeId).toBe(nodeId)
   await page.mouse.move(start.x, start.y)
   await page.mouse.down()
   await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 5 })
@@ -114,6 +126,72 @@ nodes:
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(yaml)
 })
 
+test('canvas menu stays outside the pointer viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  const menu = page.getByRole('menu', { name: 'More canvas actions' })
+  const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  const [menuBounds, viewportBounds] = await Promise.all([menu.boundingBox(), viewport.boundingBox()])
+  if (!menuBounds || !viewportBounds) throw new Error('Expected visible canvas menu and pointer viewport geometry.')
+
+  expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(viewportBounds.y)
+})
+
+test('node body remains the real hit target and draggable in the former controls rectangle', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+
+  const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  const initialPosition = await layoutPosition(page, 'prepare')
+  const [initialNodeBounds, viewportBounds] = await Promise.all([node.boundingBox(), viewport.boundingBox()])
+  if (!initialNodeBounds || !viewportBounds) throw new Error('Expected visible node and canvas viewport geometry.')
+
+  const firstStart = {
+    x: initialNodeBounds.x + initialNodeBounds.width / 2,
+    y: initialNodeBounds.y + 40,
+  }
+  const formerControlsNodeOrigin = {
+    x: viewportBounds.x + 8,
+    y: viewportBounds.y + viewportBounds.height - initialNodeBounds.height - 8,
+  }
+  await page.mouse.move(firstStart.x, firstStart.y)
+  await page.mouse.down()
+  await page.mouse.move(formerControlsNodeOrigin.x + initialNodeBounds.width / 2, formerControlsNodeOrigin.y + 40, {
+    steps: 5,
+  })
+  await page.mouse.up()
+  await expect.poll(async () => layoutPosition(page, 'prepare')).not.toEqual(initialPosition)
+
+  const positioned = await node.boundingBox()
+  if (!positioned) throw new Error('Expected the moved node to remain visible.')
+  const hitPoint = {
+    x: positioned.x + 20,
+    y: positioned.y + positioned.height - 8,
+  }
+  const hitTarget = await page.evaluate(({ x, y }) => {
+    const element = document.elementFromPoint(x, y)
+    return {
+      nodeId: element?.closest('[data-node-id]')?.getAttribute('data-node-id') ?? null,
+      tagName: element?.tagName ?? null,
+      control: element?.closest('.svelte-flow__controls') !== null,
+    }
+  }, hitPoint)
+  expect(hitTarget.nodeId).toBe('prepare')
+  expect(hitTarget.tagName).not.toBe('SVG')
+  expect(hitTarget.control).toBe(false)
+
+  const beforeSecondDrag = await layoutPosition(page, 'prepare')
+  await page.mouse.move(hitPoint.x, hitPoint.y)
+  await page.mouse.down()
+  await page.mouse.move(hitPoint.x + 90, hitPoint.y - 60, { steps: 5 })
+  await page.mouse.up()
+  await expect.poll(async () => (await layoutPosition(page, 'prepare')).x).toBeGreaterThan(beforeSecondDrag.x + 40)
+  await expect.poll(async () => (await layoutPosition(page, 'prepare')).y).toBeLessThan(beforeSecondDrag.y - 25)
+})
+
 test('adds, duplicates, connects, references, renames, deletes, saves, and reopens exact authoritative YAML', async ({
   page,
 }) => {
@@ -132,7 +210,7 @@ test('adds, duplicates, connects, references, renames, deletes, saves, and reope
 
   await command.focus()
   await command.press('Enter')
-  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
+  const commandField = page.getByRole('textbox', { name: /Command.*Required/i })
   await expect(commandField).toBeEnabled()
   await commandField.fill('/review')
   await page.getByRole('button', { name: 'Apply Command' }).click()
@@ -192,7 +270,7 @@ nodes:
   await duplicate.focus()
   await duplicate.press('Enter')
   await page.getByRole('tab', { name: 'General' }).click()
-  const idField = page.getByRole('textbox', { name: /IDrequired/i })
+  const idField = page.getByRole('textbox', { name: /ID.*Required/i })
   await expect(idField).toBeEnabled()
   await idField.fill('collect')
   await page.getByRole('button', { name: 'Apply ID' }).click()
@@ -233,10 +311,12 @@ nodes:
   await expectAuthoritativeYaml(page, afterDelete)
 
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  await page
-    .getByRole('button', { name: /^Create Editable Copy:/ })
-    .first()
-    .click()
+  const createExampleCopy = page.getByRole('button', { name: /^Create Editable Copy:/ }).first()
+  await createExampleCopy.focus()
+  await createExampleCopy.press('Enter')
+  const backToWorkflow = page.getByRole('button', { name: 'Back to Workflow' })
+  await backToWorkflow.focus()
+  await backToWorkflow.press('Enter')
   await expect(page.getByRole('group', { name: 'prompt node prompt' })).toBeVisible()
   await page.getByRole('button', { name: 'Explorer', exact: true }).click()
   const releaseDemo = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
@@ -281,7 +361,7 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   const command = page.getByRole('group', { name: 'command node command' })
   await command.focus()
   await command.press('Enter')
-  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
+  const commandField = page.getByRole('textbox', { name: /Command.*Required/i })
   await expect(commandField).toBeEnabled()
   await commandField.fill('/review')
   await page.getByRole('button', { name: 'Apply Command' }).click()

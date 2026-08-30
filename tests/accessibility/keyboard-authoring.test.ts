@@ -347,6 +347,14 @@ describe('keyboard-only workflow authoring', () => {
     expectVisibleKeyboardFocus(workflowEntry)
     await user.keyboard('{Enter}')
     const canvas = await screen.findByRole('region', { name: 'Workflow graph' })
+    const ports = rendered.container.querySelectorAll('[data-port]')
+    expect(ports.length).toBeGreaterThan(0)
+    for (const port of ports) {
+      expect(port).toHaveAccessibleName()
+      expect(port).toHaveAttribute('title')
+      expect(port).not.toHaveAttribute('role', 'button')
+      expect(port).not.toHaveAttribute('tabindex', '0')
+    }
     await waitFor(() =>
       expect(
         screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
