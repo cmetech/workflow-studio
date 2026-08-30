@@ -443,7 +443,8 @@ describe('App canvas authoring composition', () => {
     historyStore.set(createHistoryState())
     rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
-    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate Selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate Selection' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: collect-2'))
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()
@@ -463,8 +464,8 @@ describe('App canvas authoring composition', () => {
     historyStore.set(createHistoryState())
     showActivity('nodes')
     rendered = await renderAuthoringApp()
-    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
-    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+    const canvasViewport = screen.getByRole('region', { name: 'Workflow canvas viewport' })
+    vi.spyOn(canvasViewport, 'getBoundingClientRect').mockReturnValue({
       x: 100,
       y: 50,
       left: 100,
@@ -483,7 +484,7 @@ describe('App canvas authoring composition', () => {
         value: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
       },
     })
-    await fireEvent(canvas, drop)
+    await fireEvent(canvasViewport, drop)
 
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
     expect(historyStore.get().undo).toHaveLength(1)
@@ -615,8 +616,9 @@ describe('App canvas authoring composition', () => {
   it('applies canonical fit, actual-size, nudge, and larger nudge keyboard effects', async () => {
     const rendered = await renderAuthoringApp()
     const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    const canvasViewport = screen.getByRole('region', { name: 'Workflow canvas viewport' })
     const viewport = canvas.querySelector<HTMLElement>('.svelte-flow__viewport')!
-    Object.defineProperties(canvas, {
+    Object.defineProperties(canvasViewport, {
       clientHeight: { configurable: true, value: 600 },
       clientWidth: { configurable: true, value: 800 },
     })
@@ -809,13 +811,15 @@ describe('App canvas authoring composition', () => {
     const rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
     const before = $documentSession.get().pair?.definition.text
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect($documentSession.get().pair?.definition.text).toBe(before)
     expect(historyStore.get().undo).toHaveLength(0)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete nodes' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).not.toContain('id: collect'))
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()

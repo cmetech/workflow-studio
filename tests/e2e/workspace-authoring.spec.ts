@@ -15,6 +15,65 @@ async function expectAuthoritativeYaml(page: Page, expected: string): Promise<vo
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(expected)
 }
 
+interface SavedLayoutEntry {
+  readonly layout?: {
+    readonly nodePositions?: Record<string, { readonly x: number; readonly y: number }>
+  }
+}
+
+async function layoutPosition(page: Page, nodeId: string): Promise<{ readonly x: number; readonly y: number }> {
+  const serialized = (await e2eSnapshot(page)).layout
+  if (typeof serialized !== 'string') throw new Error('Expected a saved layout record.')
+  const entries = JSON.parse(serialized) as SavedLayoutEntry[]
+  const position = entries.find((entry) => entry.layout?.nodePositions?.[nodeId])?.layout?.nodePositions?.[nodeId]
+  if (!position) throw new Error(`Expected a saved layout position for ${nodeId}.`)
+  return position
+}
+
+async function dragNodeBy(
+  page: Page,
+  nodeId: string,
+  delta: { readonly x: number; readonly y: number },
+): Promise<void> {
+  const node = page.getByRole('group', { name: new RegExp(`node ${nodeId}$`) })
+  const bounds = await node.boundingBox()
+  if (!bounds) throw new Error(`Expected visible node ${nodeId}.`)
+  const start = { x: bounds.x + bounds.width / 2, y: bounds.y + 40 }
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 5 })
+  await page.mouse.up()
+}
+
+async function dragPort(page: Page, sourceId: string, targetId: string): Promise<void> {
+  const source = page.getByRole('button', { name: `Dependencies leaving ${sourceId}` })
+  const target = page.getByRole('button', { name: `Dependencies entering ${targetId}` })
+  await expect(source).toBeInViewport()
+  await expect(target).toBeInViewport()
+  const [sourceBounds, targetBounds] = await Promise.all([source.boundingBox(), target.boundingBox()])
+  if (!sourceBounds || !targetBounds) throw new Error(`Expected visible ports for ${sourceId} and ${targetId}.`)
+  const hitTargets = await page.evaluate(
+    ({ sourcePoint, targetPoint }) => ({
+      source: document.elementFromPoint(sourcePoint.x, sourcePoint.y)?.getAttribute('aria-label'),
+      target: document.elementFromPoint(targetPoint.x, targetPoint.y)?.getAttribute('aria-label'),
+    }),
+    {
+      sourcePoint: { x: sourceBounds.x + sourceBounds.width / 2, y: sourceBounds.y + sourceBounds.height / 2 },
+      targetPoint: { x: targetBounds.x + targetBounds.width / 2, y: targetBounds.y + targetBounds.height / 2 },
+    },
+  )
+  expect(hitTargets).toEqual({
+    source: `Dependencies leaving ${sourceId}`,
+    target: `Dependencies entering ${targetId}`,
+  })
+  await page.mouse.move(sourceBounds.x + sourceBounds.width / 2, sourceBounds.y + sourceBounds.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(targetBounds.x + targetBounds.width / 2, targetBounds.y + targetBounds.height / 2, {
+    steps: 5,
+  })
+  await page.mouse.up()
+}
+
 test('opens a seeded workflow pair before authoring begins', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Open Folder' }).first().click()
@@ -70,7 +129,8 @@ test('adds, duplicates, connects, references, renames, deletes, saves, and reope
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await prepare.focus()
   await prepare.press('Enter')
-  const duplicateAction = page.getByRole('button', { name: 'Duplicate Selection' })
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  const duplicateAction = page.getByRole('menuitem', { name: 'Duplicate Selection' })
   await expect(duplicateAction).toBeEnabled()
   await duplicateAction.click()
   const duplicate = page.getByRole('group', { name: 'prompt node prepare-2' })
@@ -140,7 +200,8 @@ nodes:
 
   await command.focus()
   await command.press('Enter')
-  await page.getByRole('button', { name: 'Delete Selection' }).click()
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  await page.getByRole('menuitem', { name: 'Delete Selection' }).click()
   const deleteDialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
   await deleteDialog.getByRole('button', { name: 'Delete nodes' }).click()
   await expect(deleteDialog).toBeHidden()
@@ -148,16 +209,11 @@ nodes:
   const afterDelete = afterRename.replace('  - id: command\n    command: "/review"\n', '')
   await expectAuthoritativeYaml(page, afterDelete)
 
-  const publish = page.getByRole('group', { name: 'command node publish' })
-  const publishBefore = await publish.boundingBox()
-  expect(publishBefore).not.toBeNull()
-  await page.mouse.move(publishBefore!.x + publishBefore!.width / 2, publishBefore!.y + 40)
-  await page.mouse.down()
-  await page.mouse.move(publishBefore!.x + 110, publishBefore!.y + 120, { steps: 5 })
-  await page.mouse.up()
-  await expect.poll(async () => (await e2eSnapshot(page)).layout).not.toBeNull()
-  const publishAfterDrag = await publish.boundingBox()
-  expect(publishAfterDrag).not.toBeNull()
+  const before = await layoutPosition(page, 'publish')
+  await dragNodeBy(page, 'publish', { x: 110, y: 120 })
+  await expect.poll(async () => (await layoutPosition(page, 'publish')).x).toBeGreaterThan(before.x + 80)
+  await expect.poll(async () => (await layoutPosition(page, 'publish')).y).toBeGreaterThan(before.y + 80)
+  const publishAfterDrag = await layoutPosition(page, 'publish')
 
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S')
   await expectAuthoritativeYaml(page, afterDelete)
@@ -173,11 +229,34 @@ nodes:
   await releaseDemo.click()
   await expect(releaseDemo).toHaveAttribute('aria-current', 'page')
   await expectAuthoritativeYaml(page, afterDelete)
-  const reopenedPublish = page.getByRole('group', { name: 'command node publish' })
-  await expect(reopenedPublish).toBeVisible()
-  await expect.poll(async () => reopenedPublish.boundingBox()).not.toBeNull()
-  const publishAfterReopen = await reopenedPublish.boundingBox()
-  expect(publishAfterReopen).not.toBeNull()
-  expect(Math.abs(publishAfterReopen!.x - publishAfterDrag!.x)).toBeLessThan(5)
-  expect(Math.abs(publishAfterReopen!.y - publishAfterDrag!.y)).toBeLessThan(5)
+  await expect(page.getByRole('group', { name: 'command node publish' })).toBeVisible()
+  await expect.poll(async () => layoutPosition(page, 'publish')).toEqual(publishAfterDrag)
+})
+
+test('real port gestures commit a dependency and reject a cycle without changing YAML', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Add Node' }).click()
+  const addNode = page.getByRole('dialog', { name: 'Add node' })
+  await addNode.getByRole('option', { name: /Command/ }).click()
+  const command = page.getByRole('group', { name: 'command node command' })
+  await expect(command).toBeVisible()
+  await command.focus()
+  await command.press('Enter')
+  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
+  await commandField.fill('/review')
+  await page.getByRole('button', { name: 'Apply Command' }).click()
+  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toContain('    command: "/review"\n')
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Fit View' }).click()
+
+  await dragPort(page, 'publish', 'command')
+  await expect
+    .poll(async () => (await e2eSnapshot(page)).definitionText)
+    .toContain('  - id: command\n    command: "/review"\n    depends_on:\n      - publish\n')
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+
+  const beforeCycle = (await e2eSnapshot(page)).definitionText
+  await dragPort(page, 'publish', 'prepare')
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/create a cycle/i)
+  await expectAuthoritativeYaml(page, beforeCycle as string)
 })

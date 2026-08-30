@@ -990,7 +990,8 @@ nodes:
     await waitForSetupReady()
 
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeEnabled()
     expect($documentSession.get().pair).toBe(before)
   })
 

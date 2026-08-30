@@ -3,7 +3,7 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
-import { commandRegistry, createCommandRegistry, listCommands } from '$src/lib/commands/registry'
+import { commandRegistry, createCommandRegistry, listCommands, type CommandSurface } from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
@@ -160,7 +160,8 @@ describe('GraphCanvas', () => {
     const onDropNodeKind = vi.fn()
     const { container } = renderCanvas({ projection, layout, onDropNodeKind })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
-    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+    const viewport = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')!
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({
       x: 100,
       y: 50,
       left: 100,
@@ -177,14 +178,21 @@ describe('GraphCanvas', () => {
       getData: (type: string) => (type === NODE_KIND_DRAG_TYPE ? 'command' : ''),
     }
 
-    await fireEvent.dragOver(canvas, { dataTransfer: transfer })
+    await fireEvent.drop(canvas, {
+      clientX: 500,
+      clientY: 350,
+      dataTransfer: transfer,
+    })
+    expect(onDropNodeKind).not.toHaveBeenCalled()
+
+    await fireEvent.dragOver(viewport, { dataTransfer: transfer })
     const drop = new Event('drop', { bubbles: true, cancelable: true })
     Object.defineProperties(drop, {
       clientX: { value: 500 },
       clientY: { value: 350 },
       dataTransfer: { value: transfer },
     })
-    await fireEvent(canvas, drop)
+    await fireEvent(viewport, drop)
 
     expect(transfer.dropEffect).toBe('copy')
     expect(onDropNodeKind).toHaveBeenCalledOnce()
@@ -194,14 +202,14 @@ describe('GraphCanvas', () => {
   it('fails closed for palette drops while read-only and for malformed drag payloads', async () => {
     const onDropNodeKind = vi.fn()
     const { container } = renderCanvas({ projection, layout, readOnly: true, onDropNodeKind })
-    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const viewport = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')!
 
-    await fireEvent.drop(canvas, {
+    await fireEvent.drop(viewport, {
       clientX: 100,
       clientY: 100,
       dataTransfer: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
     })
-    await fireEvent.drop(canvas, {
+    await fireEvent.drop(viewport, {
       clientX: 100,
       clientY: 100,
       dataTransfer: { types: ['text/plain'], getData: () => 'command' },
@@ -210,17 +218,50 @@ describe('GraphCanvas', () => {
     expect(onDropNodeKind).not.toHaveBeenCalled()
   })
 
+  it('keeps canvas chrome outside the dedicated pointer and drop viewport', async () => {
+    let requestEdge = (): void => undefined
+    const commandSurface: CommandSurface = {
+      listCommands,
+      executeCommand: vi.fn(async (id: string) => {
+        if (id === 'canvas.create-edge') requestEdge()
+        return { commandPalette: 'close' as const }
+      }),
+    }
+    const rendered = render(GraphCanvas, { commandSurface, projection, layout } as never)
+    requestEdge = rendered.component.requestEdge
+    const { container, rerender } = rendered
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: ['collect'] } }))
+    await tick()
+    await fireEvent.click(screen.getByRole('button', { name: 'Create Edge' }))
+
+    const tools = screen.getByLabelText('Canvas tools')
+    const viewport = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')
+    expect(viewport).not.toBeNull()
+    expect(viewport).not.toContainElement(tools)
+    expect(viewport?.parentElement).toBe(tools.parentElement)
+    expect(screen.getByText(/create edge from collect/i).closest('[data-canvas-chrome]')).not.toBeNull()
+    for (const chrome of container.querySelectorAll<HTMLElement>('[data-canvas-chrome]')) {
+      expect(viewport).not.toContainElement(chrome)
+    }
+
+    await rerender({ commandSurface, projection, layout, stale: true })
+    expect(screen.getByText(/last valid graph.*read-only/i).closest('[data-canvas-chrome]')).not.toBeNull()
+  })
+
   it('renders read-only stale affordances, canvas controls, minimap toggle, and explicit Arrange', async () => {
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
     renderCanvas({ projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
 
     expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Show minimap' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeDisabled()
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Show minimap' })).toBeEnabled()
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Show minimap' }))
+    await fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Show minimap' }))
     await tick()
-    expect(screen.getByRole('button', { name: 'Hide minimap' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' })).toBeVisible()
   })
 
   it('suppresses synthetic drag, selection, and Arrange mutations while an activation transition is locked', async () => {
@@ -250,12 +291,13 @@ describe('GraphCanvas', () => {
       }),
     )
     await fireEvent.click(screen.getAllByLabelText('command node collect')[0]!)
-    await fireEvent.click(screen.getByRole('button', { name: 'Arrange Graph' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Arrange Graph' }))
     await vi.advanceTimersByTimeAsync(300)
 
     expect($canvasPositions.get().collect).toEqual({ x: 0, y: 0 })
     expect($canvasSelection.get()).toEqual(['review'])
-    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeDisabled()
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
@@ -316,7 +358,8 @@ describe('GraphCanvas', () => {
     await tick()
 
     expect(viewport.style.transform).toContain('translate(210px, 120px) scale(1.4)')
-    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeEnabled()
   })
 
   it('persists one pending A drag before an open-draft transition and one B drag under the new identity', async () => {
@@ -442,8 +485,9 @@ describe('GraphCanvas', () => {
     setCanvasSelection(['review'])
 
     const add = screen.getByRole('button', { name: 'Registry Add' })
-    const remove = screen.getByRole('button', { name: 'Registry Remove' })
     expect(add).toHaveAttribute('title', expect.stringMatching(/registry add.*a/i))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    const remove = screen.getByRole('menuitem', { name: 'Registry Remove' })
     expect(remove).toBeDisabled()
     expect(remove).toHaveAttribute('title', 'Registry selection required.')
     await fireEvent.click(add)
