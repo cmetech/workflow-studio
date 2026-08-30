@@ -7,6 +7,7 @@ import type { WorkflowProjection } from '$src/lib/projection/types'
 import { commandRegistry, createCommandRegistry, listCommands, type CommandSurface } from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
+import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
@@ -507,6 +508,31 @@ describe('GraphCanvas', () => {
 
     const outgoing = screen.getByRole('button', { name: 'Dependencies leaving collect' })
     expect(outgoing).toHaveAttribute('data-port', 'output')
+  })
+
+  it('exposes the selected node relationship and expanded state for its Inspector drawer', async () => {
+    const rendered = render(GraphCanvasInspectorHarness, {
+      props: { canvasProps: { commandSurface: commandRegistry, projection, layout } },
+    })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: ['collect'] } }))
+    await tick()
+    expect($canvasSelection.get()).toEqual(['collect'])
+
+    const collect = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    const review = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
+    expect(collect).toHaveAttribute('aria-controls', 'workflow-inspector')
+    expect(collect).toHaveAttribute('aria-expanded', 'false')
+    expect(review).toHaveAttribute('aria-controls', 'workflow-inspector')
+    expect(review).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Toggle test inspector' }))
+    await tick()
+    expect($canvasSelection.get()).toEqual(['collect'])
+
+    const expandedCollect = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    expect(expandedCollect).toHaveAttribute('aria-controls', 'workflow-inspector')
+    expect(expandedCollect).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('keeps required and error issue counts visible as text on the affected node', async () => {

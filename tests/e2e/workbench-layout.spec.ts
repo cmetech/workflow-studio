@@ -92,10 +92,14 @@ test('compact drawer cycles preserve unsaved YAML and node selection', async ({ 
 test('compact Inspector restores focus to its non-General active tab after reopening', async ({ page }) => {
   await openPairAt(page, 1024, 700)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await expect(prepare).toHaveAttribute('aria-controls', 'workflow-inspector')
+  await expect(prepare).toHaveAttribute('aria-expanded', 'false')
   await prepare.focus()
   await prepare.press('Enter')
 
   const inspector = page.locator('aside[aria-label="Inspector"]')
+  await expect(inspector).toHaveAttribute('id', 'workflow-inspector')
+  await expect(prepare).toHaveAttribute('aria-expanded', 'true')
   const advanced = inspector.getByRole('tab', { name: 'Advanced' })
   await advanced.click()
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
@@ -103,9 +107,11 @@ test('compact Inspector restores focus to its non-General active tab after reope
 
   await page.keyboard.press('Escape')
   await expect(prepare).toBeFocused()
+  await expect(prepare).toHaveAttribute('aria-expanded', 'false')
   await prepare.press('Enter')
 
   await expect(inspector).not.toHaveAttribute('inert')
+  await expect(prepare).toHaveAttribute('aria-expanded', 'true')
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
   await expect(advanced).toBeFocused()
 })
@@ -127,6 +133,15 @@ test('keyboard-only compact drawers and Split subtabs restore focus and expose n
   await page.keyboard.press('Escape')
   await expect(canvas).toBeFocused()
   await expect(workspacePanel).toHaveAttribute('inert', '')
+
+  await page.keyboard.press(modShortcut('B'))
+  const explorer = page.getByRole('button', { name: 'Explorer' })
+  await explorer.click()
+  await expect(workspacePanel).toHaveAttribute('inert', '')
+  await explorer.click()
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+  await closeWorkspace.click()
+  await expect(explorer).toBeFocused()
 
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await prepare.focus()

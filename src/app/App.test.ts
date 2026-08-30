@@ -188,20 +188,27 @@ describe('App', () => {
     await waitFor(() => expect(closeWorkspace).toHaveFocus())
     expect(closeWorkspace).toHaveAttribute('title', 'Close workspace panel')
     expect(closeWorkspace.querySelector('svg')).not.toBeNull()
+
+    const explorer = screen.getByRole('button', { name: 'Explorer' })
+    await fireEvent.click(explorer)
+    expect(workspacePanel).toHaveAttribute('inert')
+    await fireEvent.click(explorer)
+    expect(workspacePanel).not.toHaveAttribute('inert')
+    await fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
+    await waitFor(() => expect(explorer).toHaveFocus())
+    expect(workspacePanel).toHaveAttribute('inert')
+
+    keyboardInvoker.focus()
+    await fireEvent.keyDown(keyboardInvoker, {
+      key: 'b',
+      metaKey: /mac/i.test(navigator.platform),
+      ctrlKey: !/mac/i.test(navigator.platform),
+    })
+    await waitFor(() => expect(closeWorkspace).toHaveFocus())
+    expect(workspacePanel).not.toHaveAttribute('inert')
     await fireEvent.keyDown(closeWorkspace, { key: 'Escape' })
     await waitFor(() => expect(keyboardInvoker).toHaveFocus())
     expect(workspacePanel).toHaveAttribute('inert')
-
-    const explorer = screen.getByRole('button', { name: 'Explorer' })
-    explorer.focus()
-    await fireEvent.click(explorer)
-    expect(workspacePanel).not.toHaveAttribute('inert')
-    expect(explorer).toHaveAttribute('aria-expanded', 'true')
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
-    await tick()
-    expect(workspacePanel).toHaveAttribute('inert')
-    expect(explorer).toHaveFocus()
 
     const closeInspector = container.querySelector<HTMLButtonElement>('button[aria-label="Close inspector"]')!
     expect(closeInspector).toHaveAttribute('title', 'Close inspector')

@@ -379,6 +379,7 @@
   })
 
   const editorModes: readonly EditorMode[] = ['visual', 'split', 'yaml']
+  const inspectorPanelId = 'workflow-inspector'
 
   const canvasActivationBarrier = createCanvasActivationBarrier({
     getCanvas: () => graphCanvas,
@@ -571,11 +572,11 @@
   }
 
   async function closeWorkspaceDrawer(): Promise<void> {
-    workspacePanelOpen.set(false)
-    await tick()
     const target = workspacePanelOpener?.isConnected
       ? workspacePanelOpener
       : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
+    workspacePanelOpen.set(false)
+    await tick()
     target?.focus()
     workspacePanelOpener = undefined
   }
@@ -1569,6 +1570,7 @@
     <ActivityRail
       {commandSurface}
       workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
+      onActivityInvoke={(opener) => (workspacePanelOpener = opener)}
     />
     {#if workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
       <button type="button" class="drawer-scrim" aria-label="Close open panels" onclick={() => void closeOpenDrawer()}
@@ -1787,6 +1789,8 @@
                   transitionLocked={canvasTransitionLocked}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
+                  inspectorControls={inspectorPanelId}
+                  inspectorExpanded={!inspectorPanelHidden}
                   readOnly={canvasReadOnly ||
                     $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
                       ?.readOnly === true}
@@ -1891,6 +1895,7 @@
       {/if}
     </section>
     <aside
+      id={inspectorPanelId}
       bind:this={inspectorPanelHost}
       class="panel inspector-panel"
       class:drawer-open={!inspectorPanelHidden}

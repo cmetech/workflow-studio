@@ -48,6 +48,8 @@
     issues?: readonly ValidationIssue[]
     stale?: boolean
     readOnly?: boolean
+    inspectorControls?: string
+    inspectorExpanded?: boolean
     onPersistLayout?: (layout: LayoutRecordV1) => void | Promise<void>
     onPersistenceError?: (error: unknown) => void
     onConnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
@@ -70,6 +72,8 @@
     issues = [],
     stale = false,
     readOnly = false,
+    inspectorControls,
+    inspectorExpanded = false,
     onPersistLayout = () => undefined,
     onPersistenceError = () => undefined,
     onConnect,
@@ -139,6 +143,22 @@
     flowNodes = projected.nodes
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
+  })
+
+  $effect(() => {
+    const controls = inspectorControls
+    const expanded = inspectorExpanded
+    const selectedNodeIds = new Set(selection)
+    const renderedNodeIds = new Set(flowNodes.map(({ id }) => id))
+    if (!root || !controls) return
+    for (const wrapper of root.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]')) {
+      if (!renderedNodeIds.has(wrapper.dataset.id ?? '')) continue
+      wrapper.setAttribute('aria-controls', controls)
+      wrapper.setAttribute(
+        'aria-expanded',
+        expanded && selectedNodeIds.has(wrapper.dataset.id ?? '') ? 'true' : 'false',
+      )
+    }
   })
 
   $effect(() => {

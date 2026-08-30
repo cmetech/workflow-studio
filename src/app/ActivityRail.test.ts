@@ -23,7 +23,8 @@ describe('ActivityRail', () => {
       )
     }
     showActivity('explorer')
-    render(ActivityRail, { props: { commandSurface: registry } } as never)
+    const onActivityInvoke = vi.fn()
+    render(ActivityRail, { props: { commandSurface: registry, onActivityInvoke } } as never)
 
     const documentation = screen.getByRole('button', { name: 'Registry Knowledge' })
     const settings = screen.getByRole('button', { name: 'Registry Preferences' })
@@ -34,6 +35,7 @@ describe('ActivityRail', () => {
     expect(settings.querySelector('svg')).not.toBeNull()
     await fireEvent.click(documentation)
 
+    expect(onActivityInvoke).toHaveBeenCalledWith(documentation)
     expect(runDocumentation).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: 'Git' })).toHaveAttribute('aria-pressed', 'true')
   })

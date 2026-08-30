@@ -19,8 +19,9 @@
   interface Props {
     commandSurface: CommandSurface
     workspacePanelExpanded?: boolean
+    onActivityInvoke?: (opener: HTMLButtonElement) => void
   }
-  let { commandSurface, workspacePanelExpanded = true }: Props = $props()
+  let { commandSurface, workspacePanelExpanded = true, onActivityInvoke }: Props = $props()
 
   const activities: readonly { id: ActivityId; icon: typeof Files }[] = [
     { id: 'explorer', icon: Files },
@@ -49,7 +50,10 @@
         class:active={$activeActivity === activity.id}
         title={command.title}
         disabled={!command.enabled}
-        onclick={() => void commandSurface.executeCommand(command.id, activityContext)}
+        onclick={(event) => {
+          onActivityInvoke?.(event.currentTarget)
+          void commandSurface.executeCommand(command.id, activityContext)
+        }}
       >
         <activity.icon aria-hidden="true" size={17} strokeWidth={1.75} />
       </button>
