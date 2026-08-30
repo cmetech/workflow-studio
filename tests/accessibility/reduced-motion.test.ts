@@ -5,6 +5,7 @@ import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
 import { commandRegistry } from '$src/lib/commands/registry'
 import { clearCanvasState } from '$src/stores/canvas'
 import { createLargeWorkflowFixture } from '../performance/large-workflow'
+import statusBarSource from '$src/app/StatusBar.svelte?raw'
 
 function createMotionPreference(initialMatches = false) {
   let matches = initialMatches
@@ -49,6 +50,13 @@ describe('canvas reduced-motion contract', () => {
   })
 
   afterEach(() => clearCanvasState())
+
+  it('keeps the narrow status disclosure motion-free and legible in forced colors', () => {
+    expect(statusBarSource).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(statusBarSource).toContain('@media (forced-colors: active)')
+    expect(statusBarSource).not.toMatch(/transition\s*:/)
+    expect(statusBarSource).not.toMatch(/animation\s*:/)
+  })
 
   it('reacts to runtime preference changes, keeps keyboard viewport movement instant, and cleans up', async () => {
     const motion = createMotionPreference()

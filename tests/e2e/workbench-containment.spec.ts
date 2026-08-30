@@ -44,6 +44,14 @@ test('keeps Git and Updates visible while narrow status detail stays contained',
   await expect(status.getByText('YAML: pending')).toBeVisible()
   await expect(status.getByText('DAG: pending')).toBeVisible()
 
+  const [yamlBox, dagBox] = await Promise.all([
+    status.getByText('YAML: pending').boundingBox(),
+    status.getByText('DAG: pending').boundingBox(),
+  ])
+  expect(yamlBox).not.toBeNull()
+  expect(dagBox).not.toBeNull()
+  expect(yamlBox!.y + yamlBox!.height).toBeLessThanOrEqual(dagBox!.y)
+
   const geometry = await page.evaluate(() => {
     const root = document.documentElement
     const statusBar = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
@@ -61,6 +69,32 @@ test('keeps Git and Updates visible while narrow status detail stays contained',
   expect(geometry.rootHeight).toBe(geometry.viewportHeight)
   expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewportHeight)
   expect(geometry.visibleItemsContained).toBe(true)
+})
+
+test('keeps a long dismissible application notice action visible at narrow height', async ({ page }) => {
+  await page.setViewportSize({ width: 450, height: 350 })
+  await page.goto('/?scenario=long-application-notice')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+
+  const notices = page.getByRole('region', { name: 'Application notices' })
+  const notice = notices.locator('.application-notice')
+  const message = notice.locator('[data-notice-scroll]')
+  const dismiss = notice.getByRole('button', { name: 'Dismiss' })
+  await expect(message).toContainText('Could not open the selected workspace')
+  await expect(dismiss).toBeVisible()
+
+  const geometry = await Promise.all([notice.boundingBox(), message.boundingBox(), dismiss.boundingBox()])
+  const [noticeBox, messageBox, dismissBox] = geometry
+  expect(noticeBox).not.toBeNull()
+  expect(messageBox).not.toBeNull()
+  expect(dismissBox).not.toBeNull()
+  expect(dismissBox!.y).toBeGreaterThanOrEqual(noticeBox!.y)
+  expect(dismissBox!.y + dismissBox!.height).toBeLessThanOrEqual(noticeBox!.y + noticeBox!.height)
+  expect(messageBox!.y + messageBox!.height).toBeLessThanOrEqual(dismissBox!.y)
+  expect(await message.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+
+  await dismiss.click()
+  await expect(notice).toBeHidden()
 })
 
 test('Settings has no horizontal overflow at desktop and 512px reflow widths', async ({ page }) => {

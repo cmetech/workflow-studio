@@ -285,6 +285,7 @@
   const examplesReadiness = loadExamples()
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
+  let keyboardShortcutsOpener = $state<HTMLElement | null>(null)
   let explorerCatalogOperation = $state.raw<
     { readonly phase: 'ready' | 'loading' } | { readonly phase: 'error'; readonly message: string }
   >({ phase: 'ready' })
@@ -1737,6 +1738,7 @@
       const blur = () => nodeChords.cancel('focus-loss')
       const focusin = (event: FocusEvent) => {
         const target = event.target
+        if (target instanceof HTMLElement && !target.closest('dialog')) keyboardShortcutsOpener = target
         if (nodeChordState.pending && target instanceof Element && !target.closest('.graph-canvas')) {
           nodeChords.cancel('focus-loss')
         }
@@ -2479,6 +2481,7 @@
     <ModalShell
       titleId="keyboard-shortcuts-title"
       initialFocusSelector="[data-shortcuts-close]"
+      opener={keyboardShortcutsOpener?.isConnected ? keyboardShortcutsOpener : null}
       onCancel={closeKeyboardShortcuts}
     >
       <h2 id="keyboard-shortcuts-title" class="visually-hidden">Keyboard shortcuts</h2>

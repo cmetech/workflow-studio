@@ -379,6 +379,17 @@ describe('keyboard-only workflow authoring', () => {
     await waitFor(() => expectVisibleKeyboardFocus(canvas))
     expect(explorerDrawer).toHaveAttribute('inert')
 
+    await user.keyboard('{F1}')
+    const commandSearch = await screen.findByRole('combobox', { name: 'Search commands' })
+    expectVisibleKeyboardFocus(commandSearch)
+    await user.keyboard('Keyboard Shortcuts{Enter}')
+    const shortcutsDialog = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+    const closeShortcuts = within(shortcutsDialog).getByRole('button', { name: 'Close keyboard shortcuts' })
+    await waitFor(() => expectVisibleKeyboardFocus(closeShortcuts))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(shortcutsDialog).not.toBeInTheDocument())
+    expectVisibleKeyboardFocus(canvas)
+
     let picker = await openAddNodeWithKeyboard(user)
     await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
     await waitFor(() => expect(projection($documentSession.get().pair!.definition.text).nodes).toHaveLength(2))

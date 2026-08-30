@@ -16,6 +16,29 @@ const LONG_WINDOWS_PATH =
 const LONG_GIT_SUBJECT =
   'Document the exceptionally long Windows release workflow subject without widening the Git workbench page'
 const UNBROKEN_GIT_REF = 'r'.repeat(200)
+const LONG_APPLICATION_NOTICE = `Could not open the selected workspace.\n${Array.from(
+  { length: 30 },
+  (_, index) =>
+    `Path ${index + 1}: C:\\release-workspaces\\${'deeply-nested-workflow-directory\\'.repeat(4)}definition.yaml — permission denied`,
+).join('\n')}`
+const LONG_CREATE_VERSION_YAML = `${Array.from(
+  { length: 24 },
+  (_, index) => `future_setting_${index + 1}: preserved-${index + 1}`,
+).join('\n')}
+name: Long Create Version
+description: Deterministic long findings fixture.
+nodes:
+  - id: prepare
+    prompt: Prepare the release notes.
+  - id: publish
+    command: /publish
+    depends_on: [prepare]
+`
+const LONG_CREATE_VERSION_DIFF = `diff --git a/workflows/release-demo.yaml b/workflows/release-demo.yaml
+--- a/workflows/release-demo.yaml
++++ b/workflows/release-demo.yaml
+${Array.from({ length: 48 }, (_, index) => `+release-${index + 1}: ${'content-aware-workbench-'.repeat(5)}`).join('\n')}
+`
 const AUTHORING_FILES = {
   [DEFINITION_PATH]: `name: Release demo
 description: Verify the complete authoring path.
@@ -147,7 +170,13 @@ export async function installRuntimeBootstrap(): Promise<void> {
   const largeCanvasFixture = scenario === 'large-canvas' ? createLargeWorkflowFixture() : null
   const initialFiles = largeCanvasFixture
     ? { ...AUTHORING_FILES, [DEFINITION_PATH]: largeCanvasFixture.yaml }
-    : AUTHORING_FILES
+    : scenario === 'long-create-version'
+      ? {
+          ...AUTHORING_FILES,
+          [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+          [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+        }
+      : AUTHORING_FILES
   const base = createBrowserBridge({ initialFiles, selectedRoot: '/e2e/workspace' })
   let setupRetries = 0
   let updateChecks = 0
@@ -249,6 +278,10 @@ export async function installRuntimeBootstrap(): Promise<void> {
 
   const bridge: WorkspaceNativeBridge = {
     ...base,
+    chooseWorkspaceFolder: async () => {
+      if (scenario === 'long-application-notice') throw new Error(LONG_APPLICATION_NOTICE)
+      return base.chooseWorkspaceFolder()
+    },
     setupStatus: async () =>
       scenario === 'setup-update' && setupRetries === 0
         ? { ready: false, snapshot: setupFailure() }
@@ -331,7 +364,11 @@ export async function installRuntimeBootstrap(): Promise<void> {
     }),
     gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
     gitDiffPair: async () => ({
-      working: pairVersioned ? '' : 'diff --git a/workflows/release-demo.yaml b/workflows/release-demo.yaml\n',
+      working: pairVersioned
+        ? ''
+        : scenario === 'long-create-version'
+          ? LONG_CREATE_VERSION_DIFF
+          : 'diff --git a/workflows/release-demo.yaml b/workflows/release-demo.yaml\n',
       index: '',
       authorizationToken: 'e2e-version-authorization',
     }),

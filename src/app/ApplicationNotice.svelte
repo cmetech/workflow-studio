@@ -9,7 +9,7 @@
   let { kind, message, dismissible = false, onDismiss }: Props = $props()
 </script>
 
-<section class="application-notice" data-kind={kind}>
+<section class="application-notice" data-kind={kind} data-dismissible={dismissible || undefined}>
   <div
     class="message"
     role={kind === 'error' ? 'alert' : 'status'}
@@ -57,6 +57,7 @@
 
   .message {
     min-width: 0;
+    min-height: 0;
     max-height: 100%;
     overflow: auto;
     overflow-wrap: anywhere;
@@ -70,6 +71,11 @@
   @media (max-width: 30rem) {
     .application-notice {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .application-notice[data-dismissible='true'] {
+      grid-template-rows: minmax(0, 1fr) auto;
+      block-size: min(40dvh, 18rem);
     }
 
     button {

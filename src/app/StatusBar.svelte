@@ -58,8 +58,10 @@
   <span class="primary-status">{gitLabel}</span>
   <details class="secondary-status" aria-label="More application status" bind:open={secondaryOpen}>
     <summary>More application status</summary>
-    <span data-secondary-status>YAML: pending</span>
-    <span data-secondary-status>DAG: pending</span>
+    <div class="secondary-status-panel">
+      <span data-secondary-status>YAML: pending</span>
+      <span data-secondary-status>DAG: pending</span>
+    </div>
   </details>
   <span class="update">{updateLabel}</span>
 </footer>
@@ -90,6 +92,10 @@
   }
 
   .secondary-status {
+    display: contents;
+  }
+
+  .secondary-status-panel {
     display: contents;
   }
 
@@ -130,25 +136,27 @@
       white-space: nowrap;
     }
 
-    .secondary-status[open] span {
+    .secondary-status[open] .secondary-status-panel {
       position: absolute;
       z-index: 50;
       right: 0;
       bottom: calc(100% + 0.25rem);
-      display: block;
+      display: grid;
       width: max-content;
       max-width: min(22rem, calc(100vw - 2rem));
-      margin: 0;
-      padding: 0.4rem 0.6rem;
+      padding: 0.3rem 0;
       overflow: hidden;
       border: 1px solid var(--color-border);
       color: var(--color-text);
       background: var(--color-surface-elevated);
-      text-overflow: ellipsis;
     }
 
-    .secondary-status[open] span + span {
-      bottom: calc(200% + 0.25rem);
+    .secondary-status[open] span {
+      display: block;
+      margin: 0;
+      padding: 0.2rem 0.6rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .update {
@@ -164,7 +172,7 @@
   }
 
   @media (forced-colors: active) {
-    .secondary-status[open] span {
+    .secondary-status[open] .secondary-status-panel {
       border-color: CanvasText;
     }
   }

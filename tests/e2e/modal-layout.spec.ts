@@ -11,7 +11,12 @@ nodes:
     depends_on: [prepare]
 `
 
-async function assertRealResponsiveModal(page: Page, dialog: Locator, reachableAction: Locator): Promise<void> {
+async function assertRealResponsiveModal(
+  page: Page,
+  dialog: Locator,
+  reachableAction: Locator,
+  options: { injectOverflowFixture?: boolean } = {},
+): Promise<void> {
   await expect(dialog).toBeVisible()
   expect(await dialog.evaluate((node) => node.matches(':modal'))).toBe(true)
 
@@ -27,16 +32,18 @@ async function assertRealResponsiveModal(page: Page, dialog: Locator, reachableA
   const body = dialog.locator('[data-modal-body]')
   const footer = dialog.locator('[data-modal-actions]')
   await expect(body).toBeVisible()
-  await body.evaluate((element) => {
-    const fixture = document.createElement('div')
-    fixture.dataset.modalOverflowFixture = 'true'
-    for (let index = 0; index < 24; index += 1) {
-      const line = document.createElement('p')
-      line.textContent = `Long modal reflow fixture ${index + 1}: ${'content-aware-workbench-'.repeat(6)}`
-      fixture.append(line)
-    }
-    element.append(fixture)
-  })
+  if (options.injectOverflowFixture !== false) {
+    await body.evaluate((element) => {
+      const fixture = document.createElement('div')
+      fixture.dataset.modalOverflowFixture = 'true'
+      for (let index = 0; index < 24; index += 1) {
+        const line = document.createElement('p')
+        line.textContent = `Long modal reflow fixture ${index + 1}: ${'content-aware-workbench-'.repeat(6)}`
+        fixture.append(line)
+      }
+      element.append(fixture)
+    })
+  }
 
   const before = await dialog.evaluate((element) => {
     const modalBody = element.querySelector<HTMLElement>('[data-modal-body]')!
@@ -219,13 +226,19 @@ test('Command Palette is a top-layer modal with reachable search results', async
 })
 
 test('Create Version is a top-layer modal with a reachable action after long content', async ({ page }) => {
-  await openSeededPair(page)
+  await openSeededPair(page, '?scenario=long-create-version')
   await page.getByRole('button', { name: 'Git', exact: true }).click()
   await page
     .getByRole('button', { name: 'Create version…' })
     .evaluate((element) => (element as HTMLButtonElement).click())
   const dialog = page.getByRole('dialog', { name: 'Create local version' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create version' }))
+  const findingsHeading = dialog.getByRole('heading', { name: 'Warnings and advisories' })
+  await expect(findingsHeading).toBeVisible()
+  expect(await findingsHeading.locator('+ ul li').count()).toBeGreaterThanOrEqual(24)
+  await expect(dialog.getByText('diff --git a/workflows/release-demo.yaml', { exact: false })).toBeVisible()
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create version' }), {
+    injectOverflowFixture: false,
+  })
 })
 
 test('Keyboard Shortcuts is a top-layer modal with a persistent close action', async ({ page }) => {
