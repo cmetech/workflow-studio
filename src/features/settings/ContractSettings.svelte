@@ -92,7 +92,12 @@
   .contract-settings {
     display: grid;
     gap: 1rem;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     padding: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
   }
   header,
   li,
@@ -103,9 +108,13 @@
   }
   header {
     flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
   }
   li {
     flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
     padding: 0.75rem;
     border: 1px solid var(--color-border);
     border-radius: 0.375rem;
@@ -122,14 +131,54 @@
     min-width: 0;
   }
   dd {
+    min-width: 0;
+    max-width: 100%;
     margin: 0;
+    overflow-wrap: anywhere;
+  }
+  code {
+    max-width: 100%;
+    white-space: normal;
     overflow-wrap: anywhere;
   }
   ul {
     display: grid;
     gap: 0.5rem;
+    min-width: 0;
+    max-width: 100%;
     padding: 0;
     margin: 0;
     list-style: none;
+  }
+  .actions,
+  .entry-actions {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .actions label,
+  .actions button,
+  .entry-actions button {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 36rem) {
+    dl {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .actions,
+    .entry-actions {
+      flex-direction: column;
+    }
+
+    .actions button,
+    .entry-actions button,
+    .actions label,
+    .actions select {
+      width: 100%;
+    }
   }
 </style>

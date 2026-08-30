@@ -490,13 +490,18 @@ describe('App', () => {
   it('offers a workspace action without requiring Hermes', async () => {
     const { container } = render(App)
     await waitForSetupReady()
+    const welcome = screen.getByRole('region', { name: 'Welcome' })
     expect(screen.getByRole('heading', { name: 'LOOP24 Workflow Studio' })).toBeVisible()
+    expect(welcome).toHaveAttribute('data-workbench-page', 'welcome')
     expect(container.querySelector('.brand-lockup img')).toHaveAttribute('alt', '')
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Open Folder' })).toHaveLength(2)
     expect(
       screen.getAllByRole('button', { name: 'Open Folder' }).every((button) => !button.hasAttribute('disabled')),
     ).toBe(true)
+    expect(within(welcome).getByRole('button', { name: 'Open Folder' })).toHaveAttribute('data-variant', 'primary')
+    expect(container.querySelector('.editor-column')).toHaveAttribute('hidden')
+    expect(container.querySelector('.inspector-panel')).toHaveAttribute('hidden')
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
@@ -504,6 +509,7 @@ describe('App', () => {
     render(App)
     showActivity('settings')
 
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Workflow Contracts' }))
     expect(await screen.findByRole('heading', { name: 'Workflow contracts' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Import Contract File' })).toBeEnabled()
   })
@@ -515,6 +521,7 @@ describe('App', () => {
     })
     render(App)
     showActivity('settings')
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Workflow Contracts' }))
     await fireEvent.click(await screen.findByRole('button', { name: 'Import Contract File' }))
     expect(await screen.findByText('Cached')).toBeVisible()
 
@@ -522,6 +529,7 @@ describe('App', () => {
     await tick()
     showActivity('settings')
 
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Workflow Contracts' }))
     expect(await screen.findByText('Cached')).toBeVisible()
   })
 
@@ -604,6 +612,7 @@ describe('App', () => {
     try {
       render(App)
       showActivity('settings')
+      await fireEvent.click(await screen.findByRole('tab', { name: 'Workflow Contracts' }))
       await fireEvent.click(await screen.findByRole('button', { name: 'Import Contract File' }))
       await fireEvent.click(screen.getByRole('button', { name: `Activate ${digest}` }))
       await waitFor(() => expect(screen.getAllByText('Active')).toHaveLength(2))
@@ -893,6 +902,8 @@ nodes:
     const inspector = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
     expect(await screen.findByRole('region', { name: 'Settings' })).toHaveAttribute('data-workbench-page', 'settings')
     expect(container.querySelector('[data-workbench-page="settings"]')?.closest('.left-panel')).toBeNull()
+    expect(screen.getAllByRole('tab')).toHaveLength(4)
+    expect(screen.getByRole('tabpanel', { name: 'Appearance' })).toBeVisible()
     for (const layer of [workspacePanel, authoring, inspector]) {
       expect(layer).toHaveAttribute('hidden')
       expect(layer).toHaveAttribute('inert')

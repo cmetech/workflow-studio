@@ -21,6 +21,8 @@
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
+  import SettingsPage from '$src/features/settings/SettingsPage.svelte'
+  import UpdateSettings from '$src/features/settings/UpdateSettings.svelte'
   import AboutView from '$src/features/settings/AboutView.svelte'
   import BrandSettings from '$src/features/branding/BrandSettings.svelte'
   import BrandPreview from '$src/features/branding/BrandPreview.svelte'
@@ -2075,6 +2077,66 @@
         />
       </ActivityPage>
     {:else if workbenchSurface === 'settings'}
+      {#snippet appearanceSettings()}
+        <BrandSettings
+          packs={$brandState.packs}
+          reports={$brandState.reports}
+          activeId={$brandState.activeId}
+          pending={$brandState.pending}
+          warning={$brandState.warning}
+          onImport={async () => {
+            await runBrandOperation(() => brandController.importPack())
+          }}
+          onPreview={(id) => {
+            brandPreviewId = id
+            brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+          }}
+          onActivate={async (id) => {
+            await runBrandOperation(() => brandController.activate(id))
+          }}
+          onRemove={async (id, revertActive) => {
+            await runBrandOperation(() => brandController.remove(id, revertActive))
+          }}
+        />
+      {/snippet}
+      {#snippet contractSettings()}
+        {#if contractsLoaded && appContractCache}
+          <ContractSettingsHost
+            cache={appContractCache}
+            {native}
+            confirmUnsupported={() =>
+              Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+            onContractsChanged={synchronizeContractRegistry}
+          />
+        {:else}
+          <p>Loading bundled contracts…</p>
+        {/if}
+      {/snippet}
+      {#snippet updateSettings()}
+        <UpdateSettings
+          {startupCheckEnabled}
+          updateState={updateProgress}
+          oncheck={() => updateController.check(false)}
+          onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
+          ondownload={(runId) => updateController.downloadInstall(runId)}
+          onopenlog={(runId) => updateController.openLog(runId)}
+          onrelaunch={() => updateController.relaunch()}
+        />
+      {/snippet}
+      {#snippet aboutSettings()}
+        {#if hostInfo}
+          <AboutView
+            host={hostInfo}
+            contracts={contracts.map((contract) => ({
+              profile: contract.profile,
+              schemaVersion: contract.schema_version,
+              digest: contract.contract_digest,
+            }))}
+          />
+        {:else}
+          <p role="status">Loading application identity…</p>
+        {/if}
+      {/snippet}
       <ActivityPage
         activity="settings"
         title="Settings"
@@ -2082,56 +2144,12 @@
         showBack
         onBack={returnToAuthoringSurface}
       >
-        <div class="settings-stack">
-          <BrandSettings
-            packs={$brandState.packs}
-            reports={$brandState.reports}
-            activeId={$brandState.activeId}
-            pending={$brandState.pending}
-            warning={$brandState.warning}
-            onImport={async () => {
-              await runBrandOperation(() => brandController.importPack())
-            }}
-            onPreview={(id) => {
-              brandPreviewId = id
-              brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-            }}
-            onActivate={async (id) => {
-              await runBrandOperation(() => brandController.activate(id))
-            }}
-            onRemove={async (id, revertActive) => {
-              await runBrandOperation(() => brandController.remove(id, revertActive))
-            }}
-          />
-          {#if contractsLoaded && appContractCache}
-            <ContractSettingsHost
-              cache={appContractCache}
-              {native}
-              confirmUnsupported={() =>
-                Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
-              onContractsChanged={synchronizeContractRegistry}
-            />
-          {:else}
-            <p>Loading bundled contracts…</p>
-          {/if}
-          {#if hostInfo}
-            <AboutView
-              host={hostInfo}
-              contracts={contracts.map((contract) => ({
-                profile: contract.profile,
-                schemaVersion: contract.schema_version,
-                digest: contract.contract_digest,
-              }))}
-              {startupCheckEnabled}
-              updateState={updateProgress}
-              oncheck={() => updateController.check(false)}
-              onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
-              ondownload={(runId) => updateController.downloadInstall(runId)}
-              onopenlog={(runId) => updateController.openLog(runId)}
-              onrelaunch={() => updateController.relaunch()}
-            />
-          {/if}
-        </div>
+        <SettingsPage
+          appearance={appearanceSettings}
+          contracts={contractSettings}
+          updates={updateSettings}
+          about={aboutSettings}
+        />
       </ActivityPage>
     {:else if workbenchSurface === 'git'}
       <ActivityPage
@@ -2628,13 +2646,6 @@
 
   .left-panel {
     border-right: 1px solid var(--color-border);
-  }
-
-  .settings-stack {
-    display: grid;
-    align-content: start;
-    height: 100%;
-    overflow: auto;
   }
 
   .inspector-panel {

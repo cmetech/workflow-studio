@@ -15,8 +15,11 @@ describe('OpenWorkspace', () => {
       onDropPath,
     })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Open Folder' }))
+    const primaryAction = screen.getByRole('button', { name: 'Open Folder' })
+    expect(primaryAction).toHaveAttribute('data-variant', 'primary')
+    await fireEvent.click(primaryAction)
     expect(onOpen).toHaveBeenCalledWith(undefined)
+    expect(screen.getByRole('navigation', { name: 'Recent folders' })).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: '/available' }))
     expect(onOpen).toHaveBeenCalledWith('/available')
     expect(screen.getByRole('button', { name: '/missing unavailable' })).toBeDisabled()
@@ -24,5 +27,7 @@ describe('OpenWorkspace', () => {
     const drop = screen.getByRole('region', { name: 'Open workspace drop zone' })
     await fireEvent.drop(drop, { dataTransfer: { files: [{ path: '/dropped' }] } })
     expect(onDropPath).toHaveBeenCalledWith('/dropped')
+    expect(drop.querySelector('.editor-tabs')).toBeNull()
+    expect(drop.querySelector('[aria-label="Inspector"]')).toBeNull()
   })
 })

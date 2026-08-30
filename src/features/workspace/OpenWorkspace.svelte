@@ -31,7 +31,9 @@
     <p class="eyebrow">LOCAL WORKFLOWS</p>
     <h2 id="open-workspace-heading">Open a workspace folder</h2>
     <p>Choose or drop a folder. Workflow Studio keeps YAML as the only workflow authority.</p>
-    <button type="button" {disabled} onclick={() => !disabled && void onOpen?.(undefined)}>Open Folder</button>
+    <button type="button" data-variant="primary" {disabled} onclick={() => !disabled && void onOpen?.(undefined)}
+      >Open Folder</button
+    >
   </div>
 
   {#if recent.length > 0}
@@ -57,9 +59,11 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(14rem, 22rem);
     gap: 2rem;
-    width: min(56rem, calc(100% - 4rem));
+    width: min(56rem, 100%);
+    min-width: 0;
+    max-width: 100%;
     margin: auto;
-    padding: 2rem;
+    padding: clamp(1rem, 4vw, 2rem);
     border: 1px dashed var(--color-edge);
     border-radius: 0.75rem;
     background: var(--color-surface);
@@ -82,6 +86,7 @@
     display: grid;
     gap: 0.375rem;
     align-content: start;
+    min-width: 0;
   }
 
   nav button {
@@ -95,9 +100,14 @@
 
   nav button span {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+
+  nav button small {
+    flex: 0 0 auto;
   }
 
   nav button:disabled {

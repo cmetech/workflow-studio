@@ -51,3 +51,46 @@ test('preserves exact authoring state across full-workbench page navigation', as
   await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBe(yamlScrollBefore)
   expect((await e2eSnapshot(page)).layout).toEqual(layoutBefore)
 })
+
+test('Settings exposes one responsive keyboard-operable category at a time', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+
+  const appearance = page.getByRole('tab', { name: 'Appearance' })
+  await expect(appearance).toBeVisible()
+  await expect(appearance).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel', { name: 'Appearance' })).toBeVisible()
+
+  const contracts = page.getByRole('tab', { name: 'Workflow Contracts' })
+  await contracts.click()
+  await expect(page.getByRole('heading', { name: 'Workflow contracts' })).toBeVisible()
+  await expect(page.getByRole('tabpanel')).toHaveCount(1)
+
+  await contracts.press('End')
+  await expect(page.getByRole('tab', { name: 'About' })).toBeFocused()
+  await expect(page.getByRole('tabpanel', { name: 'About' })).toBeVisible()
+})
+
+test('Welcome replaces inactive authoring chrome while preserving activity access', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.goto('/')
+
+  const welcome = page.getByRole('region', { name: 'Welcome' })
+  await expect(welcome).toBeVisible()
+  await expect(welcome.getByRole('button', { name: 'Open Folder' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Activities' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })).toHaveAttribute(
+    'hidden',
+    '',
+  )
+  await expect(page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })).toHaveAttribute(
+    'inert',
+    '',
+  )
+  await expect(page.getByRole('complementary', { name: 'Inspector', includeHidden: true })).toHaveAttribute(
+    'hidden',
+    '',
+  )
+  await expect(welcome.getByRole('group', { name: 'Editor mode' })).toHaveCount(0)
+})

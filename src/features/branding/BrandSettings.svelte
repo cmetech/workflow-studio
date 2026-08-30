@@ -173,9 +173,14 @@
   li {
     display: grid;
     gap: 0.75rem;
+    min-width: 0;
+    max-width: 100%;
   }
   .brand-settings {
+    width: 100%;
     padding: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
   }
   header p,
   header h2,
@@ -185,6 +190,8 @@
   ul {
     display: grid;
     gap: 0.625rem;
+    min-width: 0;
+    max-width: 100%;
     padding: 0;
     margin: 0;
     list-style: none;
@@ -202,6 +209,15 @@
   }
   .identity {
     display: grid;
+    min-width: 0;
+  }
+  .identity strong,
+  .identity span,
+  li p,
+  .inspection-report span {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
   .identity span {
     color: var(--color-text-muted);
@@ -212,6 +228,13 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .actions button,
+  header button {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
   li p {
     grid-column: 1 / -1;
@@ -228,5 +251,16 @@
   }
   button:focus-visible {
     box-shadow: var(--focus-ring);
+  }
+
+  @media (max-width: 36rem) {
+    .actions {
+      flex-direction: column;
+    }
+
+    .actions button,
+    header button {
+      width: 100%;
+    }
   }
 </style>
