@@ -49,9 +49,10 @@ describe('ContractSettings', () => {
 
     expect(screen.getByText('Bundled')).toBeInTheDocument()
     expect(screen.getAllByText('Cached')).toHaveLength(2)
-    expect(screen.getByText('Selected file: /chosen/archon.json')).toBeInTheDocument()
-    expect(screen.getByText('Hermes CLI: /Applications/Hermes')).toBeInTheDocument()
-    expect(screen.getByText('Reader 2')).toBeInTheDocument()
+    expect(screen.getByText('Selected file: /chosen/archon.json')).toHaveClass('technical-value')
+    expect(screen.getByText('Selected file: /chosen/archon.json').tagName).toBe('CODE')
+    expect(screen.getByText('Hermes CLI: /Applications/Hermes')).toHaveClass('technical-value')
+    expect(screen.getByText('Reader 2')).toHaveClass('technical-value')
     expect(screen.getAllByText('Archon 2026-07')).toHaveLength(3)
     expect(screen.getByRole('button', { name: `Activate ${entries[1]!.digest}` })).toBeEnabled()
     expect(screen.getByRole('button', { name: `Activate ${entries[2]!.digest}` })).toBeDisabled()

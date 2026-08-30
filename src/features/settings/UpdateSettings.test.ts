@@ -59,7 +59,10 @@ describe('UpdateSettings', () => {
     })
 
     expect(screen.getByRole('status')).toHaveTextContent('Update status: available')
-    expect(screen.getByText('windows-x86_64-with-a-very-long-technical-identity')).toBeVisible()
+    expect(screen.getByText('1.2.3')).toHaveClass('technical-value')
+    expect(screen.getByText('1.2.3').tagName).toBe('CODE')
+    expect(screen.getByText('windows-x86_64-with-a-very-long-technical-identity')).toHaveClass('technical-value')
+    expect(screen.getByText('windows-x86_64-with-a-very-long-technical-identity').tagName).toBe('CODE')
     await fireEvent.click(screen.getByRole('button', { name: 'Show update log' }))
     expect(screen.getByRole('textbox', { name: 'Update output' })).toHaveValue('Update package is ready.')
     await fireEvent.click(screen.getByRole('button', { name: 'Download / Install' }))

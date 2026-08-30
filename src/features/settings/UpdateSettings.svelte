@@ -97,8 +97,8 @@
     <section class="update-detail" aria-label="Update details">
       <p role="status">Update status: {updateState.phase}</p>
       {#if updateState.release}
-        <p><strong>Version {updateState.release.version}</strong></p>
-        <p class="technical-value">{updateState.release.platform}</p>
+        <p><strong>Version <code class="technical-value">{updateState.release.version}</code></strong></p>
+        <p><code class="technical-value">{updateState.release.platform}</code></p>
         {#if updateState.release.notes}<p class="notes">{updateState.release.notes.replace(/\s+/g, ' ').trim()}</p>{/if}
       {/if}
       {#if updateState.phase === 'downloading'}
@@ -185,6 +185,7 @@
 
   .technical-value,
   .notes {
+    min-width: 0;
     max-width: 100%;
     white-space: normal;
     overflow-wrap: anywhere;

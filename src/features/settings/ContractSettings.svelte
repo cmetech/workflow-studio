@@ -50,23 +50,23 @@
         <dl>
           <div>
             <dt>Schema</dt>
-            <dd>{entry.schemaVersion}</dd>
+            <dd><code class="technical-value">{entry.schemaVersion}</code></dd>
           </div>
           <div>
             <dt>Normalizer</dt>
-            <dd>{entry.normalizerVersion}</dd>
+            <dd><code class="technical-value">{entry.normalizerVersion}</code></dd>
           </div>
           <div>
             <dt>Reader</dt>
-            <dd>Reader {entry.readerVersion}</dd>
+            <dd><code class="technical-value">Reader {entry.readerVersion}</code></dd>
           </div>
           <div>
             <dt>Digest</dt>
-            <dd><code>{entry.digest}</code></dd>
+            <dd><code class="technical-value">{entry.digest}</code></dd>
           </div>
           <div>
             <dt>Source</dt>
-            <dd>{sourceLabel(entry)}</dd>
+            <dd><code class="technical-value">{sourceLabel(entry)}</code></dd>
           </div>
         </dl>
         <div class="entry-actions">
@@ -136,7 +136,8 @@
     margin: 0;
     overflow-wrap: anywhere;
   }
-  code {
+  .technical-value {
+    min-width: 0;
     max-width: 100%;
     white-space: normal;
     overflow-wrap: anywhere;

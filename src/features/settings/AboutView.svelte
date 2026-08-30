@@ -24,20 +24,20 @@
   <dl class="identity">
     <div>
       <dt>Version</dt>
-      <dd>{host.appVersion}</dd>
+      <dd><code class="technical-value">{host.appVersion}</code></dd>
     </div>
     <div>
       <dt>Platform</dt>
-      <dd>{host.os} / {host.arch}</dd>
+      <dd><code class="technical-value">{host.os} / {host.arch}</code></dd>
     </div>
   </dl>
 
   <ul aria-label="Authoring contracts">
     {#each contracts as contract (contract.profile + contract.digest)}
       <li>
-        <strong>{contract.profile}</strong>
-        <span>Schema {contract.schemaVersion}</span>
-        <code class="digest">{contract.digest}</code>
+        <strong><code class="technical-value">{contract.profile}</code></strong>
+        <span>Schema <code class="technical-value">{contract.schemaVersion}</code></span>
+        <code class="digest technical-value">{contract.digest}</code>
       </li>
     {/each}
   </ul>
@@ -102,6 +102,7 @@
   }
 
   .digest,
+  .technical-value,
   li strong,
   li span {
     min-width: 0;

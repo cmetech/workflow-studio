@@ -17,6 +17,8 @@ describe('OpenWorkspace', () => {
 
     const primaryAction = screen.getByRole('button', { name: 'Open Folder' })
     expect(primaryAction).toHaveAttribute('data-variant', 'primary')
+    expect(screen.getByText(/works fully offline/i)).toBeVisible()
+    expect(screen.getByText(/YAML as the only workflow authority/i)).toBeVisible()
     await fireEvent.click(primaryAction)
     expect(onOpen).toHaveBeenCalledWith(undefined)
     expect(screen.getByRole('navigation', { name: 'Recent folders' })).toBeVisible()

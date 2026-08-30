@@ -30,7 +30,7 @@
   <div>
     <p class="eyebrow">LOCAL WORKFLOWS</p>
     <h2 id="open-workspace-heading">Open a workspace folder</h2>
-    <p>Choose or drop a folder. Workflow Studio keeps YAML as the only workflow authority.</p>
+    <p>Choose or drop a folder. Workflow Studio works fully offline and keeps YAML as the only workflow authority.</p>
     <button type="button" data-variant="primary" {disabled} onclick={() => !disabled && void onOpen?.(undefined)}
       >Open Folder</button
     >
