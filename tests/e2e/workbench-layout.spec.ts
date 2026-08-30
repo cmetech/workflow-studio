@@ -114,6 +114,37 @@ test('real viewport resize keeps focus in Explorer and Inspector when docked pan
   await expect(advanced).toBeFocused()
 })
 
+test('resize-created Inspector drawer restores focus to the currently selected node', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const workbench = page.locator('.workbench')
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await prepare.press('Enter')
+  await expect(inspector).not.toHaveAttribute('inert')
+
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'docked')
+  const publish = page.getByRole('group', { name: 'command node publish', exact: true })
+  await publish.click()
+  await expect(publish).toHaveClass(/selected/)
+  await expect(prepare).not.toHaveClass(/selected/)
+
+  const activeInspectorTab = inspector.getByRole('tab', { selected: true })
+  await activeInspectorTab.focus()
+  await expect(activeInspectorTab).toBeFocused()
+  await page.setViewportSize({ width: 1180, height: 800 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'drawers')
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(activeInspectorTab).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('command node publish')
+  await expect(publish).toBeFocused()
+  await expect(publish).toHaveClass(/selected/)
+})
+
 test('real viewport resize activates the focused YAML or Canvas surface in compact Split', async ({ page }) => {
   await openPairAt(page, 1440, 900)
   await page.getByRole('button', { name: 'Split', exact: true }).click()

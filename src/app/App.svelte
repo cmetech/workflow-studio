@@ -420,15 +420,19 @@
     const panelPresentation = workbenchPresentation.panels
     const splitPresentation = workbenchPresentation.split
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const panelPresentationChanged = panelPresentationMeasured && previousPanelPresentation !== panelPresentation
 
-    if (
-      panelPresentationMeasured &&
-      previousPanelPresentation !== panelPresentation &&
-      panelPresentation === 'drawers' &&
-      focused
-    ) {
+    if (panelPresentationChanged && panelPresentation === 'docked') {
+      workspacePanelOpener = undefined
+      inspectorPanelOpener = undefined
+    }
+
+    if (panelPresentationChanged && panelPresentation === 'drawers' && focused) {
       if (workspacePanelHost?.contains(focused)) workspacePanelOpen.set(true)
-      else if (inspectorPanelHost?.contains(focused)) inspectorPanelOpen.set(true)
+      else if (inspectorPanelHost?.contains(focused)) {
+        inspectorPanelOpener = currentInspectorRestorationTarget()
+        inspectorPanelOpen.set(true)
+      }
     }
     if (
       splitPresentationMeasured &&
@@ -587,10 +591,13 @@
   }
 
   async function focusInspector(invoker?: HTMLElement): Promise<void> {
-    inspectorPanelOpener = invoker?.isConnected
-      ? invoker
-      : document.activeElement instanceof HTMLElement
-        ? document.activeElement
+    inspectorPanelOpener =
+      workbenchPresentation.panels === 'drawers'
+        ? invoker?.isConnected
+          ? invoker
+          : document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : undefined
         : undefined
     openInspectorPanel()
     await tick()
@@ -601,6 +608,14 @@
         'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
       )
     target?.focus()
+  }
+
+  function currentInspectorRestorationTarget(): HTMLElement | undefined {
+    return (
+      document.querySelector<HTMLElement>('.svelte-flow__node.selected') ??
+      document.querySelector<HTMLElement>(`[aria-controls="${inspectorPanelId}"][aria-expanded="true"]`) ??
+      undefined
+    )
   }
 
   async function focusWorkspaceDrawer(opener: HTMLElement | undefined): Promise<void> {

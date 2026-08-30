@@ -20,6 +20,13 @@ body {
   line-height: 1.45;
 }
 
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
 button,
 input,
 textarea,

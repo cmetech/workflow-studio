@@ -20,27 +20,59 @@ async function interactionSignatures(page: Page, locator: Locator) {
   return { resting, hovered, active }
 }
 
-async function expectMono(locator: Locator): Promise<void> {
+async function fontFamily(locator: Locator): Promise<string> {
   await expect(locator).toBeVisible()
-  const family = await locator.evaluate((element) => getComputedStyle(element).fontFamily)
-  expect(family).toContain('Geist Mono Variable')
+  return locator.evaluate((element) => getComputedStyle(element).fontFamily)
 }
 
-test('renders YAML, shortcuts, code fields, and technical metadata with bundled Geist Mono', async ({ page }) => {
+test('renders semantic and established technical surfaces with bundled Geist Mono', async ({ page }) => {
   await openSeededPair(page)
   await page.getByRole('group', { name: 'command node publish', exact: true }).click()
 
   const inspector = page.getByRole('region', { name: 'Workflow inspector' })
-  await expectMono(inspector.locator('textarea.code'))
-  await expectMono(page.locator('.status-bar'))
+  const families = {
+    inspectorCode: await fontFamily(inspector.locator('textarea.code')),
+    statusMetadata: await fontFamily(page.locator('.status-bar')),
+    yaml: '',
+    shortcut: '',
+    examplePreview: '',
+    unifiedDiff: '',
+    contractDigest: '',
+  }
 
   await page.getByRole('button', { name: 'YAML', exact: true }).click()
-  await expectMono(page.locator('[aria-label="Definition YAML"] .cm-scroller'))
+  families.yaml = await fontFamily(page.locator('[aria-label="Definition YAML"] .cm-scroller'))
 
   await page.keyboard.press('F1')
   await page.getByRole('combobox', { name: 'Search commands' }).fill('Keyboard Shortcuts')
   await page.keyboard.press('Enter')
-  await expectMono(page.getByRole('dialog', { name: 'Keyboard shortcuts' }).locator('kbd').first())
+  families.shortcut = await fontFamily(page.getByRole('dialog', { name: 'Keyboard shortcuts' }).locator('kbd').first())
+  await page.getByRole('button', { name: 'Close keyboard shortcuts' }).click()
+
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+  await page
+    .getByRole('button', { name: /^Preview / })
+    .first()
+    .click()
+  families.examplePreview = await fontFamily(
+    page.getByRole('region', { name: 'Example preview' }).locator('pre').first(),
+  )
+
+  await page.getByRole('button', { name: 'Git', exact: true }).click()
+  families.unifiedDiff = await fontFamily(
+    page.getByRole('region', { name: 'Workflow pair diff' }).locator('pre').first(),
+  )
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  families.contractDigest = await fontFamily(
+    page.getByRole('region', { name: 'About Workflow Studio' }).locator('code.digest').first(),
+  )
+
+  expect(families).toEqual(
+    Object.fromEntries(
+      Object.keys(families).map((surface) => [surface, expect.stringContaining('Geist Mono Variable')]),
+    ),
+  )
 })
 
 for (const colorScheme of ['dark', 'light'] as const) {
