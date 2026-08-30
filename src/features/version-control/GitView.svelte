@@ -125,7 +125,7 @@
     <div class="git-page-grid">
       <section class="repository-card" aria-label="Local repository summary">
         <p class="repository">
-          <span
+          <span class="repository-ref"
             >{repository.branch
               ? `Branch: ${repository.branch}`
               : `Detached: ${repository.detachedHead ?? 'unknown'}`}</span
@@ -235,6 +235,7 @@
     margin-top: 0;
     color: var(--color-focus);
   }
+  .repository-ref,
   .repository-root,
   .status-path {
     min-width: 0;

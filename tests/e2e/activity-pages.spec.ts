@@ -186,13 +186,14 @@ test('Git is a contained full-workbench page and falls back to unified diff when
   await page.getByRole('button', { name: 'Git', exact: true }).click()
 
   const gitPage = page.locator('[data-workbench-page="git"]')
+  const gitPageBody = gitPage.locator('[data-page-scroll]')
   await expect(gitPage).toBeVisible()
   await expect(page.locator('.left-panel .git-view')).toHaveCount(0)
   await expect(page.getByText(/C:\\workspaces\\release/)).toBeVisible()
   await expect(
     page.getByRole('button', { name: /Document the exceptionally long Windows release workflow subject/ }),
   ).toBeVisible()
-  expect(await gitPage.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+  expect(await gitPageBody.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
 
   await page.getByRole('button', { name: 'Side-by-side diff' }).click()
   const sideBySideCells = page.getByRole('table', { name: 'Working tree side-by-side diff' }).getByRole('columnheader')
@@ -205,5 +206,27 @@ test('Git is a contained full-workbench page and falls back to unified diff when
   await page.getByRole('button', { name: 'Side-by-side diff' }).click()
   await expect(page.getByRole('button', { name: 'Unified diff' })).toHaveAttribute('aria-pressed', 'true')
   await expect(gitPage.getByRole('status')).toContainText('Side-by-side diff needs more horizontal space')
-  expect(await gitPage.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+  expect(await gitPageBody.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+})
+
+test('Git contains an adversarial unbroken repository ref', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.goto('/?scenario=unbroken-git-ref')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+  const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+  await expect(pair).toBeVisible()
+  await pair.click()
+  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Git', exact: true }).click()
+
+  const gitPage = page.locator('[data-workbench-page="git"]')
+  const repositoryRef = gitPage.getByText(/^Branch: r{200}$/)
+  await expect(repositoryRef).toBeVisible()
+  await expect(repositoryRef).toHaveCSS('min-width', '0px')
+  await expect(repositoryRef).toHaveCSS('overflow-wrap', 'anywhere')
+  expect(
+    await gitPage.locator('[data-page-scroll]').evaluate((element) => element.scrollWidth - element.clientWidth),
+  ).toBe(0)
 })

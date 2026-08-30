@@ -15,6 +15,7 @@ const LONG_WINDOWS_PATH =
   'C:\\workspaces\\release\\nested\\workflow-definitions\\international\\release-demo-with-an-exceptionally-long-name.yaml'
 const LONG_GIT_SUBJECT =
   'Document the exceptionally long Windows release workflow subject without widening the Git workbench page'
+const UNBROKEN_GIT_REF = 'r'.repeat(200)
 const AUTHORING_FILES = {
   [DEFINITION_PATH]: `name: Release demo
 description: Verify the complete authoring path.
@@ -317,7 +318,11 @@ export async function installRuntimeBootstrap(): Promise<void> {
     gitDetect: async () => ({
       root: scenario === 'long-git' ? 'C:\\workspaces\\release\\nested\\workflow-studio' : '/e2e/workspace',
       branch:
-        scenario === 'long-git' ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference' : 'base',
+        scenario === 'unbroken-git-ref'
+          ? UNBROKEN_GIT_REF
+          : scenario === 'long-git'
+            ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference'
+            : 'base',
       detachedHead: null,
     }),
     gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
