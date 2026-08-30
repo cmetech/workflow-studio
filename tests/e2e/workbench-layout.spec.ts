@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { e2eSnapshot, replaceDefinitionYaml } from './support'
 
 const UNSAVED_YAML = `name: Release demo
@@ -28,6 +28,17 @@ async function openPairAt(page: Page, width: number, height: number): Promise<vo
 
 function modShortcut(key: string): string {
   return `${process.platform === 'darwin' ? 'Meta' : 'Control'}+${key}`
+}
+
+async function tabTo(page: Page, target: Locator, browserName: string, limit = 80): Promise<void> {
+  const key = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab'
+  for (
+    let index = 0;
+    index < limit && !(await target.evaluate((element) => element === document.activeElement));
+    index += 1
+  )
+    await page.keyboard.press(key)
+  await expect(target).toBeFocused()
 }
 
 for (const viewport of [
@@ -143,6 +154,38 @@ test('resize-created Inspector drawer restores focus to the currently selected n
   expect(await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('command node publish')
   await expect(publish).toBeFocused()
   await expect(publish).toHaveClass(/selected/)
+})
+
+test('resize-created Inspector Escape preserves the current keyboard-selected node instead of its stale owner', async ({
+  browserName,
+  page,
+}) => {
+  await openPairAt(page, 1440, 900)
+
+  const workbench = page.locator('.workbench')
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const publish = page.getByRole('group', { name: 'command node publish', exact: true })
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await publish.click()
+  await expect(publish).toHaveClass(/selected/)
+
+  const activeInspectorTab = inspector.getByRole('tab', { selected: true })
+  await activeInspectorTab.focus()
+  await page.setViewportSize({ width: 1180, height: 800 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'drawers')
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(activeInspectorTab).toBeFocused()
+
+  await tabTo(page, prepare, browserName)
+  await page.keyboard.press('Space')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(publish).not.toHaveClass(/selected/)
+  await expect(prepare).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(inspector).toHaveAttribute('inert', '')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(prepare).toBeFocused()
 })
 
 test('real viewport resize activates the focused YAML or Canvas surface in compact Split', async ({ page }) => {

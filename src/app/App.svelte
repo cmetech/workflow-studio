@@ -287,7 +287,9 @@
   let editorWidth = $state(720)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
-  let inspectorPanelOpener = $state<HTMLElement | undefined>()
+  let inspectorDrawerOwner = $state<
+    { readonly kind: 'explicit'; readonly opener: HTMLElement | undefined } | { readonly kind: 'resize' } | undefined
+  >()
   let previousPanelPresentation: 'docked' | 'drawers' = 'docked'
   let previousSplitPresentation: 'side-by-side' | 'tabs' = 'side-by-side'
   let panelPresentationMeasured = false
@@ -424,13 +426,13 @@
 
     if (panelPresentationChanged && panelPresentation === 'docked') {
       workspacePanelOpener = undefined
-      inspectorPanelOpener = undefined
+      inspectorDrawerOwner = undefined
     }
 
     if (panelPresentationChanged && panelPresentation === 'drawers' && focused) {
       if (workspacePanelHost?.contains(focused)) workspacePanelOpen.set(true)
       else if (inspectorPanelHost?.contains(focused)) {
-        inspectorPanelOpener = currentInspectorRestorationTarget()
+        inspectorDrawerOwner = { kind: 'resize' }
         inspectorPanelOpen.set(true)
       }
     }
@@ -591,13 +593,16 @@
   }
 
   async function focusInspector(invoker?: HTMLElement): Promise<void> {
-    inspectorPanelOpener =
+    inspectorDrawerOwner =
       workbenchPresentation.panels === 'drawers'
-        ? invoker?.isConnected
-          ? invoker
-          : document.activeElement instanceof HTMLElement
-            ? document.activeElement
-            : undefined
+        ? {
+            kind: 'explicit',
+            opener: invoker?.isConnected
+              ? invoker
+              : document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : undefined,
+          }
         : undefined
     openInspectorPanel()
     await tick()
@@ -637,13 +642,13 @@
   async function closeInspectorDrawer(invoker?: HTMLElement): Promise<void> {
     const target = invoker?.isConnected
       ? invoker
-      : inspectorPanelOpener?.isConnected
-        ? inspectorPanelOpener
-        : document.querySelector<HTMLElement>('.svelte-flow__node.selected')
+      : inspectorDrawerOwner?.kind === 'explicit' && inspectorDrawerOwner.opener?.isConnected
+        ? inspectorDrawerOwner.opener
+        : currentInspectorRestorationTarget()
     inspectorPanelOpen.set(false)
     await tick()
-    target?.focus()
-    inspectorPanelOpener = undefined
+    if (document.activeElement !== target) target?.focus()
+    inspectorDrawerOwner = undefined
   }
 
   async function closeOpenDrawer(): Promise<void> {
@@ -1482,7 +1487,37 @@
         find: findInCurrentSurface,
         validate: validateCurrentWorkflow,
       })
+      const escapeCancellations = () => {
+        const activeModal = document.querySelector('[aria-modal="true"]')
+        return [
+          ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
+          ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
+          ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
+          ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
+          ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
+          ...(activeModal === null &&
+          workbenchPresentation.panels === 'drawers' &&
+          ($inspectorPanelOpen || $workspacePanelOpen)
+            ? [{ priority: 50, cancel: closeOpenDrawer }]
+            : []),
+        ]
+      }
+      const escapeKeydown = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return
+        const cancellation = escapeCancellations().sort((left, right) => right.priority - left.priority)[0]
+        if (!cancellation) return
+        event.preventDefault()
+        event.stopPropagation()
+        try {
+          void Promise.resolve(cancellation.cancel()).catch((error: unknown) => {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          })
+        } catch (error: unknown) {
+          workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+        }
+      }
       const keydown = (event: KeyboardEvent) => {
+        if (event.defaultPrevented) return
         const context = keyboardContext(event.target)
         const keyboardOpener =
           event.target instanceof HTMLElement
@@ -1501,20 +1536,7 @@
             return
           }
         }
-        const activeModal = document.querySelector('[aria-modal="true"]')
-        const escape = [
-          ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
-          ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
-          ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
-          ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
-          ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
-          ...(activeModal === null &&
-          workbenchPresentation.panels === 'drawers' &&
-          ($inspectorPanelOpen || $workspacePanelOpen)
-            ? [{ priority: 50, cancel: closeOpenDrawer }]
-            : []),
-        ]
-        void dispatchKeybinding(event, { registry: commandSurface, context, escape })
+        void dispatchKeybinding(event, { registry: commandSurface, context })
           .then(async (result) => {
             if (
               result.status === 'executed' &&
@@ -1543,6 +1565,7 @@
           nodeChords.cancel('focus-loss')
         }
       }
+      window.addEventListener('keydown', escapeKeydown, true)
       window.addEventListener('keydown', keydown)
       window.addEventListener('blur', blur)
       window.addEventListener('focusin', focusin)
@@ -1552,6 +1575,7 @@
         unbindSave()
         unbindHistory()
         unbindDocumentCommands()
+        window.removeEventListener('keydown', escapeKeydown, true)
         window.removeEventListener('keydown', keydown)
         window.removeEventListener('blur', blur)
         window.removeEventListener('focusin', focusin)

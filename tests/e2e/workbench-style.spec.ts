@@ -75,6 +75,21 @@ test('renders semantic and established technical surfaces with bundled Geist Mon
   )
 })
 
+test('keeps ordinary New Workflow controls on bundled Geist Sans instead of technical mono', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'New Workflow' }).first().click()
+
+  const dialog = page.getByRole('dialog', { name: 'New Workflow' })
+  const families = {
+    input: await fontFamily(dialog.getByRole('textbox', { name: 'Name', exact: true })),
+    textarea: await fontFamily(dialog.getByRole('textbox', { name: 'Description', exact: true })),
+  }
+  for (const family of Object.values(families)) {
+    expect(family).toContain('Geist Variable')
+    expect(family).not.toContain('Geist Mono Variable')
+  }
+})
+
 for (const colorScheme of ['dark', 'light'] as const) {
   test(`exposes distinct enabled control hover and pressed states in the ${colorScheme} theme`, async ({ page }) => {
     await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' })
