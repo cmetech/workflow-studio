@@ -1,7 +1,7 @@
 import type { LayoutRecordV1 } from './types'
 
 export const DOCKED_WORKBENCH_MIN_WIDTH = 1280
-export const SIDE_BY_SIDE_MIN_EDITOR_WIDTH = 720
+export const SIDE_BY_SIDE_MIN_EDITOR_WIDTH = 721
 export const MIN_EDITOR_WIDTH = 720
 export const MIN_LEFT_PANEL_WIDTH = 192
 export const MIN_RIGHT_PANEL_WIDTH = 240
@@ -61,6 +61,12 @@ export function resolveOverlayPanelWidths(
   const left = Number.isFinite(stored.left) ? Math.max(320, stored.left) : 320
   const right = Number.isFinite(stored.right) ? Math.max(320, stored.right) : 320
   return { left: Math.min(left, available), right: Math.min(right, available) }
+}
+
+export function clampProblemsHeight(preferred: number, workbenchHeight: number): number {
+  const maximum = Math.max(96, Math.min(360, workbenchHeight * 0.4))
+  const requested = Number.isFinite(preferred) ? preferred : 180
+  return Math.min(maximum, Math.max(96, requested))
 }
 
 function clampPanelWidth(width: number, minimum: number, maximum: number): number {

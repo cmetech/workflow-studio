@@ -10,7 +10,7 @@
 
 <div class="field-control">
   <label for={field.id}
-    >{field.label}{#if field.required}<span> required</span>{/if}</label
+    >{field.label}{#if field.required}<span class="required-indicator"> Required</span>{/if}</label
   >
   <textarea
     id={field.id}

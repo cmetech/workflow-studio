@@ -1,4 +1,18 @@
 import { expect, test } from '@playwright/test'
+import { replaceDefinitionYaml } from './support'
+
+const REPEATED_DIAGNOSTICS_YAML = `name: Repeated diagnostics
+description: Exercise bounded Problems rendering.
+nodes:
+${Array.from({ length: 40 }, (_, index) => `  - id: duplicate\n    prompt: Diagnostic ${index + 1}.\n`).join('')}`
+
+async function openSeededAuthoringPair(page: import('@playwright/test').Page): Promise<void> {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
+  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+}
 
 test('keeps the desktop shell and status bar inside the viewport', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -68,4 +82,56 @@ test('Examples and Documentation contain long page content without horizontal ov
       expect(geometry.rootOverflow).toBe(0)
     }
   }
+})
+
+test('Inspector and Problems keep their final controls reachable inside the bounded authoring shell', async ({
+  page,
+}) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await openSeededAuthoringPair(page)
+
+  await page.getByRole('group', { name: 'prompt node prepare', exact: true }).click()
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  await inspector.getByRole('tab', { name: 'Advanced' }).click()
+  const inspectorBody = inspector.locator('[data-scroll-owner="inspector"]')
+  const finalInspectorControl = inspectorBody.locator('button, input, textarea, select').last()
+  await finalInspectorControl.scrollIntoViewIfNeeded()
+  await finalInspectorControl.focus()
+  await expect(finalInspectorControl).toBeFocused()
+
+  const [inspectorBodyBox, inspectorControlBox] = await Promise.all([
+    inspectorBody.boundingBox(),
+    finalInspectorControl.boundingBox(),
+  ])
+  expect(inspectorBodyBox).not.toBeNull()
+  expect(inspectorControlBox).not.toBeNull()
+  expect(inspectorControlBox!.y).toBeGreaterThanOrEqual(inspectorBodyBox!.y)
+  expect(inspectorControlBox!.y + inspectorControlBox!.height).toBeLessThanOrEqual(
+    inspectorBodyBox!.y + inspectorBodyBox!.height,
+  )
+
+  await replaceDefinitionYaml(page, REPEATED_DIAGNOSTICS_YAML)
+  const problems = page.getByRole('region', { name: 'Problems' })
+  await expect(problems.getByRole('button')).toHaveCount(39)
+  const problemsGroups = problems.locator('[data-scroll-owner="problems"]')
+  const finalIssue = problems.getByRole('button').last()
+  await finalIssue.scrollIntoViewIfNeeded()
+  await finalIssue.focus()
+  await expect(finalIssue).toBeFocused()
+
+  const [groupsBox, issueBox] = await Promise.all([problemsGroups.boundingBox(), finalIssue.boundingBox()])
+  expect(groupsBox).not.toBeNull()
+  expect(issueBox).not.toBeNull()
+  expect(issueBox!.y).toBeGreaterThanOrEqual(groupsBox!.y)
+  expect(issueBox!.y + issueBox!.height).toBeLessThanOrEqual(groupsBox!.y + groupsBox!.height)
+
+  const geometry = await page.evaluate(() => ({
+    viewport: innerHeight,
+    rootHeight: document.documentElement.getBoundingClientRect().height,
+    statusBottom: document.querySelector('[aria-label="Application status"]')!.getBoundingClientRect().bottom,
+  }))
+  expect(geometry.rootHeight).toBe(geometry.viewport)
+  expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewport)
+  expect(pageErrors.filter((message) => message.includes('each_key_duplicate'))).toEqual([])
 })

@@ -63,4 +63,23 @@ describe('ProblemsPanel', () => {
     await fireEvent.click(opener)
     expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt', opener)
   })
+
+  it('renders byte-identical diagnostics as independent focus targets in its bounded groups scroller', () => {
+    const duplicate = {
+      ...issues[0]!,
+      code: 'duplicate_id',
+      message: 'Duplicate node identifier.',
+      path: '/nodes/1/id',
+      line: 8,
+      column: 5,
+    }
+    const { container } = render(ProblemsPanel, {
+      issues: [duplicate, { ...duplicate }],
+      paths: { definition: 'flow.yaml', companion: null },
+    })
+
+    expect(screen.getAllByRole('button', { name: /Duplicate node identifier/i })).toHaveLength(2)
+    expect(container.querySelector('.problems')).toHaveAttribute('data-scroll-frame', 'problems')
+    expect(container.querySelector('.groups')).toHaveAttribute('data-scroll-owner', 'problems')
+  })
 })

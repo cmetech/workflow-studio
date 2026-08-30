@@ -60,6 +60,7 @@
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
   import {
     clampDockedPanels,
+    clampProblemsHeight,
     resolveOverlayPanelWidths,
     resolveWorkbenchPresentation,
   } from '$src/lib/layout/workbench-layout'
@@ -315,6 +316,7 @@
   let workspacePanelHost = $state<HTMLElement>()
   let inspectorPanelHost = $state<HTMLElement>()
   let workbenchWidth = $state(1280)
+  let workbenchHeight = $state(700)
   let editorWidth = $state(720)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
@@ -456,6 +458,7 @@
   const storedPanels = $derived($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 })
   const clampedPanels = $derived(clampDockedPanels(storedPanels, workbenchWidth))
   const overlayPanels = $derived(resolveOverlayPanelWidths(storedPanels, workbenchWidth))
+  const problemsHeight = $derived(clampProblemsHeight(storedPanels.problems, workbenchHeight))
   const explorerCatalogState = $derived(
     explorerCatalogOperation.phase === 'ready'
       ? $workspace.tree.length > 0
@@ -1534,6 +1537,7 @@
     })
     let resizeFrame: number | null = null
     let pendingWorkbenchWidth = workbenchWidth
+    let pendingWorkbenchHeight = workbenchHeight
     let pendingEditorWidth = editorWidth
     let pendingPanelMeasurement = false
     let pendingSplitMeasurement = false
@@ -1541,6 +1545,7 @@
       for (const entry of entries) {
         if (entry.target === workbenchHost) {
           pendingWorkbenchWidth = entry.contentRect.width
+          if (entry.contentRect.height > 0) pendingWorkbenchHeight = entry.contentRect.height
           pendingPanelMeasurement = true
         } else if (entry.target === editorColumnHost) {
           pendingEditorWidth = entry.contentRect.width
@@ -1561,6 +1566,7 @@
         pendingPanelMeasurement = false
         pendingSplitMeasurement = false
         workbenchWidth = pendingWorkbenchWidth
+        workbenchHeight = pendingWorkbenchHeight
         editorWidth = pendingEditorWidth
       })
     })
@@ -1571,6 +1577,8 @@
         panelPresentationMeasured = true
         workbenchWidth = measuredWidth
       }
+      const measuredHeight = workbenchHost.getBoundingClientRect().height
+      if (measuredHeight > 0) workbenchHeight = measuredHeight
       resizeObserver.observe(workbenchHost)
     }
     if (editorColumnHost) {
@@ -1837,7 +1845,7 @@
     data-scroll-owner="workbench"
     data-panel-presentation={workbenchPresentation.panels}
     data-split-presentation={workbenchPresentation.split}
-    style={`--docked-left-panel-width: ${clampedPanels.left}px; --docked-right-panel-width: ${clampedPanels.right}px; --overlay-left-panel-width: ${overlayPanels.left}px; --overlay-right-panel-width: ${overlayPanels.right}px`}
+    style={`--docked-left-panel-width: ${clampedPanels.left}px; --docked-right-panel-width: ${clampedPanels.right}px; --overlay-left-panel-width: ${overlayPanels.left}px; --overlay-right-panel-width: ${overlayPanels.right}px; --problems-height: ${problemsHeight}px`}
   >
     <ActivityRail
       {commandSurface}
@@ -1910,6 +1918,7 @@
     <section
       bind:this={editorColumnHost}
       class="editor-column"
+      data-has-problems={$documentSessionStore.pair ? 'true' : 'false'}
       aria-label="Workflow workspace"
       hidden={authoringHidden}
       {...(authoringHidden ? { inert: true } : {})}
@@ -2743,6 +2752,10 @@
     background: var(--color-canvas);
   }
 
+  .editor-column[data-has-problems='true'] {
+    grid-template-rows: 2.625rem minmax(0, 1fr) var(--problems-height);
+  }
+
   .editor-column[hidden] {
     display: grid;
     pointer-events: none;
@@ -2820,7 +2833,9 @@
   }
 
   .editor-surfaces.split:not(.no-canvas) {
-    grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.72fr);
+    grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+    gap: 1px;
+    background: var(--color-border);
   }
 
   .editor-surfaces.split.split-tabs:not(.no-canvas) {
@@ -2833,7 +2848,7 @@
   }
 
   .editor-surfaces.split:not(.no-canvas) .yaml-pane {
-    border-left: 1px solid var(--color-border);
+    border-left: 0;
   }
 
   .editor-surfaces:not(.split):not(.yaml-only) .yaml-pane,

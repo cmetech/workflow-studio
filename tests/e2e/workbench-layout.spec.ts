@@ -402,6 +402,26 @@ test('real viewport resize activates the focused YAML or Canvas surface in compa
   await expect(canvas).toBeFocused()
 })
 
+test('Split uses two 360px panes only at the true 721px usable editor boundary', async ({ page }) => {
+  await openPairAt(page, 1440, 900)
+  await page.getByRole('button', { name: 'Split', exact: true }).click()
+
+  const workbench = page.locator('.workbench')
+  const editor = page.getByRole('region', { name: 'Workflow workspace' })
+  await editor.evaluate((element) => (element.style.width = '720px'))
+  await expect(workbench).toHaveAttribute('data-split-presentation', 'tabs')
+  await expect(page.getByRole('group', { name: 'Split pane' })).toBeVisible()
+
+  await editor.evaluate((element) => (element.style.width = '721px'))
+  await expect(workbench).toHaveAttribute('data-split-presentation', 'side-by-side')
+  const [canvasBox, yamlBox] = await Promise.all([
+    page.locator('.canvas-pane').boundingBox(),
+    page.locator('.yaml-pane').boundingBox(),
+  ])
+  expect(canvasBox?.width).toBeGreaterThanOrEqual(360)
+  expect(yamlBox?.width).toBeGreaterThanOrEqual(360)
+})
+
 test('compact Inspector restores focus to its non-General active tab after reopening', async ({ page }) => {
   await openPairAt(page, 1024, 700)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })

@@ -74,7 +74,10 @@ describe('Inspector', () => {
     expect(screen.getByLabelText('Workflow inspector')).toBeVisible()
     expect(tabs.map(({ textContent }) => textContent)).toEqual(['General', 'Execution', 'Advanced', 'Docs'])
     expect(tabs.every((tab) => tab.getAttribute('data-variant') === 'ghost')).toBe(true)
-    expect(screen.getByRole('textbox', { name: /node id.*required/i })).toHaveAttribute('aria-required', 'true')
+    const requiredInput = screen.getByRole('textbox', { name: /node id.*required/i })
+    expect(requiredInput).toHaveAttribute('aria-required', 'true')
+    const requiredIndicator = requiredInput.closest('.field-control')?.querySelector('.required-indicator')
+    expect(requiredIndicator).toHaveTextContent('Required')
     expect(screen.getByText('Unique node identifier.')).toHaveAttribute('id')
 
     tabs[0]!.focus()
@@ -275,5 +278,27 @@ describe('Inspector', () => {
     await fireEvent.focusIn(screen.getByRole('textbox', { name: 'When' }))
 
     expect(onDocumentationTopic).toHaveBeenCalledWith('field:prompt.node.when')
+  })
+
+  it('keeps the header and tabs outside the bounded panel scroll owner', async () => {
+    const advancedField = {
+      ...fields[1]!,
+      id: 'prompt.node.system_prompt',
+      label: 'System prompt',
+      fieldPath: 'nodes[].system_prompt',
+      pathTemplate: ['nodes', '$node', 'system_prompt'],
+      section: 'Advanced',
+    }
+    const { container } = render(Inspector, {
+      fields: [fields[0]!, advancedField],
+      values: {},
+      selectionLabel: 'review',
+    })
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
+
+    expect(container.querySelector('.inspector')).toHaveAttribute('data-scroll-frame', 'inspector')
+    expect(screen.getByRole('tabpanel', { name: 'Advanced' })).toHaveAttribute('data-scroll-owner', 'inspector')
+    expect(screen.getByRole('textbox', { name: 'System prompt' })).toBeVisible()
   })
 })

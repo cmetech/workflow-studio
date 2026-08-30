@@ -57,15 +57,23 @@ class TestResizeObserver {
     this.targets.clear()
   }
 
-  publish(target: Element, width: number): void {
-    this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this)
+  publish(target: Element, width: number, height?: number): void {
+    this.callback(
+      [
+        {
+          target,
+          contentRect: { width, ...(height === undefined ? {} : { height }) },
+        } as unknown as ResizeObserverEntry,
+      ],
+      this,
+    )
   }
 }
 
-async function publishResize(target: Element, width: number): Promise<void> {
+async function publishResize(target: Element, width: number, height?: number): Promise<void> {
   const observer = TestResizeObserver.instances.find((candidate) => candidate.targets.has(target))
   if (!observer) throw new Error('Expected the stable workbench boundary to be observed.')
-  observer.publish(target, width)
+  observer.publish(target, width, height)
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 }
 
@@ -1290,6 +1298,48 @@ nodes:
     expect($canvasSelection.get()).toEqual([])
     expect(screen.getByRole('textbox')).not.toBe(editor)
     expect(screen.getByRole('textbox')).toHaveTextContent(/name: Other/)
+  })
+
+  it('applies the stored Problems preference clamped to the measured workbench height', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    setActiveLayout({
+      schemaVersion: 1,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      nodePositions: {},
+      viewport: { x: 0, y: 0, zoom: 1 },
+      panels: { left: 280, right: 320, problems: 5000 },
+      editorMode: 'visual',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+    })
+    const { container } = render(App)
+    await waitForSetupReady()
+
+    const workbench = container.querySelector('.workbench')!
+    await publishResize(workbench, 1280, 700)
+
+    expect(workbench).toHaveStyle('--problems-height: 280px')
+    expect(container.querySelector('.editor-column')).toHaveAttribute('data-has-problems', 'true')
   })
 
   it('routes ProblemsPanel focus through the identity-gated active YAML tab and clears the request', async () => {

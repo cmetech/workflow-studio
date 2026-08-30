@@ -17,7 +17,7 @@
       aria-describedby={`${field.id}-description${invalid ? ` ${field.id}-issue` : ''}`}
       onchange={(event) => void onCommit?.({ field, value: event.currentTarget.checked })}
     />
-    {field.label}{#if field.required}<span> required</span>{/if}</label
+    {field.label}{#if field.required}<span class="required-indicator"> Required</span>{/if}</label
   >
   <FieldDiagnostics {field} {issues} />
 </div>

@@ -3,6 +3,7 @@
   import type { CommandContext } from '$src/lib/commands/types'
   import type { DocumentKind, IssueLayer, ValidationIssue } from '$src/lib/documents/types'
   import { selectProblem } from '$src/stores/documents'
+  import { issueViewKey } from './issue-view-key'
 
   interface Props {
     issues: readonly ValidationIssue[]
@@ -58,7 +59,7 @@
   }
 </script>
 
-<section class="problems" aria-labelledby="problems-heading">
+<section class="problems" aria-labelledby="problems-heading" data-scroll-frame="problems">
   <header>
     <h2 id="problems-heading">Problems</h2>
     <p class="summary" aria-live="polite">
@@ -70,7 +71,7 @@
   {#if groups.length === 0}
     <p class="empty">No problems found.</p>
   {:else}
-    <div class="groups">
+    <div class="groups" data-scroll-owner="problems">
       {#each groups as group (group.document)}
         <section class="file-group" aria-labelledby={`problems-${group.document}`}>
           <h3 id={`problems-${group.document}`}>{group.path}</h3>
@@ -78,7 +79,7 @@
             <section class="layer-group" aria-labelledby={`problems-${group.document}-${layer.layer}`}>
               <h4 id={`problems-${group.document}-${layer.layer}`}>{layerName(layer.layer)}</h4>
               <ul>
-                {#each layer.issues as issue (`${issue.code}:${issue.path ?? ''}:${issue.message}`)}
+                {#each layer.issues as issue, occurrence (issueViewKey(issue, occurrence))}
                   <li>
                     <button
                       type="button"
@@ -106,7 +107,9 @@
   .problems {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
     min-height: 0;
+    overflow: hidden;
     color: var(--color-text);
     background: var(--color-surface);
   }

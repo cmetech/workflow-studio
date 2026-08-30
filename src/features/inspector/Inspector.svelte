@@ -101,7 +101,7 @@
   }
 </script>
 
-<section class="inspector" aria-label="Workflow inspector">
+<section class="inspector" aria-label="Workflow inspector" data-scroll-frame="inspector">
   <header>
     <span>Inspector</span>
     <strong>{selectionLabel}</strong>
@@ -126,6 +126,7 @@
 
   <div
     class="panel"
+    data-scroll-owner="inspector"
     role="tabpanel"
     id={`inspector-panel-${activeTab.toLowerCase()}`}
     aria-labelledby={`inspector-tab-${activeTab.toLowerCase()}`}
@@ -216,7 +217,10 @@
 
 <style>
   .inspector {
-    min-height: 100%;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
     color: var(--color-text);
     background: var(--color-surface);
   }
@@ -257,6 +261,7 @@
     background: var(--color-node-selected);
   }
   .panel {
+    min-height: 0;
     padding: var(--space-3);
     overflow: auto;
   }
@@ -285,6 +290,17 @@
     border-radius: 999px;
     color: var(--color-text-muted);
     font-size: 0.62rem;
+  }
+  :global(.required-indicator) {
+    display: inline-flex;
+    margin-inline-start: 0.375rem;
+    padding: 0.05rem 0.3rem;
+    border: 1px solid currentcolor;
+    border-radius: 999px;
+    color: var(--color-error);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 1.2;
   }
   .example,
   .empty,

@@ -11,7 +11,7 @@
 
 <div class="field-control">
   <label for={field.id}
-    >{field.label}{#if field.required}<span class="required"> required</span>{/if}</label
+    >{field.label}{#if field.required}<span class="required required-indicator"> Required</span>{/if}</label
   >
   <input
     id={field.id}

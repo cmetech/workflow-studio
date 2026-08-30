@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MIN_LEFT_PANEL_WIDTH,
   MIN_RIGHT_PANEL_WIDTH,
+  clampProblemsHeight,
   clampDockedPanels,
   resolveOverlayPanelWidths,
   resolveWorkbenchPresentation,
@@ -11,7 +12,16 @@ describe('workbench layout', () => {
   it('switches panel and Split presentation at the exact available-width boundaries', () => {
     expect(resolveWorkbenchPresentation(1279, 900)).toEqual({ panels: 'drawers', split: 'side-by-side' })
     expect(resolveWorkbenchPresentation(1280, 719)).toEqual({ panels: 'docked', split: 'tabs' })
+    expect(resolveWorkbenchPresentation(1440, 720).split).toBe('tabs')
+    expect(resolveWorkbenchPresentation(1440, 721).split).toBe('side-by-side')
     expect(resolveWorkbenchPresentation(1440, 840)).toEqual({ panels: 'docked', split: 'side-by-side' })
+  })
+
+  it('clamps the stored Problems preference to a useful bounded share of the workbench', () => {
+    expect(clampProblemsHeight(5000, 700)).toBeLessThanOrEqual(280)
+    expect(clampProblemsHeight(10, 700)).toBeGreaterThanOrEqual(96)
+    expect(clampProblemsHeight(Number.NaN, 1000)).toBe(180)
+    expect(clampProblemsHeight(5000, 2000)).toBe(360)
   })
 
   it('clamps stale dock preferences without mutating them or starving the editor', () => {
