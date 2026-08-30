@@ -667,6 +667,8 @@
   }
 
   :global(.graph-canvas .svelte-flow) {
+    --xy-edge-stroke: var(--color-edge);
+    --xy-edge-stroke-selected: var(--color-edge-selected);
     background-image: radial-gradient(var(--color-grid) 1px, transparent 1px);
     background-size: 1.25rem 1.25rem;
   }

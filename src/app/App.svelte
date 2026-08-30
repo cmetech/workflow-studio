@@ -611,12 +611,7 @@
     }
     const session = documentSessionStore.get()
     const projection = canvasProjection
-    if (
-      !session.pair ||
-      !session.revision ||
-      !projection ||
-      (!session.analysis?.structurallyValid && !session.analysis?.visuallyAuthorable)
-    ) {
+    if (!session.pair || !session.revision || !projection || !session.analysis?.structurallyValid) {
       return { unavailable: 'Canvas authoring requires a current valid YAML projection.' }
     }
     const contract = contracts.find(

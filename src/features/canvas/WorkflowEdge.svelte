@@ -29,16 +29,16 @@
 />
 
 <style>
-  :global(.workflow-edge) {
+  :global(.svelte-flow__edge-path.workflow-edge) {
     stroke: var(--color-edge);
     stroke-width: 2;
   }
 
-  :global(.workflow-edge.selected) {
+  :global(.svelte-flow__edge-path.workflow-edge.selected) {
     stroke: var(--color-edge-selected);
   }
 
-  :global(.workflow-edge.stale) {
+  :global(.svelte-flow__edge-path.workflow-edge.stale) {
     stroke-dasharray: 5 4;
     opacity: 0.72;
   }

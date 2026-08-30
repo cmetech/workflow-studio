@@ -247,6 +247,20 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   await page.getByRole('button', { name: 'Nodes', exact: true }).click()
   const palette = page.getByRole('region', { name: 'Nodes' })
   const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  const canvasVisuals = await page.locator('[data-node-id="publish"]').evaluate((node) => {
+    const port = node.querySelector<HTMLElement>('[data-port="output"]')
+    const kind = node.querySelector<HTMLElement>('.kind')
+    if (!port || !kind) throw new Error('Expected the publish node port and kind label.')
+    const portCenter = getComputedStyle(port, '::after')
+    return {
+      portCenter: { width: portCenter.width, height: portCenter.height },
+      kindTextTransform: getComputedStyle(kind).textTransform,
+    }
+  })
+  expect(canvasVisuals).toEqual({
+    portCenter: { width: '10px', height: '10px' },
+    kindTextTransform: 'none',
+  })
   await palette.getByRole('button', { name: /add command node/i }).dragTo(viewport, {
     targetPosition: { x: 520, y: 360 },
   })
@@ -256,14 +270,64 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   await expect.poll(async () => Math.abs((await layoutPosition(page, 'command')).x - 520)).toBeLessThanOrEqual(8)
   await expect.poll(async () => Math.abs((await layoutPosition(page, 'command')).y - 360)).toBeLessThanOrEqual(8)
 
+  const command = page.getByRole('group', { name: 'command node command' })
+  await command.focus()
+  await command.press('Enter')
+  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
+  await expect(commandField).toBeEnabled()
+  await commandField.fill('/review')
+  await page.getByRole('button', { name: 'Apply Command' }).click()
+  await expect
+    .poll(async () => (await e2eSnapshot(page)).definitionText)
+    .toContain('  - id: command\n    command: "/review"\n')
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+
   await dragPort(page, 'publish', 'output', 'command', 'input')
   await expect
     .poll(async () => (await e2eSnapshot(page)).definitionText)
-    .toContain('  - id: command\n    command: ""\n    depends_on:\n      - publish\n')
+    .toContain('  - id: command\n    command: "/review"\n    depends_on:\n      - publish\n')
   await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+
+  const dependency = page.getByRole('group', { name: 'Dependency from publish to command' })
+  await dependency.focus()
+  await dependency.press('Enter')
+  const selectedPath = dependency.locator('path.workflow-edge')
+  await expect(selectedPath).toHaveClass(/selected/)
+  const selectedEdgeStyle = await selectedPath.evaluate((path) => ({
+    computedStroke: getComputedStyle(path).stroke,
+    inlineStyle: path.getAttribute('style'),
+    matchingRules: Array.from(document.styleSheets).flatMap((sheet) => {
+      try {
+        return Array.from(sheet.cssRules)
+          .filter((rule) => rule.cssText.includes('workflow-edge'))
+          .map((rule) => rule.cssText)
+      } catch {
+        return []
+      }
+    }),
+  }))
+  const expectedSelectedStroke = await page.evaluate(() => {
+    const probe = document.createElement('div')
+    probe.style.color = 'var(--color-edge-selected)'
+    document.body.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  })
+  expect(selectedEdgeStyle.computedStroke, JSON.stringify(selectedEdgeStyle)).toBe(expectedSelectedStroke)
 
   const beforeCycle = (await e2eSnapshot(page)).definitionText
   await dragPort(page, 'publish', 'output', 'prepare', 'input')
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/create a cycle/i)
   await expectAuthoritativeYaml(page, beforeCycle as string)
+
+  await replaceDefinitionYaml(page, 'name: [\n')
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  await expect(page.getByText(/last valid graph.*read-only/i)).toBeVisible()
+  const stalePath = page
+    .getByRole('group', { name: 'Dependency from publish to command' })
+    .locator('path.workflow-edge')
+  await expect(stalePath).toHaveClass(/stale/)
+  const staleDash = await stalePath.evaluate((path) => getComputedStyle(path).strokeDasharray)
+  expect(staleDash.replaceAll('px', '').replaceAll(',', '').trim().replace(/\s+/g, ' ')).toBe('5 4')
 })

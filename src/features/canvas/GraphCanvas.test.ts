@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -450,6 +450,30 @@ describe('GraphCanvas', () => {
     expect(outgoing).toHaveAttribute('data-port', 'output')
   })
 
+  it('keeps required and error issue counts visible as text on the affected node', async () => {
+    const { container } = renderCanvas({
+      projection,
+      layout,
+      issues: [
+        {
+          code: 'schema_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Command is required.',
+          document: 'definition',
+          nodeId: 'collect',
+        },
+      ],
+    })
+    await tick()
+
+    const collect = container.querySelector<HTMLElement>('[data-node-id="collect"]')!
+    const issueText = within(collect).getByLabelText('Node issues')
+    expect(issueText).toHaveTextContent('1 required')
+    expect(issueText).toHaveTextContent('1 error')
+  })
+
   it('routes semantic connection events without changing layout and announces one typed rejection politely', async () => {
     vi.useFakeTimers()
     const onConnect = vi.fn(async () => ({
@@ -575,7 +599,8 @@ describe('WorkflowEdge', () => {
 
   it('exposes selected and stale semantic classes on the visible edge path', () => {
     const { container } = renderEdge(true, true)
+    const path = container.querySelector<SVGPathElement>('.svelte-flow__edge-path')!
 
-    expect(container.querySelector('.svelte-flow__edge-path')).toHaveClass('workflow-edge', 'selected', 'stale')
+    expect(path).toHaveClass('workflow-edge', 'selected', 'stale')
   })
 })

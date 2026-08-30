@@ -191,7 +191,7 @@ describe('workflow YAML transactions', () => {
     expect(promptResult.pair.definition.text).toContain('  - id: draft\n    prompt: ""\n')
   })
 
-  it('allows progressive inspector and DAG-safe dependency edits while explicit drafts remain incomplete', async () => {
+  it('allows progressive inspector edits while two explicit bundled object drafts remain incomplete', async () => {
     const productionContract = (await loadBundledAuthoringContracts()).find(
       ({ profile }) => profile === 'archon-2026-07',
     )
@@ -259,7 +259,7 @@ nodes:
 
     expect(progressive).toMatchObject({ ok: true })
     expect(unknown).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
-    expect(graphMutation).toMatchObject({ ok: true })
+    expect(graphMutation).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
     expect(unresolved).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
     expect(cycle).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })
     expect(duplicate).toMatchObject({ ok: false, code: 'mutation_invalid_workflow' })

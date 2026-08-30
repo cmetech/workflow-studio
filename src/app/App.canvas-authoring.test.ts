@@ -450,7 +450,7 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
-  it('keeps dependency authoring available for a current visually-authorable node draft', async () => {
+  it('keeps dependency authoring read-only for a structurally-invalid visually-authorable node draft', async () => {
     const draftText = `${source}  - id: command\n    command: ""\n`
     const rendered = await renderAuthoringApp({ text: draftText })
     const revision = $documentSession.get().revision!
@@ -479,10 +479,12 @@ describe('App canvas authoring composition', () => {
     )
 
     await waitFor(() =>
-      expect($documentSession.get().pair?.definition.text).toContain(
-        '  - id: command\n    command: ""\n    depends_on:\n      - collect\n',
+      expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
+        'Canvas authoring requires a current valid YAML projection.',
       ),
     )
+    expect($documentSession.get().pair?.definition.text).toBe(draftText)
+    expect(historyStore.get().undo).toHaveLength(0)
     rendered.unmount()
   })
 
