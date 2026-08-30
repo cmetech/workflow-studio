@@ -22,6 +22,8 @@
   let consumedTopicId = $state<string | undefined>()
   let reconciledIndex: DocumentationIndex | undefined
   let article = $state<HTMLElement>()
+  let searchInput = $state<HTMLInputElement>()
+  let backToResults = $state<HTMLButtonElement>()
   const results = $derived(searchDocumentation(index, query, kind))
 
   function activeResultId(): string | undefined {
@@ -32,6 +34,17 @@
   function select(topic: DocumentationTopic): void {
     selected = topic
     history = [topic.id, ...history.filter((id) => id !== topic.id)].slice(0, 5)
+    void revealSelectedTopic(topic.id)
+  }
+
+  async function revealSelectedTopic(topicId: string): Promise<void> {
+    await tick()
+    if (selected?.id !== topicId) return
+    if (article) article.scrollTop = 0
+    if (!window.matchMedia?.('(max-width: 48rem)').matches) return
+    const pageScroll = article?.closest<HTMLElement>('[data-page-scroll]')
+    if (pageScroll) pageScroll.scrollTop = 0
+    backToResults?.focus({ preventScroll: true })
   }
 
   function returnToResults(): void {
@@ -39,7 +52,9 @@
     selected = null
     void tick().then(() => {
       if (!selectedId) return
-      document.getElementById(`documentation-result-${selectedId}`)?.focus()
+      const selectedResult = document.getElementById(`documentation-result-${selectedId}`)
+      const target = selectedResult ?? searchInput
+      target?.focus()
     })
   }
 
@@ -121,6 +136,7 @@
       <label>
         Search documentation
         <input
+          bind:this={searchInput}
           type="search"
           bind:value={query}
           aria-controls="documentation-results"
@@ -167,8 +183,12 @@
     </section>
     {#if selected}
       <article aria-label={selected.title} bind:this={article} tabindex="-1" use:delegateLinks>
-        <button class="back-to-results" type="button" data-variant="ghost" onclick={returnToResults}
-          >Back to Results</button
+        <button
+          bind:this={backToResults}
+          class="back-to-results"
+          type="button"
+          data-variant="ghost"
+          onclick={returnToResults}>Back to Results</button
         >
         <h2>{selected.title}</h2>
         {#if selected.examples.length > 0}

@@ -39,3 +39,33 @@ test('replaces the example catalog with the selected preview', async ({ page }) 
   await expect(page.getByRole('button', { name: 'Back to Examples' })).toBeVisible()
   await expect(page.getByRole('article', { name: 'Sequential chain' })).toHaveCount(0)
 })
+
+test('reveals a preview selected from a lower card at desktop and reflow widths', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+
+  for (const size of [
+    { width: 1024, height: 700 },
+    { width: 560, height: 700 },
+  ]) {
+    await page.setViewportSize(size)
+    const pageBody = page.locator('[data-workbench-page="examples"] [data-page-scroll]')
+    const lowerPreview = page.getByRole('button', { name: /^Preview / }).last()
+    const previewName = (await lowerPreview.textContent())!.replace(/^Preview /, '')
+    await lowerPreview.scrollIntoViewIfNeeded()
+    expect(await pageBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+    await lowerPreview.click()
+
+    const back = page.getByRole('button', { name: 'Back to Examples' })
+    await expect(back).toBeFocused()
+    const [bodyBox, detailBox] = await Promise.all([
+      pageBody.boundingBox(),
+      page.getByRole('region', { name: `${previewName} preview` }).boundingBox(),
+    ])
+    expect(detailBox!.y - bodyBox!.y).toBeLessThan(100)
+    expect(await pageBody.evaluate((element) => element.scrollTop)).toBe(0)
+
+    await back.click()
+  }
+})

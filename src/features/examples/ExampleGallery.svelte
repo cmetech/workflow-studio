@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
 
   type ExampleCatalogState =
@@ -25,9 +26,19 @@
     embedded = false,
   }: Props = $props()
   let selectedExample = $state<ExampleDescriptor | null>(null)
+  let gallery = $state<HTMLElement>()
+  let previewBack = $state<HTMLButtonElement>()
+
+  async function selectExample(example: ExampleDescriptor): Promise<void> {
+    selectedExample = example
+    await tick()
+    const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
+    if (pageScroll) pageScroll.scrollTop = 0
+    previewBack?.focus({ preventScroll: true })
+  }
 </script>
 
-<section class="example-gallery" aria-labelledby={embedded ? undefined : 'examples-title'}>
+<section bind:this={gallery} class="example-gallery" aria-labelledby={embedded ? undefined : 'examples-title'}>
   {#if !embedded}<h2 id="examples-title">Examples</h2>{/if}
   {#if catalogState.phase === 'loading'}
     <p class="catalog-state" role="status">Loading validated examples…</p>
@@ -43,7 +54,9 @@
   {:else if selectedExample}
     <section class="preview" aria-label={`${selectedExample.title} preview`}>
       <header class="preview-header">
-        <button type="button" data-variant="ghost" onclick={() => (selectedExample = null)}>Back to Examples</button>
+        <button bind:this={previewBack} type="button" data-variant="ghost" onclick={() => (selectedExample = null)}
+          >Back to Examples</button
+        >
         <div>
           <h3>{selectedExample.title}</h3>
           <p>{selectedExample.summary}</p>
@@ -128,7 +141,7 @@
             {/each}
           </div>
           <div class="actions">
-            <button type="button" onclick={() => (selectedExample = example)}>Preview {example.title}</button>
+            <button type="button" onclick={() => void selectExample(example)}>Preview {example.title}</button>
             <button type="button" onclick={() => onCreateEditableCopy(example)}
               >Create Editable Copy: {example.title}</button
             >

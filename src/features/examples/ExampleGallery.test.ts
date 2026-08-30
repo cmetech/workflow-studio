@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { ExampleDescriptor } from '$src/lib/examples/types'
 import ExampleGallery from './ExampleGallery.svelte'
@@ -62,6 +62,7 @@ describe('ExampleGallery', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Preview Minimal prompt' }))
     expect(screen.getByRole('region', { name: 'Minimal prompt preview' })).toHaveTextContent('name: Minimal')
     expect(screen.getByRole('button', { name: 'Back to Examples' })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Examples' })).toHaveFocus())
     expect(screen.queryByRole('article', { name: 'Sequential chain' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Create Editable Copy: Minimal prompt' }))
     expect(onCreateEditableCopy).toHaveBeenCalledWith(example)

@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from '@testing-library/svelte'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import DocumentationView from './DocumentationView.svelte'
 import ContextDocs from './ContextDocs.svelte'
 import type { DocumentationIndex } from '$src/lib/docs/types'
@@ -56,6 +56,24 @@ index.tokenIndex = new Map([
   ['dependencies', new Set(['guide:dag'])],
 ])
 
+function useNarrowPresentation(matches: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches: matches && query === '(max-width: 48rem)',
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  )
+}
+
+afterEach(() => vi.unstubAllGlobals())
+
 describe('DocumentationView', () => {
   it('keeps results and the selected article as master-detail siblings', async () => {
     render(DocumentationView, { index })
@@ -80,6 +98,50 @@ describe('DocumentationView', () => {
     })
 
     expect(screen.getByRole('status')).toHaveTextContent('No documentation matches')
+  })
+
+  it('moves keyboard focus into narrow detail and restores the selected result', async () => {
+    useNarrowPresentation(true)
+    render(DocumentationView, { index })
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+    await fireEvent.input(search, { target: { value: 'Prompt' } })
+    const selectedResult = document.getElementById(search.getAttribute('aria-activedescendant')!)!
+    search.focus()
+
+    await fireEvent.keyDown(search, { key: 'Enter' })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    await waitFor(() => expect(selectedResult).toHaveFocus())
+  })
+
+  it('resets narrow article scroll and returns to search when an internal topic is filtered out', async () => {
+    useNarrowPresentation(true)
+    render(DocumentationView, { index })
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Topic type' }), { target: { value: 'guide' } })
+    await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
+    const article = screen.getByRole('article')
+    article.scrollTop = 120
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Prompt field' }))
+
+    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+    expect(article.scrollTop).toBe(0)
+    expect(article).toContainElement(document.activeElement as HTMLElement)
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    await waitFor(() => expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveFocus())
+  })
+
+  it('preserves result focus when wide master-detail selection opens', async () => {
+    useNarrowPresentation(false)
+    render(DocumentationView, { index })
+    const result = screen.getByRole('option', { name: /DAG dependencies/i })
+    result.focus()
+
+    await fireEvent.click(result)
+
+    expect(result).toHaveFocus()
   })
 
   it('filters and keyboard-navigates offline search results without using fetch, and records history', async () => {

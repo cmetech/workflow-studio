@@ -162,3 +162,20 @@ test('Examples and Documentation reveal selected detail immediately and keep the
   await lastResult.focus()
   await expect(lastResult).toBeFocused()
 })
+
+test('Documentation moves keyboard focus into narrow detail and restores the result', async ({ page }) => {
+  await openSeededPair(page)
+  await page.setViewportSize({ width: 560, height: 700 })
+  await page.getByRole('button', { name: 'Documentation', exact: true }).click()
+  const search = page.getByRole('searchbox', { name: 'Search documentation' })
+  await search.fill('Workflow definition')
+  await search.focus()
+  const resultId = await search.getAttribute('aria-activedescendant')
+
+  await search.press('Enter')
+
+  const back = page.getByRole('button', { name: 'Back to Results' })
+  await expect(back).toBeFocused()
+  await back.press('Enter')
+  await expect(page.locator(`[id="${resultId}"]`)).toBeFocused()
+})
