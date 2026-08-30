@@ -510,7 +510,7 @@ describe('GraphCanvas', () => {
     expect(outgoing).toHaveAttribute('data-port', 'output')
   })
 
-  it('toggles the selected node Inspector relationship and controlled drawer from its native button', async () => {
+  it('retargets a collapsed node Inspector button before toggling that selected node closed', async () => {
     const rendered = render(GraphCanvasInspectorHarness, {
       props: { canvasProps: { commandSurface: commandRegistry, projection, layout } },
     })
@@ -538,13 +538,23 @@ describe('GraphCanvas', () => {
     expect(inspector).not.toHaveAttribute('inert')
     expect(inspector).not.toHaveAttribute('aria-hidden')
 
-    inspectorTrigger.focus()
-    await fireEvent.click(inspectorTrigger)
+    const reviewTrigger = screen.getByRole('button', { name: /Inspector for review$/ })
+    expect(reviewTrigger).toHaveAttribute('aria-expanded', 'false')
+    reviewTrigger.focus()
+    await fireEvent.click(reviewTrigger)
     await tick()
+    expect($canvasSelection.get()).toEqual(['review'])
     expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
+    expect(reviewTrigger).toHaveAttribute('aria-expanded', 'true')
+    expect(inspector).not.toHaveAttribute('inert')
+
+    reviewTrigger.focus()
+    await fireEvent.click(reviewTrigger)
+    await tick()
+    expect(reviewTrigger).toHaveAttribute('aria-expanded', 'false')
     expect(inspector).toHaveAttribute('inert')
     expect(inspector).toHaveAttribute('aria-hidden', 'true')
-    expect(inspectorTrigger).toHaveFocus()
+    expect(reviewTrigger).toHaveFocus()
   })
 
   it('keeps required and error issue counts visible as text on the affected node', async () => {

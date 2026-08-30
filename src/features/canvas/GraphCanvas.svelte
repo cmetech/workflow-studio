@@ -100,7 +100,7 @@
     controls: () => inspectorControls,
     expanded: () => inspectorExpanded,
     toggle: (nodeId, invoker) => {
-      if (inspectorExpanded) {
+      if (inspectorExpanded && selection.includes(nodeId)) {
         void onToggleInspector?.(false, invoker)
         return
       }
