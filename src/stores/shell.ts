@@ -5,6 +5,11 @@ import type { DocumentKind } from '$src/lib/documents/types'
 export const $activeActivity = atom<ActivityId>('explorer')
 export const activeActivity = $activeActivity
 
+export const $workspacePanelOpen = atom(false)
+export const workspacePanelOpen = $workspacePanelOpen
+export const $inspectorPanelOpen = atom(false)
+export const inspectorPanelOpen = $inspectorPanelOpen
+
 export const $activeEditorMode = atom<EditorMode>('visual')
 export const activeEditorMode = $activeEditorMode
 
@@ -28,6 +33,24 @@ export const workspaceIntent = $workspaceIntent
 
 export function showActivity(activity: ActivityId): void {
   $activeActivity.set(activity)
+  $workspacePanelOpen.set(true)
+}
+
+export function toggleActivityPanel(activity: ActivityId): void {
+  if ($activeActivity.get() === activity && $workspacePanelOpen.get()) {
+    $workspacePanelOpen.set(false)
+    return
+  }
+  showActivity(activity)
+}
+
+export function openInspectorPanel(): void {
+  $inspectorPanelOpen.set(true)
+}
+
+export function closeTransientPanels(): void {
+  $workspacePanelOpen.set(false)
+  $inspectorPanelOpen.set(false)
 }
 
 export function showEditorMode(mode: EditorMode): void {

@@ -18,8 +18,9 @@
 
   interface Props {
     commandSurface: CommandSurface
+    workspacePanelExpanded?: boolean
   }
-  let { commandSurface }: Props = $props()
+  let { commandSurface, workspacePanelExpanded = true }: Props = $props()
 
   const activities: readonly { id: ActivityId; icon: typeof Files }[] = [
     { id: 'explorer', icon: Files },
@@ -44,6 +45,7 @@
         data-activity={activity.id}
         aria-label={command.label}
         aria-pressed={$activeActivity === activity.id}
+        aria-expanded={$activeActivity === activity.id ? workspacePanelExpanded : false}
         class:active={$activeActivity === activity.id}
         title={command.title}
         disabled={!command.enabled}

@@ -9,7 +9,7 @@ import {
   type CommandRegistry,
 } from './registry'
 import type { AppCommand, CommandContext } from './types'
-import { workspaceIntent } from '$src/stores/shell'
+import { $activeActivity, $workspacePanelOpen, workspaceIntent } from '$src/stores/shell'
 
 const globalContext: CommandContext = {
   surface: 'global',
@@ -39,6 +39,17 @@ function registryWith(...commands: AppCommand[]): CommandRegistry {
 }
 
 describe('command registry', () => {
+  it('toggles Explorer visibility when its command runs repeatedly', async () => {
+    $activeActivity.set('explorer')
+    $workspacePanelOpen.set(false)
+
+    await executeCommand('view.activity.explorer', globalContext)
+    expect($workspacePanelOpen.get()).toBe(true)
+
+    await executeCommand('view.activity.explorer', globalContext)
+    expect($workspacePanelOpen.get()).toBe(false)
+  })
+
   it('registers the initial shell commands from one table', () => {
     const commands = listCommands()
     expect(commands.map(({ id }) => id)).toEqual(

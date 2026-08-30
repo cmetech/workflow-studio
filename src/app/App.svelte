@@ -34,9 +34,12 @@
     activeActivity,
     activeEditorMode,
     commandPaletteOpen,
+    inspectorPanelOpen,
     keyboardShortcutsOpen,
+    openInspectorPanel,
     showActivity,
     showEditorMode,
+    workspacePanelOpen,
     workspaceIntent,
     closeCommandPalette,
     closeKeyboardShortcuts,
@@ -50,6 +53,7 @@
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
+  import { clampDockedPanels, resolveWorkbenchPresentation } from '$src/lib/layout/workbench-layout'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
@@ -271,6 +275,14 @@
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
+  let workbenchHost = $state<HTMLDivElement>()
+  let editorColumnHost = $state<HTMLElement>()
+  let workspacePanelHost = $state<HTMLElement>()
+  let inspectorPanelHost = $state<HTMLElement>()
+  let workbenchWidth = $state(1280)
+  let editorWidth = $state(720)
+  let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
+  let inspectorPanelOpener = $state<HTMLElement | undefined>()
   let addNodeRequest = $state<{
     request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
     opener: HTMLElement | undefined
@@ -387,6 +399,17 @@
     return $brandState.packs.find(({ manifest }) => manifest.id === $brandState.activeId) ?? fallback
   })
   const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
+  const workbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
+  const clampedPanels = $derived(
+    clampDockedPanels($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 }, workbenchWidth),
+  )
+  const workspacePanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen)
+  const inspectorPanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen)
+
+  $effect(() => {
+    if (workspacePanelHost) workspacePanelHost.toggleAttribute('inert', workspacePanelHidden)
+    if (inspectorPanelHost) inspectorPanelHost.toggleAttribute('inert', inspectorPanelHidden)
+  })
 
   const inspectorContract = $derived(
     contracts.find(
@@ -524,11 +547,35 @@
       : 'Validation is unavailable for the current workflow.'
   }
 
-  function focusInspector(): void {
+  async function focusInspector(): Promise<void> {
+    inspectorPanelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    openInspectorPanel()
+    await tick()
     const target = document.querySelector<HTMLElement>(
-      '.inspector-panel button, .inspector-panel input, .inspector-panel [tabindex]',
+      '.inspector-panel .inspector button, .inspector-panel .inspector input, .inspector-panel .inspector [tabindex]',
     )
     target?.focus()
+  }
+
+  async function closeWorkspaceDrawer(): Promise<void> {
+    workspacePanelOpen.set(false)
+    await tick()
+    document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)?.focus()
+  }
+
+  async function closeInspectorDrawer(): Promise<void> {
+    inspectorPanelOpen.set(false)
+    await tick()
+    const target = inspectorPanelOpener?.isConnected
+      ? inspectorPanelOpener
+      : document.querySelector<HTMLElement>('.svelte-flow__node.selected')
+    target?.focus()
+    inspectorPanelOpener = undefined
+  }
+
+  async function closeOpenDrawer(): Promise<void> {
+    if ($inspectorPanelOpen) await closeInspectorDrawer()
+    else if ($workspacePanelOpen) await closeWorkspaceDrawer()
   }
 
   async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
@@ -1260,7 +1307,36 @@
       cancel: () => graphCanvas?.cancel(),
       createEdge: () => graphCanvas?.requestEdge(),
     })
-    let dispose: (() => void) | undefined = unbindCanvas
+    let resizeFrame: number | null = null
+    let pendingWorkbenchWidth = workbenchWidth
+    let pendingEditorWidth = editorWidth
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === workbenchHost) pendingWorkbenchWidth = entry.contentRect.width
+        else if (entry.target === editorColumnHost) pendingEditorWidth = entry.contentRect.width
+      }
+      if (resizeFrame !== null) return
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null
+        workbenchWidth = pendingWorkbenchWidth
+        editorWidth = pendingEditorWidth
+      })
+    })
+    if (workbenchHost) {
+      const measuredWidth = workbenchHost.getBoundingClientRect().width
+      if (measuredWidth > 0) workbenchWidth = measuredWidth
+      resizeObserver.observe(workbenchHost)
+    }
+    if (editorColumnHost) {
+      const measuredWidth = editorColumnHost.getBoundingClientRect().width
+      if (measuredWidth > 0) editorWidth = measuredWidth
+      resizeObserver.observe(editorColumnHost)
+    }
+    let dispose: (() => void) | undefined = () => {
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+      resizeObserver.disconnect()
+      unbindCanvas()
+    }
     let disposed = false
     void (async () => {
       const currentWindow = '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null
@@ -1316,6 +1392,9 @@
           ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
           ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
           ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
+          ...(workbenchPresentation.panels === 'drawers' && ($inspectorPanelOpen || $workspacePanelOpen)
+            ? [{ priority: 50, cancel: closeOpenDrawer }]
+            : []),
         ]
         void dispatchKeybinding(event, { registry: commandSurface, context, escape })
           .then((result) => {
@@ -1437,9 +1516,37 @@
     <p class="workspace-error" role="alert">{workspaceError}</p>
   {/if}
 
-  <div class="workbench">
-    <ActivityRail {commandSurface} />
-    <aside class="panel left-panel" aria-label="Workspace panel">
+  <div
+    bind:this={workbenchHost}
+    class="workbench"
+    data-panel-presentation={workbenchPresentation.panels}
+    data-split-presentation={workbenchPresentation.split}
+    style={`--left-panel-width: ${clampedPanels.left}px; --right-panel-width: ${clampedPanels.right}px`}
+  >
+    <ActivityRail
+      {commandSurface}
+      workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
+    />
+    {#if workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
+      <button type="button" class="drawer-scrim" aria-label="Close open panels" onclick={() => void closeOpenDrawer()}
+      ></button>
+    {/if}
+    <aside
+      bind:this={workspacePanelHost}
+      class="panel left-panel"
+      class:drawer-open={!workspacePanelHidden}
+      aria-label="Workspace panel"
+      aria-hidden={workspacePanelHidden ? 'true' : undefined}
+    >
+      {#if workbenchPresentation.panels === 'drawers'}
+        <button
+          type="button"
+          class="drawer-close"
+          data-variant="ghost"
+          aria-label="Close workspace panel"
+          onclick={() => void closeWorkspaceDrawer()}>×</button
+        >
+      {/if}
       {#if $activeActivity === 'explorer' && $workspace.id !== null}
         <Explorer
           contractAvailable={contractsLoaded && contracts.length > 0}
@@ -1568,7 +1675,7 @@
         />
       {/if}
     </aside>
-    <section class="editor-column" aria-label="Workflow workspace">
+    <section bind:this={editorColumnHost} class="editor-column" aria-label="Workflow workspace">
       <div class="editor-tabs" role="group" aria-label="Editor mode">
         {#each editorModes as mode (mode)}
           {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
@@ -1586,6 +1693,24 @@
             </button>
           {/if}
         {/each}
+        {#if $activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
+          <div class="split-pane-tabs" role="group" aria-label="Split pane">
+            <button
+              type="button"
+              data-variant="ghost"
+              aria-pressed={compactSplitPane === 'canvas'}
+              class:active={compactSplitPane === 'canvas'}
+              onclick={() => (compactSplitPane = 'canvas')}>Canvas</button
+            >
+            <button
+              type="button"
+              data-variant="ghost"
+              aria-pressed={compactSplitPane === 'yaml'}
+              class:active={compactSplitPane === 'yaml'}
+              onclick={() => (compactSplitPane = 'yaml')}>YAML</button
+            >
+          </div>
+        {/if}
       </div>
       <section class="editor-region" aria-label="Workflow editor">
         {#if $workspace.id === null}
@@ -1599,8 +1724,10 @@
           <div
             class="editor-surfaces"
             class:split={$activeEditorMode === 'split'}
+            class:split-tabs={$activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
             class:yaml-only={$activeEditorMode === 'yaml'}
             class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
+            data-split-pane={compactSplitPane}
           >
             {#if canvasCapacity?.advisory}
               <p class="canvas-capacity-advisory" role="status">{canvasCapacity.advisory}</p>
@@ -1685,8 +1812,10 @@
               {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
             </p>
             <div class="missing-actions">
-              <button type="button" data-variant="primary" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
-                >Keep Mine / Recreate</button
+              <button
+                type="button"
+                data-variant="primary"
+                onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}>Keep Mine / Recreate</button
               >
               <button
                 type="button"
@@ -1716,7 +1845,22 @@
         {/if}
       {/if}
     </section>
-    <aside class="panel inspector-panel" aria-label="Inspector">
+    <aside
+      bind:this={inspectorPanelHost}
+      class="panel inspector-panel"
+      class:drawer-open={!inspectorPanelHidden}
+      aria-label="Inspector"
+      aria-hidden={inspectorPanelHidden ? 'true' : undefined}
+    >
+      {#if workbenchPresentation.panels === 'drawers'}
+        <button
+          type="button"
+          class="drawer-close"
+          data-variant="ghost"
+          aria-label="Close inspector"
+          onclick={() => void closeInspectorDrawer()}>×</button
+        >
+      {/if}
       <Inspector
         fields={inspectorFields}
         values={inspectorValues}
@@ -1780,8 +1924,10 @@
     <div class="recovery-offer" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="recovery-title">
       <h2 id="recovery-title">Recover unsaved workflow?</h2>
       <p>{$documentWorkspaceState.recoveryOffers[0].definition.path}</p>
-      <button type="button" data-variant="primary" onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}
-        >Recover</button
+      <button
+        type="button"
+        data-variant="primary"
+        onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}>Recover</button
       >
       <button
         type="button"
@@ -1895,7 +2041,9 @@
   {/if}
   {#if $keyboardShortcutsOpen}
     <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-      <button type="button" data-variant="ghost" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
+      <button type="button" data-variant="ghost" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}
+        >Close</button
+      >
       <KeyboardShortcuts registry={commandSurface} />
     </div>
   {/if}
@@ -2068,13 +2216,83 @@
 
   .workbench {
     display: grid;
-    grid-template-columns: 3rem minmax(10rem, 16.875rem) minmax(0, 1fr) minmax(11rem, 18.875rem);
+    position: relative;
+    isolation: isolate;
+    grid-template-columns: 3rem var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
     min-height: 0;
+    overflow: hidden;
   }
 
   .panel {
+    position: relative;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     background: var(--color-surface);
+  }
+
+  .drawer-close,
+  .drawer-scrim {
+    display: none;
+  }
+
+  .workbench[data-panel-presentation='drawers'] {
+    grid-template-columns: 3rem minmax(0, 1fr);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .panel {
+    position: absolute;
+    z-index: 20;
+    top: 0;
+    bottom: 0;
+    display: block;
+    transition: transform 120ms ease-out;
+    box-shadow: 0 1rem 3rem var(--color-shadow);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .left-panel {
+    left: 3rem;
+    width: min(var(--left-panel-width), calc(100% - 3rem));
+    transform: translateX(-100%);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .inspector-panel {
+    right: 0;
+    width: min(var(--right-panel-width), calc(100% - 3rem));
+    transform: translateX(100%);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .panel.drawer-open {
+    transform: translateX(0);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-close {
+    position: absolute;
+    z-index: 2;
+    top: var(--space-2);
+    right: var(--space-2);
+    display: grid;
+    width: var(--control-sm);
+    min-width: var(--control-sm);
+    height: var(--control-sm);
+    min-height: var(--control-sm);
+    padding: 0;
+    place-items: center;
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-scrim {
+    position: absolute;
+    z-index: 10;
+    inset: 0 0 0 3rem;
+    display: block;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--color-background) 64%, transparent);
   }
 
   .left-panel {
@@ -2106,6 +2324,12 @@
     padding: 0 var(--space-3);
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
+  }
+
+  .split-pane-tabs {
+    display: flex;
+    gap: var(--space-1);
+    margin-left: auto;
   }
 
   .editor-tabs button {
@@ -2159,6 +2383,15 @@
 
   .editor-surfaces.split:not(.no-canvas) {
     grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.72fr);
+  }
+
+  .editor-surfaces.split.split-tabs:not(.no-canvas) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-surfaces.split-tabs[data-split-pane='canvas'] .yaml-pane,
+  .editor-surfaces.split-tabs[data-split-pane='yaml'] .canvas-pane {
+    display: none;
   }
 
   .editor-surfaces.split:not(.no-canvas) .yaml-pane {

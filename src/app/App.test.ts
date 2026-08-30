@@ -5,7 +5,13 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { editDocumentText } from '$src/lib/documents/revisions'
-import { showActivity, showEditorMode } from '$src/stores/shell'
+import {
+  $inspectorPanelOpen,
+  $workspacePanelOpen,
+  closeTransientPanels,
+  showActivity,
+  showEditorMode,
+} from '$src/stores/shell'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { clearWorkspace, loadWorkspaceEntries, workspace } from '$src/stores/workspace'
@@ -30,6 +36,38 @@ import { createCommandRegistry, listCommands } from '$src/lib/commands/registry'
 import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/workers/document-worker'
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
+
+class TestResizeObserver {
+  static instances: TestResizeObserver[] = []
+  readonly targets = new Set<Element>()
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    TestResizeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target)
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target)
+  }
+
+  disconnect(): void {
+    this.targets.clear()
+  }
+
+  publish(target: Element, width: number): void {
+    this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this)
+  }
+}
+
+async function publishResize(target: Element, width: number): Promise<void> {
+  const observer = TestResizeObserver.instances.find((candidate) => candidate.targets.has(target))
+  if (!observer) throw new Error('Expected the stable workbench boundary to be observed.')
+  observer.publish(target, width)
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
 
 const contractResolverTestState = vi.hoisted(() => ({
   missingActiveProfile: null as 'hermes-legacy' | 'archon-2026-07' | null,
@@ -120,13 +158,48 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it('keeps compact drawers mounted, inert when closed, and restores the activity invoker on close', async () => {
+    closeTransientPanels()
+    const { container } = render(App)
+    await waitForSetupReady()
+    const workbench = container.querySelector('.workbench')!
+    const editor = screen.getByRole('region', { name: 'Workflow workspace' })
+
+    await publishResize(workbench, 1024)
+    await publishResize(editor, 976)
+    await tick()
+
+    const workspacePanel = container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+    const inspectorPanel = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
+    expect(workbench).toHaveAttribute('data-panel-presentation', 'drawers')
+    expect(workspacePanel).toHaveAttribute('aria-hidden', 'true')
+    expect(workspacePanel).toHaveAttribute('inert')
+    expect(inspectorPanel).toHaveAttribute('aria-hidden', 'true')
+    expect(inspectorPanel).toHaveAttribute('inert')
+
+    const explorer = screen.getByRole('button', { name: 'Explorer' })
+    explorer.focus()
+    await fireEvent.click(explorer)
+    expect(workspacePanel).not.toHaveAttribute('inert')
+    expect(explorer).toHaveAttribute('aria-expanded', 'true')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Close workspace panel' }))
+    await tick()
+    expect(workspacePanel).toHaveAttribute('inert')
+    expect(explorer).toHaveFocus()
+  })
+
   it('marks titlebar authoring and workspace actions with their control semantics', async () => {
     render(App)
     await waitForSetupReady()
 
     expect(screen.getByRole('button', { name: 'New Workflow' })).toHaveAttribute('data-variant', 'primary')
     expect(screen.getAllByRole('button', { name: 'Open Folder' })[0]).toHaveAttribute('data-variant', 'secondary')
-    expect(screen.getAllByRole('button', { name: /^(Visual|YAML|Split)$/ }).every((button) => button.getAttribute('data-variant') === 'ghost')).toBe(true)
+    expect(
+      screen
+        .getAllByRole('button', { name: /^(Visual|YAML|Split)$/ })
+        .every((button) => button.getAttribute('data-variant') === 'ghost'),
+    ).toBe(true)
   })
 
   it('mounts runtime brand management in Settings', async () => {
@@ -292,14 +365,7 @@ describe('App', () => {
         dispatchEvent: vi.fn(),
       })),
     })
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe(): void {}
-        unobserve(): void {}
-        disconnect(): void {}
-      },
-    )
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
   })
 
   afterEach(() => {
@@ -307,6 +373,9 @@ describe('App', () => {
     setNativeBridgeForTest(undefined)
     showActivity('explorer')
     showEditorMode('visual')
+    $workspacePanelOpen.set(false)
+    $inspectorPanelOpen.set(false)
+    TestResizeObserver.instances = []
     clearWorkspace()
     closeDocumentSession()
     clearActiveLayout()
@@ -695,7 +764,7 @@ nodes:
 
     expect(screen.getByRole('navigation', { name: 'Activities' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeEmptyDOMElement()
+    expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Workflow editor' })).toContainElement(
       screen.getByRole('region', { name: 'Open workspace drop zone' }),
     )
@@ -919,7 +988,7 @@ nodes:
       editorMode: 'visual',
       updatedAt: '2026-07-25T00:00:00.000Z',
     })
-    render(App)
+    const { container } = render(App)
     await waitForSetupReady()
 
     const graph = screen.getByRole('region', { name: 'Workflow graph' })
@@ -934,9 +1003,20 @@ nodes:
 
     await fireEvent.click(screen.getByRole('button', { name: 'Split' }))
     await tick()
+    await publishResize(container.querySelector('.workbench')!, 1280)
+    await publishResize(screen.getByRole('region', { name: 'Workflow workspace' }), 719)
+    await tick()
+    const splitPane = screen.getByRole('group', { name: 'Split pane' })
     expect(screen.getByRole('region', { name: 'Workflow graph' })).toBe(graph)
     expect(screen.getByRole('tabpanel', { name: 'Definition YAML' })).toBeVisible()
     expect(screen.getByRole('textbox')).toBe(editor)
+    await fireEvent.click(within(splitPane).getByRole('button', { name: 'YAML' }))
+    expect(screen.getByRole('button', { name: 'Split' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('region', { name: 'Workflow graph', hidden: true })).toBe(graph)
+    expect(screen.getByRole('textbox')).toBe(editor)
+    await fireEvent.click(within(splitPane).getByRole('button', { name: 'Canvas' }))
+    expect(screen.getByRole('region', { name: 'Workflow graph' })).toBe(graph)
+    expect(screen.getByRole('tabpanel', { name: 'Definition YAML', hidden: true })).toBeInTheDocument()
     setCanvasSelection(['collect'])
 
     openDocumentSession(
