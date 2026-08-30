@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .superpowers/
+.worktrees/
 coverage/
 dist/
 node_modules/
@@ -11,4 +12,3 @@ src-tauri/target/
 target/
 test-results/
 *.log
-
