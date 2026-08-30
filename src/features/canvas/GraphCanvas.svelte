@@ -171,6 +171,7 @@
   }
 
   $effect(() => {
+    if (!surfaceActive) return
     const projected = deriveCanvas()
     flowNodes = projected.nodes
     flowEdges = projected.edges
@@ -654,6 +655,7 @@
       nodesDraggable={!readOnly && !stale && !transitionLocked}
       nodesConnectable={!readOnly && !stale && !transitionLocked}
       elementsSelectable={!transitionLocked}
+      onlyRenderVisibleElements={true}
       nodesFocusable={true}
       edgesFocusable={true}
       selectionOnDrag={true}

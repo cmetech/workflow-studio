@@ -5,9 +5,14 @@ import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import type { ProgressSnapshot } from '$src/lib/progress/types'
 import type { GitPathStatus } from '$src/lib/git/types'
 import type { UpdateEvent, UpdateEventHandler, UpdateSnapshot } from '$src/lib/updates/types'
+import { canonicalizeContractPayload } from '$src/lib/contract/canonical-json'
+import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
+import { loadBrandManifest } from '$src/lib/branding/load-brand'
+import type { StoredBrandPack } from '$src/lib/native/types'
+import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
 import { $documentSession } from '$src/stores/documents'
 import { historyStore } from '$src/stores/history'
-import { createLargeWorkflowFixture } from '../../tests/performance/large-workflow'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
@@ -39,6 +44,86 @@ const LONG_CREATE_VERSION_DIFF = `diff --git a/workflows/release-demo.yaml b/wor
 +++ b/workflows/release-demo.yaml
 ${Array.from({ length: 48 }, (_, index) => `+release-${index + 1}: ${'content-aware-workbench-'.repeat(5)}`).join('\n')}
 `
+const REPEATED_DIAGNOSTICS_YAML = `name: Repeated diagnostics
+description: Exercise bounded Problems rendering.
+nodes:
+${Array.from({ length: 40 }, (_, index) => `  - id: duplicate\n    prompt: Diagnostic ${index + 1}.\n`).join('')}`
+const ADVANCED_INSPECTOR_YAML = `name: Advanced Inspector
+description: Exercise the complete bounded Advanced field surface.
+nodes:
+  - id: prepare
+    prompt: Prepare the release notes.
+    provider: deterministic-provider
+    model: deterministic-model-with-a-long-contained-identity
+    effort: high
+    fallbackModel: deterministic-fallback-model
+    maxBudgetUsd: 12.5
+    persist_session: true
+    allowed_tools: [read_file, search_workspace]
+    denied_tools: [network_write]
+    skills: [release-review, offline-verification]
+    systemPrompt: Keep every advanced inspector field deterministic and locally bounded.
+    mcp: local-fixture
+    betas: [content-aware-workbench]
+    output_type: release-summary
+  - id: publish
+    command: /publish
+    depends_on: [prepare]
+`
+const LONG_SETUP_LOGS = Array.from(
+  { length: 12 },
+  (_, index) =>
+    `deterministic-setup-log-${index + 1}: deeply nested offline resource verification path ${'contracts/resources/loop24/'.repeat(5)}`,
+)
+const LONG_UPDATE_LOGS = Array.from(
+  { length: 12 },
+  (_, index) =>
+    `deterministic-update-log-${index + 1}: signed updater verification message ${'macos/aarch64/offline/staging/'.repeat(5)}`,
+)
+
+function capacityWorkflowYaml(): string {
+  const ids = Array.from({ length: 250 }, (_, index) => `node-${String(index).padStart(3, '0')}`)
+  const incoming = new Map<string, string[]>()
+  const connect = (sourceIndex: number, targetIndex: number): void => {
+    const target = ids[targetIndex]!
+    incoming.set(target, [...(incoming.get(target) ?? []), ids[sourceIndex]!])
+  }
+  for (let source = 0; source < ids.length - 1; source += 1) connect(source, source + 1)
+  for (let source = 0; source < ids.length - 2; source += 1) {
+    if (source !== 24) connect(source, source + 2)
+  }
+  for (let source = 0; source < 4; source += 1) connect(source, source + 3)
+
+  return [
+    'name: Fixed 250-node performance workflow',
+    'description: Deterministic content-aware workbench capacity fixture.',
+    'nodes:',
+    ...ids.flatMap((id) => [
+      `  - id: ${id}`,
+      '    command: /capacity-step',
+      ...(incoming.has(id)
+        ? ['    depends_on:', ...incoming.get(id)!.map((dependency) => `      - ${dependency}`)]
+        : []),
+    ]),
+    '',
+  ].join('\n')
+}
+
+function capacityLayout() {
+  const ids = Array.from({ length: 250 }, (_, index) => `node-${String(index).padStart(3, '0')}`)
+  return {
+    schemaVersion: 1 as const,
+    workspaceId: 'browser-workspace',
+    workflowPath: DEFINITION_PATH,
+    nodePositions: Object.fromEntries(
+      ids.map((id, index) => [id, { x: (index % 25) * 280, y: Math.floor(index / 25) * 150 }]),
+    ),
+    viewport: { x: 0, y: 0, zoom: 0.2 },
+    panels: { left: 280, right: 320, problems: 180 },
+    editorMode: 'visual' as const,
+    updatedAt: '2026-08-30T00:00:00.000Z',
+  }
+}
 const AUTHORING_FILES = {
   [DEFINITION_PATH]: `name: Release demo
 description: Verify the complete authoring path.
@@ -80,6 +165,8 @@ interface E2EState {
   readonly companionText: string
   readonly workspacePaths: readonly string[]
   readonly layout: string | null
+  readonly projectionNodeCount: number
+  readonly projectionEdgeCount: number
 }
 
 declare global {
@@ -87,6 +174,9 @@ declare global {
     __WORKFLOW_STUDIO_E2E__?: {
       snapshot(): Promise<E2EState>
       triggerExternalChange(): Promise<void>
+      prepareCapacityConnection(): Promise<void>
+      metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']>
+      resetMetrics(): void
     }
   }
 }
@@ -104,8 +194,11 @@ function setupFailure(): ProgressSnapshot {
       { id: 'resources', label: 'Verify bundled resources', status: 'failed', durationMs: 3 },
       { id: 'git', label: 'Detect Git', status: 'pending' },
     ],
-    logs: ['Prepared app-data directories.', 'Resource digest mismatch in deterministic fixture.'],
-    failure: { code: 'fixture_resource_failure', message: 'Bundled resource verification failed.' },
+    logs: ['Prepared app-data directories.', 'Resource digest mismatch in deterministic fixture.', ...LONG_SETUP_LOGS],
+    failure: {
+      code: 'fixture_resource_failure',
+      message: `Bundled resource verification failed. ${'deeply nested offline resource verification path '.repeat(8)}`,
+    },
     savedLogAvailable: true,
   }
 }
@@ -133,7 +226,7 @@ function setupSuccess(): ProgressSnapshot {
 
 const UPDATE_RELEASE = {
   version: '0.2.0',
-  notes: 'Deterministic signed updater acceptance fixture.',
+  notes: `Deterministic signed updater acceptance fixture. ${'signed updater verification message '.repeat(12)}`,
   date: '2026-07-30T12:00:00Z',
   size: 4_096,
   platform: 'macos-aarch64',
@@ -152,7 +245,7 @@ function updateSnapshot(phase: UpdateSnapshot['phase'], sequence?: number): Upda
     totalBytes: UPDATE_RELEASE.size,
     speedBytesPerSecond: null,
     logs: failed
-      ? ['Downloaded metadata.', 'Signature fixture rejected before installation.']
+      ? ['Downloaded metadata.', 'Signature fixture rejected before installation.', ...LONG_UPDATE_LOGS]
       : ['Signed update available.'],
     failure: failed ? { code: 'fixture_signature_failure', message: 'Update signature verification failed.' } : null,
     savedLogAvailable: true,
@@ -167,17 +260,34 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 export async function installRuntimeBootstrap(): Promise<void> {
   const scenario = new URLSearchParams(location.search).get('scenario') ?? 'authoring'
-  const largeCanvasFixture = scenario === 'large-canvas' ? createLargeWorkflowFixture() : null
-  const initialFiles = largeCanvasFixture
-    ? { ...AUTHORING_FILES, [DEFINITION_PATH]: largeCanvasFixture.yaml }
+  const largeCanvasLayout = scenario === 'large-canvas' ? capacityLayout() : null
+  const metrics = createEditorMetricsCollector()
+  installEditorMetrics(metrics)
+  const largeCanvasDefinition = largeCanvasLayout
+    ? `${Array.from({ length: 8 }, (_, index) => `future_large_canvas_finding_${index + 1}: retained`).join('\n')}\n${capacityWorkflowYaml()}`
+    : null
+  const initialFiles = largeCanvasLayout
+    ? {
+        ...AUTHORING_FILES,
+        [DEFINITION_PATH]: largeCanvasDefinition!,
+        [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+      }
     : scenario === 'long-create-version'
       ? {
           ...AUTHORING_FILES,
           [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
           [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
         }
-      : AUTHORING_FILES
-  const base = createBrowserBridge({ initialFiles, selectedRoot: '/e2e/workspace' })
+      : scenario === 'repeated-diagnostics'
+        ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
+        : scenario === 'advanced-inspector'
+          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
+          : AUTHORING_FILES
+  const selectedRoot =
+    scenario === 'long-git'
+      ? 'C:\\workspaces\\release\\nested\\workflow-studio-with-a-long-workspace-identity'
+      : '/e2e/workspace'
+  const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0
   let updateChecks = 0
   let updateDeferred = false
@@ -185,7 +295,13 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let gitStatusEntries: GitPathStatus[] =
     scenario === 'long-git'
       ? [
-          { path: LONG_WINDOWS_PATH, index: ' ', worktree: 'M', untracked: false },
+          {
+            path: DEFINITION_PATH,
+            originalPath: LONG_WINDOWS_PATH,
+            index: 'R',
+            worktree: ' ',
+            untracked: false,
+          },
           { path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false },
         ]
       : [
@@ -199,15 +315,12 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateRelaunched = false
   const updateHandlers = new Set<UpdateEventHandler>()
   const workspaceChangeHandlers = new Set<WorkspaceChangedHandler>()
-  let layout: string | null = largeCanvasFixture
+  let layout: string | null = largeCanvasLayout
     ? JSON.stringify([
         {
           schemaVersion: 1,
           layout: {
-            ...largeCanvasFixture.layout,
-            workspaceId: 'browser-workspace',
-            workflowPath: DEFINITION_PATH,
-            viewport: { x: 80, y: 80, zoom: 1 },
+            ...largeCanvasLayout,
           },
           savedHashes: null,
         },
@@ -226,6 +339,44 @@ export async function installRuntimeBootstrap(): Promise<void> {
   const assetHash = await sha256(assetBytes)
   const validManifestHash = await sha256(new TextEncoder().encode(validManifest))
   const maliciousManifestHash = await sha256(new TextEncoder().encode(maliciousManifest))
+  const bundledManifest = loadBrandManifest(loop24ManifestSource)
+  const longBrandPacks: readonly StoredBrandPack[] = Array.from({ length: 12 }, (_, index) => ({
+    manifest: {
+      ...bundledManifest,
+      id: `deterministic-brand-${String(index + 1).padStart(2, '0')}`,
+      displayName: `Deterministic brand ${String(index + 1).padStart(2, '0')} ${'contained-name-'.repeat(5)}`,
+    },
+    assets: [
+      { path: 'logo.svg', bytes: [...assetBytes] },
+      { path: 'mark.svg', bytes: [...assetBytes] },
+    ],
+    revision: `e2e-long-settings-brand-${index + 1}`,
+  }))
+  const longContractEntries: readonly ContractCacheStoredEntry[] = await Promise.all(
+    Array.from({ length: 12 }, async (_, index) => {
+      const payload = {
+        contract_reader_version: 2,
+        schema_version: 1,
+        normalizer_version: index + 1,
+        profile: index % 2 === 0 ? ('archon-2026-07' as const) : ('hermes-legacy' as const),
+        fixture_identity: `deterministic-contract-${index + 1}-${'bounded-identity-'.repeat(5)}`,
+      }
+      const digest = `sha256:${await sha256(new TextEncoder().encode(canonicalizeContractPayload(payload)))}` as const
+      return {
+        digest,
+        profile: payload.profile,
+        schemaVersion: payload.schema_version,
+        normalizerVersion: payload.normalizer_version,
+        readerVersion: payload.contract_reader_version,
+        source: {
+          kind: 'user' as const,
+          identifier: `C:\\contracts\\cached\\${'deeply-nested-contract-directory\\'.repeat(4)}contract-${index + 1}.json`,
+        },
+        content: JSON.stringify({ ...payload, contract_digest: digest }),
+        active: false,
+      }
+    }),
+  )
 
   const emitUpdate = async (event: UpdateEvent): Promise<void> => {
     await Promise.all([...updateHandlers].map((handler) => handler(event)))
@@ -278,6 +429,17 @@ export async function installRuntimeBootstrap(): Promise<void> {
 
   const bridge: WorkspaceNativeBridge = {
     ...base,
+    contractCacheLoad: async () =>
+      scenario === 'long-settings' ? { entries: longContractEntries, advisories: [] } : base.contractCacheLoad(),
+    brandListPacks: async () =>
+      scenario === 'long-settings' ? { packs: longBrandPacks, warnings: [] } : base.brandListPacks(),
+    brandLoadPack: async (id) => {
+      if (scenario === 'long-settings') {
+        const pack = longBrandPacks.find(({ manifest }) => manifest.id === id)
+        if (pack) return pack
+      }
+      return base.brandLoadPack(id)
+    },
     chooseWorkspaceFolder: async () => {
       if (scenario === 'long-application-notice') throw new Error(LONG_APPLICATION_NOTICE)
       return base.chooseWorkspaceFolder()
@@ -449,6 +611,8 @@ export async function installRuntimeBootstrap(): Promise<void> {
 
   setNativeBridgeForTest(bridge)
   window.__WORKFLOW_STUDIO_E2E__ = {
+    metrics: () => metrics.snapshot(),
+    resetMetrics: () => metrics.reset(),
     async triggerExternalChange(): Promise<void> {
       const current = await base.workspaceRead(DEFINITION_PATH)
       await base.workspaceWrite({
@@ -460,8 +624,28 @@ export async function installRuntimeBootstrap(): Promise<void> {
         [...workspaceChangeHandlers].map((handler) => handler({ paths: [DEFINITION_PATH], kind: 'modify' })),
       )
     },
+    async prepareCapacityConnection(): Promise<void> {
+      if (!largeCanvasDefinition) throw new Error('The capacity connection fixture requires the large canvas scenario.')
+      const nodeStart = largeCanvasDefinition.indexOf('  - id: node-026\n')
+      const nodeEnd = largeCanvasDefinition.indexOf('  - id: node-027\n', nodeStart)
+      const nodeBlock = largeCanvasDefinition.slice(nodeStart, nodeEnd)
+      const preparedBlock = nodeBlock.replace('    depends_on:\n      - node-025\n', '')
+      if (nodeStart < 0 || nodeEnd < 0 || preparedBlock === nodeBlock) {
+        throw new Error('The deterministic capacity edge could not be prepared.')
+      }
+      const current = await base.workspaceRead(DEFINITION_PATH)
+      await base.workspaceWrite({
+        relativePath: DEFINITION_PATH,
+        text: `${largeCanvasDefinition.slice(0, nodeStart)}${preparedBlock}${largeCanvasDefinition.slice(nodeEnd)}`,
+        expectedCurrentHash: current.sha256,
+      })
+      await Promise.all(
+        [...workspaceChangeHandlers].map((handler) => handler({ paths: [DEFINITION_PATH], kind: 'modify' })),
+      )
+    },
     async snapshot(): Promise<E2EState> {
       const openPair = $documentSession.get().pair
+      const activeProjection = $documentSession.get().analysis?.projection
       const definitionText = openPair?.definition.text ?? (await bridge.workspaceRead(DEFINITION_PATH)).text
       const companionText = openPair?.companion?.text ?? (await bridge.workspaceRead(COMPANION_PATH)).text
       const workspacePaths = (await bridge.workspaceScan())
@@ -488,6 +672,8 @@ export async function installRuntimeBootstrap(): Promise<void> {
         companionText,
         workspacePaths,
         layout,
+        projectionNodeCount: isWorkflowProjection(activeProjection) ? activeProjection.nodes.length : 0,
+        projectionEdgeCount: isWorkflowProjection(activeProjection) ? activeProjection.edges.length : 0,
       }
     },
   }

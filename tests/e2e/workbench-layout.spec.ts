@@ -76,6 +76,29 @@ for (const viewport of [
   })
 }
 
+test('effective 200% reflow keeps authoring, status, and compact Split inside the viewport', async ({ page }) => {
+  await openPairAt(page, 512, 350)
+  await page.getByRole('button', { name: 'Split', exact: true }).click()
+  await expect(page.locator('.workbench')).toHaveAttribute('data-split-presentation', 'tabs')
+  await expect(page.getByRole('group', { name: 'Split pane' })).toBeVisible()
+
+  const geometry = await page.evaluate(() => {
+    const root = document.documentElement
+    const status = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
+    return {
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+      scrollWidth: root.scrollWidth,
+      clientWidth: root.clientWidth,
+      statusBottom: status.getBoundingClientRect().bottom,
+      innerHeight,
+    }
+  })
+  expect(geometry.scrollHeight).toBe(geometry.clientHeight)
+  expect(geometry.scrollWidth).toBe(geometry.clientWidth)
+  expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.innerHeight)
+})
+
 for (const width of [1024, 1280]) {
   test(`keeps both Explorer actions inside the workspace panel at ${width}px`, async ({ page }) => {
     await openPairAt(page, width, 700)
@@ -223,32 +246,16 @@ test('keyboard edge picker consumes Escape before its Inspector drawer', async (
   await expect(prepare).toBeFocused()
 })
 
-test('dependency port receives unconsumed Escape before its Inspector drawer handles the event', async ({ page }) => {
+test('dependency ports retain descriptive names without claiming keyboard button behavior', async ({ page }) => {
   await openPairAt(page, 1024, 700)
 
-  const inspector = page.locator('aside[aria-label="Inspector"]')
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
-  await prepare.focus()
-  await prepare.press('Enter')
-  await expect(inspector).not.toHaveAttribute('inert')
-
-  const port = page.getByRole('button', { name: 'Dependencies entering prepare' })
-  await port.evaluate((element) => {
-    element.addEventListener(
-      'keydown',
-      (event) => {
-        if (event.key === 'Escape') element.setAttribute('data-escape-received', 'true')
-      },
-      { once: true },
-    )
-  })
-  await port.focus()
-  await expect(port).toBeFocused()
-
-  await page.keyboard.press('Escape')
-  await expect(port).toHaveAttribute('data-escape-received', 'true')
-  await expect(inspector).toHaveAttribute('inert', '')
-  await expect(prepare).not.toHaveClass(/selected/)
+  for (const name of ['Dependencies entering prepare', 'Dependencies leaving prepare']) {
+    const port = prepare.locator(`[aria-label="${name}"]`)
+    await expect(port).toHaveAccessibleName(name)
+    await expect(port).not.toHaveAttribute('role', 'button')
+    await expect(port).not.toHaveAttribute('tabindex', '0')
+  }
 })
 
 test('Inspector disclosure can consume Escape before the next event closes its drawer', async ({ page }) => {
@@ -511,10 +518,10 @@ test('keyboard-only compact drawers and Split subtabs restore focus and expose n
   await expect(prepare).toBeFocused()
 
   await expect(page.getByRole('button', { name: 'More canvas actions' })).toHaveAccessibleName('More canvas actions')
-  await expect(page.getByRole('button', { name: 'Dependencies entering prepare' })).toHaveAccessibleName(
+  await expect(page.locator('[aria-label="Dependencies entering prepare"]')).toHaveAccessibleName(
     'Dependencies entering prepare',
   )
-  await expect(page.getByRole('button', { name: 'Dependencies leaving prepare' })).toHaveAccessibleName(
+  await expect(page.locator('[aria-label="Dependencies leaving prepare"]')).toHaveAccessibleName(
     'Dependencies leaving prepare',
   )
 

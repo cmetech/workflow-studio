@@ -380,36 +380,24 @@ describe('GraphCanvas', () => {
     const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     setCanvasSelection(['review'])
 
-    await fireEvent(
-      canvas,
-      new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }),
-    )
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }))
     await tick()
 
     expect($canvasSelection.get()).toEqual(['review'])
 
     await rendered.rerender({ commandSurface: commandRegistry, projection, layout, surfaceActive: true })
-    await fireEvent(
-      canvas,
-      new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }),
-    )
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }))
     await tick()
 
     expect($canvasSelection.get()).toEqual(['review'])
 
     await fireEvent.pointerDown(canvas)
-    await fireEvent(
-      canvas,
-      new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }),
-    )
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: [] } }))
     await tick()
 
     expect($canvasSelection.get()).toEqual([])
 
-    await fireEvent(
-      canvas,
-      new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: ['collect'] } }),
-    )
+    await fireEvent(canvas, new CustomEvent('workflowselectionchange', { bubbles: true, detail: { ids: ['collect'] } }))
     await tick()
 
     expect($canvasSelection.get()).toEqual(['collect'])

@@ -26,30 +26,40 @@ test('preserves exact authoring state across full-workbench page navigation', as
   await expect(inspectorSelection).toHaveText('prepare')
   await expect.poll(async () => (await e2eSnapshot(page)).layout).not.toBeNull()
   const layoutBefore = (await e2eSnapshot(page)).layout
+  const splitPane = page.getByRole('group', { name: 'Split pane' })
+  await splitPane.getByRole('button', { name: 'YAML' }).click()
   const yamlScroller = page.locator('[aria-label="Definition YAML"] .cm-scroller')
-  await yamlScroller.evaluate((element) => {
-    element.style.maxHeight = '12rem'
-    element.style.overflowY = 'auto'
-    element.scrollTop = 120
-  })
+  await expect(page.locator('[aria-label="Definition YAML"] .cm-content')).toContainText('# retained scroll line 79')
+  const yamlGeometry = await yamlScroller.evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }))
+  expect(yamlGeometry.scrollHeight, JSON.stringify(yamlGeometry)).toBeGreaterThan(yamlGeometry.clientHeight)
+  await yamlScroller.evaluate((element) => element.scrollTo({ top: 120 }))
+  await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   const yamlScrollBefore = await yamlScroller.evaluate((element) => element.scrollTop)
-  expect(yamlScrollBefore).toBeGreaterThan(0)
 
   const settings = page.getByRole('button', { name: 'Settings', exact: true })
   await settings.click()
   await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible()
-  await expect(
-    page.getByRole('region', { name: 'Workflow workspace', includeHidden: true }),
-  ).toHaveAttribute('inert', '')
+  await expect(page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })).toHaveAttribute(
+    'inert',
+    '',
+  )
   await expect(inspectorSelection).toHaveText('prepare')
   await page.getByRole('button', { name: 'Back to Workflow' }).click()
 
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(UNSAVED_YAML)
-  await expect(page.locator('.svelte-flow__node.selected').filter({ hasText: 'prepare' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Split', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(settings).toBeFocused()
+  await expect(inspectorSelection).toHaveText('prepare')
   await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBe(yamlScrollBefore)
   expect((await e2eSnapshot(page)).layout).toEqual(layoutBefore)
+
+  await splitPane.getByRole('button', { name: 'Canvas' }).click()
+  await expect(page.locator('.svelte-flow__node.selected').filter({ hasText: 'prepare' })).toBeVisible()
+  await splitPane.getByRole('button', { name: 'YAML' }).click()
+  await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBe(yamlScrollBefore)
 })
 
 test('Settings exposes one responsive keyboard-operable category at a time', async ({ page }) => {
@@ -163,6 +173,32 @@ test('Examples and Documentation reveal selected detail immediately and keep the
   await expect(lastResult).toBeFocused()
 })
 
+test('active Example page owns pointer hit testing after long authoring and page navigation', async ({ page }) => {
+  await openSeededPair(page)
+  await page.setViewportSize({ width: 1024, height: 700 })
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('tab', { name: 'Workflow Contracts' }).click()
+  await page.getByRole('button', { name: 'Documentation', exact: true }).click()
+  await page.setViewportSize({ width: 512, height: 350 })
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+
+  const createCopy = page.getByRole('button', { name: /^Create Editable Copy:/ }).first()
+  await createCopy.scrollIntoViewIfNeeded()
+  const hitTarget = await createCopy.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    return (
+      document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)?.closest('button') ===
+      element
+    )
+  })
+  expect(hitTarget).toBe(true)
+
+  const before = (await e2eSnapshot(page)).workspacePaths
+  await createCopy.click()
+  await expect.poll(async () => (await e2eSnapshot(page)).workspacePaths).not.toEqual(before)
+})
+
 test('Documentation moves keyboard focus into narrow detail and restores the result', async ({ page }) => {
   await openSeededPair(page)
   await page.setViewportSize({ width: 560, height: 700 })
@@ -189,7 +225,12 @@ test('Git is a contained full-workbench page and falls back to unified diff when
   const gitPageBody = gitPage.locator('[data-page-scroll]')
   await expect(gitPage).toBeVisible()
   await expect(page.locator('.left-panel .git-view')).toHaveCount(0)
-  await expect(page.getByText(/C:\\workspaces\\release/)).toBeVisible()
+  await expect(gitPage.locator('.repository-root')).toContainText(/C:\\workspaces\\release/)
+  const renamedPairPath = gitPage.getByText(
+    /release-demo-with-an-exceptionally-long-name\.yaml → workflows\/release-demo\.yaml/i,
+  )
+  await expect(renamedPairPath).toBeVisible()
+  await expect(renamedPairPath).toHaveCSS('overflow-wrap', 'anywhere')
   await expect(
     page.getByRole('button', { name: /Document the exceptionally long Windows release workflow subject/ }),
   ).toBeVisible()

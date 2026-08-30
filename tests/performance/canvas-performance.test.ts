@@ -4,12 +4,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
 import { canvasCapacityForProjection, createMemoizedCanvasProjector } from '$src/features/canvas/project-canvas'
 import { commandRegistry } from '$src/lib/commands/registry'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import {
   createEditorMetricsCollector,
   installEditorMetrics,
   type EditorMetricSnapshot,
 } from '$src/lib/metrics/editor-metrics'
 import { $canvasSelection, clearCanvasState } from '$src/stores/canvas'
+import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
 import {
   createLargeWorkflowFixture,
   LARGE_WORKFLOW_EDGE_COUNT,
@@ -157,6 +159,24 @@ describe('250-node canvas performance contract', () => {
     ).toBe(true)
   })
 
+  it('reuses unchanged render objects when one dependency changes at canvas capacity', () => {
+    const fixture = createLargeWorkflowFixture()
+    const project = createMemoizedCanvasProjector()
+    const first = project(fixture.projection, fixture.layout)
+    const changedProjection = {
+      ...fixture.projection,
+      edges: fixture.projection.edges.filter(({ source, target }) => source !== 'node-027' || target !== 'node-028'),
+    }
+
+    const second = project(changedProjection, fixture.layout)
+
+    expect(second.nodes).toBe(first.nodes)
+    expect(second.positions).toBe(first.positions)
+    expect(second.edges.find(({ id }) => id === 'dependency:node-001->node-002')).toBe(
+      first.edges.find(({ id }) => id === 'dependency:node-001->node-002'),
+    )
+  })
+
   it('keeps the 250/500 boundary visual and treats larger workflows as non-blocking YAML-only documents', () => {
     const fixture = createLargeWorkflowFixture()
     const atLimit = canvasCapacityForProjection(fixture.projection)
@@ -178,6 +198,27 @@ describe('250-node canvas performance contract', () => {
     expect(atLimit).toEqual({ visual: true, blocking: false, nodeCount: 250, edgeCount: 500 })
     expect(overLimit).toMatchObject({ visual: false, blocking: false, nodeCount: 251, edgeCount: 500 })
     expect(overLimit.advisory).toMatch(/preserved.*YAML-only/i)
+  })
+
+  it('source-patches dependencies at the exact 250/500 boundary', async () => {
+    const fixture = createLargeWorkflowFixture()
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')
+    if (!contract) throw new Error('Expected the bundled Hermes legacy contract.')
+
+    const disconnected = patchWorkflowDocument(
+      fixture.yaml,
+      { type: 'set-dependencies', nodeId: 'node-028', dependsOn: ['node-018'] },
+      contract,
+    )
+    expect(disconnected).toMatchObject({ ok: true })
+    if (!disconnected.ok) return
+
+    const connected = patchWorkflowDocument(
+      disconnected.text,
+      { type: 'set-dependencies', nodeId: 'node-028', dependsOn: ['node-018', 'node-027'] },
+      contract,
+    )
+    expect(connected).toMatchObject({ ok: true })
   })
 
   it('batches a burst of selection events into one global selection publication', async () => {

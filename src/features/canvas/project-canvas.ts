@@ -47,13 +47,89 @@ export function createMemoizedCanvasProjector(): ProjectCanvasAdapter {
     ) {
       return previousResult
     }
-    const result = projectCanvas(projection, savedLayout, options)
+    const projected = projectCanvas(projection, savedLayout, options)
+    const result = previousResult ? reuseUnchangedCanvasElements(previousResult, projected) : projected
     previousProjection = projection
     previousLayout = savedLayout
     previousOptions = options
     previousResult = result
     return result
   }
+}
+
+function reuseUnchangedCanvasElements(previous: CanvasProjection, next: CanvasProjection): CanvasProjection {
+  const previousNodes = new Map(previous.nodes.map((node) => [node.id, node]))
+  const nodes = next.nodes.map((node) => {
+    const candidate = previousNodes.get(node.id)
+    return candidate && sameCanvasNode(candidate, node) ? candidate : node
+  })
+  const previousEdges = new Map(previous.edges.map((edge) => [edge.id, edge]))
+  const edges = next.edges.map((edge) => {
+    const candidate = previousEdges.get(edge.id)
+    return candidate && sameCanvasEdge(candidate, edge) ? candidate : edge
+  })
+  return {
+    ...next,
+    nodes: sameIdentityArray(nodes, previous.nodes) ? previous.nodes : nodes,
+    edges: sameIdentityArray(edges, previous.edges) ? previous.edges : edges,
+    positions: samePositions(previous.positions, next.positions) ? previous.positions : next.positions,
+  }
+}
+
+function sameCanvasNode(left: CanvasNode, right: CanvasNode): boolean {
+  return (
+    left.id === right.id &&
+    left.type === right.type &&
+    left.position.x === right.position.x &&
+    left.position.y === right.position.y &&
+    left.initialWidth === right.initialWidth &&
+    left.initialHeight === right.initialHeight &&
+    left.sourcePosition === right.sourcePosition &&
+    left.targetPosition === right.targetPosition &&
+    left.draggable === right.draggable &&
+    left.connectable === right.connectable &&
+    left.selectable === right.selectable &&
+    left.focusable === right.focusable &&
+    left.ariaLabel === right.ariaLabel &&
+    left.data.id === right.data.id &&
+    left.data.kind === right.data.kind &&
+    left.data.summary === right.data.summary &&
+    left.data.errorCount === right.data.errorCount &&
+    left.data.requiredIssueCount === right.data.requiredIssueCount &&
+    left.data.stale === right.data.stale &&
+    left.data.readOnly === right.data.readOnly
+  )
+}
+
+function sameCanvasEdge(left: CanvasEdge, right: CanvasEdge): boolean {
+  return (
+    left.id === right.id &&
+    left.type === right.type &&
+    left.source === right.source &&
+    left.target === right.target &&
+    left.selectable === right.selectable &&
+    left.focusable === right.focusable &&
+    left.interactionWidth === right.interactionWidth &&
+    left.ariaLabel === right.ariaLabel &&
+    left.data?.stale === right.data?.stale &&
+    left.data?.readOnly === right.data?.readOnly
+  )
+}
+
+function sameIdentityArray<T>(left: readonly T[], right: readonly T[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function samePositions(
+  left: Readonly<Record<string, CanvasPosition>>,
+  right: Readonly<Record<string, CanvasPosition>>,
+): boolean {
+  const leftIds = Object.keys(left)
+  const rightIds = Object.keys(right)
+  return (
+    leftIds.length === rightIds.length &&
+    leftIds.every((id) => left[id]?.x === right[id]?.x && left[id]?.y === right[id]?.y)
+  )
 }
 
 export function canvasCapacityForProjection(projection: WorkflowProjection): CanvasCapacity {

@@ -1,17 +1,21 @@
-import { expect, test } from '@playwright/test'
-import { replaceDefinitionYaml } from './support'
+import { expect, test, type Page } from '@playwright/test'
 
-const REPEATED_DIAGNOSTICS_YAML = `name: Repeated diagnostics
-description: Exercise bounded Problems rendering.
-nodes:
-${Array.from({ length: 40 }, (_, index) => `  - id: duplicate\n    prompt: Diagnostic ${index + 1}.\n`).join('')}`
-
-async function openSeededAuthoringPair(page: import('@playwright/test').Page): Promise<void> {
-  await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/')
-  await page.getByRole('button', { name: 'Open Folder' }).first().click()
-  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
-  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+async function expectViewportContained(page: Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const root = document.documentElement
+    const status = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
+    return {
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+      scrollWidth: root.scrollWidth,
+      clientWidth: root.clientWidth,
+      statusBottom: status.getBoundingClientRect().bottom,
+      innerHeight,
+    }
+  })
+  expect(geometry.scrollHeight).toBe(geometry.clientHeight)
+  expect(geometry.scrollWidth).toBe(geometry.clientWidth)
+  expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.innerHeight)
 }
 
 test('keeps the desktop shell and status bar inside the viewport', async ({ page }) => {
@@ -124,6 +128,36 @@ test('Settings has no horizontal overflow at desktop and 512px reflow widths', a
     expect(geometry.pageOverflow).toBe(0)
     expect(geometry.rootOverflow).toBe(0)
     expect(geometry.rootScrollHeight).toBe(geometry.rootClientHeight)
+    await expectViewportContained(page)
+  }
+})
+
+test('many contracts and brand packs retain a reachable final action at every approved geometry', async ({ page }) => {
+  await page.goto('/?scenario=long-settings')
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+
+  for (const size of [
+    { width: 1024, height: 700 },
+    { width: 1280, height: 800 },
+    { width: 1440, height: 900 },
+    { width: 512, height: 350 },
+  ]) {
+    await page.setViewportSize(size)
+    await page.getByRole('tab', { name: 'Appearance' }).click()
+    const brandActions = page.getByRole('list', { name: 'Available brand packs' }).getByRole('button')
+    expect(await brandActions.count()).toBeGreaterThanOrEqual(37)
+    const lastBrandAction = brandActions.last()
+    await lastBrandAction.scrollIntoViewIfNeeded()
+    await expect(lastBrandAction).toBeVisible()
+    await expectViewportContained(page)
+
+    await page.getByRole('tab', { name: 'Workflow Contracts' }).click()
+    const contracts = page.getByRole('list', { name: 'Available contracts' }).getByRole('listitem')
+    expect(await contracts.count()).toBeGreaterThanOrEqual(14)
+    const lastContractAction = contracts.last().getByRole('button', { name: /^Remove / })
+    await lastContractAction.scrollIntoViewIfNeeded()
+    await expect(lastContractAction).toBeVisible()
+    await expectViewportContained(page)
   }
 })
 
@@ -155,12 +189,17 @@ test('Inspector and Problems keep their final controls reachable inside the boun
 }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
-  await openSeededAuthoringPair(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/?scenario=advanced-inspector')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
+  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
 
   await page.getByRole('group', { name: 'prompt node prepare', exact: true }).click()
   const inspector = page.locator('aside[aria-label="Inspector"]')
   await inspector.getByRole('tab', { name: 'Advanced' }).click()
   const inspectorBody = inspector.locator('[data-scroll-owner="inspector"]')
+  expect(await inspectorBody.locator('button, input, textarea, select').count()).toBeGreaterThanOrEqual(12)
   const finalInspectorControl = inspectorBody.locator('button, input, textarea, select').last()
   await finalInspectorControl.scrollIntoViewIfNeeded()
   await finalInspectorControl.focus()
@@ -177,7 +216,9 @@ test('Inspector and Problems keep their final controls reachable inside the boun
     inspectorBodyBox!.y + inspectorBodyBox!.height,
   )
 
-  await replaceDefinitionYaml(page, REPEATED_DIAGNOSTICS_YAML)
+  await page.goto('/?scenario=repeated-diagnostics')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
   const problems = page.getByRole('region', { name: 'Problems' })
   await expect(problems.getByRole('button')).toHaveCount(39)
   const problemsGroups = problems.locator('[data-scroll-owner="problems"]')

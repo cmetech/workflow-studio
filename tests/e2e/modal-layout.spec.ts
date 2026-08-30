@@ -128,6 +128,21 @@ async function assertRealResponsiveModal(
   expect(footerBoxAfter).not.toBeNull()
   expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  const shellGeometry = await page.evaluate(() => {
+    const root = document.documentElement
+    const status = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
+    return {
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+      scrollWidth: root.scrollWidth,
+      clientWidth: root.clientWidth,
+      statusBottom: status.getBoundingClientRect().bottom,
+      innerHeight,
+    }
+  })
+  expect(shellGeometry.scrollHeight).toBe(shellGeometry.clientHeight)
+  expect(shellGeometry.scrollWidth).toBe(shellGeometry.clientWidth)
+  expect(shellGeometry.statusBottom).toBeLessThanOrEqual(shellGeometry.innerHeight)
 }
 
 test('New Workflow is a top-layer modal with reachable actions at reflow size', async ({ page }) => {
@@ -269,6 +284,8 @@ test('Brand Preview is a top-layer modal with persistent preview actions', async
 test('Setup is a top-layer modal with bounded progress content and persistent actions', async ({ page }) => {
   await page.goto('/?scenario=setup-update')
   const dialog = page.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+  await expect(dialog.getByLabel('Setup output')).toHaveValue(/deterministic-setup-log-12/)
+  await expect(dialog).toContainText('deeply nested offline resource verification path')
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
 })
 
@@ -279,5 +296,7 @@ test('Update is a top-layer modal with bounded logs and persistent actions', asy
     .getByRole('button', { name: 'Retry' })
     .click()
   const dialog = page.getByRole('dialog', { name: 'Update Workflow Studio' })
+  await expect(dialog.getByLabel('Update output')).toHaveValue(/deterministic-update-log-12/)
+  await expect(dialog).toContainText('signed updater verification message')
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
 })

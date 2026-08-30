@@ -71,6 +71,7 @@
     $documentSession as documentSessionStore,
     $documentSyncOrigins as documentSyncOriginsStore,
     openDocumentSession,
+    receiveDocumentAnalysis,
   } from '$src/stores/documents'
   import { $activeLayout as activeLayoutStore, setActiveLayout } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
@@ -822,9 +823,11 @@
       projection,
       contract,
       positions: canvasPositionsStore.get(),
-      commit: (pair, transaction) => {
+      applyMutation: (pair, mutation, contract) => applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker),
+      commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
         documentWorkspace.changed(pair, 'visual')
+        if (analysis) receiveDocumentAnalysis(analysis)
       },
       commitPositions: async (updates) => {
         const active = activeLayoutStore.get()
@@ -1278,11 +1281,7 @@
     await refreshWorkspace()
   }
 
-  function openExampleDocumentation(
-    example: ExampleDescriptor,
-    topicId: string,
-    opener: HTMLButtonElement,
-  ): void {
+  function openExampleDocumentation(example: ExampleDescriptor, topicId: string, opener: HTMLButtonElement): void {
     rememberPageOpener(opener)
     exampleDocumentationProfile = example.profile
     documentationNavigationSequence += 1
@@ -1326,6 +1325,15 @@
               diskHash: null,
             },
     }
+    return analyzePairInWorker(pair, input.contract)
+  }
+
+  function analyzePairInWorker(pair: WorkflowPairText, contract: AuthoringContract): Promise<DocumentAnalysis> {
+    if (typeof Worker === 'undefined') {
+      return Promise.reject(
+        new WorkspaceActionError('analysis_unavailable', 'Document analysis worker is unavailable.'),
+      )
+    }
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL('../workers/document-worker.ts', import.meta.url), { type: 'module' })
       const client = new DocumentClient(worker, {
@@ -1340,7 +1348,7 @@
           reject(new WorkspaceActionError(error.code, error.message))
         },
       })
-      client.schedule(pair, input.contract, 'explicit-validate')
+      client.schedule(pair, contract, 'explicit-validate')
     })
   }
 
@@ -1876,7 +1884,7 @@
       class="panel left-panel"
       class:drawer-open={!workspacePanelHidden}
       hidden={authoringHidden}
-      {...(workspacePanelHidden ? { inert: true } : {})}
+      {...workspacePanelHidden ? { inert: true } : {}}
       aria-label="Workspace panel"
       aria-hidden={workspacePanelHidden ? 'true' : undefined}
     >
@@ -1936,7 +1944,7 @@
       data-has-problems={$documentSessionStore.pair ? 'true' : 'false'}
       aria-label="Workflow workspace"
       hidden={authoringHidden}
-      {...(authoringHidden ? { inert: true } : {})}
+      {...authoringHidden ? { inert: true } : {}}
       aria-hidden={authoringHidden ? 'true' : undefined}
     >
       <div class="editor-tabs" role="group" aria-label="Editor mode">
@@ -1997,7 +2005,12 @@
                   layout={$activeLayoutStore}
                   workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
                   transitionLocked={canvasTransitionLocked}
-                  surfaceActive={!authoringHidden}
+                  surfaceActive={!authoringHidden &&
+                    !(
+                      $activeEditorMode === 'split' &&
+                      workbenchPresentation.split === 'tabs' &&
+                      compactSplitPane === 'yaml'
+                    )}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
                   staleSource={canvasStaleSource}
@@ -2121,7 +2134,7 @@
       class="panel inspector-panel"
       class:drawer-open={!inspectorPanelHidden}
       hidden={authoringHidden}
-      {...(inspectorPanelHidden ? { inert: true } : {})}
+      {...inspectorPanelHidden ? { inert: true } : {}}
       aria-label="Inspector"
       aria-hidden={inspectorPanelHidden ? 'true' : undefined}
     >
@@ -2155,11 +2168,7 @@
       />
     </aside>
     {#if workbenchSurface === 'welcome'}
-      <ActivityPage
-        activity="welcome"
-        title="Welcome"
-        description="Open a local folder to begin authoring workflows."
-      >
+      <ActivityPage activity="welcome" title="Welcome" description="Open a local folder to begin authoring workflows.">
         <OpenWorkspace
           {recent}
           disabled={!setupReady}
@@ -2260,7 +2269,7 @@
           workspaceRoot={$workspace.rootPath ?? undefined}
           versionReady={Boolean(
             $documentSessionStore.pair &&
-              pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
+            pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
           )}
           findings={$documentSessionStore.analysis?.issues.map(({ message }) => message) ?? []}
           onInitialize={initializeGitRepository}
@@ -2665,6 +2674,7 @@
     position: relative;
     isolation: isolate;
     grid-template-columns: 3rem var(--docked-left-panel-width) minmax(0, 1fr) var(--docked-right-panel-width);
+    grid-template-rows: minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
   }
@@ -2679,7 +2689,7 @@
 
   .left-panel[hidden],
   .inspector-panel[hidden] {
-    display: block;
+    display: none;
     pointer-events: none;
   }
 
@@ -2792,7 +2802,7 @@
   }
 
   .editor-column[hidden] {
-    display: grid;
+    display: none;
     pointer-events: none;
   }
 

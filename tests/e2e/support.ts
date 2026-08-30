@@ -10,7 +10,11 @@ export async function openSeededPair(page: Page, query = ''): Promise<void> {
 }
 
 export async function replaceDefinitionYaml(page: Page, text: string): Promise<void> {
-  await page.getByRole('button', { name: 'YAML', exact: true }).click()
+  await page
+    .getByRole('group', { name: 'Editor mode' })
+    .locator(':scope > button')
+    .filter({ hasText: /^YAML$/ })
+    .click()
   const editor = page.locator('[aria-label="Definition YAML"] .cm-content')
   await editor.click()
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')

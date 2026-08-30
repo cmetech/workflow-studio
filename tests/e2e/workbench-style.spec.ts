@@ -30,7 +30,7 @@ test('centers activity buttons and icons on the rail axis', async ({ page }) => 
   const rail = page.getByRole('navigation', { name: 'Activities' })
   const explorer = page.getByRole('button', { name: 'Explorer', exact: true })
   await expect(explorer).toBeVisible()
-  await expect(explorer).toHaveAttribute('aria-pressed', 'true')
+  await expect(explorer).toHaveAttribute('aria-expanded', 'true')
 
   const geometry = await rail.evaluate((element) => {
     const center = (node: Element) => {
@@ -82,7 +82,10 @@ test('renders semantic and established technical surfaces with bundled Geist Mon
     .first()
     .click()
   families.examplePreview = await fontFamily(
-    page.getByRole('region', { name: 'Example preview' }).locator('pre').first(),
+    page
+      .getByRole('region', { name: /preview$/ })
+      .locator('pre')
+      .first(),
   )
 
   await page.getByRole('button', { name: 'Git', exact: true }).click()
@@ -91,6 +94,7 @@ test('renders semantic and established technical surfaces with bundled Geist Mon
   )
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('tab', { name: 'About' }).click()
   families.contractDigest = await fontFamily(
     page.getByRole('region', { name: 'About Workflow Studio' }).locator('code.digest').first(),
   )

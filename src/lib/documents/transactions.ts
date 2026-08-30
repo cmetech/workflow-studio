@@ -1,6 +1,6 @@
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
-import type { ValidationIssue, WorkflowPairText } from './types'
+import type { DocumentAnalysis, ValidationIssue, WorkflowPairText } from './types'
 import { editDocumentText } from './revisions'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
 import { patchWorkflowDocument, type MutationReference } from '$src/lib/yaml/patch-document'
@@ -35,7 +35,7 @@ export interface YamlTransaction {
 }
 
 export type ApplyWorkflowMutationResult =
-  | { ok: true; pair: WorkflowPairText; transaction: YamlTransaction }
+  | { ok: true; pair: WorkflowPairText; transaction: YamlTransaction; analysis?: DocumentAnalysis }
   | {
       ok: false
       code: 'mutation_invalid_workflow'
@@ -61,10 +61,13 @@ export type ApplyWorkflowMutationResult =
       message: string
     }
 
+export type MutationAnalyzer = (pair: WorkflowPairText, contract: AuthoringContract) => Promise<DocumentAnalysis>
+
 export async function applyWorkflowMutation(
   pair: WorkflowPairText,
   mutation: WorkflowMutation,
   contract: AuthoringContract,
+  analyze: MutationAnalyzer = analyzeMutationLocally,
 ): Promise<ApplyWorkflowMutationResult> {
   const documentKind = 'document' in mutation ? mutation.document : 'definition'
   const currentDocument = documentKind === 'definition' ? pair.definition : pair.companion
@@ -86,31 +89,11 @@ export async function applyWorkflowMutation(
   }
 
   const proposedPair = editDocumentText(pair, documentKind, proposedText)
+  let structuralAnalysis: DocumentAnalysis | undefined
   if (requiresStructuralValidation(mutation)) {
-    const analysis = await analyzeWorkflowPair(
-      {
-        type: 'analyze',
-        requestId: 'mutation-validation',
-        workflowId: proposedPair.workflowId,
-        pairGeneration: proposedPair.generation,
-        definition: {
-          path: proposedPair.definition.path,
-          text: proposedPair.definition.text,
-          revision: proposedPair.definition.revision,
-        },
-        companion: proposedPair.companion
-          ? {
-              path: proposedPair.companion.path,
-              text: proposedPair.companion.text,
-              revision: proposedPair.companion.revision,
-            }
-          : null,
-        profile: contract.profile,
-        contractDigest: contract.contract_digest,
-        reason: 'explicit-validate',
-      },
-      contract,
-    )
+    await yieldBeforeStructuralValidation()
+    const analysis = await analyze(proposedPair, contract)
+    structuralAnalysis = analysis
     if (!analysis.structurallyValid && !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract))) {
       return {
         ok: false,
@@ -125,6 +108,7 @@ export async function applyWorkflowMutation(
   return {
     ok: true,
     pair: proposedPair,
+    ...(structuralAnalysis ? { analysis: structuralAnalysis } : {}),
     transaction: {
       mutation,
       label: mutationLabel(mutation),
@@ -137,6 +121,39 @@ export async function applyWorkflowMutation(
       selection: selectionHint(mutation),
     },
   }
+}
+
+function analyzeMutationLocally(pair: WorkflowPairText, contract: AuthoringContract): Promise<DocumentAnalysis> {
+  return analyzeWorkflowPair(
+    {
+      type: 'analyze',
+      requestId: 'mutation-validation',
+      workflowId: pair.workflowId,
+      pairGeneration: pair.generation,
+      definition: {
+        path: pair.definition.path,
+        text: pair.definition.text,
+        revision: pair.definition.revision,
+      },
+      companion: pair.companion
+        ? {
+            path: pair.companion.path,
+            text: pair.companion.text,
+            revision: pair.companion.revision,
+          }
+        : null,
+      profile: contract.profile,
+      contractDigest: contract.contract_digest,
+      reason: 'explicit-validate',
+    },
+    contract,
+  )
+}
+
+async function yieldBeforeStructuralValidation(): Promise<void> {
+  const browserScheduler = (globalThis as typeof globalThis & { readonly scheduler?: { yield?: () => Promise<void> } })
+    .scheduler
+  if (browserScheduler?.yield) await browserScheduler.yield()
 }
 
 function progressiveDraftMutation(mutation: WorkflowMutation, contract: AuthoringContract): boolean {

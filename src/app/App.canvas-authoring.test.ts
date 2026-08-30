@@ -233,7 +233,31 @@ import {
 } from '$src/stores/shell'
 import { NODE_KIND_DRAG_TYPE } from '$src/features/canvas/node-kind-options'
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
+import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/workers/document-worker'
 import App from './App.svelte'
+
+class InlineDocumentWorker {
+  private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+  private readonly cache = createDocumentWorkerCache()
+
+  postMessage(message: DocumentWorkerRequest): void {
+    void processDocumentWorkerRequest(message, this.cache).then((response) => {
+      for (const listener of this.listeners) listener({ data: response } as MessageEvent<DocumentWorkerResponse>)
+    })
+  }
+
+  addEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+    this.listeners.add(listener)
+  }
+
+  removeEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
+    this.listeners.delete(listener)
+  }
+
+  terminate(): void {
+    this.listeners.clear()
+  }
+}
 
 const source = `name: Flow
 description: App authoring
@@ -372,6 +396,7 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
 
 describe('App canvas authoring composition', () => {
   beforeAll(() => {
+    vi.stubGlobal('Worker', InlineDocumentWorker)
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn(() => ({

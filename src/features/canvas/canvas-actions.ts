@@ -17,7 +17,11 @@ export interface CanvasActionContext {
   readonly contract: AuthoringContract
   readonly positions: Readonly<Record<string, CanvasPosition>>
   readonly applyMutation?: typeof applyWorkflowMutation
-  readonly commit: (pair: WorkflowPairText, transaction: YamlTransaction) => void | Promise<void>
+  readonly commit: (
+    pair: WorkflowPairText,
+    transaction: YamlTransaction,
+    analysis?: import('$src/lib/documents/types').DocumentAnalysis,
+  ) => void | Promise<void>
   readonly commitPositions: (updates: Readonly<Record<string, CanvasPosition | null>>) => void | Promise<void>
   readonly announce: (message: string) => void
 }
@@ -293,7 +297,7 @@ export async function commitMutation(
     context.announce(message)
     return { status: 'rejected', code: result.code, message }
   }
-  await context.commit(result.pair, result.transaction)
+  await context.commit(result.pair, result.transaction, result.analysis)
   return { status: 'committed', pair: result.pair, transaction: result.transaction }
 }
 
