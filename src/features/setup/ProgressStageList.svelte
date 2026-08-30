@@ -67,5 +67,38 @@
   }
   .message {
     grid-column: 2 / -1;
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 36rem) {
+    li {
+      grid-template-columns: 0.75rem minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      align-items: start;
+    }
+
+    .indicator {
+      grid-row: 1 / 3;
+      margin-top: 0.2rem;
+    }
+
+    .label,
+    .status {
+      grid-row: 1;
+    }
+
+    .status,
+    .duration {
+      grid-column: 3;
+      text-align: right;
+    }
+
+    .message,
+    .duration {
+      grid-row: 2;
+    }
+
+    .message {
+      grid-column: 2;
+    }
   }
 </style>

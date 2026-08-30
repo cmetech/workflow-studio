@@ -133,6 +133,8 @@ describe('BrandSettings', () => {
     const confirm = screen.getByRole('button', { name: 'Revert to LOOP24 and remove' })
 
     expect(dialog).toHaveAttribute('open')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     expect(confirm).toHaveAttribute('data-variant', 'danger')
     await waitFor(() => expect(cancel).toHaveFocus())
     await fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true })

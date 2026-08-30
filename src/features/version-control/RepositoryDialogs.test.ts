@@ -10,6 +10,8 @@ describe('repository mutation confirmations', () => {
 
     expect(screen.getByText('/selected/workspace')).toBeInTheDocument()
     expect(screen.getByText(/does not create a commit/i)).toBeInTheDocument()
+    expect(screen.getByRole('dialog').querySelector('[data-modal-body]')).not.toBeNull()
+    expect(screen.getByRole('dialog').querySelector('[data-modal-actions]')).not.toBeNull()
     await fireEvent.click(screen.getByRole('button', { name: 'Initialize repository' }))
     expect(confirm).toHaveBeenCalledOnce()
   })
@@ -19,6 +21,8 @@ describe('repository mutation confirmations', () => {
     render(RepositoryIdentityDialog, { root: '/selected/workspace', onSave: save, onCancel: vi.fn() })
 
     expect(screen.getByText(/only this repository/i)).toBeInTheDocument()
+    expect(screen.getByRole('dialog').querySelector('[data-modal-body]')).not.toBeNull()
+    expect(screen.getByRole('dialog').querySelector('[data-modal-actions]')).not.toBeNull()
     const button = screen.getByRole('button', { name: 'Save repository identity' })
     expect(button).toBeDisabled()
     await fireEvent.input(screen.getByLabelText('Author name'), { target: { value: 'Local User' } })

@@ -32,7 +32,10 @@ describe('UpdateOverlay', () => {
   it('renders real byte progress, plain release notes, a true modal, and safe cancellation', async () => {
     const cancel = vi.fn()
     render(UpdateOverlay, { props: { state: state(), oncancel: cancel } })
-    expect(screen.getByRole('dialog', { name: 'Update Workflow Studio' })).toHaveAttribute('aria-modal', 'true')
+    const dialog = screen.getByRole('dialog', { name: 'Update Workflow Studio' })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     expect(screen.getByRole('progressbar', { name: 'Update download progress' })).toHaveAttribute('aria-valuenow', '25')
     expect(screen.getByText('1.0 KiB of 4.0 KiB · 512 B/s')).toBeVisible()
     expect(screen.getByText('Security fixes. No remote markup.')).toBeVisible()

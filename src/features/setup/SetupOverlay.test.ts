@@ -45,10 +45,10 @@ describe('SetupOverlay', () => {
   it('renders a true labelled modal with real stage progress and a quiet status summary', () => {
     render(SetupOverlay, { props: { state: state(), now: 3_500 } })
 
-    expect(screen.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).toHaveAttribute(
-      'aria-modal',
-      'true',
-    )
+    const dialog = screen.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50')
     expect(screen.getByText('Verify bundled resources')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Verify bundled resources, 50% complete')

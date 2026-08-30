@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { CreateVersionOutcome } from '$src/lib/git/version-actions'
 
   interface Props {
@@ -17,10 +17,6 @@
   let pending = $state(false)
   let error = $state<string | null>(null)
   let terminal = $state<CreateVersionOutcome | null>(null)
-  let messageInput: HTMLInputElement
-  let dialogElement: HTMLDialogElement
-
-  onMount(() => messageInput.focus())
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault()
@@ -47,43 +43,20 @@
     error = null
   }
 
-  function handleDialogKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      if (!pending) onCancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const controls = Array.from(
-      dialogElement.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
-    )
-    if (controls.length === 0) return
-    const first = controls[0]!
-    const last = controls.at(-1)!
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
   function boundedError(cause: unknown, fallback: string): string {
     const message = cause instanceof Error && cause.message ? cause.message : fallback
     return message.length <= 4096 ? message : `${message.slice(0, 4096)}…`
   }
 </script>
 
-<dialog
-  bind:this={dialogElement}
-  open
-  aria-labelledby="create-version-title"
-  aria-modal="true"
-  aria-busy={pending}
-  onkeydown={handleDialogKeydown}
+<ModalShell
+  titleId="create-version-title"
+  busy={pending}
+  dismissible={!pending}
+  initialFocusSelector="[data-version-message]"
+  {onCancel}
 >
-  <form onsubmit={submit}>
+  <form id="create-version-form" onsubmit={submit}>
     <h2 id="create-version-title">Create local version</h2>
     <p>Only these workflow files will be committed:</p>
     <ul class="files">
@@ -94,7 +67,7 @@
     <label>
       Version message
       <input
-        bind:this={messageInput}
+        data-version-message
         value={message}
         oninput={editMessage}
         required
@@ -117,26 +90,22 @@
     {:else if terminal?.status === 'unknown'}
       <p role="alert">{terminal.message} Inspect repository before retrying.</p>
     {/if}
-    <footer>
+  </form>
+  {#snippet actions()}
+    <div class="dialog-actions">
       {#if terminal}
         <button type="button" onclick={onCancel}>Close</button>
       {:else}
         <button type="button" onclick={onCancel} disabled={pending}>Cancel</button>
-        <button type="submit" disabled={pending || !ready || !message.trim()}>Create version</button>
+        <button form="create-version-form" type="submit" disabled={pending || !ready || !message.trim()}
+          >Create version</button
+        >
       {/if}
-    </footer>
-  </form>
-</dialog>
+    </div>
+  {/snippet}
+</ModalShell>
 
 <style>
-  dialog {
-    max-width: 44rem;
-    padding: 1rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    color: var(--color-text);
-    background: var(--color-surface);
-  }
   form,
   label {
     display: grid;
@@ -152,10 +121,15 @@
     background: var(--color-canvas);
     white-space: pre-wrap;
   }
-  footer {
+  .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.5rem;
+  }
+  code,
+  li {
+    overflow-wrap: anywhere;
   }
   .note {
     color: var(--color-text-muted);

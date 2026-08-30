@@ -8,7 +8,9 @@ import { editDocumentText } from '$src/lib/documents/revisions'
 import {
   $inspectorPanelOpen,
   $workspacePanelOpen,
+  closeKeyboardShortcuts,
   closeTransientPanels,
+  openKeyboardShortcuts,
   showActivity,
   showEditorMode,
 } from '$src/stores/shell'
@@ -348,6 +350,48 @@ describe('App', () => {
 
     await waitFor(() => expect(gitInit).toHaveBeenCalledWith('/current'))
     expect(gitInit).not.toHaveBeenCalledWith('/old')
+  })
+
+  it('presents recovery and keyboard shortcuts through the shared modal shell', async () => {
+    render(App)
+    await waitForSetupReady()
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      recoveryOffers: [
+        {
+          schemaVersion: 1,
+          workflowId: 'workflow:workspace:recovery.yaml',
+          generation: 2,
+          savedGeneration: 1,
+          definition: {
+            path: 'recovery.yaml',
+            text: 'name: Recovery\n',
+            revision: 2,
+            savedRevision: 1,
+            diskHash: 'a'.repeat(64),
+          },
+          companion: null,
+          updatedAt: '2026-08-30T12:00:00.000Z',
+        },
+      ],
+    })
+    await tick()
+
+    const recovery = screen.getByRole('dialog', { name: 'Recover unsaved workflow?' })
+    expect(recovery.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(recovery.querySelector('[data-modal-actions]')).not.toBeNull()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recover' })).toHaveFocus())
+
+    $documentWorkspace.set({ ...$documentWorkspace.get(), recoveryOffers: [] })
+    openKeyboardShortcuts()
+    await tick()
+
+    const shortcuts = screen.getByRole('dialog', { name: 'Keyboard shortcuts' })
+    expect(shortcuts.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(shortcuts.querySelector('[data-modal-actions]')).not.toBeNull()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close keyboard shortcuts' })).toHaveFocus())
+    closeKeyboardShortcuts()
+    await tick()
   })
 
   it('does not acquire or dispose Git history authority when the application unmounts without history work', async () => {
@@ -854,6 +898,7 @@ nodes:
     await tick()
 
     expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: analysis_missing_or_stale')
+    expect(screen.getByRole('alert')).toHaveAttribute('data-application-notice')
   })
 
   it('surfaces a dirty active file removed outside the application', async () => {

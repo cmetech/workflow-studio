@@ -217,3 +217,54 @@ test('Command Palette is a top-layer modal with reachable search results', async
   const dialog = page.getByRole('dialog', { name: 'Command palette' })
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close command palette' }))
 })
+
+test('Create Version is a top-layer modal with a reachable action after long content', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Git', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Create version…' })
+    .evaluate((element) => (element as HTMLButtonElement).click())
+  const dialog = page.getByRole('dialog', { name: 'Create local version' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create version' }))
+})
+
+test('Keyboard Shortcuts is a top-layer modal with a persistent close action', async ({ page }) => {
+  await openSeededPair(page)
+  await page.keyboard.press('F1')
+  await page.getByRole('combobox', { name: 'Search commands' }).fill('Keyboard Shortcuts')
+  await page.keyboard.press('Enter')
+  const dialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close keyboard shortcuts' }))
+})
+
+test('Brand Preview is a top-layer modal with persistent preview actions', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page
+    .getByRole('button', { name: 'Import brand pack' })
+    .evaluate((element) => (element as HTMLButtonElement).click())
+  await page
+    .getByRole('button', { name: 'Import brand pack' })
+    .evaluate((element) => (element as HTMLButtonElement).click())
+  await page
+    .getByRole('button', { name: 'Preview Northstar Studio' })
+    .evaluate((element) => (element as HTMLButtonElement).click())
+  const dialog = page.getByRole('dialog', { name: 'Preview Northstar Studio' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Activate Northstar Studio' }))
+})
+
+test('Setup is a top-layer modal with bounded progress content and persistent actions', async ({ page }) => {
+  await page.goto('/?scenario=setup-update')
+  const dialog = page.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
+})
+
+test('Update is a top-layer modal with bounded logs and persistent actions', async ({ page }) => {
+  await page.goto('/?scenario=setup-update')
+  await page
+    .getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+    .getByRole('button', { name: 'Retry' })
+    .click()
+  const dialog = page.getByRole('dialog', { name: 'Update Workflow Studio' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
+})

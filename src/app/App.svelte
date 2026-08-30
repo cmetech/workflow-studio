@@ -137,6 +137,8 @@
   import ActivityRail from './ActivityRail.svelte'
   import ActivityPage from './ActivityPage.svelte'
   import StatusBar from './StatusBar.svelte'
+  import ModalShell from './ModalShell.svelte'
+  import ApplicationNotice from './ApplicationNotice.svelte'
   import X from 'lucide-svelte/icons/x'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
@@ -1826,18 +1828,28 @@
     </div>
   </header>
 
-  {#if contractsLoaded && contracts.length === 0}
-    <p class="contract-unavailable" aria-live="polite">
-      No validated production authoring contract is bundled. Contract-dependent creation and import are disabled.
-    </p>
-  {/if}
-  {#if contractCacheAdvisories.length > 0}
-    <p class="contract-cache-advisory" role="status" aria-label="Contract cache advisory">
-      {contractCacheAdvisories.map(({ message }) => message).join(' ')}
-    </p>
-  {/if}
-  {#if workspaceError}
-    <p class="workspace-error" role="alert">{workspaceError}</p>
+  {#if (contractsLoaded && contracts.length === 0) || contractCacheAdvisories.length > 0 || workspaceError}
+    <section class="application-notices" aria-label="Application notices">
+      {#if contractsLoaded && contracts.length === 0}
+        <ApplicationNotice
+          kind="warning"
+          message="No validated production authoring contract is bundled. Contract-dependent creation and import are disabled."
+        />
+      {/if}
+      {#if contractCacheAdvisories.length > 0}
+        <p class="contract-cache-advisory" role="status" aria-label="Contract cache advisory">
+          {contractCacheAdvisories.map(({ message }) => message).join(' ')}
+        </p>
+      {/if}
+      {#if workspaceError}
+        <ApplicationNotice
+          kind="error"
+          message={workspaceError}
+          dismissible
+          onDismiss={() => (workspaceError = null)}
+        />
+      {/if}
+    </section>
   {/if}
 
   <div
@@ -2053,7 +2065,9 @@
           }}
         />
         {#if $documentWorkspaceState.analysisError}
-          <p class="document-outcome" role="alert">{$documentWorkspaceState.analysisError}</p>
+          <div class="document-outcome">
+            <ApplicationNotice kind="error" message={$documentWorkspaceState.analysisError} />
+          </div>
         {/if}
         {#if $documentWorkspaceState.missingChange}
           <div class="document-outcome" role="alert">
@@ -2077,21 +2091,25 @@
           </div>
         {/if}
         {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
-          <p class="document-outcome" role="alert">
-            Save blocked: {$documentWorkspaceState.saveOutcome.reason}.
-            {$documentWorkspaceState.saveOutcome.issues.map(({ message }) => message).join(' ')}
-          </p>
+          <div class="document-outcome">
+            <ApplicationNotice
+              kind="error"
+              message={`Save blocked: ${$documentWorkspaceState.saveOutcome.reason}. ${$documentWorkspaceState.saveOutcome.issues.map(({ message }) => message).join(' ')}`}
+            />
+          </div>
         {:else if $documentWorkspaceState.saveOutcome?.status === 'partial'}
-          <p class="document-outcome" role="alert">
-            Save partially completed.
-            {[
-              $documentWorkspaceState.saveOutcome.results.definition,
-              $documentWorkspaceState.saveOutcome.results.companion,
-            ]
-              .filter((result) => result?.status === 'failed')
-              .map((result) => `${result?.path}: ${result?.message ?? result?.errorCode ?? 'failed'}`)
-              .join(' ')}
-          </p>
+          <div class="document-outcome">
+            <ApplicationNotice
+              kind="error"
+              message={`Save partially completed. ${[
+                $documentWorkspaceState.saveOutcome.results.definition,
+                $documentWorkspaceState.saveOutcome.results.companion,
+              ]
+                .filter((result) => result?.status === 'failed')
+                .map((result) => `${result?.path}: ${result?.message ?? result?.errorCode ?? 'failed'}`)
+                .join(' ')}`}
+            />
+          </div>
         {/if}
       {/if}
     </section>
@@ -2331,21 +2349,29 @@
     />
   {/if}
   {#if $documentWorkspaceState.recoveryOffers[0]}
-    <div class="recovery-offer" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="recovery-title">
+    <ModalShell
+      titleId="recovery-title"
+      dismissible={false}
+      initialFocusSelector="[data-recovery-primary]"
+      onCancel={() => undefined}
+    >
       <h2 id="recovery-title">Recover unsaved workflow?</h2>
       <p>{$documentWorkspaceState.recoveryOffers[0].definition.path}</p>
-      <button
-        type="button"
-        data-variant="primary"
-        onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}>Recover</button
-      >
-      <button
-        type="button"
-        data-variant="danger"
-        onclick={() => void documentWorkspace.discardRecovery($documentWorkspaceState.recoveryOffers[0]!.workflowId)}
-        >Discard</button
-      >
-    </div>
+      {#snippet actions()}
+        <button
+          type="button"
+          data-recovery-primary
+          data-variant="primary"
+          onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}>Recover</button
+        >
+        <button
+          type="button"
+          data-variant="danger"
+          onclick={() => void documentWorkspace.discardRecovery($documentWorkspaceState.recoveryOffers[0]!.workflowId)}
+          >Discard</button
+        >
+      {/snippet}
+    </ModalShell>
   {/if}
   {#if contextEntryId}
     <div class="context-layer">
@@ -2450,12 +2476,23 @@
     />
   {/if}
   {#if $keyboardShortcutsOpen}
-    <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-      <button type="button" data-variant="ghost" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}
-        >Close</button
-      >
+    <ModalShell
+      titleId="keyboard-shortcuts-title"
+      initialFocusSelector="[data-shortcuts-close]"
+      onCancel={closeKeyboardShortcuts}
+    >
+      <h2 id="keyboard-shortcuts-title" class="visually-hidden">Keyboard shortcuts</h2>
       <KeyboardShortcuts registry={commandSurface} />
-    </div>
+      {#snippet actions()}
+        <button
+          type="button"
+          data-shortcuts-close
+          data-variant="ghost"
+          aria-label="Close keyboard shortcuts"
+          onclick={closeKeyboardShortcuts}>Close</button
+        >
+      {/snippet}
+    </ModalShell>
   {/if}
   {#if deleteRequest}
     <DeleteImpactDialog
@@ -2532,39 +2569,33 @@
     color: var(--color-text-muted);
     font-size: 0.78rem;
   }
-  .shortcuts-dialog {
-    position: fixed;
-    z-index: 71;
-    inset: 10vh 15vw;
-    overflow: auto;
-    border: 1px solid var(--color-edge);
-    border-radius: 0.6rem;
-    color: var(--color-text);
-    background: var(--color-surface);
-    box-shadow: 0 1rem 3rem var(--color-shadow);
-  }
-  .shortcuts-dialog > button {
-    position: absolute;
-    top: 0.6rem;
-    right: 0.6rem;
-  }
-
-  .contract-unavailable,
-  .workspace-error {
+  .application-notices {
     position: fixed;
     z-index: 45;
     right: 1rem;
     bottom: 2.25rem;
-    max-width: 28rem;
-    margin: 0;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--color-warning);
-    color: var(--color-text);
-    background: var(--color-surface);
+    display: grid;
+    gap: 0.5rem;
+    max-width: calc(100vw - 2rem);
+    max-height: min(60dvh, 30rem);
+    padding: 0;
+    overflow: auto;
   }
 
-  .workspace-error {
-    border-color: var(--color-error);
+  .contract-cache-advisory {
+    width: min(32rem, calc(100vw - 2rem));
+    max-width: 100%;
+    max-height: min(40dvh, 18rem);
+    padding: 0.75rem;
+    margin: 0;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--color-border);
+    border-left: 3px solid var(--color-accent);
+    border-radius: 0.5rem;
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 0.5rem 1.5rem var(--color-shadow);
   }
 
   .titlebar {

@@ -157,7 +157,7 @@
   onkeydown={keydown}
   oncancel={(event) => event.preventDefault()}
 >
-  <section class="update-card">
+  <section class="update-card modal-shell" data-modal-shell>
     <header>
       <span class="loop-mark" aria-hidden="true">L24</span>
       <div>
@@ -165,42 +165,44 @@
         <h2 id="update-title">Update Workflow Studio</h2>
       </div>
     </header>
-    <p role="status" aria-live="polite">{statusText(update.phase)}</p>
-    {#if update.phase === 'downloading'}
-      {#if update.progressPercent === null}
-        <progress aria-label="Update download progress"></progress>
-      {:else}
-        <progress
-          max="100"
-          value={update.progressPercent}
-          aria-valuenow={update.progressPercent}
-          aria-label="Update download progress">{update.progressPercent}%</progress
-        >
+    <div class="modal-body" data-modal-body>
+      <p role="status" aria-live="polite">{statusText(update.phase)}</p>
+      {#if update.phase === 'downloading'}
+        {#if update.progressPercent === null}
+          <progress aria-label="Update download progress"></progress>
+        {:else}
+          <progress
+            max="100"
+            value={update.progressPercent}
+            aria-valuenow={update.progressPercent}
+            aria-label="Update download progress">{update.progressPercent}%</progress
+          >
+        {/if}
+        <p class="bytes">{byteSummary}</p>
       {/if}
-      <p class="bytes">{byteSummary}</p>
-    {/if}
-    {#if update.release}
-      <dl>
-        <div>
-          <dt>Version</dt>
-          <dd>{update.release.version}</dd>
-        </div>
-        <div>
-          <dt>Platform</dt>
-          <dd>{update.release.platform}</dd>
-        </div>
-      </dl>
-      {#if notes}<p class="notes">{notes}</p>{/if}
-    {/if}
-    {#if update.failure}<p role="alert" class="failure">
-        <strong>Update failed.</strong>
-        {update.failure.message}
-      </p>{/if}
-    <button bind:this={detailsButton} type="button" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>
-      {expanded ? 'Hide update log' : 'Show update log'}
-    </button>
-    <ExpandableLog {expanded} lines={update.logs} label="Update output" dataAttribute="update" />
-    <footer>
+      {#if update.release}
+        <dl>
+          <div>
+            <dt>Version</dt>
+            <dd>{update.release.version}</dd>
+          </div>
+          <div>
+            <dt>Platform</dt>
+            <dd>{update.release.platform}</dd>
+          </div>
+        </dl>
+        {#if notes}<p class="notes">{notes}</p>{/if}
+      {/if}
+      {#if update.failure}<p role="alert" class="failure">
+          <strong>Update failed.</strong>
+          {update.failure.message}
+        </p>{/if}
+      <button bind:this={detailsButton} type="button" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>
+        {expanded ? 'Hide update log' : 'Show update log'}
+      </button>
+      <ExpandableLog {expanded} lines={update.logs} label="Update output" dataAttribute="update" />
+    </div>
+    <footer data-modal-actions>
       {#if expanded}<button
           type="button"
           disabled={pending.has('copy')}
@@ -249,7 +251,9 @@
   dialog {
     width: min(44rem, calc(100vw - 2rem));
     max-height: calc(100vh - 2rem);
+    max-block-size: calc(100dvh - 2rem);
     padding: 0;
+    overflow: hidden;
     border: 1px solid var(--color-border);
     border-radius: 0.75rem;
     color: var(--color-text);
@@ -267,8 +271,20 @@
   }
   .update-card {
     display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    max-height: calc(100vh - 2rem);
+    max-block-size: calc(100dvh - 2rem);
+    min-width: 0;
+    min-height: 0;
+  }
+  .modal-body {
+    display: grid;
     gap: 1rem;
-    padding: 1.25rem;
+    min-width: 0;
+    min-height: 0;
+    padding: 1rem 1.25rem;
+    overflow: auto;
+    overflow-wrap: anywhere;
   }
   header,
   footer {
@@ -276,9 +292,13 @@
     gap: 0.75rem;
     align-items: center;
   }
+  header {
+    min-width: 0;
+    padding: 1rem 1.25rem 0;
+  }
   header p,
   header h2,
-  .update-card > p {
+  .modal-body > p {
     margin: 0;
   }
   header p {
@@ -330,6 +350,10 @@
   footer {
     justify-content: flex-end;
     flex-wrap: wrap;
+    min-width: 0;
+    padding: 0.75rem 1.25rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
   button {
     min-height: 2.25rem;
@@ -349,6 +373,15 @@
   @media (prefers-reduced-motion: reduce) {
     dialog {
       scroll-behavior: auto;
+    }
+  }
+  @media (max-width: 32rem) {
+    dl {
+      display: grid;
+    }
+
+    footer button {
+      flex: 1 1 10rem;
     }
   }
 </style>

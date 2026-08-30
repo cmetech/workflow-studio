@@ -179,7 +179,7 @@
   onkeydown={keydown}
   oncancel={(event) => event.preventDefault()}
 >
-  <section class="setup-card">
+  <section class="setup-card modal-shell" data-modal-shell>
     <header>
       <span class="loop-mark" aria-hidden="true">L24</span>
       <div>
@@ -188,26 +188,28 @@
       </div>
       <span>Elapsed {(elapsed / 1_000).toFixed(1)}s</span>
     </header>
-    <progress
-      max="100"
-      value={progress.progressPercent}
-      aria-valuenow={progress.progressPercent}
-      aria-label="Setup progress">{progress.progressPercent}%</progress
-    >
-    <p role="status" aria-live="polite">
-      {currentStage?.label ?? (progress.status === 'succeeded' ? 'Setup complete' : 'Preparing setup')}, {progress.progressPercent}%
-      complete
-    </p>
-    <ProgressStageList stages={progress.stages} />
-    {#if progress.failure}<p role="alert" class="failure">
-        <strong>Setup failed.</strong>
-        {progress.failure.message}
-      </p>{/if}
-    <button bind:this={detailsButton} type="button" aria-expanded={expanded} onclick={() => (expanded = !expanded)}
-      >{expanded ? 'Hide setup log' : 'Show setup log'}</button
-    >
-    <ExpandableLog {expanded} lines={progress.logs} />
-    <footer>
+    <div class="modal-body" data-modal-body>
+      <progress
+        max="100"
+        value={progress.progressPercent}
+        aria-valuenow={progress.progressPercent}
+        aria-label="Setup progress">{progress.progressPercent}%</progress
+      >
+      <p role="status" aria-live="polite">
+        {currentStage?.label ?? (progress.status === 'succeeded' ? 'Setup complete' : 'Preparing setup')}, {progress.progressPercent}%
+        complete
+      </p>
+      <ProgressStageList stages={progress.stages} />
+      {#if progress.failure}<p role="alert" class="failure">
+          <strong>Setup failed.</strong>
+          {progress.failure.message}
+        </p>{/if}
+      <button bind:this={detailsButton} type="button" aria-expanded={expanded} onclick={() => (expanded = !expanded)}
+        >{expanded ? 'Hide setup log' : 'Show setup log'}</button
+      >
+      <ExpandableLog {expanded} lines={progress.logs} />
+    </div>
+    <footer data-modal-actions>
       {#if expanded}<button
           type="button"
           disabled={copyPending}
@@ -240,7 +242,9 @@
   dialog {
     width: min(44rem, calc(100vw - 2rem));
     max-height: calc(100vh - 2rem);
+    max-block-size: calc(100dvh - 2rem);
     padding: 0;
+    overflow: hidden;
     border: 1px solid var(--color-border);
     border-radius: 0.75rem;
     color: var(--color-text);
@@ -258,14 +262,30 @@
   }
   .setup-card {
     display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    max-height: calc(100vh - 2rem);
+    max-block-size: calc(100dvh - 2rem);
+    min-width: 0;
+    min-height: 0;
+  }
+  .modal-body {
+    display: grid;
     gap: 1rem;
-    padding: 1.25rem;
+    min-width: 0;
+    min-height: 0;
+    padding: 1rem 1.25rem;
+    overflow: auto;
+    overflow-wrap: anywhere;
   }
   header,
   footer {
     display: flex;
     gap: 0.75rem;
     align-items: center;
+  }
+  header {
+    min-width: 0;
+    padding: 1rem 1.25rem 0;
   }
   header > span:last-child {
     margin-left: auto;
@@ -274,7 +294,7 @@
   }
   header p,
   header h2,
-  .setup-card > p {
+  .modal-body > p {
     margin: 0;
   }
   header p {
@@ -308,6 +328,10 @@
   footer {
     justify-content: flex-end;
     flex-wrap: wrap;
+    min-width: 0;
+    padding: 0.75rem 1.25rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
   button {
     min-height: 2.25rem;
@@ -327,6 +351,19 @@
   @media (prefers-reduced-motion: reduce) {
     dialog {
       scroll-behavior: auto;
+    }
+  }
+  @media (max-width: 32rem) {
+    header {
+      align-items: flex-start;
+    }
+
+    header > span:last-child {
+      margin-left: 0;
+    }
+
+    footer button {
+      flex: 1 1 10rem;
     }
   }
 </style>

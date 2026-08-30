@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
   import type { RuntimeBrandPack, RuntimeBrandReport } from '$src/lib/branding/types'
 
   interface Props {
@@ -16,22 +17,7 @@
 
   let { packs, reports = [], activeId, pending, warning, onImport, onPreview, onActivate, onRemove }: Props = $props()
   let removal: RuntimeBrandPack | null = $state(null)
-  let removalOpener: HTMLElement | null = null
-
-  function openRemovalModal(node: HTMLDialogElement): { destroy: () => void } {
-    if (typeof node.showModal === 'function') {
-      node.showModal()
-    } else {
-      node.setAttribute('open', '')
-    }
-    void tick().then(() => node.querySelector<HTMLButtonElement>('[data-removal-cancel]')?.focus())
-
-    return {
-      destroy: () => {
-        if (node.open && typeof node.close === 'function') node.close()
-      },
-    }
-  }
+  let removalOpener: HTMLElement | null = $state(null)
 
   function beginRemoval(pack: RuntimeBrandPack, opener: HTMLElement): void {
     removalOpener = opener
@@ -40,37 +26,9 @@
 
   async function closeRemoval(): Promise<void> {
     if (pending) return
-    const opener = removalOpener
     removal = null
     await tick()
-    if (opener?.isConnected) opener.focus()
     removalOpener = null
-  }
-
-  function handleRemovalKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      void closeRemoval()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const dialog = event.currentTarget as HTMLDialogElement
-    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button:not([disabled])'))
-    const first = controls[0]
-    const last = controls.at(-1)
-    if (!first || !last) return
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
-  function handleRemovalCancel(event: Event): void {
-    event.preventDefault()
-    void closeRemoval()
   }
 
   function confirmRemoval(): void {
@@ -142,29 +100,31 @@
 </section>
 
 {#if removal}
-  <dialog
-    use:openRemovalModal
-    aria-modal="true"
-    aria-labelledby="remove-active-brand-title"
-    aria-busy={pending}
-    onkeydown={handleRemovalKeydown}
-    oncancel={handleRemovalCancel}
+  <ModalShell
+    titleId="remove-active-brand-title"
+    busy={pending}
+    dismissible={!pending}
+    initialFocusSelector="[data-removal-cancel]"
+    opener={removalOpener}
+    onCancel={closeRemoval}
   >
     <h2 id="remove-active-brand-title">Revert active brand</h2>
     <p>{removal.manifest.displayName} is active. Workflow Studio must atomically revert to LOOP24 before removal.</p>
-    <footer>
-      <button
-        data-removal-cancel
-        type="button"
-        data-variant="secondary"
-        disabled={pending}
-        onclick={() => void closeRemoval()}>Cancel</button
-      >
-      <button type="button" data-variant="danger" disabled={pending} onclick={confirmRemoval}
-        >Revert to LOOP24 and remove</button
-      >
-    </footer>
-  </dialog>
+    {#snippet actions()}
+      <div class="removal-actions">
+        <button
+          data-removal-cancel
+          type="button"
+          data-variant="secondary"
+          disabled={pending}
+          onclick={() => void closeRemoval()}>Cancel</button
+        >
+        <button type="button" data-variant="danger" disabled={pending} onclick={confirmRemoval}
+          >Revert to LOOP24 and remove</button
+        >
+      </div>
+    {/snippet}
+  </ModalShell>
 {/if}
 
 <style>
@@ -223,7 +183,7 @@
     color: var(--color-text-muted);
   }
   .actions,
-  dialog footer {
+  .removal-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -241,13 +201,6 @@
   }
   .inspection-report {
     grid-template-columns: minmax(0, 1fr);
-  }
-  dialog {
-    max-width: 32rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    color: var(--color-text);
-    background: var(--color-surface);
   }
   button:focus-visible {
     box-shadow: var(--focus-ring);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import { loadBundledBrand } from '$src/lib/branding/load-brand'
 import type { RuntimeBrandPack } from '$src/lib/branding/types'
@@ -43,7 +43,10 @@ describe('BrandPreview', () => {
       })
 
       expect(showModal).toHaveBeenCalledOnce()
-      expect(screen.getByRole('dialog')).toHaveAttribute('open')
+      const dialog = screen.getByRole('dialog')
+      expect(dialog).toHaveAttribute('open')
+      expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+      expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
       unmount()
       expect(close).toHaveBeenCalledOnce()
     } finally {
@@ -54,7 +57,7 @@ describe('BrandPreview', () => {
     }
   })
 
-  it('makes background siblings inert when native modal presentation is unavailable and restores them', () => {
+  it('uses the shared open fallback when native modal presentation is unavailable', () => {
     const existingShowModal = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
     Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
     const background = document.createElement('button')
@@ -70,8 +73,6 @@ describe('BrandPreview', () => {
       })
 
       expect(screen.getByRole('dialog')).toHaveAttribute('open')
-      expect(background).toHaveAttribute('inert')
-      expect(background).toHaveAttribute('aria-hidden', 'true')
       unmount()
       expect(background).not.toHaveAttribute('inert')
       expect(background).not.toHaveAttribute('aria-hidden')
@@ -109,19 +110,19 @@ describe('BrandPreview', () => {
     const dialog = screen.getByRole('dialog', { name: 'Preview Preview Only Studio' })
     const close = screen.getByRole('button', { name: 'Close preview' })
     const activate = screen.getByRole('button', { name: 'Activate Preview Only Studio' })
-    expect(close).toHaveFocus()
+    await waitFor(() => expect(close).toHaveFocus())
     activate.focus()
     await fireEvent.keyDown(dialog, { key: 'Tab' })
     expect(screen.getByRole('button', { name: 'Sample focused control' })).toHaveFocus()
     await fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledOnce()
     await fireEvent(dialog, new Event('cancel', { cancelable: true }))
-    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(onClose).toHaveBeenCalledOnce()
 
     await rerender({ pack: previewPack(), mode: 'dark', pending: true, opener, onClose, onActivate })
-    expect(screen.getByRole('button', { name: 'Activate Preview Only Studio' })).toBeDisabled()
+    expect(activate).toBeDisabled()
     await fireEvent(dialog, new Event('cancel', { cancelable: true }))
-    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(onClose).toHaveBeenCalledOnce()
     unmount()
     expect(opener).toHaveFocus()
     opener.remove()

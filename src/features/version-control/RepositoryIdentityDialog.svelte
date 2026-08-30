@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import ModalShell from '$src/app/ModalShell.svelte'
 
   interface Props {
     root: string
@@ -11,10 +11,6 @@
   let userEmail = $state('')
   let pending = $state(false)
   let error = $state<string | null>(null)
-  let dialogElement: HTMLDialogElement
-  let nameInput: HTMLInputElement
-
-  onMount(() => nameInput.focus())
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault()
@@ -41,64 +37,40 @@
     error = null
   }
 
-  function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      if (!pending) onCancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const controls = Array.from(
-      dialogElement.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
-    )
-    if (controls.length === 0) return
-    if (event.shiftKey && document.activeElement === controls[0]) {
-      event.preventDefault()
-      controls.at(-1)!.focus()
-    } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
-      event.preventDefault()
-      controls[0]!.focus()
-    }
-  }
-
   function boundedError(cause: unknown, fallback: string): string {
     const message = cause instanceof Error && cause.message ? cause.message : fallback
     return message.length <= 4096 ? message : `${message.slice(0, 4096)}…`
   }
 </script>
 
-<dialog
-  bind:this={dialogElement}
-  open
-  aria-labelledby="repository-identity-title"
-  aria-modal="true"
-  aria-busy={pending}
-  onkeydown={handleKeydown}
+<ModalShell
+  titleId="repository-identity-title"
+  busy={pending}
+  dismissible={!pending}
+  initialFocusSelector="[data-identity-name]"
+  {onCancel}
 >
-  <form onsubmit={submit}>
+  <form id="repository-identity-form" onsubmit={submit}>
     <h2 id="repository-identity-title">Repository identity</h2>
     <p>
       This author name and email apply to only this repository at <code>{root}</code>. Global Git configuration is
       unchanged.
     </p>
     <label
-      >Author name <input
-        bind:this={nameInput}
-        value={userName}
-        oninput={editName}
-        required
-        disabled={pending}
-      /></label
+      >Author name <input data-identity-name value={userName} oninput={editName} required disabled={pending} /></label
     >
     <label>Author email <input value={userEmail} oninput={editEmail} type="email" required disabled={pending} /></label>
     {#if error}<p role="alert">{error}</p>{/if}
-    <footer>
-      <button type="button" onclick={onCancel} disabled={pending}>Cancel</button>
-      <button type="submit" disabled={pending || !userName.trim() || !userEmail.trim()}>Save repository identity</button
-      >
-    </footer>
   </form>
-</dialog>
+  {#snippet actions()}
+    <div class="dialog-actions">
+      <button type="button" onclick={onCancel} disabled={pending}>Cancel</button>
+      <button form="repository-identity-form" type="submit" disabled={pending || !userName.trim() || !userEmail.trim()}
+        >Save repository identity</button
+      >
+    </div>
+  {/snippet}
+</ModalShell>
 
 <style>
   form,
@@ -106,17 +78,13 @@
     display: grid;
     gap: 0.75rem;
   }
-  dialog {
-    max-width: 36rem;
-    padding: 1rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.5rem;
-    color: var(--color-text);
-    background: var(--color-surface);
-  }
-  footer {
+  .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.5rem;
+  }
+  code {
+    overflow-wrap: anywhere;
   }
 </style>

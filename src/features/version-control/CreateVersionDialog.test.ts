@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import CreateVersionDialog from './CreateVersionDialog.svelte'
 
@@ -118,9 +118,11 @@ describe('CreateVersionDialog', () => {
       onCancel,
     })
     const dialog = screen.getByRole('dialog')
+    expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
     const message = screen.getByLabelText('Version message')
     const submit = screen.getByRole('button', { name: 'Create version' })
-    expect(message).toHaveFocus()
+    await waitFor(() => expect(message).toHaveFocus())
     await fireEvent.input(message, { target: { value: 'Checkpoint' } })
 
     submit.focus()

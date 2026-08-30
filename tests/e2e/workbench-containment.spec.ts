@@ -31,6 +31,38 @@ test('keeps the desktop shell and status bar inside the viewport', async ({ page
   expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewport)
 })
 
+test('keeps Git and Updates visible while narrow status detail stays contained', async ({ page }) => {
+  await page.setViewportSize({ width: 512, height: 350 })
+  await page.goto('/')
+
+  const status = page.getByRole('status', { name: 'Application status' })
+  await expect(status.getByText('Git: no workspace')).toBeVisible()
+  await expect(status.getByText('Updates: Current')).toBeVisible()
+  const disclosure = status.getByText('More application status', { exact: true })
+  await expect(disclosure).toBeVisible()
+  await disclosure.click()
+  await expect(status.getByText('YAML: pending')).toBeVisible()
+  await expect(status.getByText('DAG: pending')).toBeVisible()
+
+  const geometry = await page.evaluate(() => {
+    const root = document.documentElement
+    const statusBar = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
+    const items = [...statusBar.children].map((item) => item.getBoundingClientRect())
+    return {
+      rootWidth: root.scrollWidth,
+      viewportWidth: root.clientWidth,
+      rootHeight: root.scrollHeight,
+      viewportHeight: root.clientHeight,
+      statusBottom: statusBar.getBoundingClientRect().bottom,
+      visibleItemsContained: items.every((item) => item.left >= 0 && item.right <= innerWidth),
+    }
+  })
+  expect(geometry.rootWidth).toBe(geometry.viewportWidth)
+  expect(geometry.rootHeight).toBe(geometry.viewportHeight)
+  expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewportHeight)
+  expect(geometry.visibleItemsContained).toBe(true)
+})
+
 test('Settings has no horizontal overflow at desktop and 512px reflow widths', async ({ page }) => {
   const sizes = [
     { width: 1024, height: 700 },

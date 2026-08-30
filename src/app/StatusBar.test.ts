@@ -72,4 +72,15 @@ describe('StatusBar', () => {
     await rerender({})
     expect(screen.getByText('Update: Failed')).toBeVisible()
   })
+
+  it('keeps Git and Updates visible while naming secondary YAML and DAG status in one disclosure', () => {
+    const { container } = render(StatusBar)
+
+    expect(screen.getByText('Git: no workspace')).toBeVisible()
+    expect(screen.getByText('Updates: Current')).toBeVisible()
+    const disclosure = screen.getByRole('group', { name: 'More application status' })
+    expect(disclosure).toHaveTextContent('YAML: pending')
+    expect(disclosure).toHaveTextContent('DAG: pending')
+    expect(container.querySelectorAll('[data-secondary-status]')).toHaveLength(2)
+  })
 })
