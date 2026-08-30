@@ -267,6 +267,13 @@ describe('GraphCanvas', () => {
     expect(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' })).toBeVisible()
   })
 
+  it('labels a current invalid read-only projection without calling it the last valid graph', () => {
+    renderCanvas({ projection, layout, stale: true, staleSource: 'current', readOnly: true })
+
+    expect(screen.getByText(/current graph.*read-only/i)).toBeVisible()
+    expect(screen.queryByText(/last valid graph/i)).not.toBeInTheDocument()
+  })
+
   it('suppresses graph callbacks, palette drops, drag state, and layout persistence while stale', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
@@ -488,7 +495,8 @@ describe('GraphCanvas', () => {
   })
 
   it('exposes stable node and focusable 32px dependency-port hooks for keyboard and touch users', async () => {
-    const { container } = renderCanvas({ projection, layout })
+    const rendered = renderCanvas({ projection, layout })
+    const { container } = rendered
     await tick()
 
     for (const node of projection.nodes) {
@@ -503,11 +511,20 @@ describe('GraphCanvas', () => {
     const incoming = screen.getByRole('button', { name: 'Dependencies entering collect' })
     expect(incoming).toHaveAttribute('data-port', 'input')
     expect(incoming).toHaveAttribute('tabindex', '0')
+    expect(incoming).toHaveAttribute('title', 'Dependencies entering collect')
     expect(getComputedStyle(incoming).width).toBe('32px')
     expect(getComputedStyle(incoming).height).toBe('32px')
 
     const outgoing = screen.getByRole('button', { name: 'Dependencies leaving collect' })
     expect(outgoing).toHaveAttribute('data-port', 'output')
+    expect(outgoing).toHaveAttribute('title', 'Dependencies leaving collect')
+
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, readOnly: true })
+    expect(screen.getByRole('button', { name: 'Dependencies entering collect' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Dependencies leaving collect' })).toHaveAttribute('tabindex', '-1')
   })
 
   it('retargets a collapsed node Inspector button before toggling that selected node closed', async () => {

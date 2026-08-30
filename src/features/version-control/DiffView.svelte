@@ -115,7 +115,7 @@
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 0.6875rem;
   }
   th,

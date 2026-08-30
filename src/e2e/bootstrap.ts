@@ -6,6 +6,7 @@ import type { ProgressSnapshot } from '$src/lib/progress/types'
 import type { GitPathStatus } from '$src/lib/git/types'
 import type { UpdateEvent, UpdateEventHandler, UpdateSnapshot } from '$src/lib/updates/types'
 import { $documentSession } from '$src/stores/documents'
+import { historyStore } from '$src/stores/history'
 import { createLargeWorkflowFixture } from '../../tests/performance/large-workflow'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
@@ -46,6 +47,8 @@ interface E2EState {
   readonly updateRelaunched: boolean
   readonly activeBrandId: string
   readonly definitionText: string
+  readonly definitionRevision: number
+  readonly undoDepth: number
   readonly companionText: string
   readonly workspacePaths: readonly string[]
   readonly layout: string | null
@@ -394,6 +397,8 @@ export async function installRuntimeBootstrap(): Promise<void> {
         updateRelaunched,
         activeBrandId,
         definitionText,
+        definitionRevision: openPair?.definition.revision ?? 0,
+        undoDepth: historyStore.get().undo.length,
         companionText,
         workspacePaths,
         layout,

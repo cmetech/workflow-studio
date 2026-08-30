@@ -476,7 +476,8 @@ describe('App canvas authoring composition', () => {
     await tick()
 
     expect(screen.getByLabelText('command node command')).toBeVisible()
-    expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
+    expect(screen.getByText(/current graph.*read-only/i)).toBeVisible()
+    expect(screen.queryByText(/last valid graph/i)).not.toBeInTheDocument()
     const commandField = await screen.findByRole('textbox', { name: 'Command' })
     expect(commandField).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
@@ -519,7 +520,7 @@ describe('App canvas authoring composition', () => {
       issues: [],
       projection: projection(repairedText),
     })
-    await waitFor(() => expect(screen.queryByText(/last valid graph.*read-only/i)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/current graph.*read-only/i)).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
 
     await fireEvent(

@@ -102,10 +102,15 @@ describe('authoritative editor synchronization', () => {
       analysis: { ...editedRevision, structurallyValid: true, issues: [], projection: correctedProjection },
     })
 
-    expect(pending).toMatchObject({ projection, stale: true, readOnly: true })
-    expect(staleResponse).toMatchObject({ projection, stale: true, readOnly: true })
-    expect(invalid).toMatchObject({ projection, stale: true, readOnly: true })
-    expect(corrected).toMatchObject({ projection: correctedProjection, stale: false, readOnly: false })
+    expect(pending).toMatchObject({ projection, stale: true, readOnly: true, staleSource: 'retained' })
+    expect(staleResponse).toMatchObject({ projection, stale: true, readOnly: true, staleSource: 'retained' })
+    expect(invalid).toMatchObject({ projection, stale: true, readOnly: true, staleSource: 'retained' })
+    expect(corrected).toMatchObject({
+      projection: correctedProjection,
+      stale: false,
+      readOnly: false,
+      staleSource: null,
+    })
   })
 
   it('retains a current visually-authorable incomplete-node projection as stale and read-only', () => {
@@ -134,7 +139,13 @@ describe('authoritative editor synchronization', () => {
       },
     })
 
-    expect(state).toEqual({ workflowId: current.workflowId, projection, stale: true, readOnly: true })
+    expect(state).toEqual({
+      workflowId: current.workflowId,
+      projection,
+      stale: true,
+      readOnly: true,
+      staleSource: 'current',
+    })
   })
 
   it('commits every edit immediately while dispatching only the latest debounced worker analysis', () => {

@@ -28,6 +28,7 @@ export interface EditorProjectionState {
   readonly projection: WorkflowProjection | null
   readonly stale: boolean
   readonly readOnly: boolean
+  readonly staleSource: 'current' | 'retained' | null
 }
 
 export function createEditorExtensions(onUpdate: (update: ViewUpdate) => void, label: string): Extension[] {
@@ -43,7 +44,7 @@ export function createEditorExtensions(onUpdate: (update: ViewUpdate) => void, l
         color: 'var(--color-text)',
         backgroundColor: 'var(--color-surface)',
       },
-      '.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      '.cm-scroller': { fontFamily: 'var(--font-mono)' },
       '.cm-gutters': {
         color: 'var(--color-text-muted)',
         backgroundColor: 'var(--color-yaml-gutter)',
@@ -81,7 +82,8 @@ export function synchronizeEditorProjection(
       : null
   if (currentUsableProjection) projection = currentUsableProjection
   const stale = Boolean(session.pair && (!currentUsableProjection || session.analysis?.structurallyValid !== true))
-  return { workflowId, projection, stale, readOnly: stale }
+  const staleSource = stale ? (currentUsableProjection ? 'current' : projection ? 'retained' : null) : null
+  return { workflowId, projection, stale, readOnly: stale, staleSource }
 }
 
 export function rangeForSelectedNode(

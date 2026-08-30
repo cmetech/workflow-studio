@@ -275,6 +275,7 @@
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
   let canvasReadOnly = $state(false)
+  let canvasStaleSource = $state<'current' | 'retained' | null>(null)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
@@ -287,6 +288,10 @@
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
   let inspectorPanelOpener = $state<HTMLElement | undefined>()
+  let previousPanelPresentation: 'docked' | 'drawers' = 'docked'
+  let previousSplitPresentation: 'side-by-side' | 'tabs' = 'side-by-side'
+  let panelPresentationMeasured = false
+  let splitPresentationMeasured = false
   let addNodeRequest = $state<{
     request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
     opener: HTMLElement | undefined
@@ -410,6 +415,35 @@
   )
   const workspacePanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen)
   const inspectorPanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen)
+
+  $effect.pre(() => {
+    const panelPresentation = workbenchPresentation.panels
+    const splitPresentation = workbenchPresentation.split
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    if (
+      panelPresentationMeasured &&
+      previousPanelPresentation !== panelPresentation &&
+      panelPresentation === 'drawers' &&
+      focused
+    ) {
+      if (workspacePanelHost?.contains(focused)) workspacePanelOpen.set(true)
+      else if (inspectorPanelHost?.contains(focused)) inspectorPanelOpen.set(true)
+    }
+    if (
+      splitPresentationMeasured &&
+      previousSplitPresentation !== splitPresentation &&
+      splitPresentation === 'tabs' &&
+      $activeEditorMode === 'split' &&
+      focused
+    ) {
+      if (focused.closest('.yaml-pane')) compactSplitPane = 'yaml'
+      else if (focused.closest('.canvas-pane')) compactSplitPane = 'canvas'
+    }
+
+    previousPanelPresentation = panelPresentation
+    previousSplitPresentation = splitPresentation
+  })
 
   $effect(() => {
     if (workspacePanelHost) workspacePanelHost.toggleAttribute('inert', workspacePanelHidden)
@@ -1263,6 +1297,7 @@
         projection: canvasProjection,
         stale: canvasStale,
         readOnly: canvasReadOnly,
+        staleSource: canvasStaleSource,
       },
       session,
     )
@@ -1270,6 +1305,7 @@
     canvasProjection = synchronized.projection
     canvasStale = synchronized.stale
     canvasReadOnly = synchronized.readOnly
+    canvasStaleSource = synchronized.staleSource
   })
 
   $effect(() => {
@@ -1342,26 +1378,51 @@
     let resizeFrame: number | null = null
     let pendingWorkbenchWidth = workbenchWidth
     let pendingEditorWidth = editorWidth
+    let pendingPanelMeasurement = false
+    let pendingSplitMeasurement = false
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        if (entry.target === workbenchHost) pendingWorkbenchWidth = entry.contentRect.width
-        else if (entry.target === editorColumnHost) pendingEditorWidth = entry.contentRect.width
+        if (entry.target === workbenchHost) {
+          pendingWorkbenchWidth = entry.contentRect.width
+          pendingPanelMeasurement = true
+        } else if (entry.target === editorColumnHost) {
+          pendingEditorWidth = entry.contentRect.width
+          pendingSplitMeasurement = true
+        }
       }
       if (resizeFrame !== null) return
       resizeFrame = requestAnimationFrame(() => {
         resizeFrame = null
+        if (pendingPanelMeasurement && !panelPresentationMeasured) {
+          previousPanelPresentation = resolveWorkbenchPresentation(pendingWorkbenchWidth, pendingEditorWidth).panels
+          panelPresentationMeasured = true
+        }
+        if (pendingSplitMeasurement && !splitPresentationMeasured) {
+          previousSplitPresentation = resolveWorkbenchPresentation(pendingWorkbenchWidth, pendingEditorWidth).split
+          splitPresentationMeasured = true
+        }
+        pendingPanelMeasurement = false
+        pendingSplitMeasurement = false
         workbenchWidth = pendingWorkbenchWidth
         editorWidth = pendingEditorWidth
       })
     })
     if (workbenchHost) {
       const measuredWidth = workbenchHost.getBoundingClientRect().width
-      if (measuredWidth > 0) workbenchWidth = measuredWidth
+      if (measuredWidth > 0) {
+        previousPanelPresentation = resolveWorkbenchPresentation(measuredWidth, editorWidth).panels
+        panelPresentationMeasured = true
+        workbenchWidth = measuredWidth
+      }
       resizeObserver.observe(workbenchHost)
     }
     if (editorColumnHost) {
       const measuredWidth = editorColumnHost.getBoundingClientRect().width
-      if (measuredWidth > 0) editorWidth = measuredWidth
+      if (measuredWidth > 0) {
+        previousSplitPresentation = resolveWorkbenchPresentation(workbenchWidth, measuredWidth).split
+        splitPresentationMeasured = true
+        editorWidth = measuredWidth
+      }
       resizeObserver.observe(editorColumnHost)
     }
     let dispose: (() => void) | undefined = () => {
@@ -1795,6 +1856,7 @@
                   transitionLocked={canvasTransitionLocked}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
+                  staleSource={canvasStaleSource}
                   inspectorControls={inspectorPanelId}
                   inspectorExpanded={!inspectorPanelHidden}
                   readOnly={canvasReadOnly ||
@@ -2173,7 +2235,7 @@
     padding: 0.1rem 0.28rem;
     border: 1px solid var(--color-border);
     border-radius: 0.2rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   .node-chord-overlay span {
     color: var(--color-text-muted);

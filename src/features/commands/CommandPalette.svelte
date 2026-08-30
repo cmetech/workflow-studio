@@ -188,7 +188,7 @@
     grid-column: 1 / -1;
   }
   .binding {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 0.78rem;
   }
   input:focus-visible,

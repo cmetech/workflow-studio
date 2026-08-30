@@ -19,6 +19,8 @@
   let { commands, minimapVisible, onExecute, onToggleMinimap }: Props = $props()
   let moreOpen = $state(false)
   let moreTrigger: HTMLButtonElement
+  let moreActions = $state<HTMLDivElement>()
+  let moreMenu = $state<HTMLDivElement>()
 
   const directCommandIds = ['canvas.add-node', 'canvas.create-edge'] as const
   const overflowCommandIds = ['canvas.duplicate-selection', 'canvas.delete-selection', 'canvas.arrange'] as const
@@ -49,6 +51,21 @@
     moreTrigger?.focus()
   }
 
+  async function openMore(): Promise<void> {
+    moreOpen = true
+    await tick()
+    menuItems()[0]?.focus()
+  }
+
+  function menuItems(): HTMLElement[] {
+    return moreMenu ? Array.from(moreMenu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)')) : []
+  }
+
+  function toggleMore(): void {
+    if (moreOpen) void closeMore()
+    else void openMore()
+  }
+
   async function executeOverflow(command: ResolvedCommand): Promise<void> {
     if (!command.enabled) return
     await closeMore()
@@ -61,12 +78,38 @@
   }
 
   function handleMenuKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      void closeMore()
+      return
+    }
+    const items = menuItems()
+    if (!items.length) return
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement as HTMLElement))
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowDown'
+            ? (currentIndex + 1) % items.length
+            : event.key === 'ArrowUp'
+              ? (currentIndex - 1 + items.length) % items.length
+              : null
+    if (nextIndex === null) return
     event.preventDefault()
     event.stopPropagation()
-    void closeMore()
+    items[nextIndex]?.focus()
+  }
+
+  function handleWindowPointerDown(event: PointerEvent): void {
+    if (!moreOpen || !(event.target instanceof Node) || moreActions?.contains(event.target)) return
+    moreOpen = false
   }
 </script>
+
+<svelte:window onpointerdown={handleWindowPointerDown} />
 
 <div class="canvas-toolbar" aria-label="Canvas tools" data-canvas-chrome>
   {#each directCommandIds as id (id)}
@@ -75,6 +118,7 @@
       {@const Icon = commandIcon(command.id)}
       <button
         type="button"
+        data-variant={id === 'canvas.add-node' ? 'secondary' : 'ghost'}
         aria-label={command.label}
         title={command.title}
         disabled={!command.enabled}
@@ -86,27 +130,36 @@
     {/if}
   {/each}
 
-  <div class="more-actions">
+  <div class="more-actions" bind:this={moreActions}>
     <button
       bind:this={moreTrigger}
       class="more-trigger"
       type="button"
+      data-variant="ghost"
       aria-label="More canvas actions"
       title="More canvas actions"
       aria-haspopup="menu"
       aria-expanded={moreOpen}
-      onclick={() => (moreOpen = !moreOpen)}
+      onclick={toggleMore}
     >
       <Ellipsis size={16} aria-hidden="true" />
     </button>
     {#if moreOpen}
-      <div class="more-menu" role="menu" aria-label="More canvas actions" tabindex="-1" onkeydown={handleMenuKeydown}>
+      <div
+        bind:this={moreMenu}
+        class="more-menu"
+        role="menu"
+        aria-label="More canvas actions"
+        tabindex="-1"
+        onkeydown={handleMenuKeydown}
+      >
         {#each overflowCommandIds as id (id)}
           {@const command = resolved(id)}
           {#if command}
             {@const Icon = commandIcon(command.id)}
             <button
               type="button"
+              data-variant={command.id === 'canvas.delete-selection' ? 'danger' : 'ghost'}
               role="menuitem"
               title={command.title}
               disabled={!command.enabled}
@@ -119,6 +172,7 @@
         {/each}
         <button
           type="button"
+          data-variant="ghost"
           role="menuitemcheckbox"
           aria-checked={minimapVisible}
           aria-label={minimapVisible ? 'Hide minimap' : 'Show minimap'}
@@ -153,10 +207,7 @@
     align-items: center;
     min-height: 2rem;
     padding: 0.3rem 0.55rem;
-    border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
-    color: var(--color-text);
-    background: var(--color-surface);
     white-space: nowrap;
     transition:
       border-color 100ms ease-out,
@@ -200,12 +251,6 @@
   .more-menu button {
     justify-content: flex-start;
     width: 100%;
-    border-color: transparent;
-    background: transparent;
-  }
-
-  .more-menu button:hover:not(:disabled) {
-    background: var(--color-node-selected);
   }
 
   @media (max-width: 28rem) {

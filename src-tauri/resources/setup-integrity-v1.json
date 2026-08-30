@@ -47,6 +47,16 @@
       "maxBytes": 2097152
     },
     {
+      "path": "docs/licenses/Geist-Mono-OFL-1.1.txt",
+      "sha256": "cc815ed4fc045f0e991abb10395b7932bd028c6a067deb13316d6002105074e6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "docs/licenses/Geist-OFL-1.1.txt",
+      "sha256": "71609cbb5c78b5870d712eab73a31d76622635c6ed034ab5cee3b9ecbda8685f",
+      "maxBytes": 2097152
+    },
+    {
       "path": "examples/README.md",
       "sha256": "8aef9dc9fcae2d43d2159bc111fd673d33afa09b23efa8e79b02c329d08e5f22",
       "maxBytes": 2097152

@@ -9,12 +9,12 @@
 
 | Gate | Result | Evidence |
 |---|---|---|
-| Chromium + WebKit renderer E2E | **PASS** | 40/40 Playwright tests passed with one worker. |
+| Chromium + WebKit renderer E2E | **PASS** | 50/50 Playwright tests passed with one worker. |
 | 250-node/500-edge browser capacity | **PASS** | Both projects rendered exactly 250 nodes and 500 edges. |
 | Real large-canvas node drag | **PASS** | Both projects persisted more than an 80-pixel delta on each axis; authoritative YAML stayed byte-for-byte unchanged. |
 | Chromium authoring long tasks | **PASS** | No `PerformanceObserver` long-task entry above 50 ms after startup entries were excluded. |
 | ResizeObserver-loop rejection | **PASS** | No matching page, console, or window-error message in either capacity run. |
-| Local Geist Sans/Mono browser loading | **PASS** | Both faces loaded through `document.fonts`; every observed font request used the Playwright application origin. |
+| Local Geist Sans/Mono browser loading | **PASS** | Both faces loaded through `document.fonts`; computed styles on YAML, shortcut, code, and metadata surfaces resolve to bundled Geist Mono; every observed font request used the Playwright application origin. |
 | Pointer-frame prohibited-work unit contract | **PASS** | 1,000 moves recorded zero parse, validation, layout, YAML, native, and Git work, followed by one debounced layout save. |
 | TypeScript/Svelte, lint, format, contracts, examples, resources, build | **PASS** | Exact command results are below. |
 | Full unit command | **FAIL** | 114 files passed; one native-dependent suite failed because `cargo` is absent. |
@@ -30,8 +30,9 @@
 - Playwright Chromium: 151.0.7922.34, using the `Desktop Chrome` project profile.
 - Playwright WebKit: 26.5, using the `Desktop Safari` project profile.
 - Installed Safari version present on the host: 26.5. Safari itself was not used as a native Workflow Studio smoke artifact.
-- Production web build: Vite transformed 853 modules. `dist/index.html` SHA-256 was `3f83b5ba5ae1b4fa546294f28929823839e986dbd35939c0a39c2b77277d2a77`.
+- Production web build: Vite transformed 853 modules. `dist/index.html` SHA-256 was `6aadb7cbff1f4f3afefb6a528a0faef92ee33760d596453f952538c71b638616`.
 - The web build emitted 11 local Geist/Geist Mono WOFF2 assets.
+- The web build emitted the exact upstream Geist Sans and Geist Mono OFL notices under `dist/licenses`; their SHA-256 values are `71609cbb5c78b5870d712eab73a31d76622635c6ed034ab5cee3b9ecbda8685f` and `cc815ed4fc045f0e991abb10395b7932bd028c6a067deb13316d6002105074e6`.
 - Native application artifact: none. No `.app`, DMG, or Windows installer was built or installed during this verification.
 
 Playwright WebKit evidence is renderer coverage, not evidence from an installed Tauri application or the operating system's embedded WebView.
@@ -91,12 +92,12 @@ $ npm run test:e2e
 | `npm run check` | **PASS** | `svelte-check` found 0 errors and 0 warnings; Node TypeScript check completed. |
 | `npm run contracts:check` | **PASS** | Validated bundled authoring contracts. |
 | `npm run examples:check` | **PASS** | Validated bundled workflow examples. |
-| `npm run resources:verify` | **PASS** | Verified 30 packaged resource files. |
+| `npm run resources:verify` | **PASS** | Verified 32 packaged resource files, including both exact upstream font-license notices. |
 | `npm run test:unit -- tests/performance tests/accessibility` | **PASS** | 4 files passed; 9 tests passed. |
-| `npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | **FAIL** | 114 files passed and 1 suite failed; 1,014 tests passed and 38 skipped. The failing `tests/installers/install-script.test.ts` `beforeAll` invokes `spawnSync('cargo', ...)`, which returned status `null` because Cargo is not installed. |
+| `npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | **FAIL** | 114 files passed and 1 suite failed; 1,018 tests passed and 38 skipped. The failing `tests/installers/install-script.test.ts` `beforeAll` invokes `spawnSync('cargo', ...)`, which returned status `null` because Cargo is not installed. |
 | `npm run test:rust` | **FAIL / unavailable** | `cargo test --manifest-path src-tauri/Cargo.toml` could not start: `sh: cargo: command not found`. |
-| `npm run build` | **PASS with advisory** | Vite built 853 modules in 616 ms. It retained the documented non-blocking warning that `App` exceeds 500 kB after minification. |
-| `npm run test:e2e` | **PASS** | Final run: 40/40 tests passed across named Chromium and WebKit projects. |
+| `npm run build` | **PASS with advisory** | Vite built 853 modules in 620 ms. It retained the documented non-blocking warning that `App` exceeds 500 kB after minification. |
+| `npm run test:e2e` | **PASS** | Final run: 50/50 tests passed across named Chromium and WebKit projects. |
 | `git diff --check` | **PASS** | No output. |
 | `git diff --check base...HEAD` | **PASS after mechanical cleanup** | The first branch-wide check found one inherited Markdown hard-break on the redesign spec's status line. Removing those two trailing spaces changed no text or behavior; the rerun produced no output. |
 | `git status --short` | **PASS as evidence, dirty before commit** | Listed the expected Task 7 implementation/tests plus the five required formatter-only files; no unrelated path appeared. A clean post-commit status is recorded in the Task 7 report. |

@@ -32,6 +32,8 @@
     role="button"
     tabindex={data.readOnly ? -1 : 0}
     aria-label={`Dependencies entering ${data.id}`}
+    aria-disabled={data.readOnly}
+    title={`Dependencies entering ${data.id}`}
     isConnectable={isConnectable && !data.readOnly}
   />
   <header>
@@ -72,6 +74,8 @@
     role="button"
     tabindex={data.readOnly ? -1 : 0}
     aria-label={`Dependencies leaving ${data.id}`}
+    aria-disabled={data.readOnly}
+    title={`Dependencies leaving ${data.id}`}
     isConnectable={isConnectable && !data.readOnly}
   />
 </article>

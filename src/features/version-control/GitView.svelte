@@ -216,7 +216,7 @@
   }
   ul {
     padding-left: 1.25rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
   }
   .preview {
@@ -234,7 +234,7 @@
     padding: 0.5rem;
     color: var(--color-text);
     background: var(--color-yaml-gutter);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     white-space: pre-wrap;
   }
 </style>

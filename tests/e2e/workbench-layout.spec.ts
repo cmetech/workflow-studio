@@ -89,6 +89,55 @@ test('compact drawer cycles preserve unsaved YAML and node selection', async ({ 
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(UNSAVED_YAML)
 })
 
+test('real viewport resize keeps focus in Explorer and Inspector when docked panels become drawers', async ({
+  page,
+}) => {
+  await openPairAt(page, 1440, 900)
+
+  const workbench = page.locator('.workbench')
+  const workspacePanel = page.locator('aside[aria-label="Workspace panel"]')
+  const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+  await pair.focus()
+  await page.setViewportSize({ width: 1180, height: 800 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'drawers')
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+  await expect(pair).toBeFocused()
+
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'docked')
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const advanced = inspector.getByRole('tab', { name: 'Advanced' })
+  await advanced.focus()
+  await page.setViewportSize({ width: 1180, height: 800 })
+  await expect(workbench).toHaveAttribute('data-panel-presentation', 'drawers')
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(advanced).toBeFocused()
+})
+
+test('real viewport resize activates the focused YAML or Canvas surface in compact Split', async ({ page }) => {
+  await openPairAt(page, 1440, 900)
+  await page.getByRole('button', { name: 'Split', exact: true }).click()
+  const workbench = page.locator('.workbench')
+  const canvas = page.getByRole('region', { name: 'Workflow graph' })
+  const yaml = page.getByRole('textbox', { name: 'Definition YAML' })
+
+  await yaml.focus()
+  await page.setViewportSize({ width: 700, height: 800 })
+  await expect(workbench).toHaveAttribute('data-split-presentation', 'tabs')
+  let splitPane = page.getByRole('group', { name: 'Split pane' })
+  await expect(splitPane.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(yaml).toBeFocused()
+
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(workbench).toHaveAttribute('data-split-presentation', 'side-by-side')
+  await canvas.focus()
+  await page.setViewportSize({ width: 700, height: 800 })
+  await expect(workbench).toHaveAttribute('data-split-presentation', 'tabs')
+  splitPane = page.getByRole('group', { name: 'Split pane' })
+  await expect(splitPane.getByRole('button', { name: 'Canvas' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(canvas).toBeFocused()
+})
+
 test('compact Inspector restores focus to its non-General active tab after reopening', async ({ page }) => {
   await openPairAt(page, 1024, 700)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })

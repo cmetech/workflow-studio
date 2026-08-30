@@ -15,6 +15,14 @@ async function expectAuthoritativeYaml(page: Page, expected: string): Promise<vo
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(expected)
 }
 
+async function transactionState(page: Page): Promise<{ definitionRevision: number; undoDepth: number }> {
+  const snapshot = await e2eSnapshot(page)
+  if (typeof snapshot.definitionRevision !== 'number' || typeof snapshot.undoDepth !== 'number') {
+    throw new Error('Expected the E2E snapshot to expose document revision and undo depth.')
+  }
+  return { definitionRevision: snapshot.definitionRevision, undoDepth: snapshot.undoDepth }
+}
+
 interface SavedLayoutEntry {
   readonly layout?: {
     readonly nodePositions?: Record<string, { readonly x: number; readonly y: number }>
@@ -282,10 +290,17 @@ test('real palette and port gestures commit a dependency and reject a cycle with
     .toContain('  - id: command\n    command: "/review"\n')
   await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
 
+  const beforeConnection = await transactionState(page)
   await dragPort(page, 'publish', 'output', 'command', 'input')
   await expect
     .poll(async () => (await e2eSnapshot(page)).definitionText)
     .toContain('  - id: command\n    command: "/review"\n    depends_on:\n      - publish\n')
+  await expect
+    .poll(() => transactionState(page))
+    .toEqual({
+      definitionRevision: beforeConnection.definitionRevision + 1,
+      undoDepth: beforeConnection.undoDepth + 1,
+    })
   await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
 
   const dependency = page.getByRole('group', { name: 'Dependency from publish to command' })

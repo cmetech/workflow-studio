@@ -41,6 +41,10 @@ button {
   color: var(--color-text);
   background: var(--color-surface-elevated);
   cursor: pointer;
+  transition:
+    border-color 100ms ease-out,
+    color 100ms ease-out,
+    background-color 100ms ease-out;
 }
 
 button[data-variant='primary'] {
@@ -49,9 +53,65 @@ button[data-variant='primary'] {
   background: var(--color-accent);
 }
 
+button[data-variant='secondary'] {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface-elevated);
+}
+
+button[data-variant='ghost'] {
+  border-color: transparent;
+  color: var(--color-text);
+  background: transparent;
+}
+
 button[data-variant='danger'] {
   border-color: var(--color-error);
   color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
+}
+
+button[data-variant='primary']:hover:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: var(--color-accent-strong);
+}
+
+button[data-variant='secondary']:hover:not(:disabled),
+button[data-variant='ghost']:hover:not(:disabled) {
+  border-color: var(--color-edge-selected);
+  background: var(--color-node-selected);
+}
+
+button[data-variant='danger']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 16%, transparent);
+}
+
+button[data-variant='ghost'][aria-pressed='true']:hover:not(:disabled) {
+  border-color: var(--color-focus);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-node-selected) 78%, var(--color-accent));
+}
+
+button[data-variant='primary']:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
+  background: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
+}
+
+button[data-variant='secondary']:active:not(:disabled),
+button[data-variant='ghost']:active:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: color-mix(in srgb, var(--color-node-selected) 76%, var(--color-accent));
+}
+
+button[data-variant='danger']:active:not(:disabled) {
+  color: color-mix(in srgb, var(--color-error) 82%, var(--color-text));
+  background: color-mix(in srgb, var(--color-error) 26%, transparent);
+}
+
+button[data-variant='ghost'][aria-pressed='true']:active:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
 }
 
 button:disabled,

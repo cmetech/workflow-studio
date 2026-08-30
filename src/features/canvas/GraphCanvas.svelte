@@ -54,6 +54,7 @@
     transitionLocked?: boolean
     issues?: readonly ValidationIssue[]
     stale?: boolean
+    staleSource?: 'current' | 'retained' | null
     readOnly?: boolean
     inspectorControls?: string
     inspectorExpanded?: boolean
@@ -79,6 +80,7 @@
     transitionLocked = false,
     issues = [],
     stale = false,
+    staleSource = stale ? 'retained' : null,
     readOnly = false,
     inspectorControls,
     inspectorExpanded = false,
@@ -579,7 +581,9 @@
 
   {#if stale}
     <div class="stale-overlay" role="status" data-canvas-chrome>
-      Last valid graph shown read-only while current YAML has structural errors.
+      {staleSource === 'current'
+        ? 'Current graph shown read-only while current YAML has structural errors.'
+        : 'Last valid graph shown read-only while current YAML has structural errors.'}
     </div>
   {/if}
   {#if edgeSourceId}

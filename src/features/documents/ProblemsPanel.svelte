@@ -153,7 +153,7 @@
   }
 
   h3 {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
   }
 

@@ -54,7 +54,12 @@ describe('native foundation resource boundary', () => {
       : []
     const dependencies = Object.keys({ ...packageManifest.dependencies, ...packageManifest.devDependencies })
 
-    expect(tauriConfig.bundle?.resources).toEqual(['../contracts/**/*', '../examples/**/*', '../brands/**/*'])
+    expect(tauriConfig.bundle?.resources).toEqual([
+      '../contracts/**/*',
+      '../examples/**/*',
+      '../brands/**/*',
+      '../docs/licenses/**/*',
+    ])
     expect(tauriConfig.identifier).toBe('com.cmetech.workflowstudio')
     expect(permissions).toEqual(expect.any(Array))
     expect(permissionIdentifiers).not.toContain('fs:default')

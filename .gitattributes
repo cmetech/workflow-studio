@@ -1,4 +1,6 @@
 /brands/** text=auto eol=lf
 /contracts/** text=auto eol=lf
 /examples/** text=auto eol=lf
+/docs/licenses/** text=auto eol=lf
+/public/licenses/** text=auto eol=lf
 /src-tauri/resources/*.json text=auto eol=lf

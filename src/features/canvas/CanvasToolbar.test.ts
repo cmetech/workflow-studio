@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { ResolvedCommand } from '$src/lib/commands/surface'
 import CanvasToolbar from './CanvasToolbar.svelte'
@@ -65,5 +65,43 @@ describe('CanvasToolbar', () => {
     await fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' }))
     expect(onToggleMinimap).toHaveBeenCalledOnce()
     expect(more).toHaveFocus()
+  })
+
+  it('moves focus into More, skips disabled items during keyboard navigation, and restores focus on Escape', async () => {
+    render(CanvasToolbar, { commands, minimapVisible: false, onExecute: vi.fn(), onToggleMinimap: vi.fn() })
+
+    const more = screen.getByRole('button', { name: 'More canvas actions' })
+    await fireEvent.click(more)
+    const duplicate = screen.getByRole('menuitem', { name: 'Duplicate Selection' })
+    const arrange = screen.getByRole('menuitem', { name: 'Arrange Graph' })
+    const minimap = screen.getByRole('menuitemcheckbox', { name: 'Show minimap' })
+    await waitFor(() => expect(duplicate).toHaveFocus())
+
+    await fireEvent.keyDown(duplicate, { key: 'ArrowDown' })
+    expect(arrange).toHaveFocus()
+    await fireEvent.keyDown(arrange, { key: 'End' })
+    expect(minimap).toHaveFocus()
+    await fireEvent.keyDown(minimap, { key: 'Home' })
+    expect(duplicate).toHaveFocus()
+
+    await fireEvent.keyDown(duplicate, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu', { name: 'More canvas actions' })).not.toBeInTheDocument())
+    expect(more).toHaveFocus()
+  })
+
+  it('dismisses More on click-away without stealing focus from the clicked surface', async () => {
+    render(CanvasToolbar, { commands, minimapVisible: false, onExecute: vi.fn(), onToggleMinimap: vi.fn() })
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Duplicate Selection' })).toHaveFocus())
+
+    const outside = document.createElement('button')
+    outside.textContent = 'Outside'
+    document.body.append(outside)
+    outside.focus()
+    await fireEvent.pointerDown(outside)
+
+    expect(screen.queryByRole('menu', { name: 'More canvas actions' })).not.toBeInTheDocument()
+    expect(outside).toHaveFocus()
+    outside.remove()
   })
 })
