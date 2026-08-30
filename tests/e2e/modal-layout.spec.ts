@@ -25,16 +25,102 @@ async function assertRealResponsiveModal(page: Page, dialog: Locator, reachableA
 
   await page.setViewportSize({ width: 512, height: 350 })
   const body = dialog.locator('[data-modal-body]')
+  const footer = dialog.locator('[data-modal-actions]')
   await expect(body).toBeVisible()
-  await body.evaluate((element) => element.scrollTo({ top: element.scrollHeight }))
-  await reachableAction.scrollIntoViewIfNeeded()
+  await body.evaluate((element) => {
+    const fixture = document.createElement('div')
+    fixture.dataset.modalOverflowFixture = 'true'
+    for (let index = 0; index < 24; index += 1) {
+      const line = document.createElement('p')
+      line.textContent = `Long modal reflow fixture ${index + 1}: ${'content-aware-workbench-'.repeat(6)}`
+      fixture.append(line)
+    }
+    element.append(fixture)
+  })
+
+  const before = await dialog.evaluate((element) => {
+    const modalBody = element.querySelector<HTMLElement>('[data-modal-body]')!
+    const shell = element.querySelector<HTMLElement>('.modal-shell')!
+    const modalFooter = element.querySelector<HTMLElement>('[data-modal-actions]')
+    return {
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+      documentScrollTop: document.documentElement.scrollTop,
+      pageBodyScrollTop: document.body.scrollTop,
+      dialogScrollTop: element.scrollTop,
+      shellScrollTop: shell.scrollTop,
+      footerScrollTop: modalFooter?.scrollTop ?? 0,
+      bodyScrollTop: modalBody.scrollTop,
+      bodyScrollHeight: modalBody.scrollHeight,
+      bodyClientHeight: modalBody.clientHeight,
+    }
+  })
+  expect(before.bodyScrollHeight).toBeGreaterThan(before.bodyClientHeight)
+  expect(before).toMatchObject({
+    windowX: 0,
+    windowY: 0,
+    documentScrollTop: 0,
+    pageBodyScrollTop: 0,
+    dialogScrollTop: 0,
+    shellScrollTop: 0,
+    footerScrollTop: 0,
+    bodyScrollTop: 0,
+  })
   await expect(reachableAction).toBeVisible()
-  const [actionBox, viewportHeight] = await Promise.all([
+  const [actionBoxBefore, viewportHeight] = await Promise.all([
     reachableAction.boundingBox(),
     page.evaluate(() => innerHeight),
   ])
-  expect(actionBox).not.toBeNull()
-  expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(viewportHeight)
+  expect(actionBoxBefore).not.toBeNull()
+  expect(actionBoxBefore!.y).toBeGreaterThanOrEqual(0)
+  expect(actionBoxBefore!.y + actionBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
+
+  const hasFooter = (await footer.count()) === 1
+  const footerBoxBefore = hasFooter ? await footer.boundingBox() : null
+  if (hasFooter) {
+    await expect(footer).toBeVisible()
+    expect(footerBoxBefore).not.toBeNull()
+    expect(footerBoxBefore!.y + footerBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
+  }
+
+  await body.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  const after = await dialog.evaluate((element) => {
+    const modalBody = element.querySelector<HTMLElement>('[data-modal-body]')!
+    const shell = element.querySelector<HTMLElement>('.modal-shell')!
+    const modalFooter = element.querySelector<HTMLElement>('[data-modal-actions]')
+    return {
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+      documentScrollTop: document.documentElement.scrollTop,
+      pageBodyScrollTop: document.body.scrollTop,
+      dialogScrollTop: element.scrollTop,
+      shellScrollTop: shell.scrollTop,
+      footerScrollTop: modalFooter?.scrollTop ?? 0,
+      bodyScrollTop: modalBody.scrollTop,
+    }
+  })
+  expect(after.bodyScrollTop).toBeGreaterThan(0)
+  expect(after).toMatchObject({
+    windowX: before.windowX,
+    windowY: before.windowY,
+    documentScrollTop: before.documentScrollTop,
+    pageBodyScrollTop: before.pageBodyScrollTop,
+    dialogScrollTop: before.dialogScrollTop,
+    shellScrollTop: before.shellScrollTop,
+    footerScrollTop: before.footerScrollTop,
+  })
+
+  if (hasFooter) {
+    await expect(reachableAction).toBeVisible()
+    await expect(footer).toBeVisible()
+    const [actionBoxAfter, footerBoxAfter] = await Promise.all([reachableAction.boundingBox(), footer.boundingBox()])
+    expect(actionBoxAfter).not.toBeNull()
+    expect(footerBoxAfter).not.toBeNull()
+    expect(actionBoxAfter!.y + actionBoxAfter!.height).toBeLessThanOrEqual(viewportHeight)
+    expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
+  }
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
 }
 
@@ -73,7 +159,7 @@ test('Add Node is a top-layer modal with reachable contract choices', async ({ p
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Add Node' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add node' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('option').first())
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close node picker' }))
 })
 
 test('Add Node Escape is owned by the modal before the compact workspace drawer', async ({ page }) => {

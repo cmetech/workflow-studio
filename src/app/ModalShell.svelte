@@ -1,3 +1,26 @@
+<script module lang="ts">
+  const openedModals: HTMLDialogElement[] = []
+
+  function unregisterOpenedModal(dialog: HTMLDialogElement): void {
+    const index = openedModals.lastIndexOf(dialog)
+    if (index >= 0) openedModals.splice(index, 1)
+  }
+
+  function registerOpenedModal(dialog: HTMLDialogElement): void {
+    unregisterOpenedModal(dialog)
+    openedModals.push(dialog)
+  }
+
+  function topmostOpenedModal(): HTMLDialogElement | null {
+    for (let index = openedModals.length - 1; index >= 0; index -= 1) {
+      const candidate = openedModals[index]!
+      if (candidate.open && candidate.isConnected) return candidate
+      openedModals.splice(index, 1)
+    }
+    return null
+  }
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount, tick, type Snippet } from 'svelte'
 
@@ -55,15 +78,16 @@
   function closeDialog(): void {
     if (dialog.open && typeof dialog.close === 'function') dialog.close()
     else dialog.removeAttribute('open')
+    unregisterOpenedModal(dialog)
   }
 
   function isTopmostOpenModal(): boolean {
-    return [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1) === dialog
+    return topmostOpenedModal() === dialog
   }
 
   async function restoreOpener(): Promise<void> {
     await tick()
-    const topmostOpenDialog = [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1)
+    const topmostOpenDialog = topmostOpenedModal()
     if (topmostOpenDialog && retainedOpener && !topmostOpenDialog.contains(retainedOpener)) return
     if (retainedOpener?.isConnected) retainedOpener.focus()
   }
@@ -122,6 +146,7 @@
     retainedOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
     if (typeof dialog.showModal === 'function') dialog.showModal()
     else dialog.setAttribute('open', '')
+    registerOpenedModal(dialog)
     void tick().then(() => {
       if (!destroyed && dialog.open) focusInitialTarget()
     })

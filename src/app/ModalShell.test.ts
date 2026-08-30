@@ -169,6 +169,37 @@ describe('ModalShell', () => {
     expect(upperCancel).toHaveBeenCalledOnce()
   })
 
+  it('uses showModal opening order for Escape when DOM order differs', async () => {
+    const lowerCancel = vi.fn()
+    const upperCancel = vi.fn()
+    const lowerChildren = createRawSnippet(() => ({
+      render: () => '<h2 id="opening-lower-title">Opening lower modal</h2>',
+    }))
+    const upperChildren = createRawSnippet(() => ({
+      render: () => '<h2 id="opening-upper-title">Opening upper modal</h2>',
+    }))
+    const lowerView = render(ModalShell, {
+      titleId: 'opening-lower-title',
+      onCancel: lowerCancel,
+      children: lowerChildren,
+    })
+    const upperView = render(ModalShell, {
+      titleId: 'opening-upper-title',
+      onCancel: upperCancel,
+      children: upperChildren,
+    })
+    await waitFor(() => expect(showModal).toHaveBeenCalledTimes(2))
+    lowerView.container.before(upperView.container)
+    const lower = screen.getByRole('dialog', { name: 'Opening lower modal' })
+    const upper = screen.getByRole('dialog', { name: 'Opening upper modal' })
+    expect([...document.querySelectorAll('dialog[open]')]).toEqual([upper, lower])
+
+    await fireEvent.keyDown(upper, { key: 'Escape' })
+
+    expect(upperCancel).toHaveBeenCalledOnce()
+    expect(lowerCancel).not.toHaveBeenCalled()
+  })
+
   it('does not let a closing lower modal steal focus from a newer top-layer modal', async () => {
     const opener = document.createElement('button')
     document.body.append(opener)
@@ -190,5 +221,53 @@ describe('ModalShell', () => {
 
     expect(upperAction).toHaveFocus()
     opener.remove()
+  })
+
+  it('uses opening order when deciding whether lower-modal restoration would steal focus', async () => {
+    const retainedOpener = document.createElement('button')
+    retainedOpener.textContent = 'Retained opener'
+    document.body.append(retainedOpener)
+    retainedOpener.focus()
+    const lowerChildren = createRawSnippet(() => ({
+      render: () => '<h2 id="restore-lower-title">Restore lower modal</h2>',
+    }))
+    const middleChildren = createRawSnippet(() => ({
+      render: () => '<div><h2 id="restore-middle-title">Restore middle modal</h2></div>',
+    }))
+    const upperChildren = createRawSnippet(() => ({
+      render: () =>
+        '<div><h2 id="restore-upper-title">Restore upper modal</h2><button type="button">Upper focus</button></div>',
+    }))
+    const lowerView = render(ModalShell, {
+      titleId: 'restore-lower-title',
+      opener: retainedOpener,
+      onCancel: vi.fn(),
+      children: lowerChildren,
+    })
+    const middleView = render(ModalShell, {
+      titleId: 'restore-middle-title',
+      onCancel: vi.fn(),
+      children: middleChildren,
+    })
+    const upperView = render(ModalShell, {
+      titleId: 'restore-upper-title',
+      onCancel: vi.fn(),
+      children: upperChildren,
+    })
+    await waitFor(() => expect(showModal).toHaveBeenCalledTimes(3))
+    lowerView.container.before(upperView.container)
+    middleView.container.querySelector('[data-modal-body]')?.append(retainedOpener)
+    const upperAction = screen.getByRole('button', { name: 'Upper focus' })
+    upperAction.focus()
+    expect([...document.querySelectorAll('dialog[open]')].at(-1)).toBe(
+      screen.getByRole('dialog', { name: 'Restore middle modal' }),
+    )
+
+    lowerView.unmount()
+    await tick()
+    await tick()
+
+    expect(upperAction).toHaveFocus()
+    retainedOpener.remove()
   })
 })
