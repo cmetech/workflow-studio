@@ -117,6 +117,10 @@ test('Workflow context menu consumes Escape before its Explorer drawer', async (
   await expect(contextMenu).toBeHidden()
   await expect(workspacePanel).not.toHaveAttribute('inert')
   await expect(pair).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(workspacePanel).toHaveAttribute('inert', '')
+  await expect(explorer).toBeFocused()
 })
 
 test('Canvas More menu consumes Escape before its Inspector drawer', async ({ page }) => {
@@ -141,6 +145,11 @@ test('Canvas More menu consumes Escape before its Inspector drawer', async ({ pa
   await expect(more).toHaveAttribute('aria-expanded', 'false')
   await expect(more).toBeFocused()
   await expect(inspector).not.toHaveAttribute('inert')
+
+  await page.keyboard.press('Escape')
+  await expect(inspector).toHaveAttribute('inert', '')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(prepare).toBeFocused()
 })
 
 test('keyboard edge picker consumes Escape before its Inspector drawer', async ({ page }) => {
@@ -165,6 +174,78 @@ test('keyboard edge picker consumes Escape before its Inspector drawer', async (
   await expect(edgePicker).toBeHidden()
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText('Edge creation cancelled.')
   await expect(inspector).not.toHaveAttribute('inert')
+
+  await page.keyboard.press('Escape')
+  await expect(inspector).toHaveAttribute('inert', '')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(prepare).toBeFocused()
+})
+
+test('dependency port receives unconsumed Escape before its Inspector drawer handles the event', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await prepare.press('Enter')
+  await expect(inspector).not.toHaveAttribute('inert')
+
+  const port = page.getByRole('button', { name: 'Dependencies entering prepare' })
+  await port.evaluate((element) => {
+    element.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key === 'Escape') element.setAttribute('data-escape-received', 'true')
+      },
+      { once: true },
+    )
+  })
+  await port.focus()
+  await expect(port).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(port).toHaveAttribute('data-escape-received', 'true')
+  await expect(inspector).toHaveAttribute('inert', '')
+  await expect(prepare).not.toHaveClass(/selected/)
+})
+
+test('Inspector disclosure can consume Escape before the next event closes its drawer', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const inspectorTrigger = page.getByRole('button', { name: 'Inspector for prepare' })
+  await inspectorTrigger.focus()
+  await inspectorTrigger.press('Enter')
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
+
+  await inspectorTrigger.evaluate((element) => {
+    element.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key !== 'Escape') return
+        element.setAttribute('data-escape-consumed', 'true')
+        event.preventDefault()
+        event.stopPropagation()
+      },
+      { once: true },
+    )
+  })
+  await inspectorTrigger.focus()
+  await expect(inspectorTrigger).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(inspectorTrigger).toHaveAttribute('data-escape-consumed', 'true')
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(inspectorTrigger).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(inspector).toHaveAttribute('inert', '')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
+  await expect(inspectorTrigger).toBeFocused()
 })
 
 test('real viewport resize keeps focus in Explorer and Inspector when docked panels become drawers', async ({

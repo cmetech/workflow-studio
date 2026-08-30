@@ -1537,13 +1537,7 @@
         const snapshot = drawerEscapeSnapshot()
         if (!snapshot) return
         drawerEscapeSnapshots.set(event, snapshot)
-        if (
-          snapshot.panel !== 'inspector' ||
-          !snapshot.selectedNode ||
-          !(event.target instanceof Node) ||
-          !snapshot.selectedNode.contains(event.target)
-        )
-          return
+        if (snapshot.panel !== 'inspector' || !snapshot.selectedNode || event.target !== snapshot.selectedNode) return
         event.preventDefault()
         event.stopPropagation()
         void closeOpenDrawer(snapshot).catch((error: unknown) => {
