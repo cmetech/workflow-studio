@@ -5,9 +5,11 @@ import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contrac
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { applyWorkflowMutation } from '$src/lib/documents/transactions'
 import type { WorkflowPairText } from '$src/lib/documents/types'
+import { editDocumentText } from '$src/lib/documents/revisions'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import {
   addNode,
+  commitMutation,
   connectNodes,
   deleteNodes,
   disconnectNodes,
@@ -15,6 +17,11 @@ import {
   renameNode,
   type CanvasActionContext,
 } from './canvas-actions'
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  return { promise: new Promise<T>((settle) => (resolve = settle)), resolve }
+}
 
 function nodeKind(id: string, fieldPath: string, examples: readonly unknown[] = []): NodeKindDescriptor {
   return {
@@ -122,6 +129,21 @@ function pair(text = source): WorkflowPairText {
   }
 }
 
+function pairWithCompanion(): WorkflowPairText {
+  return {
+    ...pair(),
+    companion: {
+      id: 'companion',
+      kind: 'companion',
+      path: 'actions.hermes.yaml',
+      text: '{}\n',
+      revision: 2,
+      savedRevision: 2,
+      diskHash: 'sha256:companion',
+    },
+  }
+}
+
 function projection(text = source): WorkflowProjection {
   const definition = parse(text) as Record<string, unknown>
   const rawNodes = definition.nodes as Record<string, unknown>[]
@@ -188,6 +210,156 @@ function actionContext(text = source) {
 }
 
 describe('canvas YAML actions', () => {
+  it.each([
+    ['analysis_unavailable', 'Document analysis worker is unavailable.'],
+    ['worker_runtime_error', 'Document analysis worker failed.'],
+    ['worker_message_error', 'Document analysis worker returned an unreadable message.'],
+    ['worker_timeout', 'Document analysis worker timed out.'],
+  ])('returns a user-visible %s rejection when worker analysis cannot settle successfully', async (code, message) => {
+    const fixture = actionContext()
+    const context = {
+      ...fixture.context,
+      applyMutation: vi.fn(() => Promise.reject(Object.assign(new Error(message), { code }))),
+    }
+
+    await expect(
+      commitMutation(context, {
+        type: 'set-field',
+        document: 'definition',
+        path: ['description'],
+        value: 'Never committed',
+      }),
+    ).resolves.toEqual({ status: 'rejected', code, message })
+    expect(fixture.commit).not.toHaveBeenCalled()
+    expect(fixture.announce).toHaveBeenCalledWith(message)
+  })
+
+  it('rejects the later of two visual mutations resolved from the same YAML revision', async () => {
+    const base = pair()
+    const firstMutation = {
+      type: 'set-field' as const,
+      document: 'definition' as const,
+      path: ['description'] as const,
+      value: 'First visual edit',
+    }
+    const secondMutation = { ...firstMutation, value: 'Second visual edit' }
+    const firstResult = await applyWorkflowMutation(base, firstMutation, contract)
+    const secondResult = await applyWorkflowMutation(base, secondMutation, contract)
+    const firstAnalysis = deferred<typeof firstResult>()
+    const secondAnalysis = deferred<typeof secondResult>()
+    const pending = [firstAnalysis, secondAnalysis]
+    let activePair = base
+    const fixture = actionContext()
+    const context = {
+      ...fixture.context,
+      pair: base,
+      getCurrentPair: () => activePair,
+      applyMutation: vi.fn(() => pending.shift()!.promise),
+      commit: vi.fn((next: WorkflowPairText) => {
+        activePair = next
+      }),
+    }
+
+    const first = commitMutation(context, firstMutation)
+    const second = commitMutation(context, secondMutation)
+    firstAnalysis.resolve(firstResult)
+    await expect(first).resolves.toMatchObject({ status: 'committed' })
+    secondAnalysis.resolve(secondResult)
+
+    await expect(second).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
+    expect(activePair.definition.text).toContain('description: First visual edit')
+    expect(context.commit).toHaveBeenCalledOnce()
+  })
+
+  it('preserves an intervening authoritative YAML edit while visual validation is pending', async () => {
+    const base = pair()
+    const mutation = {
+      type: 'set-field' as const,
+      document: 'definition' as const,
+      path: ['description'] as const,
+      value: 'Visual edit',
+    }
+    const visualResult = await applyWorkflowMutation(base, mutation, contract)
+    const analysis = deferred<typeof visualResult>()
+    let activePair = base
+    const fixture = actionContext()
+    const context = {
+      ...fixture.context,
+      pair: base,
+      getCurrentPair: () => activePair,
+      applyMutation: vi.fn(() => analysis.promise),
+      commit: vi.fn((next: WorkflowPairText) => {
+        activePair = next
+      }),
+    }
+
+    const visual = commitMutation(context, mutation)
+    activePair = editDocumentText(base, 'definition', base.definition.text.replace('Action fixture', 'YAML edit'))
+    analysis.resolve(visualResult)
+
+    await expect(visual).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
+    expect(activePair.definition.text).toContain('description: YAML edit')
+    expect(activePair.definition.text).not.toContain('description: Visual edit')
+    expect(context.commit).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['workflow identity', (active: WorkflowPairText) => ({ ...active, workflowId: 'replacement-workflow' })],
+    ['pair generation', (active: WorkflowPairText) => ({ ...active, generation: active.generation + 1 })],
+    [
+      'definition path',
+      (active: WorkflowPairText) => ({ ...active, definition: { ...active.definition, path: 'replacement.yaml' } }),
+    ],
+    [
+      'definition revision',
+      (active: WorkflowPairText) => ({
+        ...active,
+        definition: { ...active.definition, revision: active.definition.revision + 1 },
+      }),
+    ],
+    ['companion presence', (active: WorkflowPairText) => ({ ...active, companion: null })],
+    [
+      'companion path',
+      (active: WorkflowPairText) => ({
+        ...active,
+        companion: active.companion ? { ...active.companion, path: 'replacement.hermes.yaml' } : null,
+      }),
+    ],
+    [
+      'companion revision',
+      (active: WorkflowPairText) => ({
+        ...active,
+        companion: active.companion ? { ...active.companion, revision: active.companion.revision + 1 } : null,
+      }),
+    ],
+  ] as const)('rejects a pending visual commit when the authoritative %s changes', async (_label, changeActivePair) => {
+    const base = pairWithCompanion()
+    const mutation = {
+      type: 'set-field' as const,
+      document: 'definition' as const,
+      path: ['description'] as const,
+      value: 'Pending visual edit',
+    }
+    const visualResult = await applyWorkflowMutation(base, mutation, contract)
+    const analysis = deferred<typeof visualResult>()
+    let activePair = base
+    const fixture = actionContext()
+    const context = {
+      ...fixture.context,
+      pair: base,
+      getCurrentPair: () => activePair,
+      applyMutation: vi.fn(() => analysis.promise),
+      commit: vi.fn(),
+    }
+
+    const visual = commitMutation(context, mutation)
+    activePair = changeActivePair(activePair)
+    analysis.resolve(visualResult)
+
+    await expect(visual).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
+    expect(context.commit).not.toHaveBeenCalled()
+  })
+
   it('connects by changing only the target dependency list in one transaction', async () => {
     const fixture = actionContext()
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { ContractDigest, DocumentAnalysis, TextDocumentState, WorkflowPairText } from '$src/lib/documents/types'
 import { editDocumentText } from '$src/lib/documents/revisions'
-import { DocumentClient, type DocumentWorkerEndpoint } from './document-client'
+import { DocumentClient, type DocumentClientOptions, type DocumentWorkerEndpoint } from './document-client'
 import type {
   AnalyzeDocumentRequest,
   AnalyzeDocumentResponse,
@@ -84,21 +84,39 @@ function successFor(request: AnalyzeDocumentRequest): AnalyzeDocumentResponse {
 class FakeWorker implements DocumentWorkerEndpoint {
   readonly messages: DocumentWorkerRequest[] = []
   private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+  private readonly errorListeners = new Set<(event: ErrorEvent) => void>()
+  private readonly messageErrorListeners = new Set<(event: MessageEvent<unknown>) => void>()
 
   postMessage(message: DocumentWorkerRequest): void {
     this.messages.push(message)
   }
 
-  addEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
-    this.listeners.add(listener)
+  addEventListener(type: string, listener: EventListener): void {
+    if (type === 'message') this.listeners.add(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+    if (type === 'error') this.errorListeners.add(listener as (event: ErrorEvent) => void)
+    if (type === 'messageerror') this.messageErrorListeners.add(listener as (event: MessageEvent<unknown>) => void)
   }
 
-  removeEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
-    this.listeners.delete(listener)
+  removeEventListener(type: string, listener: EventListener): void {
+    if (type === 'message') this.listeners.delete(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+    if (type === 'error') this.errorListeners.delete(listener as (event: ErrorEvent) => void)
+    if (type === 'messageerror') this.messageErrorListeners.delete(listener as (event: MessageEvent<unknown>) => void)
   }
 
   emit(message: DocumentWorkerResponse): void {
     for (const listener of this.listeners) listener(new MessageEvent('message', { data: message }))
+  }
+
+  emitError(): void {
+    for (const listener of this.errorListeners) listener(new ErrorEvent('error', { message: 'worker crashed' }))
+  }
+
+  emitMessageError(): void {
+    for (const listener of this.messageErrorListeners) listener(new MessageEvent('messageerror', { data: null }))
+  }
+
+  listenerCount(): number {
+    return this.listeners.size + this.errorListeners.size + this.messageErrorListeners.size
   }
 }
 
@@ -200,6 +218,57 @@ describe('DocumentClient', () => {
     worker.emit({ ...successFor(oldRequest), requestId: newestRequest.requestId })
     expect(accepted).toEqual([])
     client.dispose()
+  })
+
+  it('settles the current analysis with a typed error when the worker crashes', () => {
+    const worker = new FakeWorker()
+    const errors: { code: string; message: string }[] = []
+    const client = new DocumentClient(worker, { onError: (error) => errors.push(error) })
+
+    client.schedule(pair(), contract, 'explicit-validate')
+    worker.emitError()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: 'worker_runtime_error', message: 'Document analysis worker failed.' })
+    client.dispose()
+    expect(worker.listenerCount()).toBe(0)
+  })
+
+  it('settles the current analysis with a typed error when the worker cannot deserialize a message', () => {
+    const worker = new FakeWorker()
+    const errors: { code: string; message: string }[] = []
+    const client = new DocumentClient(worker, { onError: (error) => errors.push(error) })
+
+    client.schedule(pair(), contract, 'explicit-validate')
+    worker.emitMessageError()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      code: 'worker_message_error',
+      message: 'Document analysis worker returned an unreadable message.',
+    })
+    client.dispose()
+    expect(worker.listenerCount()).toBe(0)
+  })
+
+  it('settles a dispatched analysis after the bounded response timeout', () => {
+    const worker = new FakeWorker()
+    const errors: { code: string; message: string }[] = []
+    const options = {
+      onError: (error: { code: string; message: string }) => errors.push(error),
+      analysisTimeoutMs: 1_000,
+    } as DocumentClientOptions & { analysisTimeoutMs: number }
+    const client = new DocumentClient(worker, options)
+
+    client.schedule(pair(), contract, 'explicit-validate')
+    vi.advanceTimersByTime(999)
+    expect(errors).toEqual([])
+    vi.advanceTimersByTime(1)
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ code: 'worker_timeout', message: 'Document analysis worker timed out.' })
+    client.dispose()
+    expect(worker.listenerCount()).toBe(0)
   })
 })
 

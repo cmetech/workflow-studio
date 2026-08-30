@@ -122,7 +122,11 @@ describe('App disposal fallback', () => {
     expect(layoutSave).toHaveBeenCalledOnce()
     expect(recoveryList).toHaveBeenCalled()
     expect(WorkerForDisposalTest.instances).toHaveLength(1)
-    expect(WorkerForDisposalTest.instances[0]!.removeEventListener).toHaveBeenCalledOnce()
+    expect(WorkerForDisposalTest.instances[0]!.removeEventListener.mock.calls.map(([type]) => type)).toEqual([
+      'message',
+      'error',
+      'messageerror',
+    ])
     expect(WorkerForDisposalTest.instances[0]!.terminate).toHaveBeenCalledOnce()
   }, 15_000)
 })

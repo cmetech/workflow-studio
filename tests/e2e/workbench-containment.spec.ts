@@ -1,21 +1,102 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { EXACT_GEOMETRIES, expectExactWorkbenchGeometry } from './support'
 
-async function expectViewportContained(page: Page): Promise<void> {
-  const geometry = await page.evaluate(() => {
-    const root = document.documentElement
-    const status = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
-    return {
-      scrollHeight: root.scrollHeight,
-      clientHeight: root.clientHeight,
-      scrollWidth: root.scrollWidth,
-      clientWidth: root.clientWidth,
-      statusBottom: status.getBoundingClientRect().bottom,
-      innerHeight,
-    }
+const LONG_WINDOWS_ROOT = 'C:\\workspaces\\release\\nested\\workflow-studio-with-a-long-workspace-identity'
+const LONG_WINDOWS_PATH =
+  'C:\\workspaces\\release\\nested\\workflow-definitions\\international\\release-demo-with-an-exceptionally-long-name.yaml'
+
+async function expectLastControlReachable(page: Page, selector: Locator): Promise<void> {
+  await selector.scrollIntoViewIfNeeded()
+  await expect(selector).toBeVisible()
+  const bounds = await selector.boundingBox()
+  expect(bounds).not.toBeNull()
+  expect(bounds!.y).toBeGreaterThanOrEqual(0)
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(await page.evaluate(() => innerHeight))
+  await expectExactWorkbenchGeometry(page)
+}
+
+async function openPairForGeometry(page: Page, query: string, width: number, expectGraph = true): Promise<void> {
+  await page.goto(`/${query}`)
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  if (width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+  const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+  await expect(pair).toBeVisible()
+  await pair.click()
+  if (expectGraph) await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+}
+
+for (const geometry of EXACT_GEOMETRIES) {
+  test(`covers every workbench surface at exact geometry ${geometry.label}`, async ({ page }) => {
+    test.setTimeout(90_000)
+    await page.setViewportSize(geometry.viewport)
+    await page.goto('/?scenario=long-settings')
+
+    const welcome = page.getByRole('region', { name: 'Welcome' })
+    await expectLastControlReachable(page, welcome.getByRole('button', { name: 'Open Folder' }).last())
+
+    await page.getByRole('button', { name: 'Open Folder' }).first().click()
+    if (geometry.viewport.width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+    await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
+    await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+    if (geometry.viewport.width < 1280) await page.keyboard.press('Escape')
+    await expectLastControlReachable(page, page.getByRole('button', { name: 'More canvas actions' }))
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('tab', { name: 'Workflow Contracts' }).click()
+    const lastContractAction = page
+      .getByRole('list', { name: 'Available contracts' })
+      .getByRole('listitem')
+      .last()
+      .getByRole('button', { name: /^Remove / })
+    await expectLastControlReachable(page, lastContractAction)
+
+    await page.getByRole('button', { name: 'Examples', exact: true }).click()
+    await expectLastControlReachable(page, page.getByRole('button', { name: /^Create Editable Copy:/ }).last())
+
+    await page.getByRole('button', { name: 'Documentation', exact: true }).click()
+    await expectLastControlReachable(
+      page,
+      page.getByRole('listbox', { name: 'Documentation results' }).getByRole('option').last(),
+    )
+
+    await page.setViewportSize(geometry.viewport)
+    await openPairForGeometry(page, '?scenario=long-git', geometry.viewport.width)
+    if (geometry.viewport.width < 1280) await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Git', exact: true }).click()
+    await expect(page.locator('[data-workbench-page="git"] .repository-root')).toHaveText(LONG_WINDOWS_ROOT)
+    await expect(page.locator('[data-workbench-page="git"] .status-path')).toContainText(
+      `${LONG_WINDOWS_PATH} → workflows/release-demo.yaml`,
+    )
+    await expectLastControlReachable(
+      page,
+      page.getByRole('button', {
+        name: /Document the exceptionally long Windows release workflow subject/,
+      }),
+    )
+
+    await page.setViewportSize(geometry.viewport)
+    await openPairForGeometry(page, '?scenario=advanced-inspector', geometry.viewport.width)
+    if (geometry.viewport.width < 1280) await page.keyboard.press('Escape')
+    const prepareNode = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+    await prepareNode.focus()
+    await prepareNode.press('Enter')
+    const inspector = page.locator('aside[aria-label="Inspector"]')
+    await inspector.getByRole('tab', { name: 'Advanced' }).click()
+    await expectLastControlReachable(
+      page,
+      inspector
+        .locator(
+          '[data-scroll-owner="inspector"] button, [data-scroll-owner="inspector"] input, [data-scroll-owner="inspector"] textarea, [data-scroll-owner="inspector"] select',
+        )
+        .last(),
+    )
+
+    await page.setViewportSize(geometry.viewport)
+    await openPairForGeometry(page, '?scenario=repeated-diagnostics', geometry.viewport.width, false)
+    if (geometry.viewport.width < 1280) await page.keyboard.press('Escape')
+    const finalIssue = page.getByRole('region', { name: 'Problems' }).getByRole('button').last()
+    await expectLastControlReachable(page, finalIssue)
   })
-  expect(geometry.scrollHeight).toBe(geometry.clientHeight)
-  expect(geometry.scrollWidth).toBe(geometry.clientWidth)
-  expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.innerHeight)
 }
 
 test('keeps the desktop shell and status bar inside the viewport', async ({ page }) => {
@@ -128,7 +209,7 @@ test('Settings has no horizontal overflow at desktop and 512px reflow widths', a
     expect(geometry.pageOverflow).toBe(0)
     expect(geometry.rootOverflow).toBe(0)
     expect(geometry.rootScrollHeight).toBe(geometry.rootClientHeight)
-    await expectViewportContained(page)
+    await expectExactWorkbenchGeometry(page)
   }
 })
 
@@ -149,7 +230,7 @@ test('many contracts and brand packs retain a reachable final action at every ap
     const lastBrandAction = brandActions.last()
     await lastBrandAction.scrollIntoViewIfNeeded()
     await expect(lastBrandAction).toBeVisible()
-    await expectViewportContained(page)
+    await expectExactWorkbenchGeometry(page)
 
     await page.getByRole('tab', { name: 'Workflow Contracts' }).click()
     const contracts = page.getByRole('list', { name: 'Available contracts' }).getByRole('listitem')
@@ -157,7 +238,7 @@ test('many contracts and brand packs retain a reachable final action at every ap
     const lastContractAction = contracts.last().getByRole('button', { name: /^Remove / })
     await lastContractAction.scrollIntoViewIfNeeded()
     await expect(lastContractAction).toBeVisible()
-    await expectViewportContained(page)
+    await expectExactWorkbenchGeometry(page)
   }
 })
 
@@ -188,7 +269,11 @@ test('Inspector and Problems keep their final controls reachable inside the boun
   page,
 }) => {
   const pageErrors: string[] = []
+  const consoleErrors: string[] = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text())
+  })
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/?scenario=advanced-inspector')
   await page.getByRole('button', { name: 'Open Folder' }).first().click()
@@ -240,5 +325,6 @@ test('Inspector and Problems keep their final controls reachable inside the boun
   }))
   expect(geometry.rootHeight).toBe(geometry.viewport)
   expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewport)
-  expect(pageErrors.filter((message) => message.includes('each_key_duplicate'))).toEqual([])
+  expect(pageErrors).toEqual([])
+  expect(consoleErrors).toEqual([])
 })

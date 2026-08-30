@@ -17,6 +17,7 @@ export interface CanvasActionContext {
   readonly contract: AuthoringContract
   readonly positions: Readonly<Record<string, CanvasPosition>>
   readonly applyMutation?: typeof applyWorkflowMutation
+  readonly getCurrentPair?: () => WorkflowPairText | null
   readonly commit: (
     pair: WorkflowPairText,
     transaction: YamlTransaction,
@@ -40,6 +41,12 @@ export type CanvasRejectionCode =
   | 'descriptor_unavailable'
   | 'profile_disallowed'
   | 'selection_empty'
+  | 'stale_document'
+  | 'analysis_unavailable'
+  | 'worker_runtime_error'
+  | 'worker_message_error'
+  | 'worker_timeout'
+  | 'analysis_failed'
   | MutationRejectionCode
 
 export type CanvasActionResult =
@@ -291,14 +298,68 @@ export async function commitMutation(
   context: CanvasActionContext,
   mutation: WorkflowMutation,
 ): Promise<CanvasActionResult> {
-  const result = await (context.applyMutation ?? applyWorkflowMutation)(context.pair, mutation, context.contract)
+  let result: ApplyWorkflowMutationResult
+  try {
+    result = await (context.applyMutation ?? applyWorkflowMutation)(context.pair, mutation, context.contract)
+  } catch (error) {
+    const failure = analysisFailure(error)
+    context.announce(failure.message)
+    return { status: 'rejected', ...failure }
+  }
   if (!result.ok) {
     const message = result.message
     context.announce(message)
     return { status: 'rejected', code: result.code, message }
   }
+  const currentPair = context.getCurrentPair?.() ?? context.pair
+  if (!transactionBaseIsCurrent(currentPair, context.pair, result.transaction)) {
+    const message = 'The workflow changed before the canvas action could commit. Review the current YAML and retry.'
+    context.announce(message)
+    return { status: 'rejected', code: 'stale_document', message }
+  }
   await context.commit(result.pair, result.transaction, result.analysis)
   return { status: 'committed', pair: result.pair, transaction: result.transaction }
+}
+
+function transactionBaseIsCurrent(
+  pair: WorkflowPairText | null,
+  originalPair: WorkflowPairText,
+  transaction: YamlTransaction,
+): boolean {
+  if (!pair || pair.workflowId !== transaction.workflowId || pair.generation !== transaction.pairGeneration)
+    return false
+  if (
+    pair.definition.path !== originalPair.definition.path ||
+    pair.definition.revision !== transaction.beforeRevisions.definition
+  )
+    return false
+  if (pair.companion === null || originalPair.companion === null) {
+    return pair.companion === null && originalPair.companion === null
+  }
+  return (
+    pair.companion.path === originalPair.companion.path &&
+    pair.companion.revision === transaction.beforeRevisions.companion
+  )
+}
+
+function analysisFailure(error: unknown): { readonly code: CanvasRejectionCode; readonly message: string } {
+  const knownCodes: readonly CanvasRejectionCode[] = [
+    'analysis_unavailable',
+    'worker_runtime_error',
+    'worker_message_error',
+    'worker_timeout',
+  ]
+  const code =
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    knownCodes.includes(error.code as CanvasRejectionCode)
+      ? (error.code as CanvasRejectionCode)
+      : 'analysis_failed'
+  const message =
+    error instanceof Error ? error.message : 'Document analysis failed before the canvas action committed.'
+  return { code, message }
 }
 
 export async function commitPreparedDefinition(

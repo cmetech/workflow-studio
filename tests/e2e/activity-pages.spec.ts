@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test'
 import { e2eSnapshot, openSeededPair, replaceDefinitionYaml } from './support'
 
+const LONG_WINDOWS_ROOT = 'C:\\workspaces\\release\\nested\\workflow-studio-with-a-long-workspace-identity'
+const LONG_WINDOWS_PATH =
+  'C:\\workspaces\\release\\nested\\workflow-definitions\\international\\release-demo-with-an-exceptionally-long-name.yaml'
+
 const UNSAVED_YAML = `name: Release demo
 description: Unsaved activity page edit.
 nodes:
@@ -225,16 +229,16 @@ test('Git is a contained full-workbench page and falls back to unified diff when
   const gitPageBody = gitPage.locator('[data-page-scroll]')
   await expect(gitPage).toBeVisible()
   await expect(page.locator('.left-panel .git-view')).toHaveCount(0)
-  await expect(gitPage.locator('.repository-root')).toContainText(/C:\\workspaces\\release/)
-  const renamedPairPath = gitPage.getByText(
-    /release-demo-with-an-exceptionally-long-name\.yaml → workflows\/release-demo\.yaml/i,
-  )
+  await expect(gitPage.locator('.repository-root')).toHaveText(LONG_WINDOWS_ROOT)
+  const renamedPairPath = gitPage.locator('.status-path')
   await expect(renamedPairPath).toBeVisible()
+  await expect(renamedPairPath).toContainText(`${LONG_WINDOWS_PATH} → workflows/release-demo.yaml`)
   await expect(renamedPairPath).toHaveCSS('overflow-wrap', 'anywhere')
   await expect(
     page.getByRole('button', { name: /Document the exceptionally long Windows release workflow subject/ }),
   ).toBeVisible()
   expect(await gitPageBody.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0)
 
   await page.getByRole('button', { name: 'Side-by-side diff' }).click()
   const sideBySideCells = page.getByRole('table', { name: 'Working tree side-by-side diff' }).getByRole('columnheader')

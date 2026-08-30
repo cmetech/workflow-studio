@@ -67,7 +67,7 @@ export interface AnalyzeDocumentResponse extends AnalyzeResponseIdentity {
 
 export interface AnalyzeDocumentErrorResponse extends AnalyzeResponseIdentity {
   type: 'analysis-error'
-  code: 'contract_not_registered'
+  code: 'contract_not_registered' | 'worker_runtime_error' | 'worker_message_error' | 'worker_timeout'
   message: string
 }
 

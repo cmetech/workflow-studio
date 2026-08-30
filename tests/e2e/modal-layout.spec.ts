@@ -1,5 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { e2eSnapshot, openSeededPair, replaceDefinitionYaml } from './support'
+import {
+  EXACT_GEOMETRIES,
+  e2eSnapshot,
+  expectExactWorkbenchGeometry,
+  openSeededPair,
+  replaceDefinitionYaml,
+  type ExactGeometry,
+} from './support'
 
 const DIRTY_YAML = `name: Release demo
 description: Unsaved modal conflict fixture.
@@ -15,6 +22,7 @@ async function assertRealResponsiveModal(
   page: Page,
   dialog: Locator,
   reachableAction: Locator,
+  geometry: ExactGeometry,
   options: { injectOverflowFixture?: boolean } = {},
 ): Promise<void> {
   await expect(dialog).toBeVisible()
@@ -28,7 +36,7 @@ async function assertRealResponsiveModal(
     }),
   ).toBe(false)
 
-  await page.setViewportSize({ width: 512, height: 350 })
+  await page.setViewportSize(geometry.viewport)
   const body = dialog.locator('[data-modal-body]')
   const footer = dialog.locator('[data-modal-actions]')
   await expect(body).toBeVisible()
@@ -128,59 +136,56 @@ async function assertRealResponsiveModal(
   expect(footerBoxAfter).not.toBeNull()
   expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
-  const shellGeometry = await page.evaluate(() => {
-    const root = document.documentElement
-    const status = document.querySelector<HTMLElement>('[aria-label="Application status"]')!
-    return {
-      scrollHeight: root.scrollHeight,
-      clientHeight: root.clientHeight,
-      scrollWidth: root.scrollWidth,
-      clientWidth: root.clientWidth,
-      statusBottom: status.getBoundingClientRect().bottom,
-      innerHeight,
-    }
-  })
-  expect(shellGeometry.scrollHeight).toBe(shellGeometry.clientHeight)
-  expect(shellGeometry.scrollWidth).toBe(shellGeometry.clientWidth)
-  expect(shellGeometry.statusBottom).toBeLessThanOrEqual(shellGeometry.innerHeight)
+  await expectExactWorkbenchGeometry(page)
 }
 
-test('New Workflow is a top-layer modal with reachable actions at reflow size', async ({ page }) => {
+function modalAtEveryExactGeometry(title: string, body: (page: Page, geometry: ExactGeometry) => Promise<void>): void {
+  for (const geometry of EXACT_GEOMETRIES)
+    test(`${title} at ${geometry.label}`, async ({ page }) => body(page, geometry))
+}
+
+modalAtEveryExactGeometry('New Workflow is a top-layer modal with reachable actions', async (page, geometry) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'New Workflow', exact: true }).first().click()
   const dialog = page.getByRole('dialog', { name: 'New Workflow' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create Workflow' }))
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create Workflow' }), geometry)
 })
 
-test('Import is a top-layer modal with reachable actions at reflow size', async ({ page }) => {
+modalAtEveryExactGeometry('Import is a top-layer modal with reachable actions', async (page, geometry) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Open Folder' }).first().click()
   await page.getByRole('button', { name: 'Import', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Import workflow' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Import YAML Pair' }))
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Import YAML Pair' }), geometry)
 })
 
-test('Quick Open is a top-layer modal with contained focus and scrollable results', async ({ page }) => {
-  await openSeededPair(page)
-  await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+P`)
-  const dialog = page.getByRole('dialog', { name: 'Quick Open' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close Quick Open' }))
-})
+modalAtEveryExactGeometry(
+  'Quick Open is a top-layer modal with contained focus and scrollable results',
+  async (page, geometry) => {
+    await openSeededPair(page)
+    await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+P`)
+    const dialog = page.getByRole('dialog', { name: 'Quick Open' })
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close Quick Open' }), geometry)
+  },
+)
 
-test('External Change is a top-layer modal with persistent conflict actions', async ({ page }) => {
-  await openSeededPair(page)
-  await replaceDefinitionYaml(page, DIRTY_YAML)
-  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(DIRTY_YAML)
-  await page.evaluate(async () => window.__WORKFLOW_STUDIO_E2E__!.triggerExternalChange())
-  const dialog = page.getByRole('dialog', { name: 'Workflow changed on disk' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Compare' }))
-})
+modalAtEveryExactGeometry(
+  'External Change is a top-layer modal with persistent conflict actions',
+  async (page, geometry) => {
+    await openSeededPair(page)
+    await replaceDefinitionYaml(page, DIRTY_YAML)
+    await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(DIRTY_YAML)
+    await page.evaluate(async () => window.__WORKFLOW_STUDIO_E2E__!.triggerExternalChange())
+    const dialog = page.getByRole('dialog', { name: 'Workflow changed on disk' })
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Compare' }), geometry)
+  },
+)
 
-test('Add Node is a top-layer modal with reachable contract choices', async ({ page }) => {
+modalAtEveryExactGeometry('Add Node is a top-layer modal with reachable contract choices', async (page, geometry) => {
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Add Node' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add node' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close node picker' }))
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close node picker' }), geometry)
 })
 
 test('Add Node Escape is owned by the modal before the compact workspace drawer', async ({ page }) => {
@@ -222,7 +227,7 @@ test('Add Node Escape is owned by the modal before the compact workspace drawer'
   await expect(nodesActivity).toBeFocused()
 })
 
-test('Delete is a top-layer modal with persistent impact actions', async ({ page }) => {
+modalAtEveryExactGeometry('Delete is a top-layer modal with persistent impact actions', async (page, geometry) => {
   await openSeededPair(page)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await prepare.focus()
@@ -230,73 +235,106 @@ test('Delete is a top-layer modal with persistent impact actions', async ({ page
   await page.getByRole('button', { name: 'More canvas actions' }).click()
   await page.getByRole('menuitem', { name: 'Delete Selection' }).click()
   const dialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Delete nodes' }))
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Delete nodes' }), geometry)
 })
 
-test('Command Palette is a top-layer modal with reachable search results', async ({ page }) => {
-  await openSeededPair(page)
-  await page.keyboard.press('F1')
-  const dialog = page.getByRole('dialog', { name: 'Command palette' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close command palette' }))
-})
+modalAtEveryExactGeometry(
+  'Command Palette is a top-layer modal with reachable search results',
+  async (page, geometry) => {
+    await openSeededPair(page)
+    await page.keyboard.press('F1')
+    const dialog = page.getByRole('dialog', { name: 'Command palette' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Close command palette' }),
+      geometry,
+    )
+  },
+)
 
-test('Create Version is a top-layer modal with a reachable action after long content', async ({ page }) => {
-  await openSeededPair(page, '?scenario=long-create-version')
-  await page.getByRole('button', { name: 'Git', exact: true }).click()
-  await page
-    .getByRole('button', { name: 'Create version…' })
-    .evaluate((element) => (element as HTMLButtonElement).click())
-  const dialog = page.getByRole('dialog', { name: 'Create local version' })
-  const findingsHeading = dialog.getByRole('heading', { name: 'Warnings and advisories' })
-  await expect(findingsHeading).toBeVisible()
-  expect(await findingsHeading.locator('+ ul li').count()).toBeGreaterThanOrEqual(24)
-  await expect(dialog.getByText('diff --git a/workflows/release-demo.yaml', { exact: false })).toBeVisible()
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create version' }), {
-    injectOverflowFixture: false,
-  })
-})
+modalAtEveryExactGeometry(
+  'Create Version is a top-layer modal with a reachable action after long content',
+  async (page, geometry) => {
+    await openSeededPair(page, '?scenario=long-create-version')
+    await page.getByRole('button', { name: 'Git', exact: true }).click()
+    await page
+      .getByRole('button', { name: 'Create version…' })
+      .evaluate((element) => (element as HTMLButtonElement).click())
+    const dialog = page.getByRole('dialog', { name: 'Create local version' })
+    const findingsHeading = dialog.getByRole('heading', { name: 'Warnings and advisories' })
+    await expect(findingsHeading).toBeVisible()
+    expect(await findingsHeading.locator('+ ul li').count()).toBeGreaterThanOrEqual(24)
+    await expect(dialog.getByText('diff --git a/workflows/release-demo.yaml', { exact: false })).toBeVisible()
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Create version' }), geometry, {
+      injectOverflowFixture: false,
+    })
+  },
+)
 
-test('Keyboard Shortcuts is a top-layer modal with a persistent close action', async ({ page }) => {
-  await openSeededPair(page)
-  await page.keyboard.press('F1')
-  await page.getByRole('combobox', { name: 'Search commands' }).fill('Keyboard Shortcuts')
-  await page.keyboard.press('Enter')
-  const dialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close keyboard shortcuts' }))
-})
+modalAtEveryExactGeometry(
+  'Keyboard Shortcuts is a top-layer modal with a persistent close action',
+  async (page, geometry) => {
+    await openSeededPair(page)
+    await page.keyboard.press('F1')
+    await page.getByRole('combobox', { name: 'Search commands' }).fill('Keyboard Shortcuts')
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Close keyboard shortcuts' }),
+      geometry,
+    )
+  },
+)
 
-test('Brand Preview is a top-layer modal with persistent preview actions', async ({ page }) => {
-  await openSeededPair(page)
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
-  await page
-    .getByRole('button', { name: 'Import brand pack' })
-    .evaluate((element) => (element as HTMLButtonElement).click())
-  await page
-    .getByRole('button', { name: 'Import brand pack' })
-    .evaluate((element) => (element as HTMLButtonElement).click())
-  await page
-    .getByRole('button', { name: 'Preview Northstar Studio' })
-    .evaluate((element) => (element as HTMLButtonElement).click())
-  const dialog = page.getByRole('dialog', { name: 'Preview Northstar Studio' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Activate Northstar Studio' }))
-})
+modalAtEveryExactGeometry(
+  'Brand Preview is a top-layer modal with persistent preview actions',
+  async (page, geometry) => {
+    await openSeededPair(page)
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page
+      .getByRole('button', { name: 'Import brand pack' })
+      .evaluate((element) => (element as HTMLButtonElement).click())
+    await page
+      .getByRole('button', { name: 'Import brand pack' })
+      .evaluate((element) => (element as HTMLButtonElement).click())
+    await page
+      .getByRole('button', { name: 'Preview Northstar Studio' })
+      .evaluate((element) => (element as HTMLButtonElement).click())
+    const dialog = page.getByRole('dialog', { name: 'Preview Northstar Studio' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Activate Northstar Studio' }),
+      geometry,
+    )
+  },
+)
 
-test('Setup is a top-layer modal with bounded progress content and persistent actions', async ({ page }) => {
-  await page.goto('/?scenario=setup-update')
-  const dialog = page.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
-  await expect(dialog.getByLabel('Setup output')).toHaveValue(/deterministic-setup-log-12/)
-  await expect(dialog).toContainText('deeply nested offline resource verification path')
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
-})
+modalAtEveryExactGeometry(
+  'Setup is a top-layer modal with bounded progress content and persistent actions',
+  async (page, geometry) => {
+    await page.goto('/?scenario=setup-update')
+    const dialog = page.getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+    await expect(dialog.getByLabel('Setup output')).toHaveValue(/deterministic-setup-log-12/)
+    await expect(dialog).toContainText('deeply nested offline resource verification path')
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }), geometry)
+  },
+)
 
-test('Update is a top-layer modal with bounded logs and persistent actions', async ({ page }) => {
-  await page.goto('/?scenario=setup-update')
-  await page
-    .getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
-    .getByRole('button', { name: 'Retry' })
-    .click()
-  const dialog = page.getByRole('dialog', { name: 'Update Workflow Studio' })
-  await expect(dialog.getByLabel('Update output')).toHaveValue(/deterministic-update-log-12/)
-  await expect(dialog).toContainText('signed updater verification message')
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }))
-})
+modalAtEveryExactGeometry(
+  'Update is a top-layer modal with bounded logs and persistent actions',
+  async (page, geometry) => {
+    await page.goto('/?scenario=setup-update')
+    await page
+      .getByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })
+      .getByRole('button', { name: 'Retry' })
+      .click()
+    const dialog = page.getByRole('dialog', { name: 'Update Workflow Studio' })
+    await expect(dialog.getByLabel('Update output')).toHaveValue(/deterministic-update-log-12/)
+    await expect(dialog).toContainText('signed updater verification message')
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Retry' }), geometry)
+  },
+)

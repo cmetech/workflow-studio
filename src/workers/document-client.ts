@@ -16,16 +16,18 @@ import type {
 } from './document-worker-protocol'
 
 const EDIT_DEBOUNCE_MS = 180
+const ANALYSIS_TIMEOUT_MS = 10_000
 
 export interface DocumentWorkerEndpoint {
   postMessage(message: DocumentWorkerRequest): void
-  addEventListener(type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void
-  removeEventListener(type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void
 }
 
 export interface DocumentClientOptions {
   onAnalysis?: (analysis: DocumentAnalysis) => void
   onError?: (error: AnalyzeDocumentErrorResponse) => void
+  analysisTimeoutMs?: number
 }
 
 let nextRequestNumber = 0
@@ -44,15 +46,24 @@ export class DocumentClient {
   >()
   private analysisState: AnalysisState | null = null
   private currentRequestId: string | null = null
+  private currentRequest: AnalyzeDocumentRequest | null = null
   private currentProfile: WorkflowProfile | null = null
   private currentReason: DocumentAnalysisReason | null = null
-  private readonly onMessage = (event: MessageEvent<DocumentWorkerResponse>): void => this.receive(event.data)
+  private responseTimer: ReturnType<typeof setTimeout> | undefined
+  private readonly onMessage: EventListener = (event): void =>
+    this.receive((event as MessageEvent<DocumentWorkerResponse>).data)
+  private readonly onWorkerError: EventListener = (): void =>
+    this.failCurrent('worker_runtime_error', 'Document analysis worker failed.')
+  private readonly onWorkerMessageError: EventListener = (): void =>
+    this.failCurrent('worker_message_error', 'Document analysis worker returned an unreadable message.')
 
   constructor(
     private readonly worker: DocumentWorkerEndpoint,
     private readonly options: DocumentClientOptions = {},
   ) {
     worker.addEventListener('message', this.onMessage)
+    worker.addEventListener('error', this.onWorkerError)
+    worker.addEventListener('messageerror', this.onWorkerMessageError)
   }
 
   schedule(pair: WorkflowPairText, contract: AuthoringContract, reason: DocumentAnalysisReason = 'edit'): string {
@@ -62,7 +73,9 @@ export class DocumentClient {
     }
 
     const request = this.createAnalyzeRequest(pair, contract, reason)
+    this.clearResponseTimer()
     this.currentRequestId = request.requestId
+    this.currentRequest = request
     this.currentProfile = request.profile
     this.currentReason = request.reason
     this.analysisState = {
@@ -86,6 +99,9 @@ export class DocumentClient {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
     this.worker.removeEventListener('message', this.onMessage)
+    this.worker.removeEventListener('error', this.onWorkerError)
+    this.worker.removeEventListener('messageerror', this.onWorkerMessageError)
+    this.clearResponseTimer()
     for (const { reject } of this.registrationResolvers.values()) {
       reject(new Error('Document worker client was disposed before contract registration completed.'))
     }
@@ -143,6 +159,12 @@ export class DocumentClient {
     void this.registerContract(contract).catch(() => undefined)
 
     this.worker.postMessage(request)
+    if (request.requestId === this.currentRequestId) {
+      this.responseTimer = setTimeout(
+        () => this.failCurrent('worker_timeout', 'Document analysis worker timed out.'),
+        this.options.analysisTimeoutMs ?? ANALYSIS_TIMEOUT_MS,
+      )
+    }
   }
 
   private receive(response: DocumentWorkerResponse): void {
@@ -158,6 +180,7 @@ export class DocumentClient {
       return
     }
     if (!this.responseIdentityIsCurrent(response)) return
+    this.clearResponseTimer()
 
     if (response.type === 'analysis-error') {
       this.options.onError?.(response)
@@ -165,6 +188,37 @@ export class DocumentClient {
     }
 
     this.acceptResponse(response)
+  }
+
+  private failCurrent(code: AnalyzeDocumentErrorResponse['code'], message: string): void {
+    const request = this.currentRequest
+    if (!request || !this.analysisState) return
+    this.clearResponseTimer()
+    this.currentRequest = null
+    this.currentRequestId = null
+    for (const { reject } of this.registrationResolvers.values()) reject(new Error(message))
+    this.registrationResolvers.clear()
+    this.registrations.clear()
+    this.options.onError?.({
+      type: 'analysis-error',
+      requestId: request.requestId,
+      workflowId: request.workflowId,
+      pairGeneration: request.pairGeneration,
+      definitionPath: request.definition.path,
+      companionPath: request.companion?.path ?? null,
+      definitionRevision: request.definition.revision,
+      companionRevision: request.companion?.revision ?? null,
+      profile: request.profile,
+      contractDigest: request.contractDigest,
+      reason: request.reason,
+      code,
+      message,
+    })
+  }
+
+  private clearResponseTimer(): void {
+    if (this.responseTimer) clearTimeout(this.responseTimer)
+    this.responseTimer = undefined
   }
 
   private responseIdentityIsCurrent(response: AnalyzeDocumentResponse | AnalyzeDocumentErrorResponse): boolean {

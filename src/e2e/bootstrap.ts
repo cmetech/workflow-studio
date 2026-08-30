@@ -16,6 +16,7 @@ import { historyStore } from '$src/stores/history'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
+const LONG_WINDOWS_ROOT = 'C:\\workspaces\\release\\nested\\workflow-studio-with-a-long-workspace-identity'
 const LONG_WINDOWS_PATH =
   'C:\\workspaces\\release\\nested\\workflow-definitions\\international\\release-demo-with-an-exceptionally-long-name.yaml'
 const LONG_GIT_SUBJECT =
@@ -283,10 +284,7 @@ export async function installRuntimeBootstrap(): Promise<void> {
         : scenario === 'advanced-inspector'
           ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
           : AUTHORING_FILES
-  const selectedRoot =
-    scenario === 'long-git'
-      ? 'C:\\workspaces\\release\\nested\\workflow-studio-with-a-long-workspace-identity'
-      : '/e2e/workspace'
+  const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
   const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0
   let updateChecks = 0
@@ -515,7 +513,7 @@ export async function installRuntimeBootstrap(): Promise<void> {
       return updateSnapshot('deferred')
     },
     gitDetect: async () => ({
-      root: scenario === 'long-git' ? 'C:\\workspaces\\release\\nested\\workflow-studio' : '/e2e/workspace',
+      root: scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace',
       branch:
         scenario === 'unbroken-git-ref'
           ? UNBROKEN_GIT_REF

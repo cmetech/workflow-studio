@@ -58,7 +58,12 @@ async function dragNodeBy(
   await page.mouse.up()
 }
 
-async function dragPort(page: Page, sourceId: string, targetId: string): Promise<void> {
+async function dragPort(
+  page: Page,
+  sourceId: string,
+  targetId: string,
+  onBeforeRelease?: (metrics: E2EMetricSnapshot) => void,
+): Promise<void> {
   const source = page.locator(`[data-node-id="${sourceId}"] [data-port="output"]`)
   const target = page.locator(`[data-node-id="${targetId}"] [data-port="input"]`)
   await expect(source).toBeInViewport()
@@ -84,7 +89,29 @@ async function dragPort(page: Page, sourceId: string, targetId: string): Promise
   await page.mouse.move(targetBounds.x + targetBounds.width / 2, targetBounds.y + targetBounds.height / 2, {
     steps: 5,
   })
+  if (onBeforeRelease) {
+    const metrics = await page.evaluate(() =>
+      (
+        window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+          metrics(): E2EMetricSnapshot
+        }
+      ).metrics(),
+    )
+    onBeforeRelease(metrics)
+  }
   await page.mouse.up()
+}
+
+function expectNoPortDragWork(metrics: E2EMetricSnapshot): void {
+  expect(metrics).toMatchObject({
+    parseRequests: 0,
+    validationPasses: 0,
+    layouts: 0,
+    yamlTransactions: 0,
+    nativeCalls: 0,
+    gitCalls: 0,
+    pointerMoves: 0,
+  })
 }
 
 test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ browserName, page }) => {
@@ -235,10 +262,12 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   }
   await checkpoint('capacity connection prepared')
   const beforeRejectedCycle = (await e2eSnapshot(page)).definitionText
-  await dragPort(page, 'node-027', 'node-026')
+  await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.resetMetrics())
+  await dragPort(page, 'node-027', 'node-026', expectNoPortDragWork)
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/create a cycle/i)
   expect((await e2eSnapshot(page)).definitionText).toBe(beforeRejectedCycle)
-  await dragPort(page, 'node-025', 'node-026')
+  await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.resetMetrics())
+  await dragPort(page, 'node-025', 'node-026', expectNoPortDragWork)
   await expect.poll(async () => (await e2eSnapshot(page)).projectionEdgeCount).toBe(LARGE_WORKFLOW_EDGE_COUNT)
   await expect(page.getByRole('group', { name: 'Dependency from node-025 to node-026' })).toBeAttached()
   await page.evaluate(

@@ -823,6 +823,7 @@
       projection,
       contract,
       positions: canvasPositionsStore.get(),
+      getCurrentPair: () => documentSessionStore.get().pair,
       applyMutation: (pair, mutation, contract) => applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker),
       commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))

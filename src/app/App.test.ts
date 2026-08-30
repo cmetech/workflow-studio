@@ -166,12 +166,12 @@ class RealDocumentWorker {
     })
   }
 
-  addEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
-    this.listeners.add(listener)
+  addEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+    if (type === 'message') this.listeners.add(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
   }
 
-  removeEventListener(_type: 'message', listener: (event: MessageEvent<DocumentWorkerResponse>) => void): void {
-    this.listeners.delete(listener)
+  removeEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+    if (type === 'message') this.listeners.delete(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
   }
 
   terminate(): void {
@@ -666,7 +666,7 @@ describe('App', () => {
         })
       }
       addEventListener(
-        _type: 'message',
+        type: 'message' | 'error' | 'messageerror',
         listener: (
           event: MessageEvent<{
             type: string
@@ -676,10 +676,10 @@ describe('App', () => {
           }>,
         ) => void,
       ): void {
-        this.listeners.add(listener)
+        if (type === 'message') this.listeners.add(listener)
       }
       removeEventListener(
-        _type: 'message',
+        type: 'message' | 'error' | 'messageerror',
         listener: (
           event: MessageEvent<{
             type: string
@@ -689,7 +689,7 @@ describe('App', () => {
           }>,
         ) => void,
       ): void {
-        this.listeners.delete(listener)
+        if (type === 'message') this.listeners.delete(listener)
       }
       terminate(): void {}
     }
