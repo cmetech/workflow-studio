@@ -80,7 +80,7 @@ export function synchronizeEditorProjection(
       ? session.analysis.projection
       : null
   if (currentUsableProjection) projection = currentUsableProjection
-  const stale = Boolean(session.pair && !currentUsableProjection)
+  const stale = Boolean(session.pair && (!currentUsableProjection || session.analysis?.structurallyValid !== true))
   return { workflowId, projection, stale, readOnly: stale }
 }
 

@@ -266,6 +266,65 @@ describe('GraphCanvas', () => {
     expect(screen.getByRole('menuitemcheckbox', { name: 'Hide minimap' })).toBeVisible()
   })
 
+  it('suppresses graph callbacks, palette drops, drag state, and layout persistence while stale', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const onConnect = vi.fn()
+    const onDisconnect = vi.fn()
+    const onRequestAdd = vi.fn()
+    const onDropNodeKind = vi.fn()
+    const { component, container } = renderCanvas({
+      projection,
+      layout,
+      stale: true,
+      onPersistLayout: persistLayout,
+      onConnect,
+      onDisconnect,
+      onRequestAdd,
+      onDropNodeKind,
+    })
+    const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const viewport = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')!
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'review' } }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdisconnect', { bubbles: true, detail: { source: 'collect', target: 'review' } }),
+    )
+    await fireEvent.drop(viewport, {
+      clientX: 100,
+      clientY: 100,
+      dataTransfer: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
+    })
+    component.requestAdd()
+    component.arrange()
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
+    expect(onConnect).not.toHaveBeenCalled()
+    expect(onDisconnect).not.toHaveBeenCalled()
+    expect(onRequestAdd).not.toHaveBeenCalled()
+    expect(onDropNodeKind).not.toHaveBeenCalled()
+    expect(persistLayout).not.toHaveBeenCalled()
+  })
+
   it('suppresses synthetic drag, selection, and Arrange mutations while an activation transition is locked', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)

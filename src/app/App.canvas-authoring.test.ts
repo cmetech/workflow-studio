@@ -450,7 +450,7 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
-  it('keeps dependency authoring read-only for a structurally-invalid visually-authorable node draft', async () => {
+  it('keeps an incomplete projected node canvas-read-only while Inspector repairs it and valid analysis resumes authoring', async () => {
     const draftText = `${source}  - id: command\n    command: ""\n`
     const rendered = await renderAuthoringApp({ text: draftText })
     const revision = $documentSession.get().revision!
@@ -472,19 +472,66 @@ describe('App canvas authoring composition', () => {
       projection: projection(draftText),
     })
     await tick()
+    setCanvasSelection(['command'])
+    await tick()
+
+    expect(screen.getByLabelText('command node command')).toBeVisible()
+    expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
+    const commandField = await screen.findByRole('textbox', { name: 'Command' })
+    expect(commandField).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    const layoutBeforeDrag = structuredClone(activeLayoutStore.get())
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'command', position: { x: 720, y: 180 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'command', position: { x: 720, y: 180 } },
+      }),
+    )
+    expect($canvasPositions.get().command).toEqual({ x: 640, y: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(activeLayoutStore.get()).toEqual(layoutBeforeDrag)
 
     await fireEvent(
-      screen.getByRole('region', { name: 'Workflow graph' }),
+      canvas,
       new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
-    )
-
-    await waitFor(() =>
-      expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
-        'Canvas authoring requires a current valid YAML projection.',
-      ),
     )
     expect($documentSession.get().pair?.definition.text).toBe(draftText)
     expect(historyStore.get().undo).toHaveLength(0)
+
+    await fireEvent.input(commandField, { target: { value: '/review' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('command: "/review"'))
+
+    const repairedText = $documentSession.get().pair!.definition.text
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: projection(repairedText),
+    })
+    await waitFor(() => expect(screen.queryByText(/last valid graph.*read-only/i)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
+    )
+    await waitFor(() =>
+      expect($documentSession.get().pair?.definition.text).toContain(
+        '  - id: command\n    command: "/review"\n    depends_on:\n      - collect\n',
+      ),
+    )
+    expect(historyStore.get().undo).toHaveLength(2)
     rendered.unmount()
   })
 

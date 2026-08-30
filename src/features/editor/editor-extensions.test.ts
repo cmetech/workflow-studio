@@ -108,7 +108,7 @@ describe('authoritative editor synchronization', () => {
     expect(corrected).toMatchObject({ projection: correctedProjection, stale: false, readOnly: false })
   })
 
-  it('uses a current visually-authorable incomplete-node projection without declaring YAML structurally valid', () => {
+  it('retains a current visually-authorable incomplete-node projection as stale and read-only', () => {
     const current = pair()
     const revision = createDocumentRevision(current, `sha256:${'1'.repeat(64)}`)
     const projection = workflowProjection('draft')
@@ -134,7 +134,7 @@ describe('authoritative editor synchronization', () => {
       },
     })
 
-    expect(state).toEqual({ workflowId: current.workflowId, projection, stale: false, readOnly: false })
+    expect(state).toEqual({ workflowId: current.workflowId, projection, stale: true, readOnly: true })
   })
 
   it('commits every edit immediately while dispatching only the latest debounced worker analysis', () => {

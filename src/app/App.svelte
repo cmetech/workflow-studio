@@ -67,6 +67,7 @@
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
   import type { DocumentAnalysis, DocumentKind, WorkflowPairText } from '$src/lib/documents/types'
+  import { isAnalysisCurrent } from '$src/lib/documents/revisions'
   import {
     $documentWorkspace as documentWorkspaceState,
     DocumentWorkspaceController,
@@ -272,6 +273,7 @@
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
+  let canvasReadOnly = $state(false)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
@@ -687,7 +689,14 @@
 
   function inspectorMutationDisabledReason(): string | undefined {
     if (canvasTransitionLocked) return 'The document is transitioning.'
-    if (canvasStale) return 'The YAML projection is stale.'
+    const session = $documentSessionStore
+    const currentRepairableDraft = Boolean(
+      session.revision &&
+      session.analysis?.visuallyAuthorable === true &&
+      isAnalysisCurrent(session.revision, session.analysis) &&
+      session.analysis.projection === canvasProjection,
+    )
+    if (canvasStale && !currentRepairableDraft) return 'The YAML projection is stale.'
     if ($documentWorkspaceState.missingChange) return 'A backing YAML file is missing.'
     const entry = $workspace.entries.find(({ id }) => id === $documentSessionStore.pair?.workflowId)
     if (entry?.readOnly) return 'This workflow is read-only.'
@@ -1234,13 +1243,14 @@
         workflowId: canvasWorkflowId,
         projection: canvasProjection,
         stale: canvasStale,
-        readOnly: canvasStale,
+        readOnly: canvasReadOnly,
       },
       session,
     )
     canvasWorkflowId = synchronized.workflowId
     canvasProjection = synchronized.projection
     canvasStale = synchronized.stale
+    canvasReadOnly = synchronized.readOnly
   })
 
   $effect(() => {
@@ -1749,8 +1759,9 @@
                   transitionLocked={canvasTransitionLocked}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
-                  readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                    ?.readOnly === true}
+                  readOnly={canvasReadOnly ||
+                    $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                      ?.readOnly === true}
                   onPersistLayout={persistCanvasLayout}
                   onPersistenceError={surfaceCanvasPersistenceError}
                   onConnect={(source, target) => canvasAuthoring.connect(source, target)}
