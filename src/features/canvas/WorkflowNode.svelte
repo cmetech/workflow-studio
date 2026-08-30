@@ -69,6 +69,10 @@
     background: var(--color-node);
     box-shadow: 0 0.25rem 0.75rem color-mix(in srgb, var(--color-edge) 16%, transparent);
     font-family: var(--font-sans);
+    transition:
+      border-color 120ms ease-out,
+      background-color 120ms ease-out,
+      box-shadow 120ms ease-out;
   }
 
   .workflow-node.selected,
@@ -166,6 +170,20 @@
     .workflow-node,
     :global(.workflow-port::after) {
       border-color: CanvasText;
+    }
+
+    .workflow-node.selected,
+    .workflow-node:focus-within {
+      outline: 2px solid Highlight;
+      outline-offset: 2px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workflow-node,
+    :global(.workflow-port) {
+      transition: none !important;
+      animation: none !important;
     }
   }
 </style>

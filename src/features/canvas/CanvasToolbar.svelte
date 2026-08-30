@@ -158,6 +158,10 @@
     color: var(--color-text);
     background: var(--color-surface);
     white-space: nowrap;
+    transition:
+      border-color 100ms ease-out,
+      color 100ms ease-out,
+      background-color 100ms ease-out;
   }
 
   button:focus-visible {
@@ -211,6 +215,22 @@
 
     .canvas-toolbar > button {
       padding-inline: 0.45rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    button,
+    .more-menu {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
+
+  @media (forced-colors: active) {
+    button:focus-visible {
+      outline: 2px solid ButtonText;
+      outline-offset: 2px;
+      box-shadow: none;
     }
   }
 </style>

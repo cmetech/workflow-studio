@@ -126,6 +126,7 @@
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
+  import X from 'lucide-svelte/icons/x'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
@@ -284,6 +285,7 @@
   let workbenchWidth = $state(1280)
   let editorWidth = $state(720)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
+  let workspacePanelOpener = $state<HTMLElement | undefined>()
   let inspectorPanelOpener = $state<HTMLElement | undefined>()
   let addNodeRequest = $state<{
     request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
@@ -562,10 +564,20 @@
     target?.focus()
   }
 
+  async function focusWorkspaceDrawer(opener: HTMLElement | undefined): Promise<void> {
+    workspacePanelOpener = opener
+    await tick()
+    workspacePanelHost?.querySelector<HTMLElement>('.drawer-close')?.focus()
+  }
+
   async function closeWorkspaceDrawer(): Promise<void> {
     workspacePanelOpen.set(false)
     await tick()
-    document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)?.focus()
+    const target = workspacePanelOpener?.isConnected
+      ? workspacePanelOpener
+      : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
+    target?.focus()
+    workspacePanelOpener = undefined
   }
 
   async function closeInspectorDrawer(): Promise<void> {
@@ -1389,6 +1401,13 @@
       })
       const keydown = (event: KeyboardEvent) => {
         const context = keyboardContext(event.target)
+        const keyboardOpener =
+          event.target instanceof HTMLElement
+            ? event.target
+            : document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : undefined
+        const workspacePanelWasOpen = $workspacePanelOpen
         if (
           context.surface === 'canvas' &&
           (nodeChordState.pending || (!event.shiftKey && event.key.toLowerCase() === 'n'))
@@ -1413,7 +1432,15 @@
             : []),
         ]
         void dispatchKeybinding(event, { registry: commandSurface, context, escape })
-          .then((result) => {
+          .then(async (result) => {
+            if (
+              result.status === 'executed' &&
+              result.commandId.startsWith('view.activity.') &&
+              workbenchPresentation.panels === 'drawers'
+            ) {
+              if ($workspacePanelOpen) await focusWorkspaceDrawer(keyboardOpener)
+              else if (workspacePanelWasOpen) await closeWorkspaceDrawer()
+            }
             if (result.status === 'disabled') workspaceError = result.reason
             else if (result.status === 'collision') {
               const labels = result.commandIds.map(
@@ -1560,7 +1587,8 @@
           class="drawer-close"
           data-variant="ghost"
           aria-label="Close workspace panel"
-          onclick={() => void closeWorkspaceDrawer()}>×</button
+          title="Close workspace panel"
+          onclick={() => void closeWorkspaceDrawer()}><X size={16} aria-hidden="true" /></button
         >
       {/if}
       {#if $activeActivity === 'explorer' && $workspace.id !== null}
@@ -1875,7 +1903,8 @@
           class="drawer-close"
           data-variant="ghost"
           aria-label="Close inspector"
-          onclick={() => void closeInspectorDrawer()}>×</button
+          title="Close inspector"
+          onclick={() => void closeInspectorDrawer()}><X size={16} aria-hidden="true" /></button
         >
       {/if}
       <Inspector
@@ -2349,6 +2378,13 @@
     margin-left: auto;
   }
 
+  .split-pane-tabs button {
+    transition:
+      border-color 100ms ease-out,
+      color 100ms ease-out,
+      background-color 100ms ease-out;
+  }
+
   .editor-tabs button {
     padding: var(--space-1) var(--space-3);
     border: 1px solid transparent;
@@ -2430,5 +2466,22 @@
     z-index: 40;
     top: 8rem;
     left: 17rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workbench[data-panel-presentation='drawers'] .panel,
+    .split-pane-tabs button {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .drawer-close:focus-visible,
+    .split-pane-tabs button:focus-visible {
+      outline: 2px solid ButtonText;
+      outline-offset: 2px;
+      box-shadow: none;
+    }
   }
 </style>

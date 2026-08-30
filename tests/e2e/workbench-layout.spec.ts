@@ -26,6 +26,10 @@ async function openPairAt(page: Page, width: number, height: number): Promise<vo
   }
 }
 
+function modShortcut(key: string): string {
+  return `${process.platform === 'darwin' ? 'Meta' : 'Control'}+${key}`
+}
+
 for (const viewport of [
   { width: 1024, height: 700 },
   { width: 1180, height: 800 },
@@ -104,6 +108,102 @@ test('compact Inspector restores focus to its non-General active tab after reope
   await expect(inspector).not.toHaveAttribute('inert')
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
   await expect(advanced).toBeFocused()
+})
+
+test('keyboard-only compact drawers and Split subtabs restore focus and expose named icon controls', async ({
+  page,
+}) => {
+  await openPairAt(page, 1024, 700)
+  const canvas = page.getByRole('region', { name: 'Workflow graph' })
+  await canvas.focus()
+
+  await page.keyboard.press(modShortcut('B'))
+  const workspacePanel = page.locator('aside[aria-label="Workspace panel"]')
+  const closeWorkspace = page.getByRole('button', { name: 'Close workspace panel' })
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+  await expect(closeWorkspace).toBeFocused()
+  await expect(closeWorkspace).toHaveAttribute('title', 'Close workspace panel')
+  await expect(closeWorkspace.locator('svg')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await expect(canvas).toBeFocused()
+  await expect(workspacePanel).toHaveAttribute('inert', '')
+
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await page.keyboard.press('Enter')
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const closeInspector = page.getByRole('button', { name: 'Close inspector' })
+  await expect(inspector).not.toHaveAttribute('inert')
+  await expect(closeInspector).toHaveAttribute('title', 'Close inspector')
+  await expect(closeInspector.locator('svg')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await expect(prepare).toBeFocused()
+
+  await expect(page.getByRole('button', { name: 'More canvas actions' })).toHaveAccessibleName('More canvas actions')
+  await expect(page.getByRole('button', { name: 'Dependencies entering prepare' })).toHaveAccessibleName(
+    'Dependencies entering prepare',
+  )
+  await expect(page.getByRole('button', { name: 'Dependencies leaving prepare' })).toHaveAccessibleName(
+    'Dependencies leaving prepare',
+  )
+
+  const workbench = page.locator('.workbench')
+  await workbench.evaluate((element) =>
+    element.setAttribute('style', `${element.getAttribute('style') ?? ''};width:748px`),
+  )
+  await page.keyboard.press(modShortcut('2'))
+  const splitPane = page.getByRole('group', { name: 'Split pane' })
+  const canvasSubtab = splitPane.getByRole('button', { name: 'Canvas' })
+  const yamlSubtab = splitPane.getByRole('button', { name: 'YAML' })
+  await expect(canvasSubtab).toHaveAttribute('aria-pressed', 'true')
+  await canvasSubtab.focus()
+  await page.keyboard.press('Tab')
+  await expect(yamlSubtab).toBeFocused()
+  await page.keyboard.press('Space')
+  await expect(yamlSubtab).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Split', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('reduced motion removes workbench durations and forced colors preserve focus outlines', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await openPairAt(page, 1024, 700)
+  await page.keyboard.press(modShortcut('B'))
+
+  const workbench = page.locator('.workbench')
+  await workbench.evaluate((element) =>
+    element.setAttribute('style', `${element.getAttribute('style') ?? ''};width:748px`),
+  )
+  await page.keyboard.press(modShortcut('2'))
+  const splitPane = page.getByRole('group', { name: 'Split pane' })
+  const reducedMotionTargets = [
+    page.locator('aside[aria-label="Workspace panel"]'),
+    splitPane.getByRole('button', { name: 'Canvas' }),
+    page.locator('.workflow-node').first(),
+    page.getByRole('button', { name: 'More canvas actions' }),
+  ]
+  for (const target of reducedMotionTargets) {
+    await expect(target).toBeAttached()
+    expect(
+      await target.evaluate((element) => {
+        const style = getComputedStyle(element)
+        return { animationDuration: style.animationDuration, transitionDuration: style.transitionDuration }
+      }),
+    ).toEqual({ animationDuration: '0s', transitionDuration: '0s' })
+  }
+
+  await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' })
+  for (const control of [
+    page.getByRole('button', { name: 'Close workspace panel' }),
+    splitPane.getByRole('button', { name: 'Canvas' }),
+  ]) {
+    await control.focus()
+    const outline = await control.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { style: style.outlineStyle, width: Number.parseFloat(style.outlineWidth) }
+    })
+    expect(outline.style).not.toBe('none')
+    expect(outline.width).toBeGreaterThan(0)
+  }
 })
 
 test('compact Split switches mounted surfaces without changing Split mode or scroll state', async ({ page }) => {

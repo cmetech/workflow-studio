@@ -158,7 +158,7 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
-  it('keeps compact drawers mounted, inert when closed, and restores the activity invoker on close', async () => {
+  it('keeps compact drawers mounted, inert when closed, and restores keyboard and activity invokers on close', async () => {
     closeTransientPanels()
     const { container } = render(App)
     await waitForSetupReady()
@@ -177,6 +177,21 @@ describe('App', () => {
     expect(inspectorPanel).toHaveAttribute('aria-hidden', 'true')
     expect(inspectorPanel).toHaveAttribute('inert')
 
+    const keyboardInvoker = screen.getByRole('button', { name: 'New Workflow' })
+    keyboardInvoker.focus()
+    await fireEvent.keyDown(keyboardInvoker, {
+      key: 'b',
+      metaKey: /mac/i.test(navigator.platform),
+      ctrlKey: !/mac/i.test(navigator.platform),
+    })
+    const closeWorkspace = screen.getByRole('button', { name: 'Close workspace panel' })
+    await waitFor(() => expect(closeWorkspace).toHaveFocus())
+    expect(closeWorkspace).toHaveAttribute('title', 'Close workspace panel')
+    expect(closeWorkspace.querySelector('svg')).not.toBeNull()
+    await fireEvent.keyDown(closeWorkspace, { key: 'Escape' })
+    await waitFor(() => expect(keyboardInvoker).toHaveFocus())
+    expect(workspacePanel).toHaveAttribute('inert')
+
     const explorer = screen.getByRole('button', { name: 'Explorer' })
     explorer.focus()
     await fireEvent.click(explorer)
@@ -187,6 +202,10 @@ describe('App', () => {
     await tick()
     expect(workspacePanel).toHaveAttribute('inert')
     expect(explorer).toHaveFocus()
+
+    const closeInspector = container.querySelector<HTMLButtonElement>('button[aria-label="Close inspector"]')!
+    expect(closeInspector).toHaveAttribute('title', 'Close inspector')
+    expect(closeInspector.querySelector('svg')).not.toBeNull()
   })
 
   it('leaves an open compact drawer and modal focus unchanged when Escape occurs inside the active modal', async () => {
