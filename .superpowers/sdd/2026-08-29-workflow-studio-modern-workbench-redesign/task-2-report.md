@@ -82,3 +82,55 @@ svelte-check found 0 errors and 0 warnings
 ## Concerns
 
 None known. The fixed runtime brand-token schema was not changed.
+
+## Fix round 1 — review findings
+
+### Changes
+
+- Assigned explicit variants to every button in the Task 2 chrome components: dialog Close/Cancel actions, brand import/preview/activate actions, Inspector and YAML tabs, node-palette node actions, Explorer tree actions, and App editor/recovery/shortcut controls.
+- Replaced the remaining Explorer, Delete Impact dialog, and Brand Settings local focus outlines with `var(--focus-ring)`.
+- Applied `var(--font-mono)` to import/export path metadata and delete-impact identifiers.
+
+### Files changed
+
+- `src/app/App.svelte`, `src/app/App.test.ts`
+- `src/features/workspace/Explorer.svelte`, `src/features/workspace/Explorer.test.ts`
+- `src/features/workspace/ImportExportDialog.svelte`, `src/features/workspace/ImportExportDialog.test.ts`
+- `src/features/branding/BrandSettings.svelte`, `src/features/branding/BrandSettings.test.ts`
+- `src/features/inspector/Inspector.svelte`, `src/features/inspector/Inspector.test.ts`
+- `src/features/editor/EditorModes.svelte`, `src/features/editor/EditorModes.test.ts`
+- `src/features/canvas/NodePalette.svelte`, `src/features/canvas/NodePalette.test.ts`
+- `src/features/canvas/DeleteImpactDialog.svelte`, `src/features/canvas/DeleteImpactDialog.test.ts`
+
+### RED
+
+```text
+$ npm run test:unit -- src/features/workspace/ImportExportDialog.test.ts src/features/branding/BrandSettings.test.ts src/features/inspector/Inspector.test.ts src/features/editor/EditorModes.test.ts src/features/canvas/NodePalette.test.ts src/features/canvas/DeleteImpactDialog.test.ts src/features/workspace/Explorer.test.ts
+
+Test Files  5 failed | 2 passed (7)
+Tests  5 failed | 38 passed (43)
+
+ImportExportDialog expected Close to be secondary; BrandSettings expected Import to be primary; Inspector and EditorModes expected ghost tabs; NodePalette expected a secondary node action. Each received no data-variant.
+
+$ npm run test:unit -- src/app/App.test.ts src/features/workspace/Explorer.test.ts
+
+Test Files  2 failed (2)
+Tests  2 failed | 40 passed (42)
+
+App editor-mode buttons and Explorer tree-item buttons did not expose data-variant="ghost".
+```
+
+### GREEN and verification
+
+```text
+$ npm run test:unit -- src/features/workspace/ImportExportDialog.test.ts src/features/branding/BrandSettings.test.ts src/features/inspector/Inspector.test.ts src/features/editor/EditorModes.test.ts src/features/canvas/NodePalette.test.ts src/features/canvas/DeleteImpactDialog.test.ts src/features/workspace/Explorer.test.ts src/app/App.test.ts
+
+Test Files  8 passed (8)
+Tests  76 passed (76)
+
+$ npm run check
+
+svelte-check found 0 errors and 0 warnings
+```
+
+`git diff --check` also completed with no output. No behavior, color-token schema, or workflow boundaries changed.

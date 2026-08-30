@@ -40,6 +40,7 @@ describe('NodePalette', () => {
       expect.stringContaining('Bash'),
     ])
     expect(screen.getByRole('button', { name: /add command node/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /add command node/i })).toHaveAttribute('data-variant', 'secondary')
     expect(screen.getByRole('button', { name: /add command node/i })).toHaveTextContent('N C')
     expect(screen.getByRole('button', { name: /prompt node.*deferred/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /bash node.*not available in hermes-legacy/i })).toBeDisabled()

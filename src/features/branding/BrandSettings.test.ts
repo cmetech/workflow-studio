@@ -62,9 +62,15 @@ describe('BrandSettings', () => {
       onRemove,
     })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Import brand pack' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Preview acme Studio' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Activate acme Studio' }))
+    const importPack = screen.getByRole('button', { name: 'Import brand pack' })
+    const preview = screen.getByRole('button', { name: 'Preview acme Studio' })
+    const activate = screen.getByRole('button', { name: 'Activate acme Studio' })
+    expect(importPack).toHaveAttribute('data-variant', 'primary')
+    expect(preview).toHaveAttribute('data-variant', 'ghost')
+    expect(activate).toHaveAttribute('data-variant', 'secondary')
+    await fireEvent.click(importPack)
+    await fireEvent.click(preview)
+    await fireEvent.click(activate)
     expect(screen.getByRole('button', { name: 'Remove acme Studio' })).toHaveAttribute('data-variant', 'danger')
     await fireEvent.click(screen.getByRole('button', { name: 'Remove acme Studio' }))
 

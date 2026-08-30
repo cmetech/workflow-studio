@@ -80,7 +80,7 @@
         </ul>
       </div>
       <footer>
-        <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Close</button>
+        <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Close</button>
       </footer>
     {:else}
       {#if paths.length > 0}
@@ -130,6 +130,10 @@
     display: flex;
     gap: 0.5rem;
     justify-content: flex-end;
+  }
+
+  code {
+    font-family: var(--font-mono);
   }
 
 </style>

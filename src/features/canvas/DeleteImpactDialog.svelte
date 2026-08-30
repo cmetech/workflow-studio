@@ -153,6 +153,7 @@
     display: block;
     margin-top: 0.15rem;
     color: var(--color-text-muted);
+    font-family: var(--font-mono);
   }
   .node-list code {
     display: inline;
@@ -175,7 +176,6 @@
     min-height: 2rem;
   }
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
   }
 </style>

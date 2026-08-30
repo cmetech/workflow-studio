@@ -168,6 +168,7 @@
       <button
         id={domId(row.entry.id)}
         type="button"
+        data-variant="ghost"
         role="treeitem"
         aria-label={treeItemLabel(row.entry)}
         aria-level={row.level}
@@ -281,8 +282,7 @@
   }
 
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: -1px;
+    box-shadow: var(--focus-ring);
   }
 
   .disclosure {

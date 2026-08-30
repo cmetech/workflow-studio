@@ -79,6 +79,7 @@
       {@const chord = nodeChordForKind(descriptor.id)}
       <button
         type="button"
+        data-variant="secondary"
         class:supported={available(descriptor)}
         aria-label={available(descriptor)
           ? `Add ${descriptor.label} node`

@@ -73,6 +73,7 @@ describe('Inspector', () => {
     const tabs = screen.getAllByRole('tab')
     expect(screen.getByLabelText('Workflow inspector')).toBeVisible()
     expect(tabs.map(({ textContent }) => textContent)).toEqual(['General', 'Execution', 'Advanced', 'Docs'])
+    expect(tabs.every((tab) => tab.getAttribute('data-variant') === 'ghost')).toBe(true)
     expect(screen.getByRole('textbox', { name: /node id.*required/i })).toHaveAttribute('aria-required', 'true')
     expect(screen.getByText('Unique node identifier.')).toHaveAttribute('id')
 

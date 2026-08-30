@@ -41,6 +41,7 @@ describe('DeleteImpactDialog', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/resolve.*reference/i)
     expect(screen.getByRole('button', { name: 'Delete nodes' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Delete nodes' })).toHaveAttribute('data-variant', 'danger')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveAttribute('data-variant', 'secondary')
   })
 
   it('confirms dependency-only deletion and restores focus to the opener', async () => {

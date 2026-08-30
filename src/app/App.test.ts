@@ -126,6 +126,7 @@ describe('App', () => {
 
     expect(screen.getByRole('button', { name: 'New Workflow' })).toHaveAttribute('data-variant', 'primary')
     expect(screen.getAllByRole('button', { name: 'Open Folder' })[0]).toHaveAttribute('data-variant', 'secondary')
+    expect(screen.getAllByRole('button', { name: /^(Visual|YAML|Split)$/ }).every((button) => button.getAttribute('data-variant') === 'ghost')).toBe(true)
   })
 
   it('mounts runtime brand management in Settings', async () => {

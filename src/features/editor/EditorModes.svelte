@@ -132,6 +132,7 @@
       bind:this={definitionTab}
       id={definitionTabId}
       type="button"
+      data-variant="ghost"
       role="tab"
       aria-label="Definition YAML"
       aria-selected={$activeYamlDocument === 'definition'}
@@ -145,6 +146,7 @@
         bind:this={companionTab}
         id={companionTabId}
         type="button"
+        data-variant="ghost"
         role="tab"
         aria-label="Companion YAML"
         aria-selected={$activeYamlDocument === 'companion'}

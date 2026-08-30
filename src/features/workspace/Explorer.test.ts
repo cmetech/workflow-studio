@@ -73,6 +73,7 @@ describe('Explorer', () => {
     expect(screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })).toBeVisible()
     expect(screen.getByRole('treeitem', { name: 'legacy.yml, legacy workflow' })).toBeVisible()
     expect(screen.getByRole('treeitem', { name: 'orphan.hermes.yaml, orphan companion, read only' })).toBeVisible()
+    expect(screen.getAllByRole('treeitem').every((item) => item.getAttribute('data-variant') === 'ghost')).toBe(true)
     expect(screen.getByText('+ policy')).toBeVisible()
     expect(screen.getByText('legacy')).toBeVisible()
     expect(screen.getByText('orphan')).toBeVisible()

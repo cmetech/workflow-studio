@@ -111,6 +111,7 @@
       <button
         bind:this={tabButtons[index]}
         type="button"
+        data-variant="ghost"
         role="tab"
         id={`inspector-tab-${tab.toLowerCase()}`}
         aria-controls={`inspector-panel-${tab.toLowerCase()}`}

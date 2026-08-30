@@ -1575,6 +1575,7 @@
           {#if command}
             <button
               type="button"
+              data-variant="ghost"
               aria-pressed={$activeEditorMode === mode}
               class:active={$activeEditorMode === mode}
               title={command.title}
@@ -1684,11 +1685,12 @@
               {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
             </p>
             <div class="missing-actions">
-              <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
+              <button type="button" data-variant="primary" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
                 >Keep Mine / Recreate</button
               >
               <button
                 type="button"
+                data-variant="secondary"
                 onclick={() => runWorkspaceOperation(withCanvasLayoutBarrier(() => documentWorkspace.closeMissing()))}
                 >Close and Recover Later</button
               >
@@ -1778,11 +1780,12 @@
     <div class="recovery-offer" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="recovery-title">
       <h2 id="recovery-title">Recover unsaved workflow?</h2>
       <p>{$documentWorkspaceState.recoveryOffers[0].definition.path}</p>
-      <button type="button" onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}
+      <button type="button" data-variant="primary" onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}
         >Recover</button
       >
       <button
         type="button"
+        data-variant="danger"
         onclick={() => void documentWorkspace.discardRecovery($documentWorkspaceState.recoveryOffers[0]!.workflowId)}
         >Discard</button
       >
@@ -1892,7 +1895,7 @@
   {/if}
   {#if $keyboardShortcutsOpen}
     <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-      <button type="button" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
+      <button type="button" data-variant="ghost" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
       <KeyboardShortcuts registry={commandSurface} />
     </div>
   {/if}
