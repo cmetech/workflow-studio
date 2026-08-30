@@ -33,6 +33,8 @@ describe('CommandPalette', () => {
     const dialog = screen.getByRole('dialog', { name: 'Command palette' })
     expect(dialog.tagName).toBe('DIALOG')
     expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Close command palette' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Canvas' })).toBeVisible()
     await fireEvent.input(input, { target: { value: 'delete' } })
     expect(screen.getByText('Select a node first.')).toBeVisible()
@@ -62,5 +64,8 @@ describe('CommandPalette', () => {
 
     expect(close).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Close command palette' }))
+    expect(close).toHaveBeenCalledOnce()
   })
 })

@@ -75,13 +75,11 @@ async function assertRealResponsiveModal(page: Page, dialog: Locator, reachableA
   expect(actionBoxBefore!.y).toBeGreaterThanOrEqual(0)
   expect(actionBoxBefore!.y + actionBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
 
-  const hasFooter = (await footer.count()) === 1
-  const footerBoxBefore = hasFooter ? await footer.boundingBox() : null
-  if (hasFooter) {
-    await expect(footer).toBeVisible()
-    expect(footerBoxBefore).not.toBeNull()
-    expect(footerBoxBefore!.y + footerBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
-  }
+  await expect(footer).toHaveCount(1)
+  await expect(footer).toBeVisible()
+  const footerBoxBefore = await footer.boundingBox()
+  expect(footerBoxBefore).not.toBeNull()
+  expect(footerBoxBefore!.y + footerBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
 
   await body.evaluate((element) => {
     element.scrollTop = element.scrollHeight
@@ -112,15 +110,16 @@ async function assertRealResponsiveModal(page: Page, dialog: Locator, reachableA
     footerScrollTop: before.footerScrollTop,
   })
 
-  if (hasFooter) {
-    await expect(reachableAction).toBeVisible()
-    await expect(footer).toBeVisible()
-    const [actionBoxAfter, footerBoxAfter] = await Promise.all([reachableAction.boundingBox(), footer.boundingBox()])
-    expect(actionBoxAfter).not.toBeNull()
-    expect(footerBoxAfter).not.toBeNull()
-    expect(actionBoxAfter!.y + actionBoxAfter!.height).toBeLessThanOrEqual(viewportHeight)
-    expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
-  }
+  await expect(reachableAction).toBeVisible()
+  const actionBoxAfter = await reachableAction.boundingBox()
+  expect(actionBoxAfter).not.toBeNull()
+  expect(actionBoxAfter!.y).toBeGreaterThanOrEqual(0)
+  expect(actionBoxAfter!.y + actionBoxAfter!.height).toBeLessThanOrEqual(viewportHeight)
+
+  await expect(footer).toBeVisible()
+  const footerBoxAfter = await footer.boundingBox()
+  expect(footerBoxAfter).not.toBeNull()
+  expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
 }
 
@@ -143,7 +142,7 @@ test('Quick Open is a top-layer modal with contained focus and scrollable result
   await openSeededPair(page)
   await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+P`)
   const dialog = page.getByRole('dialog', { name: 'Quick Open' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('option').first())
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close Quick Open' }))
 })
 
 test('External Change is a top-layer modal with persistent conflict actions', async ({ page }) => {
@@ -216,5 +215,5 @@ test('Command Palette is a top-layer modal with reachable search results', async
   await openSeededPair(page)
   await page.keyboard.press('F1')
   const dialog = page.getByRole('dialog', { name: 'Command palette' })
-  await assertRealResponsiveModal(page, dialog, dialog.getByRole('option').first())
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close command palette' }))
 })

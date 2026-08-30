@@ -86,6 +86,9 @@
       </button>
     {/each}
   </div>
+  {#snippet actions()}
+    <button type="button" data-variant="secondary" aria-label="Close Quick Open" onclick={close}>Close</button>
+  {/snippet}
 </ModalShell>
 
 <style>

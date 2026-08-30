@@ -38,20 +38,25 @@ const entries: readonly WorkspaceEntry[] = [
 
 describe('QuickOpen', () => {
   it('keeps forward and reverse Tab focus within the overlay', async () => {
-    render(QuickOpen, { entries })
+    const onClose = vi.fn()
+    render(QuickOpen, { entries, onClose })
     await tick()
     const dialog = screen.getByRole('dialog', { name: 'Quick Open' })
     const search = screen.getByRole('combobox', { name: 'Quick Open workflows' })
-    const lastResult = screen.getAllByRole('option').at(-1)!
+    const close = screen.getByRole('button', { name: 'Close Quick Open' })
 
     expect(dialog.tagName).toBe('DIALOG')
     expect(dialog.querySelector('[data-modal-body]')).not.toBeNull()
+    expect(dialog.querySelector('[data-modal-actions]')).not.toBeNull()
+    expect(close).toBeVisible()
     expect(search).toHaveFocus()
-    lastResult.focus()
-    await fireEvent.keyDown(lastResult, { key: 'Tab' })
+    close.focus()
+    await fireEvent.keyDown(close, { key: 'Tab' })
     expect(search).toHaveFocus()
     await fireEvent.keyDown(search, { key: 'Tab', shiftKey: true })
-    expect(lastResult).toHaveFocus()
+    expect(close).toHaveFocus()
+    await fireEvent.click(close)
+    expect(onClose).toHaveBeenCalledOnce()
   })
 
   it('captures and restores the focused opener when Escape closes the overlay', async () => {

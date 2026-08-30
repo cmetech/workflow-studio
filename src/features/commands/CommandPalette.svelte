@@ -113,6 +113,9 @@
       {/each}
     </div>
   </div>
+  {#snippet actions()}
+    <button type="button" data-variant="secondary" aria-label="Close command palette" onclick={close}>Close</button>
+  {/snippet}
 </ModalShell>
 
 <style>
