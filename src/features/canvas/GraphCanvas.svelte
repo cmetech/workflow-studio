@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, setContext } from 'svelte'
   import {
     Background,
     BackgroundVariant,
@@ -27,7 +27,14 @@
   } from '$src/stores/canvas'
   import { createMemoizedCanvasProjector, projectCanvas } from './project-canvas'
   import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
-  import type { CanvasDragDetail, CanvasEdge, CanvasNode, CanvasPosition } from './types'
+  import {
+    CANVAS_INSPECTOR_RELATIONSHIP,
+    type CanvasDragDetail,
+    type CanvasEdge,
+    type CanvasInspectorRelationship,
+    type CanvasNode,
+    type CanvasPosition,
+  } from './types'
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
   import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
@@ -87,6 +94,15 @@
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
+  const inspectorRelationship: CanvasInspectorRelationship = {
+    controls: () => inspectorControls,
+    expanded: () => inspectorExpanded,
+    open: (nodeId) => {
+      selectionChanged([nodeId])
+      onOpenInspector?.()
+    },
+  }
+  setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(initialProjection.nodes)
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -143,22 +159,6 @@
     flowNodes = projected.nodes
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
-  })
-
-  $effect(() => {
-    const controls = inspectorControls
-    const expanded = inspectorExpanded
-    const selectedNodeIds = new Set(selection)
-    const renderedNodeIds = new Set(flowNodes.map(({ id }) => id))
-    if (!root || !controls) return
-    for (const wrapper of root.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]')) {
-      if (!renderedNodeIds.has(wrapper.dataset.id ?? '')) continue
-      wrapper.setAttribute('aria-controls', controls)
-      wrapper.setAttribute(
-        'aria-expanded',
-        expanded && selectedNodeIds.has(wrapper.dataset.id ?? '') ? 'true' : 'false',
-      )
-    }
   })
 
   $effect(() => {

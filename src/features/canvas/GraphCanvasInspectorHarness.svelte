@@ -6,7 +6,9 @@
   let inspectorExpanded = $state(false)
 </script>
 
-<button type="button" aria-label="Toggle test inspector" onclick={() => (inspectorExpanded = !inspectorExpanded)}>
-  Toggle inspector
-</button>
-<GraphCanvas {...canvasProps} inspectorControls="workflow-inspector" {inspectorExpanded} />
+<GraphCanvas
+  {...canvasProps}
+  inspectorControls="workflow-inspector"
+  {inspectorExpanded}
+  onOpenInspector={() => (inspectorExpanded = true)}
+/>

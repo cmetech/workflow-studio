@@ -1,12 +1,17 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte'
-  import type { CanvasNodeData } from './types'
+  import { getContext } from 'svelte'
+  import { CANVAS_INSPECTOR_RELATIONSHIP, type CanvasInspectorRelationship, type CanvasNodeData } from './types'
 
   let {
     data,
     selected = false,
     isConnectable = true,
   }: { data: CanvasNodeData; selected?: boolean; isConnectable?: boolean } = $props()
+
+  const inspectorRelationship = getContext<CanvasInspectorRelationship | undefined>(CANVAS_INSPECTOR_RELATIONSHIP)
+  const inspectorControls = $derived(inspectorRelationship?.controls())
+  const inspectorExpanded = $derived(Boolean(selected && inspectorRelationship?.expanded()))
 </script>
 
 <article
@@ -32,6 +37,16 @@
   <header>
     <strong>{data.id}</strong>
     <span class="kind">{data.kind || 'unknown'}</span>
+    {#if inspectorControls && inspectorRelationship}
+      <button
+        type="button"
+        class="inspector-trigger nodrag nopan"
+        aria-label={`Open Inspector for ${data.id}`}
+        aria-controls={inspectorControls}
+        aria-expanded={inspectorExpanded}
+        onclick={() => inspectorRelationship.open(data.id)}>Inspect</button
+      >
+    {/if}
   </header>
   <p title={data.summary}>{data.summary || 'No summary'}</p>
   {#if data.errorCount > 0 || data.requiredIssueCount > 0}
@@ -117,6 +132,13 @@
     color: var(--color-edge-selected);
     font-size: 0.68rem;
     font-weight: 650;
+  }
+
+  .inspector-trigger {
+    flex: none;
+    min-height: 1.75rem;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.65rem;
   }
 
   p {

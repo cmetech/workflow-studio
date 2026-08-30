@@ -92,14 +92,29 @@ test('compact drawer cycles preserve unsaved YAML and node selection', async ({ 
 test('compact Inspector restores focus to its non-General active tab after reopening', async ({ page }) => {
   await openPairAt(page, 1024, 700)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
-  await expect(prepare).toHaveAttribute('aria-controls', 'workflow-inspector')
-  await expect(prepare).toHaveAttribute('aria-expanded', 'false')
+  await expect(prepare).not.toHaveAttribute('aria-expanded')
+  const inspectorTrigger = page.getByRole('button', { name: 'Open Inspector for prepare' })
+  await expect(inspectorTrigger).toHaveAttribute('aria-controls', 'workflow-inspector')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
   await prepare.focus()
   await prepare.press('Enter')
 
   const inspector = page.locator('aside[aria-label="Inspector"]')
   await expect(inspector).toHaveAttribute('id', 'workflow-inspector')
-  await expect(prepare).toHaveAttribute('aria-expanded', 'true')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
+  const cdp = await page.context().newCDPSession(page)
+  const documentNode = await cdp.send('DOM.getDocument')
+  const triggerNode = await cdp.send('DOM.querySelector', {
+    nodeId: documentNode.root.nodeId,
+    selector: '.svelte-flow__node[data-id="prepare"] .inspector-trigger',
+  })
+  const accessibility = await cdp.send('Accessibility.getPartialAXTree', {
+    nodeId: triggerNode.nodeId,
+    fetchRelatives: false,
+  })
+  expect(accessibility.nodes[0]?.role?.value).toBe('button')
+  expect(accessibility.nodes[0]?.properties?.find(({ name }) => name === 'expanded')?.value?.value).toBe(true)
+  await cdp.detach()
   const advanced = inspector.getByRole('tab', { name: 'Advanced' })
   await advanced.click()
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
@@ -107,13 +122,16 @@ test('compact Inspector restores focus to its non-General active tab after reope
 
   await page.keyboard.press('Escape')
   await expect(prepare).toBeFocused()
-  await expect(prepare).toHaveAttribute('aria-expanded', 'false')
-  await prepare.press('Enter')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
+  await inspectorTrigger.click()
 
   await expect(inspector).not.toHaveAttribute('inert')
-  await expect(prepare).toHaveAttribute('aria-expanded', 'true')
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
   await expect(advanced).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(inspectorTrigger).toBeFocused()
+  await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
 })
 
 test('keyboard-only compact drawers and Split subtabs restore focus and expose named icon controls', async ({

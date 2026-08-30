@@ -520,19 +520,18 @@ describe('GraphCanvas', () => {
     expect($canvasSelection.get()).toEqual(['collect'])
 
     const collect = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
-    const review = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
-    expect(collect).toHaveAttribute('aria-controls', 'workflow-inspector')
-    expect(collect).toHaveAttribute('aria-expanded', 'false')
-    expect(review).toHaveAttribute('aria-controls', 'workflow-inspector')
-    expect(review).toHaveAttribute('aria-expanded', 'false')
+    expect(collect).toHaveAttribute('role', 'group')
+    expect(collect).not.toHaveAttribute('aria-expanded')
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Toggle test inspector' }))
+    const inspectorTrigger = screen.getByRole('button', { name: 'Open Inspector for collect' })
+    expect(inspectorTrigger.tagName).toBe('BUTTON')
+    expect(inspectorTrigger).toHaveAttribute('aria-controls', 'workflow-inspector')
+    expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(inspectorTrigger)
     await tick()
     expect($canvasSelection.get()).toEqual(['collect'])
-
-    const expandedCollect = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
-    expect(expandedCollect).toHaveAttribute('aria-controls', 'workflow-inspector')
-    expect(expandedCollect).toHaveAttribute('aria-expanded', 'true')
+    expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('keeps required and error issue counts visible as text on the affected node', async () => {

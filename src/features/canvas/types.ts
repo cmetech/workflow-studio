@@ -32,3 +32,11 @@ export interface CanvasDragDetail {
   readonly id?: string
   readonly position?: CanvasPosition
 }
+
+export interface CanvasInspectorRelationship {
+  readonly controls: () => string | undefined
+  readonly expanded: () => boolean
+  readonly open: (nodeId: string) => void
+}
+
+export const CANVAS_INSPECTOR_RELATIONSHIP = Symbol('canvas-inspector-relationship')
