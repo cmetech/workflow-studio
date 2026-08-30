@@ -154,11 +154,17 @@
   <header>
     <h2 id="workspace-explorer-heading">Explorer</h2>
     <div class="header-actions">
-      <button type="button" data-variant="secondary" disabled={!contractAvailable} onclick={(event) => onNew?.(event.currentTarget)}
-        >New Workflow</button
+      <button
+        type="button"
+        data-variant="secondary"
+        disabled={!contractAvailable}
+        onclick={(event) => onNew?.(event.currentTarget)}>New Workflow</button
       >
-      <button type="button" data-variant="ghost" disabled={!contractAvailable} onclick={(event) => onImport?.(event.currentTarget)}
-        >Import</button
+      <button
+        type="button"
+        data-variant="ghost"
+        disabled={!contractAvailable}
+        onclick={(event) => onImport?.(event.currentTarget)}>Import</button
       >
     </div>
   </header>

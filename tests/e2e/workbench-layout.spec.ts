@@ -102,19 +102,7 @@ test('compact Inspector restores focus to its non-General active tab after reope
   const inspector = page.locator('aside[aria-label="Inspector"]')
   await expect(inspector).toHaveAttribute('id', 'workflow-inspector')
   await expect(inspectorTrigger).toHaveAttribute('aria-expanded', 'true')
-  const cdp = await page.context().newCDPSession(page)
-  const documentNode = await cdp.send('DOM.getDocument')
-  const triggerNode = await cdp.send('DOM.querySelector', {
-    nodeId: documentNode.root.nodeId,
-    selector: '.svelte-flow__node[data-id="prepare"] .inspector-trigger',
-  })
-  const accessibility = await cdp.send('Accessibility.getPartialAXTree', {
-    nodeId: triggerNode.nodeId,
-    fetchRelatives: false,
-  })
-  expect(accessibility.nodes[0]?.role?.value).toBe('button')
-  expect(accessibility.nodes[0]?.properties?.find(({ name }) => name === 'expanded')?.value?.value).toBe(true)
-  await cdp.detach()
+  await expect(inspectorTrigger).toMatchAriaSnapshot('- button "Inspector for prepare" [expanded]')
   const advanced = inspector.getByRole('tab', { name: 'Advanced' })
   await advanced.click()
   await expect(advanced).toHaveAttribute('aria-selected', 'true')
@@ -151,6 +139,7 @@ test('compact Inspector restores focus to its non-General active tab after reope
 })
 
 test('keyboard-only compact drawers and Split subtabs restore focus and expose named icon controls', async ({
+  browserName,
   page,
 }) => {
   await openPairAt(page, 1024, 700)
@@ -206,7 +195,8 @@ test('keyboard-only compact drawers and Split subtabs restore focus and expose n
   const yamlSubtab = splitPane.getByRole('button', { name: 'YAML' })
   await expect(canvasSubtab).toHaveAttribute('aria-pressed', 'true')
   await canvasSubtab.focus()
-  await page.keyboard.press('Tab')
+  await expect(canvasSubtab).toBeFocused()
+  await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab')
   await expect(yamlSubtab).toBeFocused()
   await page.keyboard.press('Space')
   await expect(yamlSubtab).toHaveAttribute('aria-pressed', 'true')

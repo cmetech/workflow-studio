@@ -109,7 +109,9 @@
 
     <footer>
       <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
-      <button type="button" data-variant="danger" disabled={requiresResolution} onclick={() => void confirm()}>Delete nodes</button>
+      <button type="button" data-variant="danger" disabled={requiresResolution} onclick={() => void confirm()}
+        >Delete nodes</button
+      >
     </footer>
   </div>
 </div>

@@ -6,6 +6,7 @@ import type { ProgressSnapshot } from '$src/lib/progress/types'
 import type { GitPathStatus } from '$src/lib/git/types'
 import type { UpdateEvent, UpdateEventHandler, UpdateSnapshot } from '$src/lib/updates/types'
 import { $documentSession } from '$src/stores/documents'
+import { createLargeWorkflowFixture } from '../../tests/performance/large-workflow'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
@@ -132,7 +133,11 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 export async function installRuntimeBootstrap(): Promise<void> {
   const scenario = new URLSearchParams(location.search).get('scenario') ?? 'authoring'
-  const base = createBrowserBridge({ initialFiles: AUTHORING_FILES, selectedRoot: '/e2e/workspace' })
+  const largeCanvasFixture = scenario === 'large-canvas' ? createLargeWorkflowFixture() : null
+  const initialFiles = largeCanvasFixture
+    ? { ...AUTHORING_FILES, [DEFINITION_PATH]: largeCanvasFixture.yaml }
+    : AUTHORING_FILES
+  const base = createBrowserBridge({ initialFiles, selectedRoot: '/e2e/workspace' })
   let setupRetries = 0
   let updateChecks = 0
   let updateDeferred = false
@@ -147,7 +152,20 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateInstalled = false
   let updateRelaunched = false
   const updateHandlers = new Set<UpdateEventHandler>()
-  let layout: string | null = null
+  let layout: string | null = largeCanvasFixture
+    ? JSON.stringify([
+        {
+          schemaVersion: 1,
+          layout: {
+            ...largeCanvasFixture.layout,
+            workspaceId: 'browser-workspace',
+            workflowPath: DEFINITION_PATH,
+            viewport: { x: 80, y: 80, zoom: 1 },
+          },
+          savedHashes: null,
+        },
+      ])
+    : null
   let brandSelection = 0
   let activeBrandId = 'loop24'
 

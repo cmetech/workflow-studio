@@ -77,6 +77,7 @@ describe('250-node canvas performance contract', () => {
   it('keeps 1,000 pointer moves isolated and persists exactly one completed drag after the debounce', async () => {
     vi.useFakeTimers()
     const fixture = createLargeWorkflowFixture()
+    const originalLayout = structuredClone(fixture.layout)
     const metrics = createEditorMetricsCollector()
     const restoreMetrics = installEditorMetrics(metrics)
     const persistLayout = vi.fn().mockResolvedValue(undefined)
@@ -122,6 +123,10 @@ describe('250-node canvas performance contract', () => {
       await vi.advanceTimersByTimeAsync(1)
 
       expect(persistLayout).toHaveBeenCalledOnce()
+      const persisted = persistLayout.mock.calls[0]![0]
+      expect(persisted.nodePositions['node-000']).toEqual({ x: 1_000, y: 2_000 })
+      expect(persisted.nodePositions['node-001']).toEqual(originalLayout.nodePositions['node-001'])
+      expect(fixture.layout).toEqual(originalLayout)
       expect(metrics.snapshot()).toMatchObject({
         ...ZERO_EXPENSIVE_METRICS,
         pointerMoves: 1_000,

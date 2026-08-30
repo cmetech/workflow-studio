@@ -91,7 +91,9 @@
       {/if}
       <footer>
         <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
-        <button type="button" data-variant={collision ? 'danger' : 'primary'} onclick={() => void confirm()}>{buttonLabel}</button>
+        <button type="button" data-variant={collision ? 'danger' : 'primary'} onclick={() => void confirm()}
+          >{buttonLabel}</button
+        >
       </footer>
     {/if}
   </div>
@@ -135,5 +137,4 @@
   code {
     font-family: var(--font-mono);
   }
-
 </style>

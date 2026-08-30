@@ -195,10 +195,13 @@
               />
             {/key}
             <div class="field-actions">
-              <button type="button" data-variant="ghost" onclick={() => resetDraft(field)}>Reset {field.label} draft</button>
+              <button type="button" data-variant="ghost" onclick={() => resetDraft(field)}
+                >Reset {field.label} draft</button
+              >
               {#if !field.required && Object.hasOwn(values, field.id)}<button
                   type="button"
-                  data-variant="danger" onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
+                  data-variant="danger"
+                  onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
                 >{/if}
             </div>
           {:else}

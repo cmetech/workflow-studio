@@ -1,6 +1,6 @@
 # Workflow Studio modern workbench redesign
 
-**Status:** Approved design, pending written-spec review  
+**Status:** Approved design, pending written-spec review
 **Date:** 2026-08-29
 
 ## Context
