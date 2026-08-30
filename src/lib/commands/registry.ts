@@ -4,6 +4,8 @@ import {
   openFolder,
   openQuickOpen,
   requestWorkflowAction,
+  isPageActivity,
+  showActivity,
   showEditorMode,
   toggleActivityPanel,
 } from '$src/stores/shell'
@@ -231,7 +233,7 @@ function activityCommand(activity: ActivityId, label: string, defaultBindings: r
     category: 'View',
     defaultBindings,
     enabled: () => true,
-    run: () => toggleActivityPanel(activity),
+    run: () => (isPageActivity(activity) ? showActivity(activity) : toggleActivityPanel(activity)),
   }
 }
 

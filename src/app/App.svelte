@@ -37,6 +37,8 @@
     inspectorPanelOpen,
     keyboardShortcutsOpen,
     openInspectorPanel,
+    resolveWorkbenchSurface,
+    returnToWorkflow,
     showActivity,
     showEditorMode,
     workspacePanelOpen,
@@ -125,6 +127,7 @@
   import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import ActivityRail from './ActivityRail.svelte'
+  import ActivityPage from './ActivityPage.svelte'
   import StatusBar from './StatusBar.svelte'
   import X from 'lucide-svelte/icons/x'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
@@ -418,12 +421,18 @@
     return $brandState.packs.find(({ manifest }) => manifest.id === $brandState.activeId) ?? fallback
   })
   const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
+  const workbenchSurface = $derived(resolveWorkbenchSurface($activeActivity, $workspace.id !== null))
+  const authoringHidden = $derived(workbenchSurface !== 'authoring')
   const workbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
   const clampedPanels = $derived(
     clampDockedPanels($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 }, workbenchWidth),
   )
-  const workspacePanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen)
-  const inspectorPanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen)
+  const workspacePanelHidden = $derived(
+    authoringHidden || (workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen),
+  )
+  const inspectorPanelHidden = $derived(
+    authoringHidden || (workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen),
+  )
 
   $effect.pre(() => {
     const panelPresentation = workbenchPresentation.panels
@@ -460,6 +469,7 @@
 
   $effect(() => {
     if (workspacePanelHost) workspacePanelHost.toggleAttribute('inert', workspacePanelHidden)
+    if (editorColumnHost) editorColumnHost.toggleAttribute('inert', authoringHidden)
     if (inspectorPanelHost) inspectorPanelHost.toggleAttribute('inert', inspectorPanelHidden)
   })
 
@@ -1715,7 +1725,7 @@
       workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
       onActivityInvoke={(opener) => (workspacePanelOpener = opener)}
     />
-    {#if workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
+    {#if workbenchSurface === 'authoring' && workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
       <button type="button" class="drawer-scrim" aria-label="Close open panels" onclick={() => void closeOpenDrawer()}
       ></button>
     {/if}
@@ -1723,6 +1733,7 @@
       bind:this={workspacePanelHost}
       class="panel left-panel"
       class:drawer-open={!workspacePanelHidden}
+      hidden={authoringHidden}
       aria-label="Workspace panel"
       aria-hidden={workspacePanelHidden ? 'true' : undefined}
     >
@@ -1761,100 +1772,6 @@
             importDialogVisible = true
           }}
         />
-      {:else if $activeActivity === 'settings'}
-        <div class="settings-stack">
-          <BrandSettings
-            packs={$brandState.packs}
-            reports={$brandState.reports}
-            activeId={$brandState.activeId}
-            pending={$brandState.pending}
-            warning={$brandState.warning}
-            onImport={async () => {
-              await runBrandOperation(() => brandController.importPack())
-            }}
-            onPreview={(id) => {
-              brandPreviewId = id
-              brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-            }}
-            onActivate={async (id) => {
-              await runBrandOperation(() => brandController.activate(id))
-            }}
-            onRemove={async (id, revertActive) => {
-              await runBrandOperation(() => brandController.remove(id, revertActive))
-            }}
-          />
-          {#if contractsLoaded && appContractCache}
-            <ContractSettingsHost
-              cache={appContractCache}
-              {native}
-              confirmUnsupported={() =>
-                Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
-              onContractsChanged={synchronizeContractRegistry}
-            />
-          {:else}
-            <p>Loading bundled contracts…</p>
-          {/if}
-          {#if hostInfo}
-            <AboutView
-              host={hostInfo}
-              contracts={contracts.map((contract) => ({
-                profile: contract.profile,
-                schemaVersion: contract.schema_version,
-                digest: contract.contract_digest,
-              }))}
-              {startupCheckEnabled}
-              updateState={updateProgress}
-              oncheck={() => updateController.check(false)}
-              onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
-              ondownload={(runId) => updateController.downloadInstall(runId)}
-              onopenlog={(runId) => updateController.openLog(runId)}
-              onrelaunch={() => updateController.relaunch()}
-            />
-          {/if}
-        </div>
-      {:else if $activeActivity === 'git'}
-        <GitView
-          onSelectCommit={loadHistoricalGitPair}
-          currentDefinition={$documentSessionStore.pair?.definition.text}
-          currentCompanion={$documentSessionStore.pair?.companion?.text}
-          onRestoreDraft={restoreHistoricalGitPair}
-          workspaceRoot={$workspace.rootPath ?? undefined}
-          versionReady={Boolean(
-            $documentSessionStore.pair &&
-            pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
-          )}
-          findings={$documentSessionStore.analysis?.issues.map(({ message }) => message) ?? []}
-          onInitialize={initializeGitRepository}
-          onSetIdentity={setRepositoryIdentity}
-          onCreateVersion={createCurrentPairVersion}
-        />
-      {:else if $activeActivity === 'documentation'}
-        {#if documentationIndex}
-          <DocumentationView
-            index={documentationIndex}
-            topicId={documentationNavigationRequest?.topicId}
-            navigationRequestId={documentationNavigationRequest?.id}
-            onTopicConsumed={(_id, requestId) => {
-              if (requestId !== undefined && documentationNavigationRequest?.id === requestId) {
-                documentationNavigationRequest = undefined
-              }
-            }}
-            onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
-          />
-        {:else}
-          <p class="documentation-unavailable" role="status">Documentation is unavailable for the active contract.</p>
-        {/if}
-      {:else if $activeActivity === 'examples'}
-        {#if examples.length > 0}
-          <ExampleGallery
-            {examples}
-            topicLabels={exampleTopicLabels}
-            onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
-            onOpenDocumentation={openExampleDocumentation}
-          />
-        {:else}
-          <p>Loading validated examples…</p>
-        {/if}
       {:else if $activeActivity === 'nodes'}
         <NodePalette
           descriptors={inspectorContract?.node_kinds ?? []}
@@ -1864,7 +1781,14 @@
         />
       {/if}
     </aside>
-    <section bind:this={editorColumnHost} class="editor-column" aria-label="Workflow workspace">
+    <section
+      bind:this={editorColumnHost}
+      class="editor-column"
+      aria-label="Workflow workspace"
+      hidden={authoringHidden}
+      inert={authoringHidden}
+      aria-hidden={authoringHidden ? 'true' : undefined}
+    >
       <div class="editor-tabs" role="group" aria-label="Editor mode">
         {#each editorModes as mode (mode)}
           {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
@@ -1902,14 +1826,7 @@
         {/if}
       </div>
       <section class="editor-region" aria-label="Workflow editor">
-        {#if $workspace.id === null}
-          <OpenWorkspace
-            {recent}
-            disabled={!setupReady}
-            onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
-            onDropPath={(path) => runWorkspaceOperation(handleExternalWorkspacePath(path))}
-          />
-        {:else}
+        {#if $workspace.id !== null}
           <div
             class="editor-surfaces"
             class:split={$activeEditorMode === 'split'}
@@ -1930,6 +1847,7 @@
                   layout={$activeLayoutStore}
                   workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
                   transitionLocked={canvasTransitionLocked}
+                  surfaceActive={!authoringHidden}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
                   staleSource={canvasStaleSource}
@@ -2045,6 +1963,7 @@
       bind:this={inspectorPanelHost}
       class="panel inspector-panel"
       class:drawer-open={!inspectorPanelHidden}
+      hidden={authoringHidden}
       aria-label="Inspector"
       aria-hidden={inspectorPanelHidden ? 'true' : undefined}
     >
@@ -2077,6 +1996,146 @@
         onCommit={commitInspectorField}
       />
     </aside>
+    {#if workbenchSurface === 'welcome'}
+      <ActivityPage
+        activity="welcome"
+        title="Welcome"
+        description="Open a local folder to begin authoring workflows."
+      >
+        <OpenWorkspace
+          {recent}
+          disabled={!setupReady}
+          onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
+          onDropPath={(path) => runWorkspaceOperation(handleExternalWorkspacePath(path))}
+        />
+      </ActivityPage>
+    {:else if workbenchSurface === 'settings'}
+      <ActivityPage
+        activity="settings"
+        title="Settings"
+        description="Manage the application."
+        showBack
+        onBack={returnToWorkflow}
+      >
+        <div class="settings-stack">
+          <BrandSettings
+            packs={$brandState.packs}
+            reports={$brandState.reports}
+            activeId={$brandState.activeId}
+            pending={$brandState.pending}
+            warning={$brandState.warning}
+            onImport={async () => {
+              await runBrandOperation(() => brandController.importPack())
+            }}
+            onPreview={(id) => {
+              brandPreviewId = id
+              brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+            }}
+            onActivate={async (id) => {
+              await runBrandOperation(() => brandController.activate(id))
+            }}
+            onRemove={async (id, revertActive) => {
+              await runBrandOperation(() => brandController.remove(id, revertActive))
+            }}
+          />
+          {#if contractsLoaded && appContractCache}
+            <ContractSettingsHost
+              cache={appContractCache}
+              {native}
+              confirmUnsupported={() =>
+                Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
+              onContractsChanged={synchronizeContractRegistry}
+            />
+          {:else}
+            <p>Loading bundled contracts…</p>
+          {/if}
+          {#if hostInfo}
+            <AboutView
+              host={hostInfo}
+              contracts={contracts.map((contract) => ({
+                profile: contract.profile,
+                schemaVersion: contract.schema_version,
+                digest: contract.contract_digest,
+              }))}
+              {startupCheckEnabled}
+              updateState={updateProgress}
+              oncheck={() => updateController.check(false)}
+              onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
+              ondownload={(runId) => updateController.downloadInstall(runId)}
+              onopenlog={(runId) => updateController.openLog(runId)}
+              onrelaunch={() => updateController.relaunch()}
+            />
+          {/if}
+        </div>
+      </ActivityPage>
+    {:else if workbenchSurface === 'git'}
+      <ActivityPage
+        activity="git"
+        title="Git"
+        description="Inspect local repository status, history, and workflow versions."
+        showBack
+        onBack={returnToWorkflow}
+      >
+        <GitView
+          onSelectCommit={loadHistoricalGitPair}
+          currentDefinition={$documentSessionStore.pair?.definition.text}
+          currentCompanion={$documentSessionStore.pair?.companion?.text}
+          onRestoreDraft={restoreHistoricalGitPair}
+          workspaceRoot={$workspace.rootPath ?? undefined}
+          versionReady={Boolean(
+            $documentSessionStore.pair &&
+              pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
+          )}
+          findings={$documentSessionStore.analysis?.issues.map(({ message }) => message) ?? []}
+          onInitialize={initializeGitRepository}
+          onSetIdentity={setRepositoryIdentity}
+          onCreateVersion={createCurrentPairVersion}
+        />
+      </ActivityPage>
+    {:else if workbenchSurface === 'documentation'}
+      <ActivityPage
+        activity="documentation"
+        title="Documentation"
+        description="Browse the bundled offline workflow reference."
+        showBack
+        onBack={returnToWorkflow}
+      >
+        {#if documentationIndex}
+          <DocumentationView
+            index={documentationIndex}
+            topicId={documentationNavigationRequest?.topicId}
+            navigationRequestId={documentationNavigationRequest?.id}
+            onTopicConsumed={(_id, requestId) => {
+              if (requestId !== undefined && documentationNavigationRequest?.id === requestId) {
+                documentationNavigationRequest = undefined
+              }
+            }}
+            onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
+          />
+        {:else}
+          <p class="documentation-unavailable" role="status">Documentation is unavailable for the active contract.</p>
+        {/if}
+      </ActivityPage>
+    {:else if workbenchSurface === 'examples'}
+      <ActivityPage
+        activity="examples"
+        title="Examples"
+        description="Explore validated bundled workflows and create editable copies."
+        showBack
+        onBack={returnToWorkflow}
+      >
+        {#if examples.length > 0}
+          <ExampleGallery
+            {examples}
+            topicLabels={exampleTopicLabels}
+            onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
+            onOpenDocumentation={openExampleDocumentation}
+          />
+        {:else}
+          <p>Loading validated examples…</p>
+        {/if}
+      </ActivityPage>
+    {/if}
   </div>
 
   <StatusBar />
@@ -2430,6 +2489,12 @@
     background: var(--color-surface);
   }
 
+  .left-panel[hidden],
+  .inspector-panel[hidden] {
+    display: block;
+    pointer-events: none;
+  }
+
   .drawer-close,
   .drawer-scrim {
     display: none;
@@ -2514,6 +2579,11 @@
     grid-template-rows: 2.625rem minmax(0, 1fr);
     min-width: 0;
     background: var(--color-canvas);
+  }
+
+  .editor-column[hidden] {
+    display: grid;
+    pointer-events: none;
   }
 
   .editor-tabs {

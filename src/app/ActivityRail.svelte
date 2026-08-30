@@ -2,7 +2,7 @@
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand } from '$src/lib/commands/surface'
   import type { ActivityId, CommandContext } from '$src/lib/commands/types'
-  import { activeActivity } from '$src/stores/shell'
+  import { activeActivity, isPageActivity } from '$src/stores/shell'
   import Files from 'lucide-svelte/icons/files'
   import Workflow from 'lucide-svelte/icons/workflow'
   import GalleryVerticalEnd from 'lucide-svelte/icons/gallery-vertical-end'
@@ -45,13 +45,17 @@
         data-variant="ghost"
         data-activity={activity.id}
         aria-label={command.label}
-        aria-pressed={$activeActivity === activity.id}
-        aria-expanded={$activeActivity === activity.id ? workspacePanelExpanded : false}
+        aria-current={isPageActivity(activity.id) && $activeActivity === activity.id ? 'page' : undefined}
+        aria-expanded={isPageActivity(activity.id)
+          ? undefined
+          : $activeActivity === activity.id
+            ? workspacePanelExpanded
+            : false}
         class:active={$activeActivity === activity.id}
         title={command.title}
         disabled={!command.enabled}
         onclick={(event) => {
-          onActivityInvoke?.(event.currentTarget)
+          if (!isPageActivity(activity.id)) onActivityInvoke?.(event.currentTarget)
           void commandSurface.executeCommand(command.id, activityContext)
         }}
       >

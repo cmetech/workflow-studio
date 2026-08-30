@@ -160,6 +160,7 @@ class RealDocumentWorker {
 describe('App', () => {
   it('keeps compact drawers mounted, inert when closed, and restores keyboard and activity invokers on close', async () => {
     closeTransientPanels()
+    loadWorkspaceEntries('workspace', 'Workspace', [])
     const { container } = render(App)
     await waitForSetupReady()
     const workbench = container.querySelector('.workbench')!
@@ -217,6 +218,9 @@ describe('App', () => {
 
   it('leaves an open compact drawer and modal focus unchanged when Escape occurs inside the active modal', async () => {
     closeTransientPanels()
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
     openDocumentSession(
       {
         workflowId: 'workflow:workspace:flow.yaml',
@@ -277,10 +281,14 @@ describe('App', () => {
   })
 
   it('marks titlebar authoring and workspace actions with their control semantics', async () => {
-    render(App)
+    loadWorkspaceEntries('workspace', 'Workspace', [])
+    const { container } = render(App)
     await waitForSetupReady()
 
-    expect(screen.getByRole('button', { name: 'New Workflow' })).toHaveAttribute('data-variant', 'primary')
+    expect(within(container.querySelector('.titlebar')!).getByRole('button', { name: 'New Workflow' })).toHaveAttribute(
+      'data-variant',
+      'primary',
+    )
     expect(screen.getAllByRole('button', { name: 'Open Folder' })[0]).toHaveAttribute('data-variant', 'secondary')
     expect(
       screen
@@ -783,6 +791,9 @@ nodes:
   })
 
   it('surfaces a dirty active file removed outside the application', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
     openDocumentSession(
       {
         workflowId: 'workflow:workspace:flow.yaml',
@@ -846,17 +857,19 @@ nodes:
   })
 
   it('renders the approved five-region workbench and updates the active activity accessibly', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
     const { container } = render(App)
     await waitForSetupReady()
 
     expect(container.querySelector('.application-shell')).toHaveAttribute('data-viewport-shell')
     expect(container.querySelector('.workbench')).toHaveAttribute('data-scroll-owner', 'workbench')
     expect(screen.getByRole('navigation', { name: 'Activities' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Workflow editor' })).toContainElement(
-      screen.getByRole('region', { name: 'Open workspace drop zone' }),
+    expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
+      screen.getByRole('heading', { name: 'Explorer' }),
     )
+    expect(screen.getByRole('region', { name: 'Workflow editor' })).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Inspector' })).toContainElement(
       screen.getByRole('region', { name: 'Workflow inspector' }),
     )
@@ -865,8 +878,33 @@ nodes:
     await fireEvent.click(screen.getByRole('button', { name: 'Nodes' }))
     await tick()
 
-    expect(screen.getByRole('button', { name: 'Nodes' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Nodes' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('renders page activities above a mounted inert authoring layer and returns without replacing it', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
+    showActivity('settings')
+    const { container } = render(App)
+    await waitForSetupReady()
+
+    const authoring = container.querySelector<HTMLElement>('section[aria-label="Workflow workspace"]')!
+    const workspacePanel = container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+    const inspector = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
+    expect(await screen.findByRole('region', { name: 'Settings' })).toHaveAttribute('data-workbench-page', 'settings')
+    expect(container.querySelector('[data-workbench-page="settings"]')?.closest('.left-panel')).toBeNull()
+    for (const layer of [workspacePanel, authoring, inspector]) {
+      expect(layer).toHaveAttribute('hidden')
+      expect(layer).toHaveAttribute('inert')
+      expect(layer).toHaveAttribute('aria-hidden', 'true')
+    }
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
+
+    expect(screen.queryByRole('region', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Workflow workspace' })).toBe(authoring)
+    expect(authoring).not.toHaveAttribute('hidden')
+    expect(authoring).not.toHaveAttribute('inert')
   })
 
   it('mounts the local Git activity view from feature-owned Git state', async () => {
@@ -883,12 +921,12 @@ nodes:
         return () => undefined
       },
     })
-    render(App)
+    const { container } = render(App)
     await waitForSetupReady()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Git' }))
 
-    expect(screen.getByRole('heading', { name: 'Git' })).toBeVisible()
+    expect(container.querySelector('[data-workbench-page="git"]')).toBeVisible()
     expect(await screen.findByText('Branch: main')).toBeVisible()
     await waitFor(() => expect(notifyGitChanged).toBeDefined())
     const callsBeforeMetadataChange = gitStatus.mock.calls.length
@@ -897,6 +935,7 @@ nodes:
   })
 
   it('uses an accessible button group to select the editor mode', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
     render(App)
     await waitForSetupReady()
 
@@ -912,6 +951,7 @@ nodes:
   })
 
   it('derives editor-mode labels, disabled reasons, and handlers from its injected command registry', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
     const registry = createCommandRegistry()
     const runSplit = vi.fn(() => showEditorMode('yaml'))
     for (const command of listCommands()) {

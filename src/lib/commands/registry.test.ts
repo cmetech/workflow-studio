@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CommandDisabledError,
   createCommandRegistry,
@@ -9,7 +9,7 @@ import {
   type CommandRegistry,
 } from './registry'
 import type { AppCommand, CommandContext } from './types'
-import { $activeActivity, $workspacePanelOpen, workspaceIntent } from '$src/stores/shell'
+import { $activeActivity, $inspectorPanelOpen, $workspacePanelOpen, workspaceIntent } from '$src/stores/shell'
 
 const globalContext: CommandContext = {
   surface: 'global',
@@ -39,6 +39,12 @@ function registryWith(...commands: AppCommand[]): CommandRegistry {
 }
 
 describe('command registry', () => {
+  beforeEach(() => {
+    $activeActivity.set('explorer')
+    $workspacePanelOpen.set(false)
+    $inspectorPanelOpen.set(false)
+  })
+
   it('toggles Explorer visibility when its command runs repeatedly', async () => {
     $activeActivity.set('explorer')
     $workspacePanelOpen.set(false)
@@ -47,6 +53,21 @@ describe('command registry', () => {
     expect($workspacePanelOpen.get()).toBe(true)
 
     await executeCommand('view.activity.explorer', globalContext)
+    expect($workspacePanelOpen.get()).toBe(false)
+  })
+
+  it('opens page activities without toggling either transient panel', async () => {
+    $workspacePanelOpen.set(true)
+    $inspectorPanelOpen.set(true)
+
+    await executeCommand('view.activity.settings', globalContext)
+
+    expect($activeActivity.get()).toBe('settings')
+    expect($workspacePanelOpen.get()).toBe(false)
+    expect($inspectorPanelOpen.get()).toBe(false)
+
+    await executeCommand('view.activity.settings', globalContext)
+    expect($activeActivity.get()).toBe('settings')
     expect($workspacePanelOpen.get()).toBe(false)
   })
 

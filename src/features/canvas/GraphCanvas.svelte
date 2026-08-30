@@ -52,6 +52,7 @@
     layout: LayoutRecordV1
     workflowIdentity?: string
     transitionLocked?: boolean
+    surfaceActive?: boolean
     issues?: readonly ValidationIssue[]
     stale?: boolean
     staleSource?: 'current' | 'retained' | null
@@ -78,6 +79,7 @@
     layout,
     workflowIdentity = `${layout.workspaceId}\0${layout.workflowPath}`,
     transitionLocked = false,
+    surfaceActive = true,
     issues = [],
     stale = false,
     staleSource = stale ? 'retained' : null,
@@ -131,6 +133,8 @@
   let pendingSelection: readonly string[] | null = null
   let selectionPublicationQueued = false
   let canvasMounted = false
+  let surfaceWasInactive = false
+  let restoringSurfaceSelection = false
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
     canMutate: canAuthor(),
@@ -168,6 +172,18 @@
     flowNodes = projected.nodes
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
+  })
+
+  $effect(() => {
+    if (!surfaceActive) {
+      surfaceWasInactive = true
+      restoringSurfaceSelection = false
+      return
+    }
+    if (!surfaceWasInactive) return
+    surfaceWasInactive = false
+    restoringSurfaceSelection = canvasSelectionStore.get().length > 0
+    restoreSurfaceSelection()
   })
 
   $effect(() => {
@@ -368,13 +384,27 @@
   }
 
   function selectionChanged(ids: readonly string[]): void {
-    if (transitionLocked) return
+    if (transitionLocked || !surfaceActive) return
+    if (restoringSurfaceSelection && ids.length === 0 && canvasSelectionStore.get().length > 0) {
+      restoreSurfaceSelection()
+      return
+    }
     setCanvasSelection(ids)
     selection = [...ids]
   }
 
+  function restoreSurfaceSelection(): void {
+    const selectedIds = new Set(canvasSelectionStore.get())
+    flowNodes = flowNodes.map((node) => ({ ...node, selected: selectedIds.has(node.id) }))
+    selection = [...selectedIds]
+  }
+
+  function resumeSelectionPublication(): void {
+    restoringSurfaceSelection = false
+  }
+
   function scheduleSelectionChanged(ids: readonly string[]): void {
-    if (transitionLocked) return
+    if (transitionLocked || !surfaceActive) return
     pendingSelection = [...ids]
     if (selectionPublicationQueued) return
     selectionPublicationQueued = true
@@ -382,7 +412,7 @@
       selectionPublicationQueued = false
       const next = pendingSelection
       pendingSelection = null
-      if (canvasMounted && next) selectionChanged(next)
+      if (canvasMounted && surfaceActive && next) selectionChanged(next)
     })
   }
 
@@ -538,6 +568,8 @@
     root.addEventListener('workflowdisconnect', disconnect)
     root.addEventListener('workflowbeforedelete', beforeDeleteEvent)
     root.addEventListener('workflowselectionchange', selectionEvent)
+    root.addEventListener('pointerdown', resumeSelectionPublication, true)
+    root.addEventListener('keydown', resumeSelectionPublication, true)
     root.addEventListener('keydown', handleEdgeKeydown)
     motionQuery.addEventListener?.('change', motionChanged)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
@@ -551,6 +583,8 @@
       root.removeEventListener('workflowdisconnect', disconnect)
       root.removeEventListener('workflowbeforedelete', beforeDeleteEvent)
       root.removeEventListener('workflowselectionchange', selectionEvent)
+      root.removeEventListener('pointerdown', resumeSelectionPublication, true)
+      root.removeEventListener('keydown', resumeSelectionPublication, true)
       root.removeEventListener('keydown', handleEdgeKeydown)
       motionQuery.removeEventListener?.('change', motionChanged)
       unsubscribeSelection()

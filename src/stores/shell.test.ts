@@ -5,6 +5,9 @@ import {
   $workspacePanelOpen,
   closeTransientPanels,
   openInspectorPanel,
+  resolveWorkbenchSurface,
+  returnToWorkflow,
+  showActivity,
   toggleActivityPanel,
 } from './shell'
 
@@ -36,5 +39,22 @@ describe('responsive shell state', () => {
     expect($activeActivity.get()).toBe('nodes')
     expect($workspacePanelOpen.get()).toBe(true)
     expect($inspectorPanelOpen.get()).toBe(true)
+  })
+
+  it('opens page activities without drawers and returns to the prior authoring target', () => {
+    showActivity('nodes')
+    $workspacePanelOpen.set(false)
+    showActivity('settings')
+
+    expect($activeActivity.get()).toBe('settings')
+    expect($workspacePanelOpen.get()).toBe(false)
+    expect($inspectorPanelOpen.get()).toBe(false)
+    expect(resolveWorkbenchSurface('settings', true)).toBe('settings')
+
+    returnToWorkflow()
+    expect($activeActivity.get()).toBe('nodes')
+    expect($workspacePanelOpen.get()).toBe(false)
+    expect(resolveWorkbenchSurface('nodes', true)).toBe('authoring')
+    expect(resolveWorkbenchSurface('explorer', false)).toBe('welcome')
   })
 })
