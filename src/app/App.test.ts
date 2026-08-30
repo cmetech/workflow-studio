@@ -846,9 +846,11 @@ nodes:
   })
 
   it('renders the approved five-region workbench and updates the active activity accessibly', async () => {
-    render(App)
+    const { container } = render(App)
     await waitForSetupReady()
 
+    expect(container.querySelector('.application-shell')).toHaveAttribute('data-viewport-shell')
+    expect(container.querySelector('.workbench')).toHaveAttribute('data-scroll-owner', 'workbench')
     expect(screen.getByRole('navigation', { name: 'Activities' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeInTheDocument()

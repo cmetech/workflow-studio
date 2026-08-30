@@ -1657,7 +1657,7 @@
   <title>{activeRuntimeBrand.manifest.displayName}</title>
 </svelte:head>
 
-<main class="application-shell">
+<main class="application-shell" data-viewport-shell>
   <header class="titlebar">
     <div class="brand-lockup">
       <img src={activeRuntimeBrand.assetUrls.mark} alt="" />
@@ -1705,6 +1705,7 @@
   <div
     bind:this={workbenchHost}
     class="workbench"
+    data-scroll-owner="workbench"
     data-panel-presentation={workbenchPresentation.panels}
     data-split-presentation={workbenchPresentation.split}
     style={`--left-panel-width: ${clampedPanels.left}px; --right-panel-width: ${clampedPanels.right}px`}
@@ -2283,7 +2284,9 @@
     grid-template-rows: auto minmax(0, 1fr) auto;
     width: 100%;
     max-width: none;
-    min-height: 100vh;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
     align-content: stretch;
     padding: 0;
     overflow: hidden;
