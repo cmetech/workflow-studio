@@ -3,9 +3,18 @@
 
   interface Props {
     diff: GitDiff
+    availableWidth?: number
   }
-  let { diff }: Props = $props()
+  let { diff, availableWidth = Number.POSITIVE_INFINITY }: Props = $props()
   let mode = $state<'unified' | 'side-by-side'>('unified')
+  let insufficientWidth = $state(false)
+  const sideBySideAvailable = $derived(availableWidth >= 2 * 360 + 1 + 24)
+
+  $effect(() => {
+    if (sideBySideAvailable || mode !== 'side-by-side') return
+    mode = 'unified'
+    insufficientWidth = true
+  })
 
   interface SideRow {
     readonly before: string
@@ -32,20 +41,38 @@
     }
     return rows
   }
+
+  function selectUnified(): void {
+    mode = 'unified'
+    insufficientWidth = false
+  }
+
+  function selectSideBySide(): void {
+    if (!sideBySideAvailable) {
+      mode = 'unified'
+      insufficientWidth = true
+      return
+    }
+    mode = 'side-by-side'
+    insufficientWidth = false
+  }
 </script>
 
 <section class="diff-view" aria-label="Workflow pair diff">
   <div class="mode" role="group" aria-label="Diff presentation">
-    <button type="button" aria-label="Unified diff" aria-pressed={mode === 'unified'} onclick={() => (mode = 'unified')}
+    <button type="button" aria-label="Unified diff" aria-pressed={mode === 'unified'} onclick={selectUnified}
       >Unified</button
     >
     <button
       type="button"
       aria-label="Side-by-side diff"
       aria-pressed={mode === 'side-by-side'}
-      onclick={() => (mode = 'side-by-side')}>Side by side</button
+      onclick={selectSideBySide}>Side by side</button
     >
   </div>
+  {#if insufficientWidth}
+    <p class="presentation-note" role="status">Side-by-side diff needs more horizontal space. Showing unified diff.</p>
+  {/if}
   <h3>Working tree</h3>
   {#if mode === 'unified'}
     <pre>{diff.working || 'No unstaged pair changes.'}</pre>
@@ -78,6 +105,7 @@
   .diff-view {
     display: grid;
     gap: 0.375rem;
+    min-width: 0;
   }
   .mode {
     display: flex;
@@ -102,6 +130,7 @@
     font-size: 0.8125rem;
   }
   pre {
+    min-width: 0;
     max-height: 12rem;
     margin: 0;
     overflow: auto;
@@ -117,6 +146,12 @@
     table-layout: fixed;
     font-family: var(--font-mono);
     font-size: 0.6875rem;
+  }
+  .presentation-note {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
   }
   th,
   td {

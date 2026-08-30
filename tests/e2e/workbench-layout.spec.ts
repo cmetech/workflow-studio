@@ -76,6 +76,48 @@ for (const viewport of [
   })
 }
 
+for (const width of [1024, 1280]) {
+  test(`keeps both Explorer actions inside the workspace panel at ${width}px`, async ({ page }) => {
+    await openPairAt(page, width, 700)
+    const workspacePanel = page.locator('aside[aria-label="Workspace panel"]')
+    if (width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+    await expect.poll(async () => (await workspacePanel.boundingBox())?.x).toBe(48)
+
+    const panelBox = await workspacePanel.boundingBox()
+    expect(panelBox).not.toBeNull()
+    if (width < 1280) expect(panelBox!.width).toBe(320)
+    for (const name of ['New Workflow', 'Import']) {
+      const action = workspacePanel.getByRole('button', { name, exact: true })
+      await expect(action).toHaveAttribute('title', name)
+      await expect(action.locator('svg')).toHaveCount(1)
+      const actionBox = await action.boundingBox()
+      expect(actionBox).not.toBeNull()
+      expect(actionBox!.x).toBeGreaterThanOrEqual(panelBox!.x)
+      expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width)
+      expect(actionBox!.y).toBeGreaterThanOrEqual(panelBox!.y)
+      expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height)
+    }
+  })
+}
+
+test('scrolls and focuses the last node kind without leaving the contextual drawer', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+  await page.getByRole('button', { name: 'Nodes', exact: true }).click()
+
+  const panel = page.locator('aside[aria-label="Workspace panel"]')
+  const kinds = panel.locator('[data-node-palette-scroll]').getByRole('button')
+  const lastKind = kinds.last()
+  await lastKind.scrollIntoViewIfNeeded()
+  await lastKind.focus()
+  await expect(lastKind).toBeFocused()
+
+  const [panelBox, kindBox] = await Promise.all([panel.boundingBox(), lastKind.boundingBox()])
+  expect(panelBox).not.toBeNull()
+  expect(kindBox).not.toBeNull()
+  expect(kindBox!.y).toBeGreaterThanOrEqual(panelBox!.y)
+  expect(kindBox!.y + kindBox!.height).toBeLessThanOrEqual(panelBox!.y + panelBox!.height)
+})
+
 test('compact drawer cycles preserve unsaved YAML and node selection', async ({ page }) => {
   await openPairAt(page, 1024, 700)
   await replaceDefinitionYaml(page, UNSAVED_YAML)

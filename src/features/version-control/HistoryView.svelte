@@ -10,7 +10,7 @@
   let { history, selectedOid, onSelect, onRestore }: Props = $props()
 </script>
 
-<section aria-labelledby="git-history-title">
+<section class="history-view" aria-labelledby="git-history-title">
   <h3 id="git-history-title">History</h3>
   {#if history.length === 0}
     <p>No commits touch this workflow pair.</p>
@@ -35,6 +35,15 @@
 <style>
   h3 {
     margin-bottom: 0.375rem;
+  }
+  .history-view,
+  li,
+  button,
+  strong,
+  span,
+  time {
+    min-width: 0;
+    max-width: 100%;
   }
   ol {
     display: grid;
@@ -66,6 +75,11 @@
   p {
     color: var(--color-text-muted);
     font-size: 0.6875rem;
+  }
+  strong,
+  span,
+  time {
+    overflow-wrap: anywhere;
   }
   button:focus-visible {
     outline: 3px solid var(--color-focus);

@@ -58,7 +58,11 @@
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
-  import { clampDockedPanels, resolveWorkbenchPresentation } from '$src/lib/layout/workbench-layout'
+  import {
+    clampDockedPanels,
+    resolveOverlayPanelWidths,
+    resolveWorkbenchPresentation,
+  } from '$src/lib/layout/workbench-layout'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
@@ -278,6 +282,9 @@
   const examplesReadiness = loadExamples()
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
+  let explorerCatalogOperation = $state.raw<
+    { readonly phase: 'ready' | 'loading' } | { readonly phase: 'error'; readonly message: string }
+  >({ phase: 'ready' })
   let quickOpenVisible = $state(false)
   let quickOpenOpener = $state<HTMLElement | undefined>()
   let contextEntryId = $state<string | null>(null)
@@ -446,8 +453,18 @@
   const workbenchSurface = $derived(resolveWorkbenchSurface($activeActivity, $workspace.id !== null))
   const authoringHidden = $derived(workbenchSurface !== 'authoring')
   const workbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
-  const clampedPanels = $derived(
-    clampDockedPanels($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 }, workbenchWidth),
+  const storedPanels = $derived($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 })
+  const clampedPanels = $derived(clampDockedPanels(storedPanels, workbenchWidth))
+  const overlayPanels = $derived(resolveOverlayPanelWidths(storedPanels, workbenchWidth))
+  const explorerCatalogState = $derived(
+    explorerCatalogOperation.phase === 'ready'
+      ? $workspace.tree.length > 0
+        ? 'ready'
+        : 'empty'
+      : explorerCatalogOperation.phase,
+  )
+  const explorerCatalogError = $derived(
+    explorerCatalogOperation.phase === 'error' ? explorerCatalogOperation.message : undefined,
   )
   const workspacePanelHidden = $derived(
     authoringHidden || (workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen),
@@ -1076,12 +1093,22 @@
   }
 
   async function openWorkspace(rootPath?: string): Promise<void> {
-    const selected = await actions.openWorkspace(rootPath)
-    if (selected) {
-      gitController.reset()
-      void refreshGitRepository()
+    explorerCatalogOperation = { phase: 'loading' }
+    try {
+      const selected = await actions.openWorkspace(rootPath)
+      explorerCatalogOperation = { phase: 'ready' }
+      if (selected) {
+        gitController.reset()
+        void refreshGitRepository()
+      }
+      await refreshRecent()
+    } catch (error: unknown) {
+      explorerCatalogOperation = {
+        phase: 'error',
+        message: error instanceof Error ? error.message : 'Workspace workflows could not be loaded.',
+      }
+      throw error
     }
-    await refreshRecent()
   }
 
   async function initializeGitRepository(): Promise<void> {
@@ -1124,8 +1151,18 @@
   async function refreshWorkspace(): Promise<void> {
     const current = $workspace
     if (!current.id || !current.displayName) return
-    loadWorkspaceEntries(current.id, current.displayName, await native.workspaceScan(), current.rootPath)
-    void refreshGit()
+    explorerCatalogOperation = { phase: 'loading' }
+    try {
+      loadWorkspaceEntries(current.id, current.displayName, await native.workspaceScan(), current.rootPath)
+      explorerCatalogOperation = { phase: 'ready' }
+      void refreshGit()
+    } catch (error: unknown) {
+      explorerCatalogOperation = {
+        phase: 'error',
+        message: error instanceof Error ? error.message : 'Workspace workflows could not be refreshed.',
+      }
+      throw error
+    }
   }
 
   function activeGitPair(): GitPairPaths | null {
@@ -1800,7 +1837,7 @@
     data-scroll-owner="workbench"
     data-panel-presentation={workbenchPresentation.panels}
     data-split-presentation={workbenchPresentation.split}
-    style={`--left-panel-width: ${clampedPanels.left}px; --right-panel-width: ${clampedPanels.right}px`}
+    style={`--docked-left-panel-width: ${clampedPanels.left}px; --docked-right-panel-width: ${clampedPanels.right}px; --overlay-left-panel-width: ${overlayPanels.left}px; --overlay-right-panel-width: ${overlayPanels.right}px`}
   >
     <ActivityRail
       {commandSurface}
@@ -1821,48 +1858,54 @@
       aria-hidden={workspacePanelHidden ? 'true' : undefined}
     >
       {#if workbenchPresentation.panels === 'drawers'}
-        <button
-          type="button"
-          class="drawer-close"
-          data-variant="ghost"
-          aria-label="Close workspace panel"
-          title="Close workspace panel"
-          onclick={() => void closeWorkspaceDrawer()}><X size={16} aria-hidden="true" /></button
-        >
+        <div class="drawer-toolbar">
+          <button
+            type="button"
+            class="drawer-close"
+            data-variant="ghost"
+            aria-label="Close workspace panel"
+            title="Close workspace panel"
+            onclick={() => void closeWorkspaceDrawer()}><X size={16} aria-hidden="true" /></button
+          >
+        </div>
       {/if}
-      {#if $activeActivity === 'explorer' && $workspace.id !== null}
-        <Explorer
-          contractAvailable={contractsLoaded && contracts.length > 0}
-          onOpen={(entry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry))}
-          onContext={(entry) => {
-            contextEntryId = entry.id
-            contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-            contextProfile = entry.state === 'legacy' ? 'hermes-legacy' : null
-            if (entry.kind === 'workflow' && entry.companionPath) {
-              void contractReadiness
-                .then(() => activeContractFor(entry))
-                .then((contract) => {
-                  if (contextEntryId === entry.id) contextProfile = contract?.profile ?? null
-                })
-            }
-          }}
-          onNew={(opener) => {
-            newDialogOpener = opener
-            newDialogVisible = true
-          }}
-          onImport={(opener) => {
-            importDialogOpener = opener
-            importDialogVisible = true
-          }}
-        />
-      {:else if $activeActivity === 'nodes'}
-        <NodePalette
-          descriptors={inspectorContract?.node_kinds ?? []}
-          profile={canvasProjection?.profile ?? inspectorContract?.profile ?? 'hermes-legacy'}
-          disabledReason={nodesPaletteDisabled}
-          onChoose={choosePaletteNode}
-        />
-      {/if}
+      <div class="left-panel-body" data-contextual-panel-body>
+        {#if $activeActivity === 'explorer' && $workspace.id !== null}
+          <Explorer
+            state={explorerCatalogState}
+            error={explorerCatalogError}
+            contractAvailable={contractsLoaded && contracts.length > 0}
+            onOpen={(entry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry))}
+            onContext={(entry) => {
+              contextEntryId = entry.id
+              contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+              contextProfile = entry.state === 'legacy' ? 'hermes-legacy' : null
+              if (entry.kind === 'workflow' && entry.companionPath) {
+                void contractReadiness
+                  .then(() => activeContractFor(entry))
+                  .then((contract) => {
+                    if (contextEntryId === entry.id) contextProfile = contract?.profile ?? null
+                  })
+              }
+            }}
+            onNew={(opener) => {
+              newDialogOpener = opener
+              newDialogVisible = true
+            }}
+            onImport={(opener) => {
+              importDialogOpener = opener
+              importDialogVisible = true
+            }}
+          />
+        {:else if $activeActivity === 'nodes'}
+          <NodePalette
+            descriptors={inspectorContract?.node_kinds ?? []}
+            profile={canvasProjection?.profile ?? inspectorContract?.profile ?? 'hermes-legacy'}
+            disabledReason={nodesPaletteDisabled}
+            onChoose={choosePaletteNode}
+          />
+        {/if}
+      </div>
     </aside>
     <section
       bind:this={editorColumnHost}
@@ -2179,6 +2222,7 @@
       >
         <GitView
           embedded
+          availableWidth={Math.max(0, workbenchWidth - 48)}
           onSelectCommit={loadHistoricalGitPair}
           currentDefinition={$documentSessionStore.pair?.definition.text}
           currentCompanion={$documentSessionStore.pair?.companion?.text}
@@ -2576,7 +2620,7 @@
     display: grid;
     position: relative;
     isolation: isolate;
-    grid-template-columns: 3rem var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
+    grid-template-columns: 3rem var(--docked-left-panel-width) minmax(0, 1fr) var(--docked-right-panel-width);
     min-height: 0;
     overflow: hidden;
   }
@@ -2616,13 +2660,13 @@
 
   .workbench[data-panel-presentation='drawers'] .left-panel {
     left: 3rem;
-    width: min(var(--left-panel-width), calc(100% - 3rem));
+    width: var(--overlay-left-panel-width);
     transform: translateX(-100%);
   }
 
   .workbench[data-panel-presentation='drawers'] .inspector-panel {
     right: 0;
-    width: min(var(--right-panel-width), calc(100% - 3rem));
+    width: var(--overlay-right-panel-width);
     transform: translateX(100%);
   }
 
@@ -2644,6 +2688,23 @@
     place-items: center;
   }
 
+  .workbench[data-panel-presentation='drawers'] .left-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-toolbar {
+    display: flex;
+    min-width: 0;
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+    justify-content: flex-end;
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-toolbar .drawer-close {
+    position: static;
+  }
+
   .workbench[data-panel-presentation='drawers'] .drawer-scrim {
     position: absolute;
     z-index: 10;
@@ -2660,7 +2721,15 @@
   }
 
   .left-panel {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
     border-right: 1px solid var(--color-border);
+  }
+
+  .left-panel-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .inspector-panel {

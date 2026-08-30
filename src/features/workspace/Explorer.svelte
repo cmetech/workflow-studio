@@ -3,6 +3,10 @@
   import { isWorkspaceFolder } from '$src/lib/workspace/types'
   import type { WorkspaceEntry, WorkspaceTreeEntry } from '$src/lib/workspace/types'
   import { workspace, selectWorkspaceEntry } from '$src/stores/workspace'
+  import FilePlus from 'lucide-svelte/icons/file-plus'
+  import FileUp from 'lucide-svelte/icons/file-up'
+
+  type ExplorerState = 'loading' | 'ready' | 'empty' | 'error'
 
   interface Props {
     tree?: readonly WorkspaceTreeEntry[]
@@ -12,6 +16,8 @@
     onNew?: (opener: HTMLElement) => void
     onImport?: (opener: HTMLElement) => void
     contractAvailable?: boolean
+    state?: ExplorerState
+    error?: string | undefined
   }
 
   interface VisibleTreeRow {
@@ -22,7 +28,17 @@
     readonly setSize: number
   }
 
-  let { tree, activeId, onOpen, onContext, onNew, onImport, contractAvailable = false }: Props = $props()
+  let {
+    tree,
+    activeId,
+    onOpen,
+    onContext,
+    onNew,
+    onImport,
+    contractAvailable = false,
+    state: catalogState = 'ready',
+    error,
+  }: Props = $props()
   const displayedTree = $derived(tree ?? $workspace.tree)
   const selectedId = $derived(activeId === undefined ? $workspace.activeEntryId : activeId)
   let expandedIds = $state<Set<string>>(new Set())
@@ -157,62 +173,74 @@
       <button
         type="button"
         data-variant="secondary"
+        aria-label="New Workflow"
+        title="New Workflow"
         disabled={!contractAvailable}
-        onclick={(event) => onNew?.(event.currentTarget)}>New Workflow</button
+        onclick={(event) => onNew?.(event.currentTarget)}><FilePlus size={16} aria-hidden="true" /></button
       >
       <button
         type="button"
         data-variant="ghost"
+        aria-label="Import"
+        title="Import"
         disabled={!contractAvailable}
-        onclick={(event) => onImport?.(event.currentTarget)}>Import</button
+        onclick={(event) => onImport?.(event.currentTarget)}><FileUp size={16} aria-hidden="true" /></button
       >
     </div>
   </header>
 
-  <div class="tree" role="tree" aria-label="Workspace workflows">
-    {#each visibleRows as row (row.entry.id)}
-      <button
-        id={domId(row.entry.id)}
-        type="button"
-        data-variant="ghost"
-        role="treeitem"
-        aria-label={treeItemLabel(row.entry)}
-        aria-level={row.level}
-        aria-posinset={row.positionInSet}
-        aria-setsize={row.setSize}
-        aria-selected={row.entry.id === selectedId}
-        aria-expanded={isWorkspaceFolder(row.entry) ? expandedIds.has(row.entry.id) : undefined}
-        aria-current={row.entry.id === selectedId ? 'page' : undefined}
-        tabindex={row.entry.id === focusedId ? 0 : -1}
-        class:folder={isWorkspaceFolder(row.entry)}
-        class:active={row.entry.id === selectedId}
-        class:read-only={!isWorkspaceFolder(row.entry) && row.entry.readOnly}
-        style:padding-left={`${0.5 + (row.level - 1) * 1.125}rem`}
-        onclick={() => activateRow(row.entry)}
-        onfocus={() => (focusedId = row.entry.id)}
-        onkeydown={(event) => handleKeydown(event, row)}
-        oncontextmenu={(event) => {
-          if (isWorkspaceFolder(row.entry)) return
-          event.preventDefault()
-          event.currentTarget.focus()
-          onContext?.(row.entry)
-        }}
-      >
-        <span class="disclosure" aria-hidden="true">
-          {#if isWorkspaceFolder(row.entry)}{expandedIds.has(row.entry.id) ? '▾' : '▸'}{:else}◇{/if}
-        </span>
-        <span class="entry-name">{row.entry.name}</span>
-        {#if !isWorkspaceFolder(row.entry)}
-          <span class="badges" aria-hidden="true">
-            <span class:warning={row.entry.state === 'orphan'}>
-              {row.entry.state === 'paired' ? '+ policy' : row.entry.state}
-            </span>
-            {#if row.entry.readOnly}<span>read only</span>{/if}
+  {#if catalogState === 'loading'}
+    <p class="catalog-state" role="status">Loading workspace workflows…</p>
+  {:else if catalogState === 'error'}
+    <p class="catalog-state" role="alert">{error ?? 'Workspace workflows could not be loaded.'}</p>
+  {:else if catalogState === 'empty'}
+    <p class="catalog-state" role="status">No workflows found. Use New Workflow or Import to begin.</p>
+  {:else}
+    <div class="tree" role="tree" aria-label="Workspace workflows">
+      {#each visibleRows as row (row.entry.id)}
+        <button
+          id={domId(row.entry.id)}
+          type="button"
+          data-variant="ghost"
+          role="treeitem"
+          aria-label={treeItemLabel(row.entry)}
+          aria-level={row.level}
+          aria-posinset={row.positionInSet}
+          aria-setsize={row.setSize}
+          aria-selected={row.entry.id === selectedId}
+          aria-expanded={isWorkspaceFolder(row.entry) ? expandedIds.has(row.entry.id) : undefined}
+          aria-current={row.entry.id === selectedId ? 'page' : undefined}
+          tabindex={row.entry.id === focusedId ? 0 : -1}
+          class:folder={isWorkspaceFolder(row.entry)}
+          class:active={row.entry.id === selectedId}
+          class:read-only={!isWorkspaceFolder(row.entry) && row.entry.readOnly}
+          style:padding-left={`${0.5 + (row.level - 1) * 1.125}rem`}
+          onclick={() => activateRow(row.entry)}
+          onfocus={() => (focusedId = row.entry.id)}
+          onkeydown={(event) => handleKeydown(event, row)}
+          oncontextmenu={(event) => {
+            if (isWorkspaceFolder(row.entry)) return
+            event.preventDefault()
+            event.currentTarget.focus()
+            onContext?.(row.entry)
+          }}
+        >
+          <span class="disclosure" aria-hidden="true">
+            {#if isWorkspaceFolder(row.entry)}{expandedIds.has(row.entry.id) ? '▾' : '▸'}{:else}◇{/if}
           </span>
-        {/if}
-      </button>
-    {/each}
-  </div>
+          <span class="entry-name">{row.entry.name}</span>
+          {#if !isWorkspaceFolder(row.entry)}
+            <span class="badges" aria-hidden="true">
+              <span class:warning={row.entry.state === 'orphan'}>
+                {row.entry.state === 'paired' ? '+ policy' : row.entry.state}
+              </span>
+              {#if row.entry.readOnly}<span>read only</span>{/if}
+            </span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -248,15 +276,30 @@
   }
 
   .header-actions button {
-    width: auto;
+    display: grid;
+    width: var(--control-sm);
+    min-width: var(--control-sm);
+    height: var(--control-sm);
     min-height: var(--control-sm);
-    padding: var(--space-1) var(--space-2);
+    padding: 0;
+    place-items: center;
+  }
+
+  .tree,
+  .catalog-state {
+    min-height: 0;
+    overflow: auto;
   }
 
   .tree {
-    min-height: 0;
     padding: var(--space-2);
-    overflow: auto;
+  }
+
+  .catalog-state {
+    margin: 0;
+    padding: var(--space-4) var(--space-3);
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
   }
 
   button {

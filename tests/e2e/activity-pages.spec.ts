@@ -179,3 +179,31 @@ test('Documentation moves keyboard focus into narrow detail and restores the res
   await back.press('Enter')
   await expect(page.locator(`[id="${resultId}"]`)).toBeFocused()
 })
+
+test('Git is a contained full-workbench page and falls back to unified diff when narrow', async ({ page }) => {
+  await openSeededPair(page, '?scenario=long-git')
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.getByRole('button', { name: 'Git', exact: true }).click()
+
+  const gitPage = page.locator('[data-workbench-page="git"]')
+  await expect(gitPage).toBeVisible()
+  await expect(page.locator('.left-panel .git-view')).toHaveCount(0)
+  await expect(page.getByText(/C:\\workspaces\\release/)).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: /Document the exceptionally long Windows release workflow subject/ }),
+  ).toBeVisible()
+  expect(await gitPage.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+
+  await page.getByRole('button', { name: 'Side-by-side diff' }).click()
+  const sideBySideCells = page.getByRole('table', { name: 'Working tree side-by-side diff' }).getByRole('columnheader')
+  await expect(sideBySideCells).toHaveCount(2)
+  for (const cell of await sideBySideCells.all()) {
+    expect((await cell.boundingBox())?.width).toBeGreaterThanOrEqual(360)
+  }
+
+  await page.setViewportSize({ width: 560, height: 700 })
+  await page.getByRole('button', { name: 'Side-by-side diff' }).click()
+  await expect(page.getByRole('button', { name: 'Unified diff' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(gitPage.getByRole('status')).toContainText('Side-by-side diff needs more horizontal space')
+  expect(await gitPage.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0)
+})

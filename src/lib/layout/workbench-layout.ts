@@ -17,6 +17,11 @@ export interface WorkbenchPresentation {
 
 type PanelPreferences = LayoutRecordV1['panels']
 
+export interface OverlayPanelPreferences {
+  readonly left: number
+  readonly right: number
+}
+
 export function resolveWorkbenchPresentation(workbenchWidth: number, editorWidth: number): WorkbenchPresentation {
   return {
     panels: workbenchWidth >= DOCKED_WORKBENCH_MIN_WIDTH ? 'docked' : 'drawers',
@@ -46,6 +51,16 @@ export function clampDockedPanels(panels: PanelPreferences, workbenchWidth: numb
     right: MIN_RIGHT_PANEL_WIDTH + rightRange * (1 - reductionRatio),
     problems: panels.problems,
   }
+}
+
+export function resolveOverlayPanelWidths(
+  stored: OverlayPanelPreferences,
+  workbenchWidth: number,
+): OverlayPanelPreferences {
+  const available = Math.max(0, workbenchWidth - 48)
+  const left = Number.isFinite(stored.left) ? Math.max(320, stored.left) : 320
+  const right = Number.isFinite(stored.right) ? Math.max(320, stored.right) : 320
+  return { left: Math.min(left, available), right: Math.min(right, available) }
 }
 
 function clampPanelWidth(width: number, minimum: number, maximum: number): number {

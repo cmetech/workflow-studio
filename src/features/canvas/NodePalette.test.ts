@@ -26,6 +26,9 @@ function descriptor(
 const command = descriptor('command', 'supported', ['hermes-legacy', 'archon-2026-07'])
 const prompt = descriptor('prompt', 'deferred', ['hermes-legacy'])
 const bash = descriptor('bash', 'supported', ['archon-2026-07'])
+const allDescriptors = ['command', 'prompt', 'bash', 'script', 'loop', 'approval', 'cancel'].map((id) =>
+  descriptor(id, 'supported', ['hermes-legacy', 'archon-2026-07']),
+)
 
 describe('NodePalette', () => {
   afterEach(() => document.querySelectorAll('[data-node-drag-ghost]').forEach((node) => node.remove()))
@@ -95,5 +98,19 @@ describe('NodePalette', () => {
     await rerender({ descriptors: [command, bash], profile: 'archon-2026-07', disabledReason: undefined })
     expect(screen.getByRole('button', { name: /add bash node/i })).toBeEnabled()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('keeps every published node kind inside the palette list scroll owner', () => {
+    const { container } = render(NodePalette, {
+      descriptors: allDescriptors,
+      profile: 'hermes-legacy',
+    })
+
+    const list = container.querySelector('[data-node-palette-scroll]')
+    const lastKind = screen.getByRole('button', { name: /add script node/i })
+    expect(list).not.toBeNull()
+    expect(list).toContainElement(lastKind)
+    lastKind.focus()
+    expect(lastKind).toHaveFocus()
   })
 })

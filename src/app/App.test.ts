@@ -1042,7 +1042,10 @@ nodes:
 
     await fireEvent.click(screen.getByRole('button', { name: 'Git' }))
 
-    expect(container.querySelector('[data-workbench-page="git"]')).toBeVisible()
+    const gitPage = container.querySelector('[data-workbench-page="git"]')
+    expect(gitPage).toBeVisible()
+    expect(gitPage?.closest('.left-panel')).toBeNull()
+    expect(container.querySelector('.left-panel .git-view')).toBeNull()
     expect(await screen.findByText('Branch: main')).toBeVisible()
     await waitFor(() => expect(notifyGitChanged).toBeDefined())
     const callsBeforeMetadataChange = gitStatus.mock.calls.length

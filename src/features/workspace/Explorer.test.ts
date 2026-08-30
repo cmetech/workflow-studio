@@ -66,8 +66,12 @@ describe('Explorer', () => {
     await tick()
 
     expect(screen.getByRole('heading', { name: 'Explorer' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'New Workflow' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Import' })).toBeVisible()
+    const newWorkflow = screen.getByRole('button', { name: 'New Workflow' })
+    const importWorkflow = screen.getByRole('button', { name: 'Import' })
+    expect(newWorkflow).toHaveAttribute('title', 'New Workflow')
+    expect(importWorkflow).toHaveAttribute('title', 'Import')
+    expect(newWorkflow.querySelector('svg')).not.toBeNull()
+    expect(importWorkflow.querySelector('svg')).not.toBeNull()
     expect(screen.getByRole('tree', { name: 'Workspace workflows' })).toBeVisible()
     expect(screen.getByRole('treeitem', { name: 'flows folder' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('treeitem', { name: 'paired.yaml, paired workflow' })).toBeVisible()
@@ -78,6 +82,27 @@ describe('Explorer', () => {
     expect(screen.getByText('legacy')).toBeVisible()
     expect(screen.getByText('orphan')).toBeVisible()
     expect(screen.getByText('read only')).toBeVisible()
+  })
+
+  it('renders explicit loading, empty, ready, and error catalog states without hiding creation actions', async () => {
+    const { rerender } = render(Explorer, {
+      props: { tree: [], state: 'loading', contractAvailable: true },
+    } as never)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading workspace workflows')
+    expect(screen.getByRole('button', { name: 'New Workflow' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled()
+
+    await rerender({ tree: [], state: 'empty', contractAvailable: true } as never)
+    expect(screen.getByRole('status')).toHaveTextContent('No workflows found')
+    expect(screen.queryByRole('tree')).not.toBeInTheDocument()
+
+    await rerender({ tree, state: 'ready', contractAvailable: true } as never)
+    expect(screen.getByRole('tree', { name: 'Workspace workflows' })).toBeVisible()
+
+    await rerender({ tree: [], state: 'error', error: 'Workspace scan failed.', contractAvailable: true } as never)
+    expect(screen.getByRole('alert')).toHaveTextContent('Workspace scan failed.')
+    expect(screen.queryByRole('tree')).not.toBeInTheDocument()
   })
 
   it('uses roving focus and arrow navigation through expanded folders', async () => {

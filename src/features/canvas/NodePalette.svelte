@@ -69,49 +69,59 @@
     <p>Choose or drag a node kind published by the active contract.</p>
   </header>
 
-  {#if disabledReason}
-    <p class="unavailable" role="status">{disabledReason}</p>
-  {/if}
+  <div class="palette-body">
+    {#if disabledReason}
+      <p class="unavailable" role="status">{disabledReason}</p>
+    {/if}
 
-  <div class="node-kinds" aria-label="Contract node kinds">
-    {#each ordered as descriptor (descriptor.id)}
-      {@const status = nodeKindStatus(descriptor, profile)}
-      {@const chord = nodeChordForKind(descriptor.id)}
-      <button
-        type="button"
-        data-variant="secondary"
-        class:supported={available(descriptor)}
-        aria-label={available(descriptor)
-          ? `Add ${descriptor.label} node`
-          : `${descriptor.label} node — ${disabledReason ?? status}`}
-        disabled={!available(descriptor)}
-        draggable={available(descriptor)}
-        onclick={() => choose(descriptor)}
-        ondragstart={(event) => startDrag(event, descriptor)}
-        ondragend={removeDragGhost}
-      >
-        <span class="node-kind-title">
-          <strong>{descriptor.label}</strong>
-          <span class="metadata">
-            {#if chord}<kbd>{chord}</kbd>{/if}
-            <small>{status}</small>
+    <div class="node-kinds" data-node-palette-scroll aria-label="Contract node kinds">
+      {#each ordered as descriptor (descriptor.id)}
+        {@const status = nodeKindStatus(descriptor, profile)}
+        {@const chord = nodeChordForKind(descriptor.id)}
+        <button
+          type="button"
+          data-variant="secondary"
+          class:supported={available(descriptor)}
+          aria-label={available(descriptor)
+            ? `Add ${descriptor.label} node`
+            : `${descriptor.label} node — ${disabledReason ?? status}`}
+          disabled={!available(descriptor)}
+          draggable={available(descriptor)}
+          onclick={() => choose(descriptor)}
+          ondragstart={(event) => startDrag(event, descriptor)}
+          ondragend={removeDragGhost}
+        >
+          <span class="node-kind-title">
+            <strong>{descriptor.label}</strong>
+            <span class="metadata">
+              {#if chord}<kbd>{chord}</kbd>{/if}
+              <small>{status}</small>
+            </span>
           </span>
-        </span>
-        <span class="description">{descriptor.description}</span>
-      </button>
-    {:else}
-      {#if !disabledReason}
-        <p class="unavailable" role="status">The active contract publishes no node kinds.</p>
-      {/if}
-    {/each}
+          <span class="description">{descriptor.description}</span>
+        </button>
+      {:else}
+        {#if !disabledReason}
+          <p class="unavailable" role="status">The active contract publishes no node kinds.</p>
+        {/if}
+      {/each}
+    </div>
   </div>
 </section>
 
 <style>
   .node-palette {
-    min-height: 100%;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
     color: var(--color-text);
     background: var(--color-surface);
+  }
+  .palette-body {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
   }
   header,
   .node-kinds {
@@ -155,7 +165,11 @@
   }
   .node-kinds {
     display: grid;
+    grid-row: 2;
+    align-content: start;
     gap: var(--space-2);
+    min-height: 0;
+    overflow: auto;
   }
   button {
     display: grid;

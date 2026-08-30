@@ -11,6 +11,10 @@ import { createLargeWorkflowFixture } from '../../tests/performance/large-workfl
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
+const LONG_WINDOWS_PATH =
+  'C:\\workspaces\\release\\nested\\workflow-definitions\\international\\release-demo-with-an-exceptionally-long-name.yaml'
+const LONG_GIT_SUBJECT =
+  'Document the exceptionally long Windows release workflow subject without widening the Git workbench page'
 const AUTHORING_FILES = {
   [DEFINITION_PATH]: `name: Release demo
 description: Verify the complete authoring path.
@@ -145,10 +149,16 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateChecks = 0
   let updateDeferred = false
   let pairVersioned = false
-  let gitStatusEntries: GitPathStatus[] = [
-    { path: DEFINITION_PATH, index: ' ', worktree: 'M', untracked: false },
-    { path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false },
-  ]
+  let gitStatusEntries: GitPathStatus[] =
+    scenario === 'long-git'
+      ? [
+          { path: LONG_WINDOWS_PATH, index: ' ', worktree: 'M', untracked: false },
+          { path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false },
+        ]
+      : [
+          { path: DEFINITION_PATH, index: ' ', worktree: 'M', untracked: false },
+          { path: 'notes/unrelated.txt', index: 'M', worktree: ' ', untracked: false },
+        ]
   let gitVersionRequest: E2EState['gitVersionRequest'] = null
   let updateInstallRequests = 0
   let updateCancelled = false
@@ -304,7 +314,12 @@ export async function installRuntimeBootstrap(): Promise<void> {
       updateDeferred = true
       return updateSnapshot('deferred')
     },
-    gitDetect: async () => ({ root: '/e2e/workspace', branch: 'base', detachedHead: null }),
+    gitDetect: async () => ({
+      root: scenario === 'long-git' ? 'C:\\workspaces\\release\\nested\\workflow-studio' : '/e2e/workspace',
+      branch:
+        scenario === 'long-git' ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference' : 'base',
+      detachedHead: null,
+    }),
     gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
     gitDiffPair: async () => ({
       working: pairVersioned ? '' : 'diff --git a/workflows/release-demo.yaml b/workflows/release-demo.yaml\n',
@@ -312,17 +327,28 @@ export async function installRuntimeBootstrap(): Promise<void> {
       authorizationToken: 'e2e-version-authorization',
     }),
     gitHistoryPair: async () => ({
-      commits: pairVersioned
-        ? [
-            {
-              oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-              shortOid: 'aaaaaaaaaaaa',
-              authorName: 'Workflow Tester',
-              authoredAt: '2026-07-30T12:00:00Z',
-              subject: 'Verify release workflow',
-            },
-          ]
-        : [],
+      commits:
+        scenario === 'long-git'
+          ? [
+              {
+                oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                shortOid: 'bbbbbbbbbbbb',
+                authorName: 'A Very Long Release Automation Author Identity For Containment Verification',
+                authoredAt: '2026-08-30T12:00:00Z',
+                subject: LONG_GIT_SUBJECT,
+              },
+            ]
+          : pairVersioned
+            ? [
+                {
+                  oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                  shortOid: 'aaaaaaaaaaaa',
+                  authorName: 'Workflow Tester',
+                  authoredAt: '2026-07-30T12:00:00Z',
+                  subject: 'Verify release workflow',
+                },
+              ]
+            : [],
       authorizationToken: 'e2e-history-authorization',
     }),
     gitRetainHistoryAuthorization: async () => undefined,

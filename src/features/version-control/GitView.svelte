@@ -22,6 +22,7 @@
     onCreateVersion?:
       ((message: string) => void | CreateVersionOutcome | Promise<void | CreateVersionOutcome>) | undefined
     embedded?: boolean
+    availableWidth?: number
   }
   let {
     onSelectCommit,
@@ -35,6 +36,7 @@
     onSetIdentity,
     onCreateVersion,
     embedded = false,
+    availableWidth = Number.POSITIVE_INFINITY,
   }: Props = $props()
   let selected = $state<GitPairSnapshot | null>(null)
   let selectedOid = $state<string | undefined>()
@@ -120,58 +122,76 @@
     {/if}
   {:else}
     {@const repository = $gitState.inspection.repository}
-    <p class="repository">
-      {repository.branch ? `Branch: ${repository.branch}` : `Detached: ${repository.detachedHead ?? 'unknown'}`}
-    </p>
-    <div class="actions">
-      {#if onSetIdentity}<button type="button" onclick={(event) => openDialog('identity', event)}
-          >Configure identity…</button
-        >{/if}
-      {#if $gitState.inspection.pair && onCreateVersion}
-        <button type="button" onclick={(event) => openDialog('create', event)}>Create version…</button>
+    <div class="git-page-grid">
+      <section class="repository-card" aria-label="Local repository summary">
+        <p class="repository">
+          <span
+            >{repository.branch
+              ? `Branch: ${repository.branch}`
+              : `Detached: ${repository.detachedHead ?? 'unknown'}`}</span
+          >
+          <span class="repository-root">{repository.root}</span>
+        </p>
+        <div class="actions">
+          {#if onSetIdentity}<button type="button" onclick={(event) => openDialog('identity', event)}
+              >Configure identity…</button
+            >{/if}
+          {#if $gitState.inspection.pair && onCreateVersion}
+            <button type="button" onclick={(event) => openDialog('create', event)}>Create version…</button>
+          {/if}
+        </div>
+        <section class="status-card" aria-labelledby="git-status-title">
+          <h3 id="git-status-title">{$gitState.inspection.pair ? 'Pair status' : 'Workspace status'}</h3>
+          {#if $gitState.inspection.status.entries.length === 0}
+            <p>No {$gitState.inspection.pair ? 'pair' : 'workspace'} changes.</p>
+          {:else}
+            <ul>
+              {#each $gitState.inspection.status.entries as entry (`${entry.path}:${entry.originalPath ?? ''}`)}
+                <li>
+                  <span class="status-path"
+                    >{entry.index}{entry.worktree}
+                    {entry.originalPath ? `${entry.originalPath} → ` : ''}{entry.path}</span
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      </section>
+      {#if $gitState.inspection.pair}
+        <div class="diff-column">
+          <DiffView diff={$gitState.inspection.diff} {availableWidth} />
+          {#if previewError}<p role="alert">{previewError}</p>{/if}
+          {#if selected}
+            <section class="preview" aria-labelledby="historical-preview-title">
+              <h3 id="historical-preview-title">Historical preview</h3>
+              {#if currentDefinition !== undefined}
+                <h4>Current definition</h4>
+                <pre aria-label="Current definition">{currentDefinition}</pre>
+              {/if}
+              <h4>Historical definition</h4>
+              <pre aria-label="Historical definition">{selected.definition ?? 'Not present in this commit'}</pre>
+              {#if currentCompanion !== undefined}
+                <h4>Current companion</h4>
+                <pre aria-label="Current companion">{currentCompanion ?? 'Not present in the current draft'}</pre>
+              {/if}
+              <h4>Historical companion</h4>
+              <pre aria-label="Historical companion">{selected.companion ?? 'Not present in this commit'}</pre>
+            </section>
+          {/if}
+        </div>
+        <div class="history-column">
+          <HistoryView
+            history={$gitState.inspection.history}
+            {selectedOid}
+            onSelect={selectCommit}
+            onRestore={onRestoreDraft ? restoreCommit : undefined}
+          />
+        </div>
+      {:else}
+        <p class="pair-empty">Open a workflow to inspect its exact diff and history.</p>
       {/if}
     </div>
-    <section aria-labelledby="git-status-title">
-      <h3 id="git-status-title">{$gitState.inspection.pair ? 'Pair status' : 'Workspace status'}</h3>
-      {#if $gitState.inspection.status.entries.length === 0}
-        <p>No {$gitState.inspection.pair ? 'pair' : 'workspace'} changes.</p>
-      {:else}
-        <ul>
-          {#each $gitState.inspection.status.entries as entry (`${entry.path}:${entry.originalPath ?? ''}`)}
-            <li>{entry.index}{entry.worktree} {entry.originalPath ? `${entry.originalPath} → ` : ''}{entry.path}</li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-    {#if $gitState.inspection.pair}
-      <DiffView diff={$gitState.inspection.diff} />
-      <HistoryView
-        history={$gitState.inspection.history}
-        {selectedOid}
-        onSelect={selectCommit}
-        onRestore={onRestoreDraft ? restoreCommit : undefined}
-      />
-    {:else}
-      <p>Open a workflow to inspect its exact diff and history.</p>
-    {/if}
-    {#if previewError}<p role="alert">{previewError}</p>{/if}
-    {#if selected && $gitState.inspection.pair}
-      <section class="preview" aria-labelledby="historical-preview-title">
-        <h3 id="historical-preview-title">Historical preview</h3>
-        {#if currentDefinition !== undefined}
-          <h4>Current definition</h4>
-          <pre aria-label="Current definition">{currentDefinition}</pre>
-        {/if}
-        <h4>Historical definition</h4>
-        <pre aria-label="Historical definition">{selected.definition ?? 'Not present in this commit'}</pre>
-        {#if currentCompanion !== undefined}
-          <h4>Current companion</h4>
-          <pre aria-label="Current companion">{currentCompanion ?? 'Not present in the current draft'}</pre>
-        {/if}
-        <h4>Historical companion</h4>
-        <pre aria-label="Historical companion">{selected.companion ?? 'Not present in this commit'}</pre>
-      </section>
-    {/if}
   {/if}
 </section>
 
@@ -199,8 +219,9 @@
 
 <style>
   .git-view {
-    height: 100%;
-    overflow: auto;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
     padding: 0.75rem;
   }
   h2,
@@ -208,7 +229,49 @@
     margin-top: 0;
   }
   .repository {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    margin-top: 0;
     color: var(--color-focus);
+  }
+  .repository-root,
+  .status-path {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .repository-root {
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .git-page-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+    gap: var(--space-4);
+    min-width: 0;
+  }
+  .pair-empty {
+    grid-column: 1 / -1;
+  }
+  .repository-card,
+  .diff-column,
+  .history-column,
+  .status-card,
+  .preview {
+    min-width: 0;
+  }
+  .repository-card {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .history-column {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .diff-column {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
   .actions {
     display: flex;
@@ -217,9 +280,14 @@
     margin-bottom: 0.75rem;
   }
   ul {
+    display: grid;
+    gap: var(--space-1);
     padding-left: 1.25rem;
     font-family: var(--font-mono);
     font-size: 0.75rem;
+  }
+  li {
+    min-width: 0;
   }
   .preview {
     display: grid;
@@ -230,6 +298,7 @@
     margin-top: 0.75rem;
   }
   .preview pre {
+    max-width: 100%;
     min-height: 4rem;
     margin: 0;
     overflow: auto;
@@ -238,5 +307,18 @@
     background: var(--color-yaml-gutter);
     font-family: var(--font-mono);
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 48rem) {
+    .git-page-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .repository-card,
+    .diff-column,
+    .history-column,
+    .pair-empty {
+      grid-column: 1;
+      grid-row: auto;
+    }
   }
 </style>

@@ -24,4 +24,22 @@ describe('DiffView', () => {
     expect(within(working).getByText('name: after')).toBeVisible()
     expect(screen.getByRole('table', { name: 'Index side-by-side diff' })).toBeVisible()
   })
+
+  it('keeps unified presentation when side-by-side panes would fall below their readable minimum', async () => {
+    render(DiffView, {
+      props: {
+        diff: {
+          working: '@@ -1 +1 @@\n-name: before\n+name: after\n',
+          index: '',
+        },
+        availableWidth: 640,
+      },
+    } as never)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Side-by-side diff' }))
+
+    expect(screen.getByRole('button', { name: 'Unified diff' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('table', { name: 'Working tree side-by-side diff' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Side-by-side diff needs more horizontal space')
+  })
 })

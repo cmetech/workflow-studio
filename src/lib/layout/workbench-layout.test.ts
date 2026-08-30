@@ -3,6 +3,7 @@ import {
   MIN_LEFT_PANEL_WIDTH,
   MIN_RIGHT_PANEL_WIDTH,
   clampDockedPanels,
+  resolveOverlayPanelWidths,
   resolveWorkbenchPresentation,
 } from './workbench-layout'
 
@@ -31,6 +32,15 @@ describe('workbench layout', () => {
       left: MIN_LEFT_PANEL_WIDTH,
       right: MIN_RIGHT_PANEL_WIDTH,
       problems: 144,
+    })
+  })
+
+  it('resolves overlay widths independently while reserving only the activity rail', () => {
+    expect(resolveOverlayPanelWidths({ left: 192, right: 240 }, 1024)).toEqual({ left: 320, right: 320 })
+    expect(resolveOverlayPanelWidths({ left: 500, right: 500 }, 300)).toEqual({ left: 252, right: 252 })
+    expect(resolveOverlayPanelWidths({ left: Number.NaN, right: Number.NaN }, 1280)).toEqual({
+      left: 320,
+      right: 320,
     })
   })
 })
