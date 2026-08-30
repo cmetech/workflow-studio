@@ -46,3 +46,26 @@ test('Settings has no horizontal overflow at desktop and 512px reflow widths', a
     expect(geometry.rootScrollHeight).toBe(geometry.rootClientHeight)
   }
 })
+
+test('Examples and Documentation contain long page content without horizontal overflow', async ({ page }) => {
+  await page.goto('/')
+
+  for (const activity of ['Examples', 'Documentation'] as const) {
+    await page.getByRole('button', { name: activity, exact: true }).click()
+    for (const size of [
+      { width: 1024, height: 700 },
+      { width: 560, height: 700 },
+    ]) {
+      await page.setViewportSize(size)
+      const geometry = await page.evaluate((pageActivity) => {
+        const pageRoot = document.querySelector<HTMLElement>(`[data-workbench-page="${pageActivity.toLowerCase()}"]`)!
+        return {
+          pageOverflow: pageRoot.scrollWidth - pageRoot.clientWidth,
+          rootOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        }
+      }, activity)
+      expect(geometry.pageOverflow).toBe(0)
+      expect(geometry.rootOverflow).toBe(0)
+    }
+  }
+})

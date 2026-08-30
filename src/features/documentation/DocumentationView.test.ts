@@ -57,6 +57,31 @@ index.tokenIndex = new Map([
 ])
 
 describe('DocumentationView', () => {
+  it('keeps results and the selected article as master-detail siblings', async () => {
+    render(DocumentationView, { index })
+
+    await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
+
+    const article = screen.getByRole('article', { name: 'DAG dependencies' })
+    expect(article).toBeVisible()
+    expect(screen.getByTestId('documentation-navigation')).not.toContainElement(article)
+    expect(article.parentElement).toBe(screen.getByTestId('documentation-navigation').parentElement)
+    expect(screen.getByRole('button', { name: 'Back to Results' })).toBeVisible()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+  })
+
+  it('announces an empty search result set explicitly', async () => {
+    render(DocumentationView, { index })
+
+    await fireEvent.input(screen.getByRole('searchbox', { name: 'Search documentation' }), {
+      target: { value: 'nothing-can-match-this-query' },
+    })
+
+    expect(screen.getByRole('status')).toHaveTextContent('No documentation matches')
+  })
+
   it('filters and keyboard-navigates offline search results without using fetch, and records history', async () => {
     const onOpenExternal = vi.fn()
     const fetchStub = vi.fn()

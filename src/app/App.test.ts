@@ -73,6 +73,10 @@ const contractResolverTestState = vi.hoisted(() => ({
   missingActiveProfile: null as 'hermes-legacy' | 'archon-2026-07' | null,
 }))
 
+const exampleCatalogTestState = vi.hoisted(() => ({
+  load: undefined as undefined | (() => Promise<readonly import('$src/lib/examples/types').ExampleDescriptor[]>),
+}))
+
 vi.mock('$src/lib/contract/contract-cache', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$src/lib/contract/contract-cache')>()
   return {
@@ -86,6 +90,14 @@ vi.mock('$src/lib/contract/contract-cache', async (importOriginal) => {
         },
       }
     },
+  }
+})
+
+vi.mock('$src/lib/examples/load-examples', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$src/lib/examples/load-examples')>()
+  return {
+    ...actual,
+    loadExampleCatalog: () => exampleCatalogTestState.load?.() ?? actual.loadExampleCatalog(),
   }
 })
 
@@ -347,6 +359,37 @@ describe('App', () => {
     expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
   })
 
+  it('distinguishes a resolved empty example catalog from loading', async () => {
+    const catalog = deferred<readonly import('$src/lib/examples/types').ExampleDescriptor[]>()
+    exampleCatalogTestState.load = () => catalog.promise
+    showActivity('examples')
+    render(App)
+
+    await waitForSetupReady()
+    expect(screen.getByText('Loading validated examples…')).toBeVisible()
+    catalog.resolve([])
+
+    expect(await screen.findByText('No bundled examples are available.')).toBeVisible()
+    expect(screen.queryByText('Loading validated examples…')).not.toBeInTheDocument()
+  })
+
+  it('shows a recoverable example catalog error and retries the load', async () => {
+    const load = vi
+      .fn<() => Promise<readonly import('$src/lib/examples/types').ExampleDescriptor[]>>()
+      .mockRejectedValueOnce(new Error('Catalog could not be read.'))
+      .mockResolvedValueOnce([])
+    exampleCatalogTestState.load = load
+    showActivity('examples')
+    render(App)
+
+    await waitForSetupReady()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog could not be read.')
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry loading examples' }))
+
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText('No bundled examples are available.')).toBeVisible()
+  })
+
   it('does not fall back to another profile documentation index for a projection-less session', () => {
     openDocumentSession(
       {
@@ -465,6 +508,7 @@ describe('App', () => {
 
   afterEach(() => {
     contractResolverTestState.missingActiveProfile = null
+    exampleCatalogTestState.load = undefined
     setNativeBridgeForTest(undefined)
     showActivity('explorer')
     showEditorMode('visual')

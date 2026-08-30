@@ -94,3 +94,71 @@ test('Welcome replaces inactive authoring chrome while preserving activity acces
   )
   await expect(welcome.getByRole('group', { name: 'Editor mode' })).toHaveCount(0)
 })
+
+test('Examples and Documentation reveal selected detail immediately and keep the last result reachable', async ({
+  page,
+}) => {
+  await openSeededPair(page)
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+  await page.getByRole('button', { name: 'Preview Minimal prompt' }).click()
+
+  const exampleBody = page.locator('[data-workbench-page="examples"] [data-page-scroll]')
+  const exampleDetail = page.getByRole('region', { name: 'Minimal prompt preview' })
+  const [exampleBodyBox, exampleDetailBox] = await Promise.all([exampleBody.boundingBox(), exampleDetail.boundingBox()])
+  expect(exampleDetailBox!.y - exampleBodyBox!.y).toBeLessThan(100)
+
+  await page.setViewportSize({ width: 560, height: 700 })
+  const narrowExampleGeometry = await page.evaluate(() => {
+    const pageRoot = document.querySelector<HTMLElement>('[data-workbench-page="examples"]')!
+    const pageBody = pageRoot.querySelector<HTMLElement>('[data-page-scroll]')!
+    const detail = pageRoot.querySelector<HTMLElement>('[aria-label$=" preview"]')!
+    return {
+      detailOffset: detail.getBoundingClientRect().top - pageBody.getBoundingClientRect().top,
+      pageOverflow: pageRoot.scrollWidth - pageRoot.clientWidth,
+    }
+  })
+  expect(narrowExampleGeometry.detailOffset).toBeLessThan(100)
+  expect(narrowExampleGeometry.pageOverflow).toBe(0)
+
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await page.getByRole('button', { name: 'Documentation', exact: true }).click()
+  const results = page.getByRole('listbox', { name: 'Documentation results' }).getByRole('option')
+  const lastResult = results.last()
+  await lastResult.scrollIntoViewIfNeeded()
+  await lastResult.focus()
+  await expect(lastResult).toBeFocused()
+  await results.first().click()
+
+  const documentationBody = page.locator('[data-workbench-page="documentation"] [data-page-scroll]')
+  const article = page.getByRole('article')
+  const [documentationBodyBox, articleBox] = await Promise.all([documentationBody.boundingBox(), article.boundingBox()])
+  expect(articleBox!.y - documentationBodyBox!.y).toBeLessThan(100)
+  expect(
+    await page.getByTestId('documentation-navigation').evaluate((element) => getComputedStyle(element).overflowY),
+  ).toBe('auto')
+  expect(await article.evaluate((element) => getComputedStyle(element).overflowY)).toBe('auto')
+
+  await page.setViewportSize({ width: 560, height: 700 })
+  await expect(page.getByRole('button', { name: 'Back to Results' })).toBeVisible()
+  const narrowGeometry = await page.evaluate(() => {
+    const pageRoot = document.querySelector<HTMLElement>('[data-workbench-page="documentation"]')!
+    const pageBody = pageRoot.querySelector<HTMLElement>('[data-page-scroll]')!
+    const detail = pageRoot.querySelector<HTMLElement>('article')!
+    return {
+      detailOffset: detail.getBoundingClientRect().top - pageBody.getBoundingClientRect().top,
+      pageOverflow: pageRoot.scrollWidth - pageRoot.clientWidth,
+      pageBodyOverflow: getComputedStyle(pageBody).overflowY,
+      detailOverflow: getComputedStyle(detail).overflowY,
+    }
+  })
+  expect(narrowGeometry.detailOffset).toBeLessThan(100)
+  expect(narrowGeometry.pageOverflow).toBe(0)
+  expect(narrowGeometry.pageBodyOverflow).toBe('auto')
+  expect(narrowGeometry.detailOverflow).toBe('visible')
+
+  await page.getByRole('button', { name: 'Back to Results' }).click()
+  await lastResult.scrollIntoViewIfNeeded()
+  await lastResult.focus()
+  await expect(lastResult).toBeFocused()
+})

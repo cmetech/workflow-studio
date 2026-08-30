@@ -28,3 +28,14 @@ test('creates an editable copy from every bundled example and opens contextual o
   await expect(docs).toBeVisible()
   await expect(docs.getByRole('article')).toBeVisible()
 })
+
+test('replaces the example catalog with the selected preview', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+
+  await page.getByRole('button', { name: 'Preview Minimal prompt' }).click()
+
+  await expect(page.getByRole('region', { name: 'Minimal prompt preview' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Back to Examples' })).toBeVisible()
+  await expect(page.getByRole('article', { name: 'Sequential chain' })).toHaveCount(0)
+})

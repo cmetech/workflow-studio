@@ -34,6 +34,15 @@
     history = [topic.id, ...history.filter((id) => id !== topic.id)].slice(0, 5)
   }
 
+  function returnToResults(): void {
+    const selectedId = selected?.id
+    selected = null
+    void tick().then(() => {
+      if (!selectedId) return
+      document.getElementById(`documentation-result-${selectedId}`)?.focus()
+    })
+  }
+
   $effect(() => {
     if (index === reconciledIndex) return
     reconciledIndex = index
@@ -103,70 +112,101 @@
 </script>
 
 <section class="documentation" aria-label="Offline documentation" data-profile={index.topics[0]?.profile}>
-  <label>
-    Search documentation
-    <input
-      type="search"
-      bind:value={query}
-      aria-controls="documentation-results"
-      aria-activedescendant={activeResultId()}
-      oninput={() => (highlighted = 0)}
-      onkeydown={searchKeydown}
-    />
-  </label>
-  <label>
-    Topic type
-    <select aria-label="Topic type" bind:value={kind} onchange={() => (highlighted = 0)}>
-      <option value="all">All topics</option>
-      <option value="node">Nodes</option>
-      <option value="field">Fields</option>
-      <option value="guide">Guides</option>
-      <option value="contract">Contract</option>
-    </select>
-  </label>
-  <div id="documentation-results" role="listbox" aria-label="Documentation results">
-    {#each results as topic, index (topic.id)}
-      <button
-        role="option"
-        id={`documentation-result-${topic.id}`}
-        aria-selected={index === highlighted}
-        class:highlighted={index === highlighted}
-        onclick={() => {
-          highlighted = index
-          select(topic)
-        }}
-      >
-        <strong>{topic.title}</strong><span>{topic.kind}</span>
-      </button>
-    {/each}
-  </div>
-  {#if history.length > 0}
-    <nav aria-label="Documentation history">
-      {#each history as id (id)}
-        {@const topic = index.byId.get(id)}
-        {#if topic}<button type="button" onclick={() => select(topic)}>{topic.title} — {topic.id}</button>{/if}
-      {/each}
-    </nav>
-  {/if}
-  {#if selected}
-    <article bind:this={article} tabindex="-1" use:delegateLinks>
-      <h2>{selected.title}</h2>
-      {#if selected.examples.length > 0}
-        <section aria-label="Examples">
-          <h3>Examples</h3>
-          <pre>{JSON.stringify(selected.examples[0], null, 2)}</pre>
-        </section>
+  <div class="documentation-layout" class:detail-active={selected !== null}>
+    <section
+      class="documentation-navigation"
+      data-testid="documentation-navigation"
+      aria-label="Documentation navigation"
+    >
+      <label>
+        Search documentation
+        <input
+          type="search"
+          bind:value={query}
+          aria-controls="documentation-results"
+          aria-activedescendant={activeResultId()}
+          oninput={() => (highlighted = 0)}
+          onkeydown={searchKeydown}
+        />
+      </label>
+      <label>
+        Topic type
+        <select aria-label="Topic type" bind:value={kind} onchange={() => (highlighted = 0)}>
+          <option value="all">All topics</option>
+          <option value="node">Nodes</option>
+          <option value="field">Fields</option>
+          <option value="guide">Guides</option>
+          <option value="contract">Contract</option>
+        </select>
+      </label>
+      <div id="documentation-results" role="listbox" aria-label="Documentation results">
+        {#each results as topic, index (topic.id)}
+          <button
+            role="option"
+            id={`documentation-result-${topic.id}`}
+            aria-selected={index === highlighted}
+            class:highlighted={index === highlighted}
+            onclick={() => {
+              highlighted = index
+              select(topic)
+            }}
+          >
+            <strong>{topic.title}</strong><span>{topic.kind}</span>
+          </button>
+        {/each}
+      </div>
+      {#if results.length === 0}<p class="empty-results" role="status">No documentation matches</p>{/if}
+      {#if history.length > 0}
+        <nav aria-label="Documentation history">
+          {#each history as id (id)}
+            {@const topic = index.byId.get(id)}
+            {#if topic}<button type="button" onclick={() => select(topic)}>{topic.title} — {topic.id}</button>{/if}
+          {/each}
+        </nav>
       {/if}
-      <div class="markdown" use:renderSanitized={selected.body}></div>
-    </article>
-  {/if}
+    </section>
+    {#if selected}
+      <article aria-label={selected.title} bind:this={article} tabindex="-1" use:delegateLinks>
+        <button class="back-to-results" type="button" data-variant="ghost" onclick={returnToResults}
+          >Back to Results</button
+        >
+        <h2>{selected.title}</h2>
+        {#if selected.examples.length > 0}
+          <section aria-label="Examples">
+            <h3>Examples</h3>
+            <pre>{JSON.stringify(selected.examples[0], null, 2)}</pre>
+          </section>
+        {/if}
+        <div class="markdown" use:renderSanitized={selected.body}></div>
+      </article>
+    {/if}
+  </div>
 </section>
 
 <style>
   .documentation {
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+  }
+  .documentation-layout {
     display: grid;
-    gap: 0.75rem;
-    padding: 0.75rem;
+    grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+    gap: var(--space-3);
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-3);
+    overflow: hidden;
+  }
+  .documentation-navigation {
+    display: grid;
+    align-content: start;
+    gap: var(--space-3);
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
   }
   label {
     display: grid;
@@ -184,6 +224,7 @@
   [role='listbox'] {
     display: grid;
     gap: 0.25rem;
+    min-width: 0;
   }
   [role='option'] {
     display: flex;
@@ -194,6 +235,7 @@
     color: var(--color-text);
     background: transparent;
     border: 1px solid var(--color-border);
+    min-width: 0;
   }
   [role='option'].highlighted,
   [role='option']:focus-visible {
@@ -201,11 +243,64 @@
     outline-offset: 1px;
   }
   [role='option'] span {
+    min-width: 0;
     color: var(--color-text-muted);
     font-size: 0.7rem;
+    overflow-wrap: anywhere;
+  }
+  [role='option'] strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  article {
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1) var(--space-3) var(--space-4);
+    overflow: auto;
+    overflow-wrap: anywhere;
+  }
+  article h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  article pre {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .back-to-results {
+    display: none;
+  }
+  .empty-results {
+    margin: 0;
+    color: var(--color-text-muted);
   }
   .markdown :global(pre),
   .markdown :global(code) {
     white-space: pre-wrap;
+  }
+
+  @media (max-width: 48rem) {
+    .documentation {
+      height: auto;
+    }
+
+    .documentation-layout {
+      display: block;
+      height: auto;
+      overflow: visible;
+    }
+
+    .documentation-navigation,
+    article {
+      overflow: visible;
+    }
+
+    .documentation-layout.detail-active .documentation-navigation {
+      display: none;
+    }
+
+    .back-to-results {
+      display: inline-flex;
+    }
   }
 </style>

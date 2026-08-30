@@ -226,7 +226,12 @@
   const availableContracts: AuthoringContract[] = []
   let contracts = $state.raw<readonly AuthoringContract[]>([])
   let bundledContracts = $state.raw<readonly AuthoringContract[]>([])
-  let examples = $state.raw<readonly ExampleDescriptor[]>([])
+  type ExampleCatalogState =
+    | { readonly phase: 'loading' }
+    | { readonly phase: 'ready'; readonly examples: readonly ExampleDescriptor[] }
+    | { readonly phase: 'empty' }
+    | { readonly phase: 'error'; readonly message: string }
+  let exampleCatalogState = $state.raw<ExampleCatalogState>({ phase: 'loading' })
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
   let contractCacheAdvisories = $state.raw<readonly ContractCacheAdvisory[]>([])
@@ -254,10 +259,23 @@
     }
     return loaded
   })
-  const examplesReadiness = loadExampleCatalog().then((loaded) => {
-    examples = loaded
-    return loaded
-  })
+  function loadExamples(): Promise<readonly ExampleDescriptor[]> {
+    exampleCatalogState = { phase: 'loading' }
+    return Promise.resolve()
+      .then(() => loadExampleCatalog())
+      .then((loaded) => {
+        exampleCatalogState = loaded.length > 0 ? { phase: 'ready', examples: loaded } : { phase: 'empty' }
+        return loaded
+      })
+      .catch((error: unknown) => {
+        exampleCatalogState = {
+          phase: 'error',
+          message: error instanceof Error ? error.message : 'The bundled example catalog could not be loaded.',
+        }
+        return []
+      })
+  }
+  const examplesReadiness = loadExamples()
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
   let quickOpenVisible = $state(false)
@@ -2208,17 +2226,14 @@
         showBack
         onBack={returnToAuthoringSurface}
       >
-        {#if examples.length > 0}
-          <ExampleGallery
-            embedded
-            {examples}
-            topicLabels={exampleTopicLabels}
-            onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
-            onOpenDocumentation={openExampleDocumentation}
-          />
-        {:else}
-          <p>Loading validated examples…</p>
-        {/if}
+        <ExampleGallery
+          embedded
+          catalogState={exampleCatalogState}
+          topicLabels={exampleTopicLabels}
+          onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
+          onOpenDocumentation={openExampleDocumentation}
+          onRetry={() => loadExamples().then(() => undefined)}
+        />
       </ActivityPage>
     {/if}
   </div>
