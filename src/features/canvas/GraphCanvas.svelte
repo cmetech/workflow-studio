@@ -67,6 +67,7 @@
     }) => void | Promise<void>
     onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
     onOpenInspector?: () => void
+    onToggleInspector?: (expanded: boolean, invoker: HTMLElement) => void | Promise<void>
     onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
   }
 
@@ -88,6 +89,7 @@
     onRequestAdd,
     onRequestDelete,
     onOpenInspector,
+    onToggleInspector,
     onDropNodeKind,
   }: Props = $props()
 
@@ -97,9 +99,14 @@
   const inspectorRelationship: CanvasInspectorRelationship = {
     controls: () => inspectorControls,
     expanded: () => inspectorExpanded,
-    open: (nodeId) => {
+    toggle: (nodeId, invoker) => {
+      if (inspectorExpanded) {
+        void onToggleInspector?.(false, invoker)
+        return
+      }
       selectionChanged([nodeId])
-      onOpenInspector?.()
+      if (onToggleInspector) void onToggleInspector(true, invoker)
+      else onOpenInspector?.()
     },
   }
   setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)

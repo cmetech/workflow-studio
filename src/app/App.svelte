@@ -552,8 +552,12 @@
       : 'Validation is unavailable for the current workflow.'
   }
 
-  async function focusInspector(): Promise<void> {
-    inspectorPanelOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+  async function focusInspector(invoker?: HTMLElement): Promise<void> {
+    inspectorPanelOpener = invoker?.isConnected
+      ? invoker
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : undefined
     openInspectorPanel()
     await tick()
     const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
@@ -581,12 +585,14 @@
     workspacePanelOpener = undefined
   }
 
-  async function closeInspectorDrawer(): Promise<void> {
+  async function closeInspectorDrawer(invoker?: HTMLElement): Promise<void> {
+    const target = invoker?.isConnected
+      ? invoker
+      : inspectorPanelOpener?.isConnected
+        ? inspectorPanelOpener
+        : document.querySelector<HTMLElement>('.svelte-flow__node.selected')
     inspectorPanelOpen.set(false)
     await tick()
-    const target = inspectorPanelOpener?.isConnected
-      ? inspectorPanelOpener
-      : document.querySelector<HTMLElement>('.svelte-flow__node.selected')
     target?.focus()
     inspectorPanelOpener = undefined
   }
@@ -1801,6 +1807,8 @@
                   onRequestAdd={requestCanvasAdd}
                   onRequestDelete={requestCanvasDelete}
                   onOpenInspector={focusInspector}
+                  onToggleInspector={(expanded, invoker) =>
+                    expanded ? focusInspector(invoker) : closeInspectorDrawer(invoker)}
                   onDropNodeKind={dropPaletteNode}
                 />
               </div>

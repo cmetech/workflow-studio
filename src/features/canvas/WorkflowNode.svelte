@@ -41,10 +41,13 @@
       <button
         type="button"
         class="inspector-trigger nodrag nopan"
-        aria-label={`Open Inspector for ${data.id}`}
+        aria-label={`Inspector for ${data.id}`}
         aria-controls={inspectorControls}
         aria-expanded={inspectorExpanded}
-        onclick={() => inspectorRelationship.open(data.id)}>Inspect</button
+        onkeydown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+        }}
+        onclick={(event) => inspectorRelationship.toggle(data.id, event.currentTarget)}>Inspect</button
       >
     {/if}
   </header>
