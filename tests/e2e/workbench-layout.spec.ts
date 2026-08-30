@@ -100,6 +100,73 @@ test('compact drawer cycles preserve unsaved YAML and node selection', async ({ 
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(UNSAVED_YAML)
 })
 
+test('Workflow context menu consumes Escape before its Explorer drawer', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const explorer = page.getByRole('button', { name: 'Explorer', exact: true })
+  const workspacePanel = page.locator('aside[aria-label="Workspace panel"]')
+  await explorer.click()
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+
+  const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+  await pair.click({ button: 'right' })
+  const contextMenu = page.getByRole('menu', { name: 'Workflow actions' })
+  await expect(contextMenu).toBeVisible()
+
+  await page.keyboard.press('Escape')
+  await expect(contextMenu).toBeHidden()
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+  await expect(pair).toBeFocused()
+})
+
+test('Canvas More menu consumes Escape before its Inspector drawer', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await prepare.press('Enter')
+  await expect(inspector).not.toHaveAttribute('inert')
+
+  const more = page.getByRole('button', { name: 'More canvas actions' })
+  await more.focus()
+  await expect(more).toBeFocused()
+  await page.keyboard.press('Space')
+  const moreMenu = page.getByRole('menu', { name: 'More canvas actions' })
+  await expect(moreMenu).toBeVisible()
+  await expect(more).toHaveAttribute('aria-expanded', 'true')
+
+  await page.keyboard.press('Escape')
+  await expect(moreMenu).toBeHidden()
+  await expect(more).toHaveAttribute('aria-expanded', 'false')
+  await expect(more).toBeFocused()
+  await expect(inspector).not.toHaveAttribute('inert')
+})
+
+test('keyboard edge picker consumes Escape before its Inspector drawer', async ({ page }) => {
+  await openPairAt(page, 1024, 700)
+
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.focus()
+  await prepare.press('Enter')
+  await expect(inspector).not.toHaveAttribute('inert')
+
+  const createEdge = page.getByRole('button', { name: 'Create Edge' })
+  await expect(createEdge).toBeEnabled()
+  await createEdge.focus()
+  await expect(createEdge).toBeFocused()
+  await page.keyboard.press('Space')
+  const edgePicker = page.getByText('Create edge from prepare', { exact: true })
+  await expect(edgePicker).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeFocused()
+
+  await page.keyboard.press('Escape')
+  await expect(edgePicker).toBeHidden()
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText('Edge creation cancelled.')
+  await expect(inspector).not.toHaveAttribute('inert')
+})
+
 test('real viewport resize keeps focus in Explorer and Inspector when docked panels become drawers', async ({
   page,
 }) => {

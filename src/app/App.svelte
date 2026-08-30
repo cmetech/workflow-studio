@@ -290,6 +290,13 @@
   let inspectorDrawerOwner = $state<
     { readonly kind: 'explicit'; readonly opener: HTMLElement | undefined } | { readonly kind: 'resize' } | undefined
   >()
+  type DrawerEscapeSnapshot =
+    | { readonly panel: 'workspace' }
+    | {
+        readonly panel: 'inspector'
+        readonly restorationTarget: HTMLElement | undefined
+        readonly selectedNode: HTMLElement | undefined
+      }
   let previousPanelPresentation: 'docked' | 'drawers' = 'docked'
   let previousSplitPresentation: 'side-by-side' | 'tabs' = 'side-by-side'
   let panelPresentationMeasured = false
@@ -651,9 +658,10 @@
     inspectorDrawerOwner = undefined
   }
 
-  async function closeOpenDrawer(): Promise<void> {
-    if ($inspectorPanelOpen) await closeInspectorDrawer()
-    else if ($workspacePanelOpen) await closeWorkspaceDrawer()
+  async function closeOpenDrawer(snapshot?: DrawerEscapeSnapshot): Promise<void> {
+    if ((snapshot?.panel === 'inspector' || !snapshot) && $inspectorPanelOpen) {
+      await closeInspectorDrawer(snapshot?.panel === 'inspector' ? snapshot.restorationTarget : undefined)
+    } else if ((snapshot?.panel === 'workspace' || !snapshot) && $workspacePanelOpen) await closeWorkspaceDrawer()
   }
 
   async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
@@ -1487,37 +1495,71 @@
         find: findInCurrentSurface,
         validate: validateCurrentWorkflow,
       })
-      const escapeCancellations = () => {
-        const activeModal = document.querySelector('[aria-modal="true"]')
+      const appEscapeCancellations = () => {
         return [
           ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
           ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
           ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
           ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
           ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
-          ...(activeModal === null &&
-          workbenchPresentation.panels === 'drawers' &&
-          ($inspectorPanelOpen || $workspacePanelOpen)
-            ? [{ priority: 50, cancel: closeOpenDrawer }]
-            : []),
         ]
       }
+      const drawerEscapeSnapshot = (): DrawerEscapeSnapshot | undefined => {
+        if (document.querySelector('[aria-modal="true"]') !== null || workbenchPresentation.panels !== 'drawers')
+          return undefined
+        if ($inspectorPanelOpen) {
+          return {
+            panel: 'inspector',
+            restorationTarget:
+              inspectorDrawerOwner?.kind === 'resize' ? currentInspectorRestorationTarget() : undefined,
+            selectedNode: document.querySelector<HTMLElement>('.svelte-flow__node.selected') ?? undefined,
+          }
+        }
+        return $workspacePanelOpen ? { panel: 'workspace' } : undefined
+      }
+      const drawerEscapeSnapshots = new WeakMap<KeyboardEvent, DrawerEscapeSnapshot>()
       const escapeKeydown = (event: KeyboardEvent) => {
         if (event.key !== 'Escape') return
-        const cancellation = escapeCancellations().sort((left, right) => right.priority - left.priority)[0]
-        if (!cancellation) return
+        const cancellation = appEscapeCancellations().sort((left, right) => right.priority - left.priority)[0]
+        if (cancellation) {
+          event.preventDefault()
+          event.stopPropagation()
+          try {
+            void Promise.resolve(cancellation.cancel()).catch((error: unknown) => {
+              workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+            })
+          } catch (error: unknown) {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          }
+          return
+        }
+
+        const snapshot = drawerEscapeSnapshot()
+        if (!snapshot) return
+        drawerEscapeSnapshots.set(event, snapshot)
+        if (
+          snapshot.panel !== 'inspector' ||
+          !snapshot.selectedNode ||
+          !(event.target instanceof Node) ||
+          !snapshot.selectedNode.contains(event.target)
+        )
+          return
         event.preventDefault()
         event.stopPropagation()
-        try {
-          void Promise.resolve(cancellation.cancel()).catch((error: unknown) => {
-            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
-          })
-        } catch (error: unknown) {
+        void closeOpenDrawer(snapshot).catch((error: unknown) => {
           workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
-        }
+        })
       }
       const keydown = (event: KeyboardEvent) => {
         if (event.defaultPrevented) return
+        const drawerSnapshot = event.key === 'Escape' ? drawerEscapeSnapshots.get(event) : undefined
+        if (drawerSnapshot) {
+          event.preventDefault()
+          void closeOpenDrawer(drawerSnapshot).catch((error: unknown) => {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          })
+          return
+        }
         const context = keyboardContext(event.target)
         const keyboardOpener =
           event.target instanceof HTMLElement
