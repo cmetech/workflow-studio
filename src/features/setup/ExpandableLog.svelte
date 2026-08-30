@@ -52,9 +52,9 @@
     border-radius: 0.375rem;
     color: var(--color-text);
     background: var(--color-yaml-gutter);
-    font:
-      0.75rem/1.5 ui-monospace,
-      monospace;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

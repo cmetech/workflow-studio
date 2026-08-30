@@ -22,6 +22,6 @@
     font-size: 0.68rem;
   }
   .issue {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
 </style>

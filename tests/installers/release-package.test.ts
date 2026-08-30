@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import * as releaseAssets from '../../scripts/verify-release-assets.mjs'
 
 const RESOURCE_MANIFEST = 'src-tauri/resources/setup-integrity-v1.json'
-const RESOURCE_DIRECTORIES = ['brands', 'contracts', 'examples']
+const RESOURCE_DIRECTORIES = ['brands', 'contracts', 'examples', 'docs/licenses']
 
 type PackagedResourceVerifier = (
   resourceRoot: string,
@@ -92,10 +92,10 @@ function verifyPackagedResourcesWithPe(root: string, manifestPath: string, execu
 }
 
 describe('packaged resource verification', () => {
-  it('accepts the exact 30-file packaged resource tree', async () => {
+  it('accepts the exact 32-file packaged resource tree', async () => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
-      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 30 })
+      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 32 })
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }
@@ -190,7 +190,9 @@ describe('packaged resource verification', () => {
     mkdirSync(repository)
     try {
       for (const directory of RESOURCE_DIRECTORIES) {
-        cpSync(directory, join(repository, directory), { recursive: true })
+        const destination = join(repository, directory)
+        mkdirSync(dirname(destination), { recursive: true })
+        cpSync(directory, destination, { recursive: true })
       }
       const manifestPath = join(repository, RESOURCE_MANIFEST)
       mkdirSync(dirname(manifestPath), { recursive: true })
@@ -223,7 +225,7 @@ describe('packaged resource verification', () => {
         { encoding: 'utf8' },
       )
       expect(verification.status, verification.stderr).toBe(0)
-      expect(verification.stdout).toContain('Verified 30 packaged resource files')
+      expect(verification.stdout).toContain('Verified 32 packaged resource files')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -239,7 +241,7 @@ describe('Windows packaged executable verification', () => {
 
       const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toContain('Verified 30 packaged resource files')
+      expect(result.stdout).toContain('Verified 32 packaged resource files')
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }

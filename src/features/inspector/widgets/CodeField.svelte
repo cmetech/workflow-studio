@@ -29,9 +29,9 @@
   .code {
     width: 100%;
     min-height: 5rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   span {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
 </style>

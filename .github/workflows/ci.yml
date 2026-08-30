@@ -51,8 +51,8 @@ jobs:
           node-version: 22.13.0
           cache: npm
       - run: npm ci
-      - name: Install Chromium only
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
       - run: npm run test:e2e
       - name: Upload Playwright failure evidence
         if: failure()

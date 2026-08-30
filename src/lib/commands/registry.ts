@@ -4,8 +4,8 @@ import {
   openFolder,
   openQuickOpen,
   requestWorkflowAction,
-  showActivity,
   showEditorMode,
+  toggleActivityPanel,
 } from '$src/stores/shell'
 import { requestProblemFocus } from '$src/stores/documents'
 import type {
@@ -231,7 +231,7 @@ function activityCommand(activity: ActivityId, label: string, defaultBindings: r
     category: 'View',
     defaultBindings,
     enabled: () => true,
-    run: () => showActivity(activity),
+    run: () => toggleActivityPanel(activity),
   }
 }
 

@@ -65,6 +65,8 @@ describe('canvas reduced-motion contract', () => {
     await tick()
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     const viewport = canvas.querySelector<HTMLElement>('.svelte-flow__viewport')!
+    const toolbar = canvas.querySelector<HTMLElement>('.canvas-toolbar')!
+    const node = canvas.querySelector<HTMLElement>('.workflow-node')!
 
     expect(canvas).toHaveAttribute('data-motion', 'full')
     expect(canvas).toHaveClass('canvas-transitions')
@@ -77,6 +79,9 @@ describe('canvas reduced-motion contract', () => {
     expect(canvas).not.toHaveClass('canvas-transitions')
     expect(canvas.querySelector('.animated')).not.toBeInTheDocument()
     expect(canvas).toHaveAttribute('data-keyboard-viewport-focus', 'instant')
+    expect(toolbar.closest('[data-motion="reduced"]')).toBe(canvas)
+    expect(node.closest('[data-motion="reduced"]')).toBe(canvas)
+    expect(node).not.toHaveClass('animated')
 
     canvas.focus()
     component.fitGraph()

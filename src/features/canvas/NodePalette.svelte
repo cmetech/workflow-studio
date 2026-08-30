@@ -46,7 +46,7 @@
       left: '-1000px',
       padding: '6px 10px',
       border: '1px solid var(--color-edge)',
-      borderRadius: '6px',
+      borderRadius: 'var(--radius-sm)',
       color: 'var(--color-text)',
       background: 'var(--color-node)',
     })
@@ -79,6 +79,7 @@
       {@const chord = nodeChordForKind(descriptor.id)}
       <button
         type="button"
+        data-variant="secondary"
         class:supported={available(descriptor)}
         aria-label={available(descriptor)
           ? `Add ${descriptor.label} node`
@@ -110,10 +111,11 @@
   .node-palette {
     min-height: 100%;
     color: var(--color-text);
+    background: var(--color-surface);
   }
   header,
   .node-kinds {
-    padding: 0.75rem;
+    padding: var(--space-3);
   }
   header {
     border-bottom: 1px solid var(--color-border);
@@ -124,7 +126,7 @@
     margin: 0;
   }
   .eyebrow {
-    color: var(--color-accent);
+    color: var(--color-text-muted);
     font-size: 0.66rem;
     font-weight: 700;
     letter-spacing: 0.12em;
@@ -144,38 +146,37 @@
   }
   .unavailable {
     margin: 0.75rem;
-    padding: 0.65rem;
+    padding: var(--space-3);
     border: 1px solid var(--color-border);
-    border-radius: 0.4rem;
+    border-radius: var(--radius-md);
     color: var(--color-text-muted);
     background: var(--color-node);
     font-size: 0.76rem;
   }
   .node-kinds {
     display: grid;
-    gap: 0.45rem;
+    gap: var(--space-2);
   }
   button {
     display: grid;
     gap: 0.3rem;
     width: 100%;
-    padding: 0.65rem;
+    padding: var(--space-3);
     border: 1px solid var(--color-border);
-    border-radius: 0.45rem;
+    border-radius: var(--radius-md);
     color: var(--color-text);
     background: var(--color-node);
     text-align: left;
   }
   button.supported:hover {
-    border-color: var(--color-edge);
+    border-color: var(--color-accent);
     background: var(--color-node-selected);
   }
   button:disabled {
     opacity: 0.64;
   }
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
+    box-shadow: var(--focus-ring);
   }
   .node-kind-title,
   .metadata {
@@ -190,7 +191,8 @@
   kbd {
     padding: 0.08rem 0.3rem;
     border: 1px solid var(--color-border);
-    border-radius: 0.22rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
     font-size: 0.65rem;
   }
   small {

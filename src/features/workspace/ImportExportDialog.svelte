@@ -80,7 +80,7 @@
         </ul>
       </div>
       <footer>
-        <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Close</button>
+        <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Close</button>
       </footer>
     {:else}
       {#if paths.length > 0}
@@ -90,8 +90,10 @@
         </ul>
       {/if}
       <footer>
-        <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Cancel</button>
-        <button type="button" onclick={() => void confirm()}>{buttonLabel}</button>
+        <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
+        <button type="button" data-variant={collision ? 'danger' : 'primary'} onclick={() => void confirm()}
+          >{buttonLabel}</button
+        >
       </footer>
     {/if}
   </div>
@@ -122,7 +124,7 @@
 
   [role='alert'] {
     padding: 0.75rem;
-    border-left: 0.25rem solid var(--color-danger);
+    border-left: 0.25rem solid var(--color-error);
     background: var(--color-node);
   }
 
@@ -132,8 +134,7 @@
     justify-content: flex-end;
   }
 
-  .secondary {
-    color: var(--color-text);
-    background: var(--color-node);
+  code {
+    font-family: var(--font-mono);
   }
 </style>

@@ -46,7 +46,7 @@
     width: 100%;
   }
   .required {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
   .field-actions {
     display: flex;

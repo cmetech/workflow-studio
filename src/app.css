@@ -1,11 +1,30 @@
-:root {
-  color: #1a1a16;
-  background: #f7f5ed;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
 }
 
 body {
+  min-height: 100vh;
   margin: 0;
+  color: var(--color-text);
+  background: var(--color-background);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
 }
 
 button,
@@ -15,34 +34,117 @@ select {
   font: inherit;
 }
 
-button:focus-visible {
-  outline: 3px solid #0f5fbf;
-  outline-offset: 2px;
-}
-
-main {
-  display: grid;
-  gap: 1rem;
-  max-width: 42rem;
-  min-height: 100vh;
-  align-content: center;
-  padding: 2rem;
-}
-
-h1,
-p {
-  margin: 0;
+button,
+input,
+textarea,
+select {
+  border-radius: var(--radius-sm);
 }
 
 button {
-  width: fit-content;
-  min-height: 2.75rem;
-  padding: 0.5rem 1rem;
-  border: 1px solid #8a6d1a;
-  border-radius: 0.25rem;
-  color: #0c0c0c;
-  background: #fad22d;
+  min-height: var(--control-sm);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface-elevated);
   cursor: pointer;
+  transition:
+    border-color 100ms ease-out,
+    color 100ms ease-out,
+    background-color 100ms ease-out;
+}
+
+button[data-variant='primary'] {
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+}
+
+button[data-variant='secondary'] {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface-elevated);
+}
+
+button[data-variant='ghost'] {
+  border-color: transparent;
+  color: var(--color-text);
+  background: transparent;
+}
+
+button[data-variant='danger'] {
+  border-color: var(--color-error);
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 7%, transparent);
+}
+
+button[data-variant='primary']:hover:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: var(--color-accent-strong);
+}
+
+button[data-variant='secondary']:hover:not(:disabled),
+button[data-variant='ghost']:hover:not(:disabled) {
+  border-color: var(--color-edge-selected);
+  background: var(--color-node-selected);
+}
+
+button[data-variant='danger']:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 16%, transparent);
+}
+
+button[data-variant='ghost'][aria-pressed='true']:hover:not(:disabled) {
+  border-color: var(--color-focus);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-node-selected) 78%, var(--color-accent));
+}
+
+button[data-variant='primary']:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
+  background: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
+}
+
+button[data-variant='secondary']:active:not(:disabled),
+button[data-variant='ghost']:active:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: color-mix(in srgb, var(--color-node-selected) 76%, var(--color-accent));
+}
+
+button[data-variant='danger']:active:not(:disabled) {
+  color: color-mix(in srgb, var(--color-error) 82%, var(--color-text));
+  background: color-mix(in srgb, var(--color-error) 26%, transparent);
+}
+
+button[data-variant='ghost'][aria-pressed='true']:active:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+input,
+textarea,
+select {
+  min-height: var(--control-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -52,5 +154,16 @@ button {
     scroll-behavior: auto !important;
     transition: none !important;
     animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid ButtonText;
+    outline-offset: 2px;
+    box-shadow: none;
   }
 }

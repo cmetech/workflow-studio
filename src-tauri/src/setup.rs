@@ -1111,7 +1111,7 @@ impl ResourceScope {
         }
         let mut found = HashSet::new();
         let mut budget = ResourceTraversalBudget::default();
-        for top in ["contracts", "examples", "brands"] {
+        for top in ["contracts", "examples", "brands", "docs"] {
             if !allowed_directories.contains(top) {
                 return Err(invalid_integrity_manifest());
             }
@@ -1860,23 +1860,28 @@ fn resolve_setup_paths(app: &AppHandle) -> SetupResult<SetupPaths> {
             format!("Installed resources are unavailable: {error}"),
         )
     })?;
-    let resource_root = [resource_dir.clone(), resource_dir.join("_up_")]
+    let resource_root = resolve_installed_resource_root(&resource_dir)?;
+    Ok(SetupPaths {
+        app_data,
+        resource_root,
+    })
+}
+
+pub(crate) fn resolve_installed_resource_root(resource_dir: &Path) -> SetupResult<PathBuf> {
+    [resource_dir.to_path_buf(), resource_dir.join("_up_")]
         .into_iter()
         .find(|candidate| {
             candidate.join("contracts").is_dir()
                 && candidate.join("examples").is_dir()
                 && candidate.join("brands").is_dir()
+                && candidate.join("docs/licenses").is_dir()
         })
         .ok_or_else(|| {
             setup_error(
                 "setup_resource_root_unavailable",
                 "The installed Tauri resource root is unavailable.",
             )
-        })?;
-    Ok(SetupPaths {
-        app_data,
-        resource_root,
-    })
+        })
 }
 
 fn ensure_private_directory(path: &Path) -> SetupResult<()> {
@@ -2101,10 +2106,12 @@ fn readiness_destination_changed() -> SetupError {
 fn safe_resource_path(value: &str) -> bool {
     !value.is_empty()
         && !value.contains('\\')
-        && matches!(
+        && (matches!(
             value.split('/').next(),
             Some("contracts" | "examples" | "brands")
-        )
+        ) || value
+            .strip_prefix("docs/licenses/")
+            .is_some_and(|relative| !relative.is_empty()))
         && Path::new(value)
             .components()
             .all(|component| matches!(component, Component::Normal(_)))

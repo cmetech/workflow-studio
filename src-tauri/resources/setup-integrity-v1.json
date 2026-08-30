@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "brands/loop24/brand.yaml",
-      "sha256": "07ce05cb542270963ab6918d8c90f2d4d63fa226198cca5ae46248107466fbaa",
+      "sha256": "a32e3b951910f26cff350918d5556eaabb1112dc29354c1b0002172730b08950",
       "maxBytes": 2097152
     },
     {
@@ -44,6 +44,16 @@
     {
       "path": "contracts/resource-root",
       "sha256": "e4c55f41fdeb45d6ea40bf4022077d1db6d6c2a8aa750d5b73d881100f455a1b",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "docs/licenses/Geist-Mono-OFL-1.1.txt",
+      "sha256": "cc815ed4fc045f0e991abb10395b7932bd028c6a067deb13316d6002105074e6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "docs/licenses/Geist-OFL-1.1.txt",
+      "sha256": "71609cbb5c78b5870d712eab73a31d76622635c6ed034ab5cee3b9ecbda8685f",
       "maxBytes": 2097152
     },
     {

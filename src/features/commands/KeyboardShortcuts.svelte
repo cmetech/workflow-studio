@@ -53,7 +53,7 @@
     border-bottom: 1px solid var(--color-border);
   }
   kbd {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   input:focus-visible {
     outline: 3px solid var(--color-focus);

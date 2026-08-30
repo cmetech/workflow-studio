@@ -31,6 +31,8 @@ const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'contracts/hermes-legacy-v1.json',
   'contracts/manifest.json',
   'contracts/resource-root',
+  'docs/licenses/Geist-Mono-OFL-1.1.txt',
+  'docs/licenses/Geist-OFL-1.1.txt',
   'examples/README.md',
   'examples/advanced-reference/workflow.hermes.yaml',
   'examples/advanced-reference/workflow.yaml',
@@ -61,9 +63,7 @@ const PACKAGED_RESOURCE_DIRECTORY_PATH_SET = new Set(
     return segments.map((_, index) => segments.slice(0, index + 1).join('/'))
   }),
 )
-const PACKAGED_RESOURCE_DIRECTORIES = Object.freeze(
-  [...PACKAGED_RESOURCE_DIRECTORY_PATH_SET].filter((path) => !path.includes('/')).sort(),
-)
+const PACKAGED_RESOURCE_SOURCE_DIRECTORIES = Object.freeze(['brands', 'contracts', 'docs/licenses', 'examples'])
 
 const TARGETS = Object.freeze({
   'darwin-aarch64': Object.freeze({
@@ -452,7 +452,7 @@ async function collectPackagedResourcePaths(resourceRoot, sourceTree) {
   }
 
   if (sourceTree) {
-    for (const directory of PACKAGED_RESOURCE_DIRECTORIES) {
+    for (const directory of PACKAGED_RESOURCE_SOURCE_DIRECTORIES) {
       await visit(directory)
     }
   } else {

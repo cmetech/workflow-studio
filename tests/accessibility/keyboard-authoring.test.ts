@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte'
+import { render, screen, waitFor, within } from '@testing-library/svelte'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
@@ -127,7 +127,7 @@ import { $canvasSelection, clearCanvasState } from '$src/stores/canvas'
 import { $documentSession, closeDocumentSession } from '$src/stores/documents'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearActiveLayout } from '$src/stores/layout'
-import { closeCommandPalette, closeKeyboardShortcuts, showEditorMode } from '$src/stores/shell'
+import { closeCommandPalette, closeKeyboardShortcuts, closeTransientPanels, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 
 const initialYaml = `name: Keyboard flow
@@ -160,6 +160,42 @@ class RealAnalysisWorker {
   terminate(): void {
     this.listeners.clear()
   }
+}
+
+class TestResizeObserver {
+  static instances: TestResizeObserver[] = []
+  readonly targets = new Set<Element>()
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    TestResizeObserver.instances.push(this)
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target)
+  }
+
+  unobserve(target: Element): void {
+    this.targets.delete(target)
+  }
+
+  disconnect(): void {
+    this.targets.clear()
+  }
+
+  publish(target: Element, width: number): void {
+    this.callback([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this)
+  }
+}
+
+async function publishResize(target: Element, width: number): Promise<void> {
+  const observer = TestResizeObserver.instances.find((candidate) => candidate.targets.has(target))
+  if (!observer) throw new Error('Expected the workbench boundary to be observed.')
+  observer.publish(target, width)
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
+
+function modifierChord(key: string): string {
+  return /mac/i.test(navigator.platform) ? `{Meta>}${key}{/Meta}` : `{Control>}${key}{/Control}`
 }
 
 function projection(text: string) {
@@ -248,14 +284,7 @@ describe('keyboard-only workflow authoring', () => {
         removeEventListener: vi.fn(),
       })),
     })
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe(): void {}
-        unobserve(): void {}
-        disconnect(): void {}
-      },
-    )
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
     vi.stubGlobal('Worker', RealAnalysisWorker)
     if (!Range.prototype.getClientRects) {
       Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] })
@@ -276,7 +305,9 @@ describe('keyboard-only workflow authoring', () => {
     clearActiveLayout()
     closeCommandPalette()
     closeKeyboardShortcuts()
+    closeTransientPanels()
     showEditorMode('visual')
+    TestResizeObserver.instances = []
     historyStore.set(createHistoryState())
     $documentWorkspace.set({
       conflict: null,
@@ -321,7 +352,25 @@ describe('keyboard-only workflow authoring', () => {
         screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
       ).toBe(true),
     )
+
+    const workbench = rendered.container.querySelector<HTMLElement>('.workbench')!
+    const editorWorkspace = screen.getByRole('region', { name: 'Workflow workspace' })
+    await publishResize(workbench, 1024)
+    await publishResize(editorWorkspace, 976)
+    await tick()
+    const explorerDrawer = rendered.container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+    expect(explorerDrawer).toHaveAttribute('inert')
+
     await tabTo(user, canvas)
+    await user.keyboard(modifierChord('b'))
+    const closeExplorer = screen.getByRole('button', { name: 'Close workspace panel' })
+    await waitFor(() => expectVisibleKeyboardFocus(closeExplorer))
+    expect(explorerDrawer).not.toHaveAttribute('inert')
+    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'true')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expectVisibleKeyboardFocus(canvas))
+    expect(explorerDrawer).toHaveAttribute('inert')
+
     let picker = await openAddNodeWithKeyboard(user)
     await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
     await waitFor(() => expect(projection($documentSession.get().pair!.definition.text).nodes).toHaveLength(2))
@@ -336,7 +385,8 @@ describe('keyboard-only workflow authoring', () => {
       })
     })
     expect(screen.queryByText(/last valid graph shown read-only/i)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Arrange Graph' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeEnabled()
     await selectNodeWithKeyboard(user, 'seed')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled())
     await user.keyboard('e')
@@ -390,6 +440,26 @@ describe('keyboard-only workflow authoring', () => {
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0]).toContain('id: final-command')
     expectVisibleKeyboardFocus(saveTarget)
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expectVisibleKeyboardFocus(canvas))
+    expect(rendered.container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')).toHaveAttribute('inert')
+
+    await publishResize(editorWorkspace, 719)
+    await user.keyboard(modifierChord('2'))
+    const splitPane = await screen.findByRole('group', { name: 'Split pane' })
+    const canvasSubtab = within(splitPane).getByRole('button', { name: 'Canvas' })
+    const yamlSubtab = within(splitPane).getByRole('button', { name: 'YAML' })
+    expect(canvasSubtab).toHaveAttribute('aria-pressed', 'true')
+    expect(yamlSubtab).toHaveAttribute('aria-pressed', 'false')
+    canvasSubtab.focus()
+    expectVisibleKeyboardFocus(canvasSubtab)
+    await user.tab()
+    expectVisibleKeyboardFocus(yamlSubtab)
+    await user.keyboard(' ')
+    expect(canvasSubtab).toHaveAttribute('aria-pressed', 'false')
+    expect(yamlSubtab).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Split' })).toHaveAttribute('aria-pressed', 'true')
     rendered.unmount()
   }, 20_000)
 })

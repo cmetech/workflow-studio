@@ -108,8 +108,10 @@
     {/if}
 
     <footer>
-      <button bind:this={cancelButton} type="button" class="secondary" onclick={cancel}>Cancel</button>
-      <button type="button" disabled={requiresResolution} onclick={() => void confirm()}>Delete nodes</button>
+      <button bind:this={cancelButton} type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
+      <button type="button" data-variant="danger" disabled={requiresResolution} onclick={() => void confirm()}
+        >Delete nodes</button
+      >
     </footer>
   </div>
 </div>
@@ -153,6 +155,7 @@
     display: block;
     margin-top: 0.15rem;
     color: var(--color-text-muted);
+    font-family: var(--font-mono);
   }
   .node-list code {
     display: inline;
@@ -174,12 +177,7 @@
   button {
     min-height: 2rem;
   }
-  .secondary {
-    color: var(--color-text);
-    background: var(--color-node);
-  }
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
   }
 </style>

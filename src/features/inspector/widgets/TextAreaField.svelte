@@ -32,6 +32,6 @@
     min-height: 5rem;
   }
   span {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
 </style>

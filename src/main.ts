@@ -1,3 +1,5 @@
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import './app.css'
 import './styles/tokens.css'
 import './styles/loop24.css'

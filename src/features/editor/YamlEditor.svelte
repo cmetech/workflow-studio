@@ -183,6 +183,8 @@
     min-height: 0;
     height: 100%;
     overflow: hidden;
-    background: var(--color-surface);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-elevated);
+    font-family: var(--font-mono);
   }
 </style>

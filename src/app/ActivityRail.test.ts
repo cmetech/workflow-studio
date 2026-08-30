@@ -23,14 +23,19 @@ describe('ActivityRail', () => {
       )
     }
     showActivity('explorer')
-    render(ActivityRail, { props: { commandSurface: registry } } as never)
+    const onActivityInvoke = vi.fn()
+    render(ActivityRail, { props: { commandSurface: registry, onActivityInvoke } } as never)
 
     const documentation = screen.getByRole('button', { name: 'Registry Knowledge' })
     const settings = screen.getByRole('button', { name: 'Registry Preferences' })
+    const explorer = screen.getByRole('button', { name: 'Explorer' })
     expect(settings).toBeDisabled()
     expect(settings).toHaveAttribute('title', 'Preferences are locked.')
+    expect(explorer).toHaveAttribute('data-activity', 'explorer')
+    expect(settings.querySelector('svg')).not.toBeNull()
     await fireEvent.click(documentation)
 
+    expect(onActivityInvoke).toHaveBeenCalledWith(documentation)
     expect(runDocumentation).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: 'Git' })).toHaveAttribute('aria-pressed', 'true')
   })

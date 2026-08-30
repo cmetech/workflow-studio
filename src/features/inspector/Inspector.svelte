@@ -111,6 +111,7 @@
       <button
         bind:this={tabButtons[index]}
         type="button"
+        data-variant="ghost"
         role="tab"
         id={`inspector-tab-${tab.toLowerCase()}`}
         aria-controls={`inspector-panel-${tab.toLowerCase()}`}
@@ -194,9 +195,12 @@
               />
             {/key}
             <div class="field-actions">
-              <button type="button" onclick={() => resetDraft(field)}>Reset {field.label} draft</button>
+              <button type="button" data-variant="ghost" onclick={() => resetDraft(field)}
+                >Reset {field.label} draft</button
+              >
               {#if !field.required && Object.hasOwn(values, field.id)}<button
                   type="button"
+                  data-variant="danger"
                   onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
                 >{/if}
             </div>
@@ -220,7 +224,7 @@
     display: flex;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 0.75rem;
+    padding: var(--space-3);
     border-bottom: 1px solid var(--color-border);
     font-size: 0.72rem;
     text-transform: uppercase;
@@ -235,29 +239,29 @@
   .tabs {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 0.1rem;
-    padding: 0.5rem;
+    gap: var(--space-1);
+    padding: var(--space-2);
     border-bottom: 1px solid var(--color-border);
   }
   .tabs button {
     min-width: 0;
     padding: 0.35rem 0.15rem;
     border: 0;
-    border-radius: 0.3rem;
+    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
     background: transparent;
     font-size: 0.68rem;
   }
   .tabs button.active {
-    color: var(--color-accent-strong);
+    color: var(--color-text);
     background: var(--color-node-selected);
   }
   .panel {
-    padding: 0.75rem;
+    padding: var(--space-3);
     overflow: auto;
   }
   .field {
-    padding: 0.65rem 0;
+    padding: var(--space-3) 0;
     border-bottom: 1px solid var(--color-border);
   }
   .field.deferred {
@@ -266,14 +270,14 @@
   .field-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.25rem;
-    margin-bottom: 0.25rem;
+    gap: var(--space-1);
+    margin-bottom: var(--space-1);
   }
   .field-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem;
-    margin-top: 0.35rem;
+    gap: var(--space-1);
+    margin-top: var(--space-2);
   }
   .badge {
     padding: 0.1rem 0.3rem;

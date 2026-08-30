@@ -9,9 +9,9 @@ use tempfile::tempdir;
 use crate::setup::ResourceScope;
 use crate::setup::{
     atomic_persist_readiness, initialize_setup_status, is_ready, load_remembered_workspace,
-    redact_log_line, run_setup, verify_resource_tree, AppDataScope, BoundedSetupLog,
-    IntegrityEntry, IntegrityManifest, SetupError, SetupEvent, SetupPaths, SetupRunStatus,
-    SetupServices, SetupState,
+    redact_log_line, resolve_installed_resource_root, run_setup, verify_resource_tree,
+    AppDataScope, BoundedSetupLog, IntegrityEntry, IntegrityManifest, SetupError, SetupEvent,
+    SetupPaths, SetupRunStatus, SetupServices, SetupState,
 };
 
 fn digest(bytes: &[u8]) -> String {
@@ -22,6 +22,14 @@ fn resource_fixture() -> (tempfile::TempDir, IntegrityManifest) {
     let root = tempdir().unwrap();
     let files = [
         ("contracts/contract.json", b"contract".as_slice()),
+        (
+            "docs/licenses/Geist-Mono-OFL-1.1.txt",
+            b"mono license".as_slice(),
+        ),
+        (
+            "docs/licenses/Geist-OFL-1.1.txt",
+            b"sans license".as_slice(),
+        ),
         (
             "examples/minimal/workflow.yaml",
             b"name: minimal\n".as_slice(),
@@ -64,6 +72,34 @@ fn add_resource(
     });
 }
 
+fn create_installed_resource_directories(root: &std::path::Path) {
+    for directory in ["brands", "contracts", "docs/licenses", "examples"] {
+        fs::create_dir_all(root.join(directory)).unwrap();
+    }
+}
+
+fn copy_packaged_resource_directory(
+    source_root: &std::path::Path,
+    destination_root: &std::path::Path,
+    relative: &std::path::Path,
+) {
+    let source = source_root.join(relative);
+    let destination = destination_root.join(relative);
+    fs::create_dir_all(&destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let metadata = fs::symlink_metadata(entry.path()).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        let child_relative = relative.join(entry.file_name());
+        if metadata.is_dir() {
+            copy_packaged_resource_directory(source_root, destination_root, &child_relative);
+        } else {
+            assert!(metadata.is_file());
+            fs::copy(entry.path(), destination_root.join(child_relative)).unwrap();
+        }
+    }
+}
+
 #[test]
 fn committed_integrity_manifest_matches_the_exact_bundled_repository_tree() {
     let manifest: IntegrityManifest =
@@ -71,9 +107,143 @@ fn committed_integrity_manifest_matches_the_exact_bundled_repository_tree() {
     let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
+    let packaged_root = tempdir().unwrap();
+    for directory in ["brands", "contracts", "docs/licenses", "examples"] {
+        copy_packaged_resource_directory(
+            repository_root,
+            packaged_root.path(),
+            std::path::Path::new(directory),
+        );
+    }
 
-    verify_resource_tree(repository_root, &manifest).unwrap();
-    assert_eq!(manifest.files.len(), 30);
+    verify_resource_tree(packaged_root.path(), &manifest).unwrap();
+    assert_eq!(manifest.files.len(), 32);
+}
+
+#[test]
+fn installed_resource_root_discovery_requires_license_notices_in_direct_and_tauri_up_layouts() {
+    let direct = tempdir().unwrap();
+    for directory in ["brands", "contracts", "examples"] {
+        fs::create_dir(direct.path().join(directory)).unwrap();
+    }
+    assert_eq!(
+        resolve_installed_resource_root(direct.path())
+            .unwrap_err()
+            .code,
+        "setup_resource_root_unavailable"
+    );
+    fs::create_dir_all(direct.path().join("docs/licenses")).unwrap();
+    assert_eq!(
+        resolve_installed_resource_root(direct.path()).unwrap(),
+        direct.path()
+    );
+
+    let packaged = tempdir().unwrap();
+    let tauri_root = packaged.path().join("_up_");
+    create_installed_resource_directories(&tauri_root);
+    assert_eq!(
+        resolve_installed_resource_root(packaged.path()).unwrap(),
+        tauri_root
+    );
+}
+
+#[test]
+fn resource_verification_accepts_manifest_protected_font_license_notices() {
+    let (root, manifest) = resource_fixture();
+
+    verify_resource_tree(root.path(), &manifest).unwrap();
+}
+
+#[test]
+fn resource_verification_rejects_a_tampered_font_license_notice() {
+    let (root, manifest) = resource_fixture();
+    fs::write(
+        root.path().join("docs/licenses/Geist-OFL-1.1.txt"),
+        b"tampered license",
+    )
+    .unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_digest_mismatch"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_a_missing_font_license_notice() {
+    let (root, manifest) = resource_fixture();
+    fs::remove_file(root.path().join("docs/licenses/Geist-Mono-OFL-1.1.txt")).unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_missing"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_an_extra_font_license_file() {
+    let (root, manifest) = resource_fixture();
+    fs::write(root.path().join("docs/licenses/unlisted.txt"), b"extra").unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_unexpected"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_manifest_entries_outside_docs_licenses() {
+    let (root, mut manifest) = resource_fixture();
+    add_resource(
+        root.path(),
+        &mut manifest,
+        "docs/README.md".to_owned(),
+        b"unexpected documentation",
+    );
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_integrity_manifest_invalid"
+    );
+}
+
+#[test]
+fn resource_verification_rejects_unlisted_docs_directories() {
+    let (root, manifest) = resource_fixture();
+    fs::create_dir(root.path().join("docs/guides")).unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_unexpected_directory"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_verification_rejects_a_symlinked_font_license_notice() {
+    use std::os::unix::fs::symlink;
+
+    let (root, manifest) = resource_fixture();
+    let notice = root.path().join("docs/licenses/Geist-OFL-1.1.txt");
+    fs::remove_file(&notice).unwrap();
+    symlink("Geist-Mono-OFL-1.1.txt", notice).unwrap();
+
+    assert_eq!(
+        verify_resource_tree(root.path(), &manifest)
+            .unwrap_err()
+            .code,
+        "setup_resource_invalid_type"
+    );
 }
 
 #[test]

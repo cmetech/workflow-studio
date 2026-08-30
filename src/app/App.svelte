@@ -34,9 +34,12 @@
     activeActivity,
     activeEditorMode,
     commandPaletteOpen,
+    inspectorPanelOpen,
     keyboardShortcutsOpen,
+    openInspectorPanel,
     showActivity,
     showEditorMode,
+    workspacePanelOpen,
     workspaceIntent,
     closeCommandPalette,
     closeKeyboardShortcuts,
@@ -50,6 +53,7 @@
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
+  import { clampDockedPanels, resolveWorkbenchPresentation } from '$src/lib/layout/workbench-layout'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
@@ -63,6 +67,7 @@
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
   import type { DocumentAnalysis, DocumentKind, WorkflowPairText } from '$src/lib/documents/types'
+  import { isAnalysisCurrent } from '$src/lib/documents/revisions'
   import {
     $documentWorkspace as documentWorkspaceState,
     DocumentWorkspaceController,
@@ -121,6 +126,7 @@
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import ActivityRail from './ActivityRail.svelte'
   import StatusBar from './StatusBar.svelte'
+  import X from 'lucide-svelte/icons/x'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
@@ -268,9 +274,33 @@
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
+  let canvasReadOnly = $state(false)
+  let canvasStaleSource = $state<'current' | 'retained' | null>(null)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
+  let workbenchHost = $state<HTMLDivElement>()
+  let editorColumnHost = $state<HTMLElement>()
+  let workspacePanelHost = $state<HTMLElement>()
+  let inspectorPanelHost = $state<HTMLElement>()
+  let workbenchWidth = $state(1280)
+  let editorWidth = $state(720)
+  let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
+  let workspacePanelOpener = $state<HTMLElement | undefined>()
+  let inspectorDrawerOwner = $state<
+    { readonly kind: 'explicit'; readonly opener: HTMLElement | undefined } | { readonly kind: 'resize' } | undefined
+  >()
+  type DrawerEscapeSnapshot =
+    | { readonly panel: 'workspace' }
+    | {
+        readonly panel: 'inspector'
+        readonly restorationTarget: HTMLElement | undefined
+        readonly selectedNode: HTMLElement | undefined
+      }
+  let previousPanelPresentation: 'docked' | 'drawers' = 'docked'
+  let previousSplitPresentation: 'side-by-side' | 'tabs' = 'side-by-side'
+  let panelPresentationMeasured = false
+  let splitPresentationMeasured = false
   let addNodeRequest = $state<{
     request: { readonly afterNodeId?: string; readonly viewportCenter: { readonly x: number; readonly y: number } }
     opener: HTMLElement | undefined
@@ -363,6 +393,7 @@
   })
 
   const editorModes: readonly EditorMode[] = ['visual', 'split', 'yaml']
+  const inspectorPanelId = 'workflow-inspector'
 
   const canvasActivationBarrier = createCanvasActivationBarrier({
     getCanvas: () => graphCanvas,
@@ -387,6 +418,50 @@
     return $brandState.packs.find(({ manifest }) => manifest.id === $brandState.activeId) ?? fallback
   })
   const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
+  const workbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
+  const clampedPanels = $derived(
+    clampDockedPanels($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 }, workbenchWidth),
+  )
+  const workspacePanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen)
+  const inspectorPanelHidden = $derived(workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen)
+
+  $effect.pre(() => {
+    const panelPresentation = workbenchPresentation.panels
+    const splitPresentation = workbenchPresentation.split
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const panelPresentationChanged = panelPresentationMeasured && previousPanelPresentation !== panelPresentation
+
+    if (panelPresentationChanged && panelPresentation === 'docked') {
+      workspacePanelOpener = undefined
+      inspectorDrawerOwner = undefined
+    }
+
+    if (panelPresentationChanged && panelPresentation === 'drawers' && focused) {
+      if (workspacePanelHost?.contains(focused)) workspacePanelOpen.set(true)
+      else if (inspectorPanelHost?.contains(focused)) {
+        inspectorDrawerOwner = { kind: 'resize' }
+        inspectorPanelOpen.set(true)
+      }
+    }
+    if (
+      splitPresentationMeasured &&
+      previousSplitPresentation !== splitPresentation &&
+      splitPresentation === 'tabs' &&
+      $activeEditorMode === 'split' &&
+      focused
+    ) {
+      if (focused.closest('.yaml-pane')) compactSplitPane = 'yaml'
+      else if (focused.closest('.canvas-pane')) compactSplitPane = 'canvas'
+    }
+
+    previousPanelPresentation = panelPresentation
+    previousSplitPresentation = splitPresentation
+  })
+
+  $effect(() => {
+    if (workspacePanelHost) workspacePanelHost.toggleAttribute('inert', workspacePanelHidden)
+    if (inspectorPanelHost) inspectorPanelHost.toggleAttribute('inert', inspectorPanelHidden)
+  })
 
   const inspectorContract = $derived(
     contracts.find(
@@ -524,11 +599,69 @@
       : 'Validation is unavailable for the current workflow.'
   }
 
-  function focusInspector(): void {
-    const target = document.querySelector<HTMLElement>(
-      '.inspector-panel button, .inspector-panel input, .inspector-panel [tabindex]',
-    )
+  async function focusInspector(invoker?: HTMLElement): Promise<void> {
+    inspectorDrawerOwner =
+      workbenchPresentation.panels === 'drawers'
+        ? {
+            kind: 'explicit',
+            opener: invoker?.isConnected
+              ? invoker
+              : document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : undefined,
+          }
+        : undefined
+    openInspectorPanel()
+    await tick()
+    const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
+    const target =
+      inspector?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+      inspector?.querySelector<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      )
     target?.focus()
+  }
+
+  function currentInspectorRestorationTarget(): HTMLElement | undefined {
+    return (
+      document.querySelector<HTMLElement>('.svelte-flow__node.selected') ??
+      document.querySelector<HTMLElement>(`[aria-controls="${inspectorPanelId}"][aria-expanded="true"]`) ??
+      undefined
+    )
+  }
+
+  async function focusWorkspaceDrawer(opener: HTMLElement | undefined): Promise<void> {
+    workspacePanelOpener = opener
+    await tick()
+    workspacePanelHost?.querySelector<HTMLElement>('.drawer-close')?.focus()
+  }
+
+  async function closeWorkspaceDrawer(): Promise<void> {
+    const target = workspacePanelOpener?.isConnected
+      ? workspacePanelOpener
+      : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
+    workspacePanelOpen.set(false)
+    await tick()
+    target?.focus()
+    workspacePanelOpener = undefined
+  }
+
+  async function closeInspectorDrawer(invoker?: HTMLElement): Promise<void> {
+    const target = invoker?.isConnected
+      ? invoker
+      : inspectorDrawerOwner?.kind === 'explicit' && inspectorDrawerOwner.opener?.isConnected
+        ? inspectorDrawerOwner.opener
+        : currentInspectorRestorationTarget()
+    inspectorPanelOpen.set(false)
+    await tick()
+    if (document.activeElement !== target) target?.focus()
+    inspectorDrawerOwner = undefined
+  }
+
+  async function closeOpenDrawer(snapshot?: DrawerEscapeSnapshot): Promise<void> {
+    if ((snapshot?.panel === 'inspector' || !snapshot) && $inspectorPanelOpen) {
+      await closeInspectorDrawer(snapshot?.panel === 'inspector' ? snapshot.restorationTarget : undefined)
+    } else if ((snapshot?.panel === 'workspace' || !snapshot) && $workspacePanelOpen) await closeWorkspaceDrawer()
   }
 
   async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
@@ -637,7 +770,14 @@
 
   function inspectorMutationDisabledReason(): string | undefined {
     if (canvasTransitionLocked) return 'The document is transitioning.'
-    if (canvasStale) return 'The YAML projection is stale.'
+    const session = $documentSessionStore
+    const currentRepairableDraft = Boolean(
+      session.revision &&
+      session.analysis?.visuallyAuthorable === true &&
+      isAnalysisCurrent(session.revision, session.analysis) &&
+      session.analysis.projection === canvasProjection,
+    )
+    if (canvasStale && !currentRepairableDraft) return 'The YAML projection is stale.'
     if ($documentWorkspaceState.missingChange) return 'A backing YAML file is missing.'
     const entry = $workspace.entries.find(({ id }) => id === $documentSessionStore.pair?.workflowId)
     if (entry?.readOnly) return 'This workflow is read-only.'
@@ -1184,13 +1324,16 @@
         workflowId: canvasWorkflowId,
         projection: canvasProjection,
         stale: canvasStale,
-        readOnly: canvasStale,
+        readOnly: canvasReadOnly,
+        staleSource: canvasStaleSource,
       },
       session,
     )
     canvasWorkflowId = synchronized.workflowId
     canvasProjection = synchronized.projection
     canvasStale = synchronized.stale
+    canvasReadOnly = synchronized.readOnly
+    canvasStaleSource = synchronized.staleSource
   })
 
   $effect(() => {
@@ -1260,7 +1403,61 @@
       cancel: () => graphCanvas?.cancel(),
       createEdge: () => graphCanvas?.requestEdge(),
     })
-    let dispose: (() => void) | undefined = unbindCanvas
+    let resizeFrame: number | null = null
+    let pendingWorkbenchWidth = workbenchWidth
+    let pendingEditorWidth = editorWidth
+    let pendingPanelMeasurement = false
+    let pendingSplitMeasurement = false
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === workbenchHost) {
+          pendingWorkbenchWidth = entry.contentRect.width
+          pendingPanelMeasurement = true
+        } else if (entry.target === editorColumnHost) {
+          pendingEditorWidth = entry.contentRect.width
+          pendingSplitMeasurement = true
+        }
+      }
+      if (resizeFrame !== null) return
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null
+        if (pendingPanelMeasurement && !panelPresentationMeasured) {
+          previousPanelPresentation = resolveWorkbenchPresentation(pendingWorkbenchWidth, pendingEditorWidth).panels
+          panelPresentationMeasured = true
+        }
+        if (pendingSplitMeasurement && !splitPresentationMeasured) {
+          previousSplitPresentation = resolveWorkbenchPresentation(pendingWorkbenchWidth, pendingEditorWidth).split
+          splitPresentationMeasured = true
+        }
+        pendingPanelMeasurement = false
+        pendingSplitMeasurement = false
+        workbenchWidth = pendingWorkbenchWidth
+        editorWidth = pendingEditorWidth
+      })
+    })
+    if (workbenchHost) {
+      const measuredWidth = workbenchHost.getBoundingClientRect().width
+      if (measuredWidth > 0) {
+        previousPanelPresentation = resolveWorkbenchPresentation(measuredWidth, editorWidth).panels
+        panelPresentationMeasured = true
+        workbenchWidth = measuredWidth
+      }
+      resizeObserver.observe(workbenchHost)
+    }
+    if (editorColumnHost) {
+      const measuredWidth = editorColumnHost.getBoundingClientRect().width
+      if (measuredWidth > 0) {
+        previousSplitPresentation = resolveWorkbenchPresentation(workbenchWidth, measuredWidth).split
+        splitPresentationMeasured = true
+        editorWidth = measuredWidth
+      }
+      resizeObserver.observe(editorColumnHost)
+    }
+    let dispose: (() => void) | undefined = () => {
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+      resizeObserver.disconnect()
+      unbindCanvas()
+    }
     let disposed = false
     void (async () => {
       const currentWindow = '__TAURI_INTERNALS__' in window ? getCurrentWindow() : null
@@ -1298,8 +1495,73 @@
         find: findInCurrentSurface,
         validate: validateCurrentWorkflow,
       })
+      const appEscapeCancellations = () => {
+        return [
+          ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
+          ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
+          ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
+          ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
+          ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
+        ]
+      }
+      const drawerEscapeSnapshot = (): DrawerEscapeSnapshot | undefined => {
+        if (document.querySelector('[aria-modal="true"]') !== null || workbenchPresentation.panels !== 'drawers')
+          return undefined
+        if ($inspectorPanelOpen) {
+          return {
+            panel: 'inspector',
+            restorationTarget:
+              inspectorDrawerOwner?.kind === 'resize' ? currentInspectorRestorationTarget() : undefined,
+            selectedNode: document.querySelector<HTMLElement>('.svelte-flow__node.selected') ?? undefined,
+          }
+        }
+        return $workspacePanelOpen ? { panel: 'workspace' } : undefined
+      }
+      const drawerEscapeSnapshots = new WeakMap<KeyboardEvent, DrawerEscapeSnapshot>()
+      const escapeKeydown = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return
+        const cancellation = appEscapeCancellations().sort((left, right) => right.priority - left.priority)[0]
+        if (cancellation) {
+          event.preventDefault()
+          event.stopPropagation()
+          try {
+            void Promise.resolve(cancellation.cancel()).catch((error: unknown) => {
+              workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+            })
+          } catch (error: unknown) {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          }
+          return
+        }
+
+        const snapshot = drawerEscapeSnapshot()
+        if (!snapshot) return
+        drawerEscapeSnapshots.set(event, snapshot)
+        if (snapshot.panel !== 'inspector' || !snapshot.selectedNode || event.target !== snapshot.selectedNode) return
+        event.preventDefault()
+        event.stopPropagation()
+        void closeOpenDrawer(snapshot).catch((error: unknown) => {
+          workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+        })
+      }
       const keydown = (event: KeyboardEvent) => {
+        if (event.defaultPrevented) return
+        const drawerSnapshot = event.key === 'Escape' ? drawerEscapeSnapshots.get(event) : undefined
+        if (drawerSnapshot) {
+          event.preventDefault()
+          void closeOpenDrawer(drawerSnapshot).catch((error: unknown) => {
+            workspaceError = error instanceof Error ? error.message : 'The keyboard command failed.'
+          })
+          return
+        }
         const context = keyboardContext(event.target)
+        const keyboardOpener =
+          event.target instanceof HTMLElement
+            ? event.target
+            : document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : undefined
+        const workspacePanelWasOpen = $workspacePanelOpen
         if (
           context.surface === 'canvas' &&
           (nodeChordState.pending || (!event.shiftKey && event.key.toLowerCase() === 'n'))
@@ -1310,15 +1572,16 @@
             return
           }
         }
-        const escape = [
-          ...(nodeChordState.pending ? [{ priority: 100, cancel: () => nodeChords.cancel('escape') }] : []),
-          ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
-          ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
-          ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
-          ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
-        ]
-        void dispatchKeybinding(event, { registry: commandSurface, context, escape })
-          .then((result) => {
+        void dispatchKeybinding(event, { registry: commandSurface, context })
+          .then(async (result) => {
+            if (
+              result.status === 'executed' &&
+              result.commandId.startsWith('view.activity.') &&
+              workbenchPresentation.panels === 'drawers'
+            ) {
+              if ($workspacePanelOpen) await focusWorkspaceDrawer(keyboardOpener)
+              else if (workspacePanelWasOpen) await closeWorkspaceDrawer()
+            }
             if (result.status === 'disabled') workspaceError = result.reason
             else if (result.status === 'collision') {
               const labels = result.commandIds.map(
@@ -1338,6 +1601,7 @@
           nodeChords.cancel('focus-loss')
         }
       }
+      window.addEventListener('keydown', escapeKeydown, true)
       window.addEventListener('keydown', keydown)
       window.addEventListener('blur', blur)
       window.addEventListener('focusin', focusin)
@@ -1347,6 +1611,7 @@
         unbindSave()
         unbindHistory()
         unbindDocumentCommands()
+        window.removeEventListener('keydown', escapeKeydown, true)
         window.removeEventListener('keydown', keydown)
         window.removeEventListener('blur', blur)
         window.removeEventListener('focusin', focusin)
@@ -1406,6 +1671,7 @@
     <div class="title-actions">
       <button
         type="button"
+        data-variant="primary"
         disabled={!contractsLoaded || contracts.length === 0}
         onclick={(event) => {
           newDialogOpener = event.currentTarget
@@ -1415,6 +1681,7 @@
       <button
         type="button"
         class="open-folder"
+        data-variant="secondary"
         disabled={!setupReady}
         onclick={() => setupReady && void runCommand('workspace.open-folder')}>Open Folder</button
       >
@@ -1435,9 +1702,39 @@
     <p class="workspace-error" role="alert">{workspaceError}</p>
   {/if}
 
-  <div class="workbench">
-    <ActivityRail {commandSurface} />
-    <aside class="panel left-panel" aria-label="Workspace panel">
+  <div
+    bind:this={workbenchHost}
+    class="workbench"
+    data-panel-presentation={workbenchPresentation.panels}
+    data-split-presentation={workbenchPresentation.split}
+    style={`--left-panel-width: ${clampedPanels.left}px; --right-panel-width: ${clampedPanels.right}px`}
+  >
+    <ActivityRail
+      {commandSurface}
+      workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
+      onActivityInvoke={(opener) => (workspacePanelOpener = opener)}
+    />
+    {#if workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
+      <button type="button" class="drawer-scrim" aria-label="Close open panels" onclick={() => void closeOpenDrawer()}
+      ></button>
+    {/if}
+    <aside
+      bind:this={workspacePanelHost}
+      class="panel left-panel"
+      class:drawer-open={!workspacePanelHidden}
+      aria-label="Workspace panel"
+      aria-hidden={workspacePanelHidden ? 'true' : undefined}
+    >
+      {#if workbenchPresentation.panels === 'drawers'}
+        <button
+          type="button"
+          class="drawer-close"
+          data-variant="ghost"
+          aria-label="Close workspace panel"
+          title="Close workspace panel"
+          onclick={() => void closeWorkspaceDrawer()}><X size={16} aria-hidden="true" /></button
+        >
+      {/if}
       {#if $activeActivity === 'explorer' && $workspace.id !== null}
         <Explorer
           contractAvailable={contractsLoaded && contracts.length > 0}
@@ -1566,13 +1863,14 @@
         />
       {/if}
     </aside>
-    <section class="editor-column" aria-label="Workflow workspace">
+    <section bind:this={editorColumnHost} class="editor-column" aria-label="Workflow workspace">
       <div class="editor-tabs" role="group" aria-label="Editor mode">
         {#each editorModes as mode (mode)}
           {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
           {#if command}
             <button
               type="button"
+              data-variant="ghost"
               aria-pressed={$activeEditorMode === mode}
               class:active={$activeEditorMode === mode}
               title={command.title}
@@ -1583,6 +1881,24 @@
             </button>
           {/if}
         {/each}
+        {#if $activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
+          <div class="split-pane-tabs" role="group" aria-label="Split pane">
+            <button
+              type="button"
+              data-variant="ghost"
+              aria-pressed={compactSplitPane === 'canvas'}
+              class:active={compactSplitPane === 'canvas'}
+              onclick={() => (compactSplitPane = 'canvas')}>Canvas</button
+            >
+            <button
+              type="button"
+              data-variant="ghost"
+              aria-pressed={compactSplitPane === 'yaml'}
+              class:active={compactSplitPane === 'yaml'}
+              onclick={() => (compactSplitPane = 'yaml')}>YAML</button
+            >
+          </div>
+        {/if}
       </div>
       <section class="editor-region" aria-label="Workflow editor">
         {#if $workspace.id === null}
@@ -1596,8 +1912,10 @@
           <div
             class="editor-surfaces"
             class:split={$activeEditorMode === 'split'}
+            class:split-tabs={$activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
             class:yaml-only={$activeEditorMode === 'yaml'}
             class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
+            data-split-pane={compactSplitPane}
           >
             {#if canvasCapacity?.advisory}
               <p class="canvas-capacity-advisory" role="status">{canvasCapacity.advisory}</p>
@@ -1613,8 +1931,12 @@
                   transitionLocked={canvasTransitionLocked}
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale}
-                  readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                    ?.readOnly === true}
+                  staleSource={canvasStaleSource}
+                  inspectorControls={inspectorPanelId}
+                  inspectorExpanded={!inspectorPanelHidden}
+                  readOnly={canvasReadOnly ||
+                    $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                      ?.readOnly === true}
                   onPersistLayout={persistCanvasLayout}
                   onPersistenceError={surfaceCanvasPersistenceError}
                   onConnect={(source, target) => canvasAuthoring.connect(source, target)}
@@ -1622,6 +1944,8 @@
                   onRequestAdd={requestCanvasAdd}
                   onRequestDelete={requestCanvasDelete}
                   onOpenInspector={focusInspector}
+                  onToggleInspector={(expanded, invoker) =>
+                    expanded ? focusInspector(invoker) : closeInspectorDrawer(invoker)}
                   onDropNodeKind={dropPaletteNode}
                 />
               </div>
@@ -1682,11 +2006,14 @@
               {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
             </p>
             <div class="missing-actions">
-              <button type="button" onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
-                >Keep Mine / Recreate</button
+              <button
+                type="button"
+                data-variant="primary"
+                onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}>Keep Mine / Recreate</button
               >
               <button
                 type="button"
+                data-variant="secondary"
                 onclick={() => runWorkspaceOperation(withCanvasLayoutBarrier(() => documentWorkspace.closeMissing()))}
                 >Close and Recover Later</button
               >
@@ -1712,7 +2039,24 @@
         {/if}
       {/if}
     </section>
-    <aside class="panel inspector-panel" aria-label="Inspector">
+    <aside
+      id={inspectorPanelId}
+      bind:this={inspectorPanelHost}
+      class="panel inspector-panel"
+      class:drawer-open={!inspectorPanelHidden}
+      aria-label="Inspector"
+      aria-hidden={inspectorPanelHidden ? 'true' : undefined}
+    >
+      {#if workbenchPresentation.panels === 'drawers'}
+        <button
+          type="button"
+          class="drawer-close"
+          data-variant="ghost"
+          aria-label="Close inspector"
+          title="Close inspector"
+          onclick={() => void closeInspectorDrawer()}><X size={16} aria-hidden="true" /></button
+        >
+      {/if}
       <Inspector
         fields={inspectorFields}
         values={inspectorValues}
@@ -1776,11 +2120,14 @@
     <div class="recovery-offer" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="recovery-title">
       <h2 id="recovery-title">Recover unsaved workflow?</h2>
       <p>{$documentWorkspaceState.recoveryOffers[0].definition.path}</p>
-      <button type="button" onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}
-        >Recover</button
+      <button
+        type="button"
+        data-variant="primary"
+        onclick={() => documentWorkspace.recoverDraft($documentWorkspaceState.recoveryOffers[0]!)}>Recover</button
       >
       <button
         type="button"
+        data-variant="danger"
         onclick={() => void documentWorkspace.discardRecovery($documentWorkspaceState.recoveryOffers[0]!.workflowId)}
         >Discard</button
       >
@@ -1890,7 +2237,9 @@
   {/if}
   {#if $keyboardShortcutsOpen}
     <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-      <button type="button" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}>Close</button>
+      <button type="button" data-variant="ghost" aria-label="Close keyboard shortcuts" onclick={closeKeyboardShortcuts}
+        >Close</button
+      >
       <KeyboardShortcuts registry={commandSurface} />
     </div>
   {/if}
@@ -1961,7 +2310,7 @@
     padding: 0.1rem 0.28rem;
     border: 1px solid var(--color-border);
     border-radius: 0.2rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
   }
   .node-chord-overlay span {
     color: var(--color-text-muted);
@@ -1999,7 +2348,7 @@
   }
 
   .workspace-error {
-    border-color: var(--color-danger);
+    border-color: var(--color-error);
   }
 
   .titlebar {
@@ -2007,40 +2356,39 @@
     align-items: center;
     justify-content: space-between;
     min-height: 3rem;
-    padding: 0.5rem 0.875rem;
+    padding: var(--space-2) var(--space-4);
     border-bottom: 1px solid var(--color-border);
-    background: var(--color-yaml-gutter);
-    box-shadow: 0 0.75rem 2.5rem var(--color-shadow);
+    background: var(--color-surface);
   }
 
   .brand-lockup {
     display: flex;
-    gap: 0.625rem;
+    gap: var(--space-2);
     align-items: center;
   }
 
   .title-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .brand-lockup img {
-    width: 2rem;
-    height: 2rem;
+    width: var(--control-md);
+    height: var(--control-md);
     object-fit: contain;
     object-position: left center;
   }
 
   .title-copy {
-    padding-left: 0.625rem;
+    padding-left: var(--space-3);
     border-left: 1px solid var(--color-border);
   }
 
   .eyebrow {
     margin: 0;
-    color: var(--color-accent);
+    color: var(--color-text-muted);
     font-size: 0.625rem;
-    font-weight: 800;
+    font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
   }
@@ -2051,29 +2399,96 @@
     line-height: 1.2;
   }
 
-  .open-folder,
+  .title-actions button,
   .editor-tabs button {
-    min-height: 2rem;
-    border-radius: 0.375rem;
+    min-height: var(--control-sm);
+    border-radius: var(--radius-sm);
     cursor: pointer;
   }
 
-  .open-folder {
-    padding: 0.375rem 0.625rem;
-    border: 1px solid var(--color-edge);
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+  .title-actions button {
+    padding-inline: var(--space-3);
   }
 
   .workbench {
     display: grid;
-    grid-template-columns: 3rem minmax(10rem, 16.875rem) minmax(0, 1fr) minmax(11rem, 18.875rem);
+    position: relative;
+    isolation: isolate;
+    grid-template-columns: 3rem var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
     min-height: 0;
+    overflow: hidden;
   }
 
   .panel {
+    position: relative;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     background: var(--color-surface);
+  }
+
+  .drawer-close,
+  .drawer-scrim {
+    display: none;
+  }
+
+  .workbench[data-panel-presentation='drawers'] {
+    grid-template-columns: 3rem minmax(0, 1fr);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .panel {
+    position: absolute;
+    z-index: 20;
+    top: 0;
+    bottom: 0;
+    display: block;
+    transition: transform 120ms ease-out;
+    box-shadow: 0 1rem 3rem var(--color-shadow);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .left-panel {
+    left: 3rem;
+    width: min(var(--left-panel-width), calc(100% - 3rem));
+    transform: translateX(-100%);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .inspector-panel {
+    right: 0;
+    width: min(var(--right-panel-width), calc(100% - 3rem));
+    transform: translateX(100%);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .panel.drawer-open {
+    transform: translateX(0);
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-close {
+    position: absolute;
+    z-index: 2;
+    top: var(--space-2);
+    right: var(--space-2);
+    display: grid;
+    width: var(--control-sm);
+    min-width: var(--control-sm);
+    height: var(--control-sm);
+    min-height: var(--control-sm);
+    padding: 0;
+    place-items: center;
+  }
+
+  .workbench[data-panel-presentation='drawers'] .drawer-scrim {
+    position: absolute;
+    z-index: 10;
+    inset: 0 0 0 3rem;
+    display: block;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--color-background) 64%, transparent);
   }
 
   .left-panel {
@@ -2100,29 +2515,37 @@
 
   .editor-tabs {
     display: flex;
-    gap: 0.1875rem;
+    gap: var(--space-1);
     align-items: center;
-    padding: 0 0.625rem;
+    padding: 0 var(--space-3);
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
   }
 
+  .split-pane-tabs {
+    display: flex;
+    gap: var(--space-1);
+    margin-left: auto;
+  }
+
+  .split-pane-tabs button {
+    transition:
+      border-color 100ms ease-out,
+      color 100ms ease-out,
+      background-color 100ms ease-out;
+  }
+
   .editor-tabs button {
-    padding: 0.25rem 0.625rem;
+    padding: var(--space-1) var(--space-3);
     border: 1px solid transparent;
     color: var(--color-text-muted);
     background: transparent;
   }
 
   .editor-tabs button.active {
-    border-color: var(--color-edge);
+    border-color: var(--color-accent);
     color: var(--color-accent-strong);
     background: var(--color-node-selected);
-  }
-
-  button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
   }
 
   .editor-region {
@@ -2165,6 +2588,15 @@
     grid-template-columns: minmax(0, 1fr) minmax(20rem, 0.72fr);
   }
 
+  .editor-surfaces.split.split-tabs:not(.no-canvas) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-surfaces.split-tabs[data-split-pane='canvas'] .yaml-pane,
+  .editor-surfaces.split-tabs[data-split-pane='yaml'] .canvas-pane {
+    display: none;
+  }
+
   .editor-surfaces.split:not(.no-canvas) .yaml-pane {
     border-left: 1px solid var(--color-border);
   }
@@ -2184,5 +2616,22 @@
     z-index: 40;
     top: 8rem;
     left: 17rem;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workbench[data-panel-presentation='drawers'] .panel,
+    .split-pane-tabs button {
+      transition: none !important;
+      animation: none !important;
+    }
+  }
+
+  @media (forced-colors: active) {
+    .drawer-close:focus-visible,
+    .split-pane-tabs button:focus-visible {
+      outline: 2px solid ButtonText;
+      outline-offset: 2px;
+      box-shadow: none;
+    }
   }
 </style>

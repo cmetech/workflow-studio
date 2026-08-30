@@ -443,9 +443,96 @@ describe('App canvas authoring composition', () => {
     historyStore.set(createHistoryState())
     rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
-    await fireEvent.click(screen.getByRole('button', { name: 'Duplicate Selection' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate Selection' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: collect-2'))
     expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('keeps an incomplete projected node canvas-read-only while Inspector repairs it and valid analysis resumes authoring', async () => {
+    const draftText = `${source}  - id: command\n    command: ""\n`
+    const rendered = await renderAuthoringApp({ text: draftText })
+    const revision = $documentSession.get().revision!
+    receiveDocumentAnalysis({
+      ...revision,
+      structurallyValid: false,
+      visuallyAuthorable: true,
+      issues: [
+        {
+          code: 'schema_min_length',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Command must not be empty.',
+          document: 'definition',
+          nodeId: 'command',
+        },
+      ],
+      projection: projection(draftText),
+    })
+    await tick()
+    setCanvasSelection(['command'])
+    await tick()
+
+    expect(screen.getByLabelText('command node command')).toBeVisible()
+    expect(screen.getByText(/current graph.*read-only/i)).toBeVisible()
+    expect(screen.queryByText(/last valid graph/i)).not.toBeInTheDocument()
+    const commandField = await screen.findByRole('textbox', { name: 'Command' })
+    expect(commandField).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+
+    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    const layoutBeforeDrag = structuredClone(activeLayoutStore.get())
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'command', position: { x: 720, y: 180 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'command', position: { x: 720, y: 180 } },
+      }),
+    )
+    expect($canvasPositions.get().command).toEqual({ x: 640, y: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(activeLayoutStore.get()).toEqual(layoutBeforeDrag)
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
+    )
+    expect($documentSession.get().pair?.definition.text).toBe(draftText)
+    expect(historyStore.get().undo).toHaveLength(0)
+
+    await fireEvent.input(commandField, { target: { value: '/review' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('command: "/review"'))
+
+    const repairedText = $documentSession.get().pair!.definition.text
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: projection(repairedText),
+    })
+    await waitFor(() => expect(screen.queryByText(/current graph.*read-only/i)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
+    )
+    await waitFor(() =>
+      expect($documentSession.get().pair?.definition.text).toContain(
+        '  - id: command\n    command: "/review"\n    depends_on:\n      - collect\n',
+      ),
+    )
+    expect(historyStore.get().undo).toHaveLength(2)
     rendered.unmount()
   })
 
@@ -463,8 +550,8 @@ describe('App canvas authoring composition', () => {
     historyStore.set(createHistoryState())
     showActivity('nodes')
     rendered = await renderAuthoringApp()
-    const canvas = screen.getByRole('region', { name: 'Workflow graph' })
-    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+    const canvasViewport = screen.getByRole('region', { name: 'Workflow canvas viewport' })
+    vi.spyOn(canvasViewport, 'getBoundingClientRect').mockReturnValue({
       x: 100,
       y: 50,
       left: 100,
@@ -483,7 +570,7 @@ describe('App canvas authoring composition', () => {
         value: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'command' },
       },
     })
-    await fireEvent(canvas, drop)
+    await fireEvent(canvasViewport, drop)
 
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
     expect(historyStore.get().undo).toHaveLength(1)
@@ -615,8 +702,9 @@ describe('App canvas authoring composition', () => {
   it('applies canonical fit, actual-size, nudge, and larger nudge keyboard effects', async () => {
     const rendered = await renderAuthoringApp()
     const canvas = screen.getByRole('region', { name: 'Workflow graph' })
+    const canvasViewport = screen.getByRole('region', { name: 'Workflow canvas viewport' })
     const viewport = canvas.querySelector<HTMLElement>('.svelte-flow__viewport')!
-    Object.defineProperties(canvas, {
+    Object.defineProperties(canvasViewport, {
       clientHeight: { configurable: true, value: 600 },
       clientWidth: { configurable: true, value: 800 },
     })
@@ -809,13 +897,15 @@ describe('App canvas authoring composition', () => {
     const rendered = await renderAuthoringApp()
     setCanvasSelection(['collect'])
     const before = $documentSession.get().pair?.definition.text
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect($documentSession.get().pair?.definition.text).toBe(before)
     expect(historyStore.get().undo).toHaveLength(0)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete Selection' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete nodes' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).not.toContain('id: collect'))
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()

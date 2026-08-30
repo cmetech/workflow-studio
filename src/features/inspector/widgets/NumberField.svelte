@@ -49,7 +49,7 @@
     flex: 1;
   }
   label span {
-    color: var(--color-danger);
+    color: var(--color-error);
   }
   .unit {
     color: var(--color-text-muted);

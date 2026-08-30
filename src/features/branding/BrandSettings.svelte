@@ -85,7 +85,9 @@
   <header>
     <h2 id="brand-settings-title">Brand and theme packs</h2>
     <p>Runtime packs change in-app identity and semantic colors only. Installed application icons remain LOOP24.</p>
-    <button type="button" disabled={pending} onclick={() => void onImport()}>Import brand pack</button>
+    <button type="button" data-variant="primary" disabled={pending} onclick={() => void onImport()}
+      >Import brand pack</button
+    >
   </header>
   {#if warning}<p role="status">{warning}</p>{/if}
   <ul aria-label="Available brand packs">
@@ -101,16 +103,18 @@
           >
         </div>
         <div class="actions">
-          <button type="button" disabled={pending} onclick={() => onPreview(pack.manifest.id)}>
+          <button type="button" data-variant="ghost" disabled={pending} onclick={() => onPreview(pack.manifest.id)}>
             Preview {pack.manifest.displayName}
           </button>
           <button
             type="button"
+            data-variant="secondary"
             disabled={pending || !pack.canActivate || activeId === pack.manifest.id}
             onclick={() => void onActivate(pack.manifest.id)}>Activate {pack.manifest.displayName}</button
           >
           <button
             type="button"
+            data-variant="danger"
             disabled={pending || pack.builtIn}
             onclick={(event) =>
               activeId === pack.manifest.id
@@ -149,8 +153,16 @@
     <h2 id="remove-active-brand-title">Revert active brand</h2>
     <p>{removal.manifest.displayName} is active. Workflow Studio must atomically revert to LOOP24 before removal.</p>
     <footer>
-      <button data-removal-cancel type="button" disabled={pending} onclick={() => void closeRemoval()}>Cancel</button>
-      <button type="button" disabled={pending} onclick={confirmRemoval}>Revert to LOOP24 and remove</button>
+      <button
+        data-removal-cancel
+        type="button"
+        data-variant="secondary"
+        disabled={pending}
+        onclick={() => void closeRemoval()}>Cancel</button
+      >
+      <button type="button" data-variant="danger" disabled={pending} onclick={confirmRemoval}
+        >Revert to LOOP24 and remove</button
+      >
     </footer>
   </dialog>
 {/if}
@@ -215,7 +227,6 @@
     background: var(--color-surface);
   }
   button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
   }
 </style>

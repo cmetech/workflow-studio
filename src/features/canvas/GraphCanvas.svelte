@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, setContext } from 'svelte'
   import {
     Background,
     BackgroundVariant,
@@ -9,15 +9,9 @@
     SvelteFlow,
     type Viewport,
   } from '@xyflow/svelte'
-  import Copy from 'lucide-svelte/icons/copy'
-  import Link from 'lucide-svelte/icons/link'
-  import Map from 'lucide-svelte/icons/map'
-  import Network from 'lucide-svelte/icons/network'
-  import Plus from 'lucide-svelte/icons/plus'
-  import Trash2 from 'lucide-svelte/icons/trash-2'
   import '@xyflow/svelte/dist/style.css'
   import type { CommandSurface } from '$src/lib/commands/registry'
-  import { resolveCommand } from '$src/lib/commands/surface'
+  import { resolveCommand, type ResolvedCommand } from '$src/lib/commands/surface'
   import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
@@ -33,8 +27,16 @@
   } from '$src/stores/canvas'
   import { createMemoizedCanvasProjector, projectCanvas } from './project-canvas'
   import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
-  import type { CanvasDragDetail, CanvasEdge, CanvasNode, CanvasPosition } from './types'
+  import {
+    CANVAS_INSPECTOR_RELATIONSHIP,
+    type CanvasDragDetail,
+    type CanvasEdge,
+    type CanvasInspectorRelationship,
+    type CanvasNode,
+    type CanvasPosition,
+  } from './types'
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
+  import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
 
@@ -52,7 +54,10 @@
     transitionLocked?: boolean
     issues?: readonly ValidationIssue[]
     stale?: boolean
+    staleSource?: 'current' | 'retained' | null
     readOnly?: boolean
+    inspectorControls?: string
+    inspectorExpanded?: boolean
     onPersistLayout?: (layout: LayoutRecordV1) => void | Promise<void>
     onPersistenceError?: (error: unknown) => void
     onConnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
@@ -63,6 +68,7 @@
     }) => void | Promise<void>
     onRequestDelete?: (nodeIds: readonly string[]) => unknown | Promise<unknown>
     onOpenInspector?: () => void
+    onToggleInspector?: (expanded: boolean, invoker: HTMLElement) => void | Promise<void>
     onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
   }
 
@@ -74,7 +80,10 @@
     transitionLocked = false,
     issues = [],
     stale = false,
+    staleSource = stale ? 'retained' : null,
     readOnly = false,
+    inspectorControls,
+    inspectorExpanded = false,
     onPersistLayout = () => undefined,
     onPersistenceError = () => undefined,
     onConnect,
@@ -82,12 +91,27 @@
     onRequestAdd,
     onRequestDelete,
     onOpenInspector,
+    onToggleInspector,
     onDropNodeKind,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
+  const inspectorRelationship: CanvasInspectorRelationship = {
+    controls: () => inspectorControls,
+    expanded: () => inspectorExpanded,
+    toggle: (nodeId, invoker) => {
+      if (inspectorExpanded && selection.includes(nodeId)) {
+        void onToggleInspector?.(false, invoker)
+        return
+      }
+      selectionChanged([nodeId])
+      if (onToggleInspector) void onToggleInspector(true, invoker)
+      else onOpenInspector?.()
+    },
+  }
+  setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(initialProjection.nodes)
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -100,6 +124,7 @@
   let edgeTargetIndex = $state(0)
   let reducedMotion = $state(false)
   let root: HTMLElement
+  let viewportElement: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: LayoutRecordV1 | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
@@ -117,12 +142,21 @@
   const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
   const deleteCommand = $derived(resolveCommand(commandSurface, 'canvas.delete-selection', canvasCommandContext))
   const arrangeCommand = $derived(resolveCommand(commandSurface, 'canvas.arrange', canvasCommandContext))
+  const toolbarCommands = $derived.by<readonly ResolvedCommand[]>(() =>
+    [addCommand, edgeCommand, duplicateCommand, deleteCommand, arrangeCommand].filter(
+      (command): command is ResolvedCommand => command !== undefined,
+    ),
+  )
 
   function executeToolbar(
     command: { readonly id: string; readonly enabled: boolean } | undefined,
   ): Promise<CommandExecutionResult> | undefined {
     if (!command?.enabled) return undefined
     return commandSurface.executeCommand(command.id, canvasCommandContext)
+  }
+
+  function executeToolbarId(id: string): Promise<CommandExecutionResult> | undefined {
+    return executeToolbar(toolbarCommands.find((command) => command.id === id))
   }
 
   function deriveCanvas() {
@@ -319,11 +353,11 @@
     const height = Math.max(1, bottom - top)
     const zoom = Math.max(
       0.1,
-      Math.min(4, Math.min(root.clientWidth / (width + 48), root.clientHeight / (height + 48))),
+      Math.min(4, Math.min(viewportElement.clientWidth / (width + 48), viewportElement.clientHeight / (height + 48))),
     )
     flowViewport = {
-      x: (root.clientWidth - width * zoom) / 2 - left * zoom,
-      y: (root.clientHeight - height * zoom) / 2 - top * zoom,
+      x: (viewportElement.clientWidth - width * zoom) / 2 - left * zoom,
+      y: (viewportElement.clientHeight - height * zoom) / 2 - top * zoom,
       zoom,
     }
   }
@@ -359,8 +393,8 @@
   export function viewportCenterPosition(): { x: number; y: number } {
     const zoom = flowViewport.zoom || 1
     return {
-      x: (root.clientWidth / 2 - flowViewport.x) / zoom,
-      y: (root.clientHeight / 2 - flowViewport.y) / zoom,
+      x: (viewportElement.clientWidth / 2 - flowViewport.x) / zoom,
+      y: (viewportElement.clientHeight / 2 - flowViewport.y) / zoom,
     }
   }
 
@@ -398,7 +432,7 @@
     const kind = event.dataTransfer.getData(NODE_KIND_DRAG_TYPE)
     if (!kind) return
     event.preventDefault()
-    const bounds = root.getBoundingClientRect()
+    const bounds = viewportElement.getBoundingClientRect()
     const zoom = flowViewport.zoom || 1
     void onDropNodeKind(kind, {
       x: (event.clientX - bounds.left - flowViewport.x) / zoom,
@@ -537,140 +571,23 @@
   aria-label="Workflow graph"
   aria-busy={transitionLocked}
   bind:this={root}
-  ondragover={dragNodeKindOver}
-  ondrop={dropNodeKind}
 >
-  <div class="canvas-toolbar" aria-label="Canvas tools">
-    {#if addCommand}
-      <button
-        type="button"
-        aria-label={addCommand.label}
-        title={addCommand.title}
-        disabled={!addCommand.enabled}
-        onclick={() => void executeToolbar(addCommand)}
-      >
-        <Plus size={15} aria-hidden="true" />
-        {addCommand.label}
-      </button>
-    {/if}
-    {#if edgeCommand}
-      <button
-        type="button"
-        aria-label={edgeCommand.label}
-        title={edgeCommand.title}
-        disabled={!edgeCommand.enabled}
-        onclick={() => void executeToolbar(edgeCommand)}
-      >
-        <Link size={15} aria-hidden="true" />
-        {edgeCommand.label}
-      </button>
-    {/if}
-    {#if duplicateCommand}
-      <button
-        type="button"
-        aria-label={duplicateCommand.label}
-        title={duplicateCommand.title}
-        disabled={!duplicateCommand.enabled}
-        onclick={() => void executeToolbar(duplicateCommand)}
-      >
-        <Copy size={15} aria-hidden="true" />
-        {duplicateCommand.label}
-      </button>
-    {/if}
-    {#if deleteCommand}
-      <button
-        type="button"
-        aria-label={deleteCommand.label}
-        title={deleteCommand.title}
-        disabled={!deleteCommand.enabled}
-        onclick={() => void executeToolbar(deleteCommand)}
-      >
-        <Trash2 size={15} aria-hidden="true" />
-        {deleteCommand.label}
-      </button>
-    {/if}
-    {#if arrangeCommand}
-      <button
-        type="button"
-        aria-label={arrangeCommand.label}
-        title={arrangeCommand.title}
-        disabled={!arrangeCommand.enabled}
-        onclick={() => void executeToolbar(arrangeCommand)}
-      >
-        <Network size={15} aria-hidden="true" />
-        {arrangeCommand.label}
-      </button>
-    {/if}
-    <button
-      type="button"
-      aria-label={minimapVisible ? 'Hide minimap' : 'Show minimap'}
-      aria-pressed={minimapVisible}
-      onclick={() => (minimapVisible = !minimapVisible)}
-    >
-      <Map size={15} aria-hidden="true" />
-      Map
-    </button>
-  </div>
-
-  <SvelteFlow
-    bind:nodes={flowNodes}
-    bind:edges={flowEdges}
-    bind:viewport={flowViewport}
-    {nodeTypes}
-    {edgeTypes}
-    nodesDraggable={!readOnly && !stale && !transitionLocked}
-    nodesConnectable={!readOnly && !stale && !transitionLocked}
-    elementsSelectable={!transitionLocked}
-    nodesFocusable={true}
-    edgesFocusable={true}
-    selectionOnDrag={true}
-    selectionMode={SelectionMode.Partial}
-    selectionKey="Shift"
-    multiSelectionKey={['Meta', 'Control']}
-    panActivationKey="Space"
-    panOnDrag={true}
-    minZoom={0.1}
-    maxZoom={4}
-    fitViewOptions={{ padding: 0.18, duration: 0 }}
-    onnodedrag={({ targetNode, nodes }) => {
-      handleDrag(dragDetail(nodes, targetNode))
-    }}
-    onnodedragstop={({ targetNode, nodes }) => {
-      handleDragStop(dragDetail(nodes, targetNode))
-    }}
-    onselectionchange={({ nodes }) => scheduleSelectionChanged(nodes.map(({ id }) => id))}
-    onconnect={({ source, target }) => {
-      if (source && target) {
-        void handleAuthoringResult(
-          onConnect
-            ? () => onConnect(source, target)
-            : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Connect is unavailable.' }),
-        )
-      }
-    }}
-    onbeforedelete={({ nodes, edges }) => beforeDelete(nodes, edges)}
-    onmoveend={(_event, viewport) => viewportChanged(viewport)}
-  >
-    <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-    <Controls showLock={false} aria-label="Canvas zoom controls" />
-    {#if minimapVisible}
-      <MiniMap
-        ariaLabel="Workflow minimap"
-        pannable={true}
-        zoomable={true}
-        nodeColor="var(--color-accent)"
-        maskColor="color-mix(in srgb, var(--color-background) 74%, transparent)"
-      />
-    {/if}
-  </SvelteFlow>
+  <CanvasToolbar
+    commands={toolbarCommands}
+    {minimapVisible}
+    onExecute={executeToolbarId}
+    onToggleMinimap={() => (minimapVisible = !minimapVisible)}
+  />
 
   {#if stale}
-    <div class="stale-overlay" role="status">
-      Last valid graph shown read-only while current YAML has structural errors.
+    <div class="stale-overlay" role="status" data-canvas-chrome>
+      {staleSource === 'current'
+        ? 'Current graph shown read-only while current YAML has structural errors.'
+        : 'Last valid graph shown read-only while current YAML has structural errors.'}
     </div>
   {/if}
   {#if edgeSourceId}
-    <div class="edge-picker" role="status" aria-live="polite">
+    <div class="edge-picker" role="status" aria-live="polite" data-canvas-chrome>
       <strong>Create edge from {edgeSourceId}</strong>
       <p>Use Tab or arrows to choose a valid target, Enter to connect, Escape to cancel.</p>
       <div role="listbox" aria-label="Valid edge targets">
@@ -687,6 +604,67 @@
       </div>
     </div>
   {/if}
+  <div
+    class="canvas-viewport"
+    data-testid="workflow-canvas-viewport"
+    role="region"
+    aria-label="Workflow canvas viewport"
+    bind:this={viewportElement}
+    ondragover={dragNodeKindOver}
+    ondrop={dropNodeKind}
+  >
+    <SvelteFlow
+      bind:nodes={flowNodes}
+      bind:edges={flowEdges}
+      bind:viewport={flowViewport}
+      {nodeTypes}
+      {edgeTypes}
+      nodesDraggable={!readOnly && !stale && !transitionLocked}
+      nodesConnectable={!readOnly && !stale && !transitionLocked}
+      elementsSelectable={!transitionLocked}
+      nodesFocusable={true}
+      edgesFocusable={true}
+      selectionOnDrag={true}
+      selectionMode={SelectionMode.Partial}
+      selectionKey="Shift"
+      multiSelectionKey={['Meta', 'Control']}
+      panActivationKey="Space"
+      panOnDrag={true}
+      minZoom={0.1}
+      maxZoom={4}
+      fitViewOptions={{ padding: 0.18, duration: 0 }}
+      onnodedrag={({ targetNode, nodes }) => {
+        handleDrag(dragDetail(nodes, targetNode))
+      }}
+      onnodedragstop={({ targetNode, nodes }) => {
+        handleDragStop(dragDetail(nodes, targetNode))
+      }}
+      onselectionchange={({ nodes }) => scheduleSelectionChanged(nodes.map(({ id }) => id))}
+      onconnect={({ source, target }) => {
+        if (source && target) {
+          void handleAuthoringResult(
+            onConnect
+              ? () => onConnect(source, target)
+              : () => ({ status: 'rejected', code: 'canvas_action_unavailable', message: 'Connect is unavailable.' }),
+          )
+        }
+      }}
+      onbeforedelete={({ nodes, edges }) => beforeDelete(nodes, edges)}
+      onmoveend={(_event, viewport) => viewportChanged(viewport)}
+    >
+      <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+      <Controls showLock={false} aria-label="Canvas zoom controls" />
+      {#if minimapVisible}
+        <MiniMap
+          ariaLabel="Workflow minimap"
+          pannable={true}
+          zoomable={true}
+          nodeColor="var(--color-accent)"
+          maskColor="color-mix(in srgb, var(--color-background) 74%, transparent)"
+        />
+      {/if}
+    </SvelteFlow>
+  </div>
   <p class="sr-only" role="status" aria-label="Canvas authoring feedback" aria-live="polite">
     {authoringFeedback}
   </p>
@@ -695,12 +673,22 @@
 <style>
   .graph-canvas {
     position: relative;
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     width: 100%;
     min-width: 0;
     height: 100%;
     min-height: 18rem;
     overflow: hidden;
     background: var(--color-canvas);
+  }
+
+  .canvas-viewport {
+    position: relative;
+    grid-row: 4;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .graph-canvas:focus {
@@ -710,52 +698,18 @@
   }
 
   :global(.graph-canvas .svelte-flow) {
+    --xy-edge-stroke: var(--color-edge);
+    --xy-edge-stroke-selected: var(--color-edge-selected);
     background-image: radial-gradient(var(--color-grid) 1px, transparent 1px);
     background-size: 1.25rem 1.25rem;
   }
 
-  :global(.graph-canvas .workflow-edge .svelte-flow__edge-path) {
-    stroke: var(--color-edge);
-    stroke-width: 2;
-  }
-
-  :global(.graph-canvas .workflow-edge.stale .svelte-flow__edge-path) {
-    stroke-dasharray: 5 4;
-    opacity: 0.72;
-  }
-
-  .canvas-toolbar {
-    position: absolute;
-    z-index: 6;
-    top: 0.625rem;
-    right: 0.625rem;
-    display: flex;
-    gap: 0.35rem;
-  }
-
-  .canvas-toolbar button {
-    display: inline-flex;
-    gap: 0.35rem;
-    align-items: center;
-    min-height: 2rem;
-    padding: 0.3rem 0.55rem;
-    border: 1px solid var(--color-border);
-    border-radius: 0.4rem;
-    color: var(--color-text);
-    background: var(--color-surface);
-  }
-
-  .canvas-toolbar button:focus-visible {
-    outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
-  }
-
   .stale-overlay {
-    position: absolute;
-    z-index: 5;
-    right: 1rem;
-    bottom: 1rem;
+    position: static;
+    grid-row: 2;
+    justify-self: end;
     max-width: 24rem;
+    margin: 0.5rem 0.625rem 0;
     padding: 0.55rem 0.7rem;
     border: 1px solid var(--color-warning);
     border-radius: 0.45rem;
@@ -765,11 +719,11 @@
   }
 
   .edge-picker {
-    position: absolute;
-    z-index: 7;
-    top: 3.3rem;
-    right: 0.625rem;
+    position: static;
+    grid-row: 3;
+    justify-self: end;
     max-width: 20rem;
+    margin: 0.5rem 0.625rem 0;
     padding: 0.65rem;
     border: 1px solid var(--color-focus);
     border-radius: 0.45rem;

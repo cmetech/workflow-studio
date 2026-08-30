@@ -32,14 +32,14 @@ describe('validateBrandPack', () => {
     const value = mutableBrand()
     value.id = 'acme'
     value.displayName = 'Acme Studio'
-    value.themes.dark.background = 'rgb(9 10 13)'
-    value.themes.dark.surface = '#101218ff'
+    value.themes.dark.background = 'rgb(11 13 18)'
+    value.themes.dark.surface = '#11141cff'
 
     const result = validateBrandPack(stringify(value), assets())
 
     expect(result.canActivate).toBe(true)
-    expect(result.manifest.themes.dark.background).toBe('#090A0D')
-    expect(result.manifest.themes.dark.surface).toBe('#101218')
+    expect(result.manifest.themes.dark.background).toBe('#0B0D12')
+    expect(result.manifest.themes.dark.surface).toBe('#11141C')
     expect(result.issues).toEqual([])
   })
 

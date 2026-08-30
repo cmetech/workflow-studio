@@ -7,6 +7,7 @@ describe('ImportExportDialog', () => {
     render(ImportExportDialog, { mode: 'export', blockingIssues: ['Dependency cycle'] })
     expect(screen.getByRole('alert')).toHaveTextContent('Dependency cycle')
     expect(screen.queryByRole('button', { name: 'Export YAML Pair' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveAttribute('data-variant', 'secondary')
   })
 
   it('names the exact YAML pair in collision confirmation and excludes application data', async () => {
@@ -20,6 +21,7 @@ describe('ImportExportDialog', () => {
     expect(screen.getByText('/exports/flow.yaml')).toBeVisible()
     expect(screen.getByText('/exports/flow.hermes.yaml')).toBeVisible()
     expect(screen.queryByText(/layout|settings|contract|brand/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace YAML Pair' })).toHaveAttribute('data-variant', 'danger')
     await fireEvent.click(screen.getByRole('button', { name: 'Replace YAML Pair' }))
     expect(onConfirm).toHaveBeenCalledTimes(1)
   })
@@ -53,6 +55,7 @@ describe('ImportExportDialog', () => {
     const onConfirm = vi.fn(async () => undefined)
     render(ImportExportDialog, { mode, onConfirm, opener })
 
+    expect(screen.getByRole('button', { name: label })).toHaveAttribute('data-variant', 'primary')
     await fireEvent.click(screen.getByRole('button', { name: label }))
     expect(onConfirm).toHaveBeenCalledTimes(1)
     expect(opener).toHaveFocus()
