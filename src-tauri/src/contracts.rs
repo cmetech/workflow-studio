@@ -141,7 +141,7 @@ impl From<&ContractCacheStoredEntry> for ContractCacheIndexEntry {
 }
 
 #[tauri::command]
-pub fn contract_choose_file(
+pub async fn contract_choose_file(
     app: AppHandle,
     grants: State<'_, ContractGrantState>,
 ) -> ContractResult<Option<String>> {
@@ -164,7 +164,7 @@ pub fn contract_choose_file(
 }
 
 #[tauri::command]
-pub fn contract_choose_hermes_executable(
+pub async fn contract_choose_hermes_executable(
     app: AppHandle,
     grants: State<'_, ContractGrantState>,
 ) -> ContractResult<Option<String>> {

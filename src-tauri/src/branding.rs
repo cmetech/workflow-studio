@@ -2570,7 +2570,7 @@ fn app_data(app: &AppHandle) -> BrandResult<PathBuf> {
 }
 
 #[tauri::command]
-pub fn brand_choose_source(
+pub async fn brand_choose_source(
     app: AppHandle,
     grants: State<'_, BrandGrantState>,
 ) -> BrandResult<Option<BrandSourceSelection>> {

@@ -58,12 +58,12 @@ pub struct ExternalExportResult {
 }
 
 #[tauri::command]
-pub fn dialog_choose_workspace(app: AppHandle) -> WorkspaceResult<Option<String>> {
+pub async fn dialog_choose_workspace(app: AppHandle) -> WorkspaceResult<Option<String>> {
     chosen_directory(&app)
 }
 
 #[tauri::command]
-pub fn dialog_choose_import_definition(
+pub async fn dialog_choose_import_definition(
     app: AppHandle,
     grants: State<'_, DialogGrantState>,
 ) -> WorkspaceResult<Option<String>> {
@@ -87,7 +87,7 @@ pub fn dialog_choose_import_definition(
 }
 
 #[tauri::command]
-pub fn dialog_choose_export_directory(
+pub async fn dialog_choose_export_directory(
     app: AppHandle,
     grants: State<'_, DialogGrantState>,
 ) -> WorkspaceResult<Option<String>> {
@@ -669,15 +669,30 @@ fn io_error(code: &'static str, cause: std::io::Error) -> WorkspaceError {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::fs;
 
+    use tauri::AppHandle;
     use tempfile::tempdir;
 
     use super::{
+        dialog_choose_workspace,
         export_granted_yaml_pair, export_granted_yaml_pair_with_commit_hook,
         grant_export_directory, grant_import_pair, read_granted_yaml, revoke_export_grant,
-        DialogGrantState, ExportYamlFile,
+        DialogGrantState, ExportYamlFile, WorkspaceResult,
     };
+
+    #[test]
+    fn workspace_picker_command_is_async_so_cancel_can_return_to_the_webview() {
+        fn require_async_command<F, Output>(_command: F)
+        where
+            F: FnOnce(AppHandle) -> Output,
+            Output: Future<Output = WorkspaceResult<Option<String>>>,
+        {
+        }
+
+        require_async_command(dialog_choose_workspace);
+    }
 
     #[test]
     fn exact_import_grants_are_consumed_and_include_only_the_canonical_pair() {

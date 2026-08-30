@@ -69,12 +69,13 @@
     align-items: center;
     min-height: 0;
     padding: var(--space-2) var(--space-1);
-    border-right: 1px solid var(--color-border);
     background: var(--color-yaml-gutter);
+    box-shadow: inset -1px 0 var(--color-border);
   }
 
   button {
     display: grid;
+    place-items: center;
     width: var(--control-md);
     min-width: var(--control-md);
     height: var(--control-md);

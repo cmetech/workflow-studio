@@ -25,6 +25,33 @@ async function fontFamily(locator: Locator): Promise<string> {
   return locator.evaluate((element) => getComputedStyle(element).fontFamily)
 }
 
+test('centers activity buttons and icons on the rail axis', async ({ page }) => {
+  await page.goto('/')
+  const rail = page.getByRole('navigation', { name: 'Activities' })
+  const explorer = page.getByRole('button', { name: 'Explorer', exact: true })
+  await expect(explorer).toBeVisible()
+  await expect(explorer).toHaveAttribute('aria-pressed', 'true')
+
+  const geometry = await rail.evaluate((element) => {
+    const center = (node: Element) => {
+      const bounds = node.getBoundingClientRect()
+      return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+    }
+    const railCenter = center(element)
+    return [...element.querySelectorAll('button')].map((button) => {
+      const icon = button.querySelector('svg')
+      if (!icon) throw new Error('Every activity button must render an icon.')
+      return { railCenter, buttonCenter: center(button), iconCenter: center(icon) }
+    })
+  })
+
+  for (const { railCenter, buttonCenter, iconCenter } of geometry) {
+    expect(Math.abs(buttonCenter.x - railCenter.x)).toBeLessThan(0.01)
+    expect(Math.abs(iconCenter.x - buttonCenter.x)).toBeLessThan(0.01)
+    expect(Math.abs(iconCenter.y - buttonCenter.y)).toBeLessThan(0.01)
+  }
+})
+
 test('renders semantic and established technical surfaces with bundled Geist Mono', async ({ page }) => {
   await openSeededPair(page)
   await page.getByRole('group', { name: 'command node publish', exact: true }).click()
