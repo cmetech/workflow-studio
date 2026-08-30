@@ -181,6 +181,40 @@ modalAtEveryExactGeometry(
   },
 )
 
+modalAtEveryExactGeometry('Recovery is a top-layer modal with persistent draft actions', async (page, geometry) => {
+  await openSeededPair(page, '?scenario=recovery-modal')
+  const dialog = page.getByRole('dialog', { name: 'Recover unsaved workflow?' })
+  await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Recover' }), geometry)
+})
+
+modalAtEveryExactGeometry(
+  'Blocked Export is a top-layer modal with a reachable close action',
+  async (page, geometry) => {
+    await page.goto('/?scenario=export-blocking-modal')
+    await page.getByRole('button', { name: 'Open Folder' }).first().click()
+    const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+    await pair.click()
+    await expect(page.getByRole('button', { name: /depends on missing node.*Blocks save and export/i })).toBeVisible()
+    await pair.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Export' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Export workflow' })
+    await expect(dialog).toContainText('Resolve structural issues before export.')
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close' }), geometry)
+  },
+)
+
+modalAtEveryExactGeometry(
+  'Export Collision is a top-layer modal with persistent replacement actions',
+  async (page, geometry) => {
+    await openSeededPair(page, '?scenario=export-collision-modal')
+    await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Export' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Export workflow' })
+    await expect(dialog).toContainText('These exact files already exist:')
+    await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Replace YAML Pair' }), geometry)
+  },
+)
+
 modalAtEveryExactGeometry('Add Node is a top-layer modal with reachable contract choices', async (page, geometry) => {
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Add Node' }).click()
@@ -308,6 +342,54 @@ modalAtEveryExactGeometry(
       page,
       dialog,
       dialog.getByRole('button', { name: 'Activate Northstar Studio' }),
+      geometry,
+    )
+  },
+)
+
+modalAtEveryExactGeometry(
+  'Active Brand Removal is a top-layer modal with persistent revert actions',
+  async (page, geometry) => {
+    await page.goto('/?scenario=active-brand-removal-modal')
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('button', { name: 'Remove Northstar Studio' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Revert active brand' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Revert to LOOP24 and remove' }),
+      geometry,
+    )
+  },
+)
+
+modalAtEveryExactGeometry(
+  'Initialize Repository is a top-layer modal with a persistent initialize action',
+  async (page, geometry) => {
+    await openSeededPair(page, '?scenario=initialize-repository-modal')
+    await page.getByRole('button', { name: 'Git', exact: true }).click()
+    await page.getByRole('button', { name: 'Initialize Git repository' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Initialize repository' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Initialize repository' }),
+      geometry,
+    )
+  },
+)
+
+modalAtEveryExactGeometry(
+  'Repository Identity is a top-layer modal with a persistent save action',
+  async (page, geometry) => {
+    await openSeededPair(page, '?scenario=repository-identity-modal')
+    await page.getByRole('button', { name: 'Git', exact: true }).click()
+    await page.getByRole('button', { name: 'Configure identity…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Repository identity' })
+    await assertRealResponsiveModal(
+      page,
+      dialog,
+      dialog.getByRole('button', { name: 'Save repository identity' }),
       geometry,
     )
   },

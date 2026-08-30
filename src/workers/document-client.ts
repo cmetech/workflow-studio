@@ -17,6 +17,7 @@ import type {
 
 const EDIT_DEBOUNCE_MS = 180
 const ANALYSIS_TIMEOUT_MS = 10_000
+const REGISTRATION_TIMEOUT_MS = 10_000
 
 export interface DocumentWorkerEndpoint {
   postMessage(message: DocumentWorkerRequest): void
@@ -28,6 +29,7 @@ export interface DocumentClientOptions {
   onAnalysis?: (analysis: DocumentAnalysis) => void
   onError?: (error: AnalyzeDocumentErrorResponse) => void
   analysisTimeoutMs?: number
+  registrationTimeoutMs?: number
 }
 
 let nextRequestNumber = 0
@@ -42,7 +44,11 @@ export class DocumentClient {
   private readonly registrations = new Map<string, Promise<void>>()
   private readonly registrationResolvers = new Map<
     string,
-    { readonly resolve: () => void; readonly reject: (reason: Error) => void }
+    {
+      readonly resolve: () => void
+      readonly reject: (reason: Error) => void
+      readonly timer: ReturnType<typeof setTimeout>
+    }
   >()
   private analysisState: AnalysisState | null = null
   private currentRequestId: string | null = null
@@ -96,17 +102,12 @@ export class DocumentClient {
   }
 
   dispose(): void {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = undefined
+    this.clearEditTimer()
     this.worker.removeEventListener('message', this.onMessage)
     this.worker.removeEventListener('error', this.onWorkerError)
     this.worker.removeEventListener('messageerror', this.onWorkerMessageError)
     this.clearResponseTimer()
-    for (const { reject } of this.registrationResolvers.values()) {
-      reject(new Error('Document worker client was disposed before contract registration completed.'))
-    }
-    this.registrationResolvers.clear()
-    this.registrations.clear()
+    this.rejectRegistrations('Document worker client was disposed before contract registration completed.')
   }
 
   registerContract(contract: AuthoringContract): Promise<void> {
@@ -114,7 +115,11 @@ export class DocumentClient {
     if (known) return known
     const registrationId = requestId('contract')
     const registration = new Promise<void>((resolve, reject) => {
-      this.registrationResolvers.set(registrationId, { resolve, reject })
+      const timer = setTimeout(
+        () => this.failCurrent('worker_timeout', 'Document analysis worker contract registration timed out.'),
+        this.options.registrationTimeoutMs ?? REGISTRATION_TIMEOUT_MS,
+      )
+      this.registrationResolvers.set(registrationId, { resolve, reject, timer })
     })
     this.registrations.set(contract.contract_digest, registration)
     this.worker.postMessage({
@@ -172,6 +177,7 @@ export class DocumentClient {
       const resolver = this.registrationResolvers.get(response.requestId)
       if (!resolver) return
       this.registrationResolvers.delete(response.requestId)
+      clearTimeout(resolver.timer)
       if (response.type === 'contract-registered') resolver.resolve()
       else {
         this.registrations.delete(response.contractDigest)
@@ -191,14 +197,13 @@ export class DocumentClient {
   }
 
   private failCurrent(code: AnalyzeDocumentErrorResponse['code'], message: string): void {
+    this.clearEditTimer()
+    this.clearResponseTimer()
+    this.rejectRegistrations(message)
     const request = this.currentRequest
     if (!request || !this.analysisState) return
-    this.clearResponseTimer()
     this.currentRequest = null
     this.currentRequestId = null
-    for (const { reject } of this.registrationResolvers.values()) reject(new Error(message))
-    this.registrationResolvers.clear()
-    this.registrations.clear()
     this.options.onError?.({
       type: 'analysis-error',
       requestId: request.requestId,
@@ -219,6 +224,20 @@ export class DocumentClient {
   private clearResponseTimer(): void {
     if (this.responseTimer) clearTimeout(this.responseTimer)
     this.responseTimer = undefined
+  }
+
+  private clearEditTimer(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = undefined
+  }
+
+  private rejectRegistrations(message: string): void {
+    for (const { reject, timer } of this.registrationResolvers.values()) {
+      clearTimeout(timer)
+      reject(new Error(message))
+    }
+    this.registrationResolvers.clear()
+    this.registrations.clear()
   }
 
   private responseIdentityIsCurrent(response: AnalyzeDocumentResponse | AnalyzeDocumentErrorResponse): boolean {

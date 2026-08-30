@@ -134,6 +134,69 @@ describe('workspace action coordinator', () => {
     expect(duplicateWorkflow).not.toHaveBeenCalled()
   })
 
+  it('exports an already active exact pair without reopening and invalidating its analysis', async () => {
+    const open = vi.fn(async () => undefined)
+    const exportWorkflow = vi.fn(async () => ({ status: 'exported' as const, paths: [], results: [] }))
+    const pair = {
+      workflowId: entry.id,
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'active-definition',
+        kind: 'definition' as const,
+        path: entry.definitionPath,
+        text: 'name: Flow\n',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: {
+        id: 'active-companion',
+        kind: 'companion' as const,
+        path: entry.companionPath!,
+        text: 'language_compatibility: hermes-legacy\n',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'b'.repeat(64),
+      },
+    }
+    const revision = {
+      workflowId: entry.id,
+      pairGeneration: 0,
+      definitionPath: entry.definitionPath,
+      companionPath: entry.companionPath,
+      definitionRevision: 0,
+      companionRevision: 0,
+      contractDigest: `sha256:${'1'.repeat(64)}` as const,
+    }
+    const analysis = { ...revision, issues: [], structurallyValid: true }
+    const coordinate = createWorkspaceActionCoordinator({
+      actions: {
+        duplicateWorkflow: vi.fn(),
+        renameWorkflow: vi.fn(),
+        createCompanion: vi.fn(),
+        removeCompanion: vi.fn(),
+        exportWorkflow,
+        trashWorkflow: vi.fn(),
+      },
+      getEntry: () => entry,
+      getWorkspaceId: () => 'workspace',
+      read: vi.fn(),
+      open,
+      refresh: vi.fn(),
+      promptRename: vi.fn(),
+      promptCompanion: vi.fn(),
+      confirm: vi.fn(),
+      currentDocument: () => ({ pair, analysis, revision }),
+      confirmExportCollision: vi.fn(async () => true),
+    })
+
+    await coordinate({ kind: 'workflow.export', revision: 1, targetEntryId: entry.id })
+
+    expect(open).not.toHaveBeenCalled()
+    expect(exportWorkflow).toHaveBeenCalledWith(expect.objectContaining({ pair, analysis, activeRevision: revision }))
+  })
+
   it('rejects export when awaited open did not replace a previously active document with the target pair', async () => {
     const exportWorkflow = vi.fn(async () => undefined)
     const priorPair = {

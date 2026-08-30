@@ -133,8 +133,18 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
         break
       }
       case 'workflow.export': {
-        await dependencies.open(entry)
-        const document = dependencies.currentDocument()
+        let document = dependencies.currentDocument()
+        const activePair = document.pair
+        const entryIsActive = Boolean(
+          activePair &&
+          activePair.workflowId === entry.id &&
+          activePair.definition.path === entry.definitionPath &&
+          (activePair.companion?.path ?? null) === entry.companionPath,
+        )
+        if (!entryIsActive) {
+          await dependencies.open(entry)
+          document = dependencies.currentDocument()
+        }
         if (!document.pair || !document.revision) {
           throw new WorkspaceActionCoordinatorError(
             'workspace_document_identity_mismatch',

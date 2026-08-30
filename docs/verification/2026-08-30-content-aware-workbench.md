@@ -7,15 +7,15 @@ and [implementation plan](../superpowers/plans/2026-08-30-workflow-studio-conten
 ## Candidate identity
 
 - Branch: `fix/native-dialog-and-rail-centering`
-- Review-fix parent commit: `61066248fd8e0f43c0547116dc1ceb4447bd4a8c`
-- Parent subject: `test: verify content-aware workbench release`
+- Second-round review-fix parent commit: `2652f30aabdd109f7e3742b7eb4d4e60dc54ee43`
+- Parent subject: `fix: address Task 10 review findings`
 - Host: Apple silicon, macOS 26.5.1 (25F80)
 - Rust toolchain: `rustc 1.88.0 (6b00bc388 2025-06-23)`, `cargo 1.88.0 (873a06493 2025-05-10)`
 - System WebKit framework: `21624`
 - Verification date: 2026-08-30
 
-The review-fix commit cannot contain its own hash. Its stable 20-file source/test manifest SHA-256 is
-`3d3aaccb3364432dce206dbf16909826c824f5c023e20b6b9bd4f15e2bd71ad8`. Reproduce that identity from the committed
+The second-round review-fix commit cannot contain its own hash. Its stable 6-file source/test manifest SHA-256 is
+`00136115c2631de06f7fcbdfab5a26091199b9e980fd7697624a6c4578d450ba`. Reproduce that identity from the committed
 review fix with:
 
 ```bash
@@ -37,8 +37,15 @@ The final review-fix commit hash is also recorded in the ignored SDD execution r
 - Worker unavailable, runtime `error`, `messageerror`, and bounded no-response timeout paths settle as visible canvas
   rejections. Worker listeners, timers, and registration waiters are cleaned up. No main-thread validation fallback
   was added.
+- Registration-only worker `error`, `messageerror`, and bounded registration-timeout paths now reject even without a
+  current analysis request. Terminal failure and disposal cancel pending edit, analysis, and registration timers and
+  clear every registration waiter. A debounced edit cannot dispatch after terminal failure.
+- Exporting the already active exact workflow pair preserves its current worker analysis rather than reopening the
+  pair and invalidating that analysis. Non-active export targets retain the prior activation and exact-identity checks.
 - One shared exact-geometry helper now checks Welcome, authoring, Settings, Examples, Documentation, Git,
-  Inspector/Problems, and every modal at all four geometries in both configured engines.
+  Inspector/Problems, and every modal at all four geometries in both configured engines. The production recovery,
+  blocked-export, collision-export, active-brand-removal, initialize-repository, and repository-identity states are
+  included through deterministic real-UI scenarios.
 - Port-drag counters are reset and inspected before mouse-up for the rejected and valid gestures. Repeated diagnostics
   assert the complete page-error and console-error collections are empty. The long Windows selected workspace and Git
   repository roots are identical, while the entire prior path, long ref, commit subject, and containment are asserted.
@@ -57,10 +64,10 @@ were run with the task-provided `CARGO_HOME`, `RUSTUP_HOME`, and `PATH` values.
 | `npm run examples:check` | PASS; bundled examples validated |
 | `npm run resources:verify` | PASS; 32 packaged files verified |
 | `npm run test:unit -- tests/performance tests/accessibility` | PASS; 4 files, 12 tests |
-| `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | PASS; 121 files, 1,125 tests |
+| `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | PASS; 121 files, 1,133 tests |
 | `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:rust` | PASS; 245 library tests and 24 Git integration tests |
 | `npm run build` | PASS; 874 modules transformed |
-| `npm run test:e2e` | PASS; 222 tests across Chromium and Playwright WebKit |
+| `npm run test:e2e` | PASS; 270 tests across Chromium and Playwright WebKit |
 | `git diff --check` | PASS |
 
 The original focused adversarial matrix was exactly 104/104 at parent `6106624` with this command:
@@ -71,8 +78,8 @@ npx playwright test tests/e2e/activity-pages.spec.ts tests/e2e/canvas-capacity.s
   tests/e2e/workbench-layout.spec.ts --project=chromium --project=webkit --workers=1
 ```
 
-After the review-strengthened modal/surface matrix expanded those same files, the exact same command passed 184/184.
-The exact geometry-only command also passed 120/120:
+After the second review expanded those same files with all six omitted production modal states, the exact same command
+passed 232/232. The exact geometry-only command passed 168/168:
 
 ```bash
 npx playwright test tests/e2e/workbench-containment.spec.ts tests/e2e/modal-layout.spec.ts \
@@ -101,8 +108,8 @@ npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json
 
 | Artifact | Identity | SHA-256 |
 | --- | --- | --- |
-| `src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg` | macOS arm64, app 1.0.3, debug/unsigned DMG; review source manifest above | `ce2bdce743839b13a2648e082291ed2365bec64f0d020a52e4bbaae1a66319c1` |
-| `src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio` | Mach-O arm64 executable, ad-hoc linker signature; review source manifest above | `3c8cc5adea2b62f93697ec28abf03b246c6c918286565844582c03e5fef23acc` |
+| `src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg` | macOS arm64, app 1.0.3, debug/unsigned DMG; second-round source manifest above | `ce568265676bef7e4e648544d31ebca1f9874dc12be6801c97e1ee3d7aa89a82` |
+| `src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio` | Mach-O arm64 executable, ad-hoc linker signature; second-round source manifest above | `34bc2c524c2e517f5b25fd19aae1a98a69c2129584fca8016e3c27b4e9f04c34` |
 
 The checksums, mount, copy, detach, launch, and temporary install identity are reproducible from these exact commands:
 
@@ -111,8 +118,8 @@ shasum -a 256 \
   'src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg' \
   'src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 
-mktemp -d /private/tmp/workflow-studio-task10-review.XXXXXX
-# Result: /private/tmp/workflow-studio-task10-review.n1CZwn
+mktemp -d /private/tmp/workflow-studio-task10-round2.XXXXXX
+# Result: /private/tmp/workflow-studio-task10-round2.0egnKx
 
 hdiutil attach -readonly -nobrowse \
   'src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg'
@@ -120,21 +127,21 @@ hdiutil attach -readonly -nobrowse \
 # /Volumes/LOOP24 Workflow Studio 1 and passed image CRC verification.
 
 ditto '/Volumes/LOOP24 Workflow Studio 1/LOOP24 Workflow Studio.app' \
-  '/private/tmp/workflow-studio-task10-review.n1CZwn/LOOP24 Workflow Studio.app'
+  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app'
 shasum -a 256 \
-  '/private/tmp/workflow-studio-task10-review.n1CZwn/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
+  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 hdiutil detach /dev/disk7
 
 env HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
   ALL_PROXY=http://127.0.0.1:9 NO_PROXY= \
-  '/private/tmp/workflow-studio-task10-review.n1CZwn/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
+  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 ps -ax -o pid=,command= \
-  | rg '/private/tmp/workflow-studio-task10-review\.n1CZwn/LOOP24 Workflow Studio\.app/Contents/MacOS/workflow-studio'
+  | rg '/private/tmp/workflow-studio-task10-round2\.0egnKx/LOOP24 Workflow Studio\.app/Contents/MacOS/workflow-studio'
 ```
 
-The copied review artifact launched and remained alive after the deliberately dead proxy produced the expected
-updater network failure. It was then terminated with `Ctrl-C`, and a repeated `ps`/`rg` check returned no process.
-No extended installed interaction matrix was repeated for this review artifact.
+The copied second-round review artifact launched and remained alive after the deliberately dead proxy produced the
+expected updater network failure. It was then terminated with `Ctrl-C`, and a repeated `ps`/`rg` check returned no
+process. No extended installed interaction matrix was repeated for this review artifact.
 
 ### Initial Task 10 installed macOS smoke observations
 

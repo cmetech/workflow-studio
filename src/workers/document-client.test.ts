@@ -171,6 +171,64 @@ describe('DocumentClient', () => {
     client.dispose()
   })
 
+  it.each([
+    ['runtime error', (worker: FakeWorker) => worker.emitError(), 'Document analysis worker failed.'],
+    [
+      'message error',
+      (worker: FakeWorker) => worker.emitMessageError(),
+      'Document analysis worker returned an unreadable message.',
+    ],
+  ] as const)('rejects registration-only work on worker %s', async (_label, fail, message) => {
+    const worker = new FakeWorker()
+    const client = new DocumentClient(worker)
+    const registration = client.registerContract(contract)
+    let rejection: Error | null = null
+    void registration.catch((error: Error) => (rejection = error))
+
+    fail(worker)
+    await Promise.resolve()
+
+    expect(rejection).toMatchObject({ message })
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
+  })
+
+  it('rejects registration-only work after the bounded registration timeout', async () => {
+    const worker = new FakeWorker()
+    const client = new DocumentClient(worker, { registrationTimeoutMs: 1_000 })
+    const registration = client.registerContract(contract)
+    let rejection: Error | null = null
+    void registration.catch((error: Error) => (rejection = error))
+
+    vi.advanceTimersByTime(999)
+    expect(vi.getTimerCount()).toBe(1)
+    vi.advanceTimersByTime(1)
+    await Promise.resolve()
+
+    expect(rejection).toMatchObject({ message: 'Document analysis worker contract registration timed out.' })
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
+  })
+
+  it('clears a successful registration timeout', async () => {
+    const worker = new FakeWorker()
+    const client = new DocumentClient(worker, { registrationTimeoutMs: 1_000 })
+    const registration = client.registerContract(contract)
+    const request = worker.messages[0]
+    if (!request || request.type !== 'contract-register') throw new Error('missing registration request')
+
+    worker.emit({
+      type: 'contract-registered',
+      requestId: request.requestId,
+      contractDigest: request.contractDigest,
+      profile: request.profile,
+    })
+
+    await expect(registration).resolves.toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
+  })
+
   it('keeps dispatched work running and ignores its response after a newer revision is scheduled', () => {
     const worker = new FakeWorker()
     const accepted: DocumentAnalysis[] = []
@@ -249,6 +307,50 @@ describe('DocumentClient', () => {
     })
     client.dispose()
     expect(worker.listenerCount()).toBe(0)
+  })
+
+  it.each([
+    ['runtime error', (worker: FakeWorker) => worker.emitError(), 'worker_runtime_error'],
+    ['message error', (worker: FakeWorker) => worker.emitMessageError(), 'worker_message_error'],
+  ] as const)('cancels a debounced edit after a worker %s', (_label, fail, code) => {
+    const worker = new FakeWorker()
+    const errors: { code: string }[] = []
+    const client = new DocumentClient(worker, { onError: (error) => errors.push(error) })
+
+    client.schedule(pair(), contract, 'edit')
+    fail(worker)
+    vi.advanceTimersByTime(180)
+
+    expect(worker.messages).toEqual([])
+    expect(errors).toEqual([expect.objectContaining({ code })])
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
+  })
+
+  it('settles a debounced edit when contract registration times out after dispatch', () => {
+    const worker = new FakeWorker()
+    const errors: { code: string; message: string }[] = []
+    const client = new DocumentClient(worker, {
+      onError: (error) => errors.push(error),
+      registrationTimeoutMs: 1_000,
+      analysisTimeoutMs: 5_000,
+    })
+
+    client.schedule(pair(), contract, 'edit')
+    vi.advanceTimersByTime(180)
+    expect(worker.messages.map(({ type }) => type)).toEqual(['contract-register', 'analyze'])
+    vi.advanceTimersByTime(999)
+    expect(errors).toEqual([])
+    vi.advanceTimersByTime(1)
+
+    expect(errors).toEqual([
+      expect.objectContaining({
+        code: 'worker_timeout',
+        message: 'Document analysis worker contract registration timed out.',
+      }),
+    ])
+    expect(vi.getTimerCount()).toBe(0)
+    client.dispose()
   })
 
   it('settles a dispatched analysis after the bounded response timeout', () => {

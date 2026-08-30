@@ -1,5 +1,5 @@
 import loop24ManifestSource from '../../brands/loop24/brand.yaml?raw'
-import type { WorkspaceChangedHandler, WorkspaceNativeBridge } from '$src/lib/native/types'
+import { NativeError, type WorkspaceChangedHandler, type WorkspaceNativeBridge } from '$src/lib/native/types'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import type { ProgressSnapshot } from '$src/lib/progress/types'
@@ -70,6 +70,13 @@ nodes:
   - id: publish
     command: /publish
     depends_on: [prepare]
+`
+const EXPORT_BLOCKING_YAML = `name: Blocked export
+description: Deterministic structurally invalid export fixture.
+nodes:
+  - id: publish
+    command: /publish
+    depends_on: [missing]
 `
 const LONG_SETUP_LOGS = Array.from(
   { length: 12 },
@@ -281,9 +288,11 @@ export async function installRuntimeBootstrap(): Promise<void> {
         }
       : scenario === 'repeated-diagnostics'
         ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
-        : scenario === 'advanced-inspector'
-          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
-          : AUTHORING_FILES
+        : scenario === 'export-blocking-modal'
+          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
+          : scenario === 'advanced-inspector'
+            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
+            : AUTHORING_FILES
   const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
   const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0
@@ -325,7 +334,7 @@ export async function installRuntimeBootstrap(): Promise<void> {
       ])
     : null
   let brandSelection = 0
-  let activeBrandId = 'loop24'
+  let activeBrandId = scenario === 'active-brand-removal-modal' ? 'northstar' : 'loop24'
 
   const validManifest = loop24ManifestSource
     .replace('id: loop24', 'id: northstar')
@@ -338,6 +347,14 @@ export async function installRuntimeBootstrap(): Promise<void> {
   const validManifestHash = await sha256(new TextEncoder().encode(validManifest))
   const maliciousManifestHash = await sha256(new TextEncoder().encode(maliciousManifest))
   const bundledManifest = loadBrandManifest(loop24ManifestSource)
+  const activeBrandPack: StoredBrandPack = {
+    manifest: loadBrandManifest(validManifest),
+    assets: [
+      { path: 'logo.svg', bytes: [...assetBytes] },
+      { path: 'mark.svg', bytes: [...assetBytes] },
+    ],
+    revision: 'e2e-active-brand',
+  }
   const longBrandPacks: readonly StoredBrandPack[] = Array.from({ length: 12 }, (_, index) => ({
     manifest: {
       ...bundledManifest,
@@ -430,13 +447,57 @@ export async function installRuntimeBootstrap(): Promise<void> {
     contractCacheLoad: async () =>
       scenario === 'long-settings' ? { entries: longContractEntries, advisories: [] } : base.contractCacheLoad(),
     brandListPacks: async () =>
-      scenario === 'long-settings' ? { packs: longBrandPacks, warnings: [] } : base.brandListPacks(),
+      scenario === 'long-settings'
+        ? { packs: longBrandPacks, warnings: [] }
+        : scenario === 'active-brand-removal-modal'
+          ? { packs: [activeBrandPack], warnings: [] }
+          : base.brandListPacks(),
     brandLoadPack: async (id) => {
       if (scenario === 'long-settings') {
         const pack = longBrandPacks.find(({ manifest }) => manifest.id === id)
         if (pack) return pack
       }
+      if (scenario === 'active-brand-removal-modal' && id === activeBrandPack.manifest.id) return activeBrandPack
       return base.brandLoadPack(id)
+    },
+    brandLoadActive: async () =>
+      scenario === 'active-brand-removal-modal'
+        ? { id: activeBrandPack.manifest.id, pack: activeBrandPack, recovered: false, warning: null }
+        : base.brandLoadActive(),
+    recoveryList: async () => {
+      if (scenario !== 'recovery-modal') return base.recoveryList()
+      const content = JSON.stringify({
+        schemaVersion: 1,
+        workflowId: `workflow:browser-workspace:${DEFINITION_PATH}`,
+        generation: 1,
+        savedGeneration: 0,
+        definition: {
+          path: DEFINITION_PATH,
+          text: AUTHORING_FILES[DEFINITION_PATH].replace('Release demo', 'Recovered release demo'),
+          revision: 1,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: {
+          path: COMPANION_PATH,
+          text: AUTHORING_FILES[COMPANION_PATH],
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'e2e-companion-hash',
+        },
+        updatedAt: '2026-08-30T12:00:00.000Z',
+      })
+      return [
+        { id: 'e2e-recovery.wsr', key: `workflow:browser-workspace:${DEFINITION_PATH}`, content, size: content.length },
+      ]
+    },
+    chooseExportDirectory: async () =>
+      scenario === 'export-collision-modal' ? '/e2e/exports' : base.chooseExportDirectory(),
+    externalExportYamlPair: async (request) => {
+      if (scenario === 'export-collision-modal' && !request.overwrite) {
+        throw new NativeError('destination_exists', 'The selected export files already exist.')
+      }
+      return base.externalExportYamlPair(request)
     },
     chooseWorkspaceFolder: async () => {
       if (scenario === 'long-application-notice') throw new Error(LONG_APPLICATION_NOTICE)
@@ -512,16 +573,19 @@ export async function installRuntimeBootstrap(): Promise<void> {
       updateDeferred = true
       return updateSnapshot('deferred')
     },
-    gitDetect: async () => ({
-      root: scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace',
-      branch:
-        scenario === 'unbroken-git-ref'
-          ? UNBROKEN_GIT_REF
-          : scenario === 'long-git'
-            ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference'
-            : 'base',
-      detachedHead: null,
-    }),
+    gitDetect: async () =>
+      scenario === 'initialize-repository-modal'
+        ? null
+        : {
+            root: scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace',
+            branch:
+              scenario === 'unbroken-git-ref'
+                ? UNBROKEN_GIT_REF
+                : scenario === 'long-git'
+                  ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference'
+                  : 'base',
+            detachedHead: null,
+          },
     gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
     gitDiffPair: async () => ({
       working: pairVersioned
