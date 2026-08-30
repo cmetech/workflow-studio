@@ -671,16 +671,6 @@
     background-size: 1.25rem 1.25rem;
   }
 
-  :global(.graph-canvas .workflow-edge .svelte-flow__edge-path) {
-    stroke: var(--color-edge);
-    stroke-width: 2;
-  }
-
-  :global(.graph-canvas .workflow-edge.stale .svelte-flow__edge-path) {
-    stroke-dasharray: 5 4;
-    opacity: 0.72;
-  }
-
   .stale-overlay {
     position: static;
     grid-row: 2;

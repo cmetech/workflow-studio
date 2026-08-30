@@ -450,6 +450,42 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('keeps dependency authoring available for a current visually-authorable node draft', async () => {
+    const draftText = `${source}  - id: command\n    command: ""\n`
+    const rendered = await renderAuthoringApp({ text: draftText })
+    const revision = $documentSession.get().revision!
+    receiveDocumentAnalysis({
+      ...revision,
+      structurallyValid: false,
+      visuallyAuthorable: true,
+      issues: [
+        {
+          code: 'schema_min_length',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Command must not be empty.',
+          document: 'definition',
+          nodeId: 'command',
+        },
+      ],
+      projection: projection(draftText),
+    })
+    await tick()
+
+    await fireEvent(
+      screen.getByRole('region', { name: 'Workflow graph' }),
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
+    )
+
+    await waitFor(() =>
+      expect($documentSession.get().pair?.definition.text).toContain(
+        '  - id: command\n    command: ""\n    depends_on:\n      - collect\n',
+      ),
+    )
+    rendered.unmount()
+  })
+
   it('mounts the Nodes activity and authors one YAML transaction by click or exact-position HTML drop', async () => {
     showActivity('nodes')
     let rendered = await renderAuthoringApp()

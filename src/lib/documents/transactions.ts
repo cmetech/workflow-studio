@@ -140,7 +140,7 @@ export async function applyWorkflowMutation(
 }
 
 function progressiveDraftMutation(mutation: WorkflowMutation, contract: AuthoringContract): boolean {
-  if (mutation.type === 'add-node') return true
+  if (mutation.type === 'add-node' || mutation.type === 'set-dependencies') return true
   if (mutation.type !== 'set-field' && mutation.type !== 'delete-field') return false
   if (mutation.document !== 'definition') return true
   const dagRule = contract.semantic_rules.find(({ id }) => id === 'workflow-dag-v1')

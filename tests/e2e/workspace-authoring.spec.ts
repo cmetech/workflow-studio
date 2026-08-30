@@ -45,9 +45,15 @@ async function dragNodeBy(
   await page.mouse.up()
 }
 
-async function dragPort(page: Page, sourceId: string, targetId: string): Promise<void> {
-  const source = page.getByRole('button', { name: `Dependencies leaving ${sourceId}` })
-  const target = page.getByRole('button', { name: `Dependencies entering ${targetId}` })
+async function dragPort(
+  page: Page,
+  sourceId: string,
+  sourcePort: 'input' | 'output',
+  targetId: string,
+  targetPort: 'input' | 'output',
+): Promise<void> {
+  const source = page.locator(`[data-node-id="${sourceId}"] [data-port="${sourcePort}"]`)
+  const target = page.locator(`[data-node-id="${targetId}"] [data-port="${targetPort}"]`)
   await expect(source).toBeInViewport()
   await expect(target).toBeInViewport()
   const [sourceBounds, targetBounds] = await Promise.all([source.boundingBox(), target.boundingBox()])
@@ -233,30 +239,31 @@ nodes:
   await expect.poll(async () => layoutPosition(page, 'publish')).toEqual(publishAfterDrag)
 })
 
-test('real port gestures commit a dependency and reject a cycle without changing YAML', async ({ page }) => {
+test('real palette and port gestures commit a dependency and reject a cycle without changing YAML', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
-  await page.getByRole('button', { name: 'Add Node' }).click()
-  const addNode = page.getByRole('dialog', { name: 'Add node' })
-  await addNode.getByRole('option', { name: /Command/ }).click()
-  const command = page.getByRole('group', { name: 'command node command' })
-  await expect(command).toBeVisible()
-  await command.focus()
-  await command.press('Enter')
-  const commandField = page.getByRole('textbox', { name: /Commandrequired/i })
-  await commandField.fill('/review')
-  await page.getByRole('button', { name: 'Apply Command' }).click()
-  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toContain('    command: "/review"\n')
-  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
-  await page.getByRole('button', { name: 'Fit View' }).click()
+  await page.getByRole('button', { name: 'Nodes', exact: true }).click()
+  const palette = page.getByRole('region', { name: 'Nodes' })
+  const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  await palette.getByRole('button', { name: /add command node/i }).dragTo(viewport, {
+    targetPosition: { x: 520, y: 360 },
+  })
+  await expect
+    .poll(async () => ((await e2eSnapshot(page)).definitionText.match(/^  - id: command$/gm) ?? []).length)
+    .toBe(1)
+  await expect.poll(async () => Math.abs((await layoutPosition(page, 'command')).x - 520)).toBeLessThanOrEqual(8)
+  await expect.poll(async () => Math.abs((await layoutPosition(page, 'command')).y - 360)).toBeLessThanOrEqual(8)
 
-  await dragPort(page, 'publish', 'command')
+  await dragPort(page, 'publish', 'output', 'command', 'input')
   await expect
     .poll(async () => (await e2eSnapshot(page)).definitionText)
-    .toContain('  - id: command\n    command: "/review"\n    depends_on:\n      - publish\n')
+    .toContain('  - id: command\n    command: ""\n    depends_on:\n      - publish\n')
   await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
 
   const beforeCycle = (await e2eSnapshot(page)).definitionText
-  await dragPort(page, 'publish', 'prepare')
+  await dragPort(page, 'publish', 'output', 'prepare', 'input')
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/create a cycle/i)
   await expectAuthoritativeYaml(page, beforeCycle as string)
 })

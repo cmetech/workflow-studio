@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
+import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
@@ -6,6 +7,7 @@ import type { WorkflowProjection } from '$src/lib/projection/types'
 import { commandRegistry, createCommandRegistry, listCommands, type CommandSurface } from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
+import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
 
@@ -425,14 +427,27 @@ describe('GraphCanvas', () => {
     ])
   })
 
-  it('exposes focusable 32px dependency ports for keyboard and touch users', async () => {
-    renderCanvas({ projection, layout })
+  it('exposes stable node and focusable 32px dependency-port hooks for keyboard and touch users', async () => {
+    const { container } = renderCanvas({ projection, layout })
     await tick()
 
+    for (const node of projection.nodes) {
+      const article = container.querySelector<HTMLElement>(`article[aria-label="${node.kind} node ${node.id}"]`)
+      expect(article).toHaveAttribute('data-node-id', node.id)
+      expect(Array.from(article!.querySelectorAll('[data-port]'), (port) => port.getAttribute('data-port'))).toEqual([
+        'input',
+        'output',
+      ])
+    }
+
     const incoming = screen.getByRole('button', { name: 'Dependencies entering collect' })
+    expect(incoming).toHaveAttribute('data-port', 'input')
     expect(incoming).toHaveAttribute('tabindex', '0')
     expect(getComputedStyle(incoming).width).toBe('32px')
     expect(getComputedStyle(incoming).height).toBe('32px')
+
+    const outgoing = screen.getByRole('button', { name: 'Dependencies leaving collect' })
+    expect(outgoing).toHaveAttribute('data-port', 'output')
   })
 
   it('routes semantic connection events without changing layout and announces one typed rejection politely', async () => {
@@ -534,5 +549,33 @@ describe('GraphCanvas', () => {
 
     expect(onRequestDelete).not.toHaveBeenCalled()
     expect(onDisconnect).toHaveBeenCalledWith('collect', 'review')
+  })
+})
+
+describe('WorkflowEdge', () => {
+  function renderEdge(selected = false, stale = false) {
+    return render(WorkflowEdge, {
+      id: 'dependency:collect->review',
+      sourceX: 0,
+      sourceY: 0,
+      targetX: 320,
+      targetY: 0,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      selected,
+      data: { stale, readOnly: false },
+    } as never)
+  }
+
+  it('retains a 32px transparent edge interaction path', () => {
+    const { container } = renderEdge()
+
+    expect(container.querySelector('.svelte-flow__edge-interaction')).toHaveAttribute('stroke-width', '32')
+  })
+
+  it('exposes selected and stale semantic classes on the visible edge path', () => {
+    const { container } = renderEdge(true, true)
+
+    expect(container.querySelector('.svelte-flow__edge-path')).toHaveClass('workflow-edge', 'selected', 'stale')
   })
 })
