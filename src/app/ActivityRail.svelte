@@ -19,7 +19,7 @@
   interface Props {
     commandSurface: CommandSurface
     workspacePanelExpanded?: boolean
-    onActivityInvoke?: (opener: HTMLButtonElement) => void
+    onActivityInvoke?: (opener: HTMLButtonElement, activity: ActivityId) => void
   }
   let { commandSurface, workspacePanelExpanded = true, onActivityInvoke }: Props = $props()
 
@@ -55,7 +55,7 @@
         title={command.title}
         disabled={!command.enabled}
         onclick={(event) => {
-          if (!isPageActivity(activity.id)) onActivityInvoke?.(event.currentTarget)
+          onActivityInvoke?.(event.currentTarget, activity.id)
           void commandSurface.executeCommand(command.id, activityContext)
         }}
       >

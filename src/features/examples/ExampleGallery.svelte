@@ -5,15 +5,16 @@
     examples: readonly ExampleDescriptor[]
     topicLabels: Readonly<Record<string, string>>
     onCreateEditableCopy: (example: ExampleDescriptor) => void | Promise<void>
-    onOpenDocumentation: (example: ExampleDescriptor, topicId: string) => void
+    onOpenDocumentation: (example: ExampleDescriptor, topicId: string, opener: HTMLButtonElement) => void
+    embedded?: boolean
   }
 
-  let { examples, topicLabels, onCreateEditableCopy, onOpenDocumentation }: Props = $props()
+  let { examples, topicLabels, onCreateEditableCopy, onOpenDocumentation, embedded = false }: Props = $props()
   let preview = $state<ExampleDescriptor | null>(null)
 </script>
 
-<section class="example-gallery" aria-labelledby="examples-title">
-  <h2 id="examples-title">Examples</h2>
+<section class="example-gallery" aria-labelledby={embedded ? undefined : 'examples-title'}>
+  {#if !embedded}<h2 id="examples-title">Examples</h2>{/if}
   <p class="intro">Validated bundled workflows are read-only. Create a copy to edit one in the current workspace.</p>
   <div class="cards">
     {#each examples as example (example.id)}
@@ -40,7 +41,7 @@
         </dl>
         <div class="topics" aria-label={`${example.title} documentation`}>
           {#each example.documentationTopicIds as topicId (topicId)}
-            <button type="button" onclick={() => onOpenDocumentation(example, topicId)}>
+            <button type="button" onclick={(event) => onOpenDocumentation(example, topicId, event.currentTarget)}>
               Open documentation: {topicLabels[`${example.profile}:${topicId}`] ?? topicId}
             </button>
           {/each}

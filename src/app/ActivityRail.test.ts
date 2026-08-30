@@ -37,7 +37,7 @@ describe('ActivityRail', () => {
     expect(settings.querySelector('svg')).not.toBeNull()
     await fireEvent.click(documentation)
 
-    expect(onActivityInvoke).not.toHaveBeenCalled()
+    expect(onActivityInvoke).toHaveBeenCalledWith(documentation, 'documentation')
     expect(runDocumentation).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: 'Git' })).toHaveAttribute('aria-current', 'page')
   })

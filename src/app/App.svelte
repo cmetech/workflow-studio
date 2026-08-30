@@ -12,7 +12,7 @@
   import { resolveCommand } from '$src/lib/commands/surface'
   import { dispatchKeybinding } from '$src/lib/commands/keybindings'
   import { NodeChordController, type NodeChordKind, type NodeChordState } from '$src/lib/commands/node-chords'
-  import type { CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
+  import type { ActivityId, CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
   import { resolveThemeMode } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
   import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
@@ -35,6 +35,7 @@
     activeEditorMode,
     commandPaletteOpen,
     inspectorPanelOpen,
+    isPageActivity,
     keyboardShortcutsOpen,
     openInspectorPanel,
     resolveWorkbenchSurface,
@@ -290,6 +291,7 @@
   let editorWidth = $state(720)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
+  let pageOpener = $state<HTMLElement | undefined>()
   let inspectorDrawerOwner = $state<
     { readonly kind: 'explicit'; readonly opener: HTMLElement | undefined } | { readonly kind: 'resize' } | undefined
   >()
@@ -433,6 +435,47 @@
   const inspectorPanelHidden = $derived(
     authoringHidden || (workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen),
   )
+  let authoringWasHidden = false
+  let authoringScrollSnapshot: readonly {
+    readonly element: HTMLElement
+    readonly top: number
+    readonly left: number
+  }[] = []
+
+  function captureAuthoringScroll(): void {
+    const roots = [workspacePanelHost, editorColumnHost, inspectorPanelHost].filter(
+      (element): element is HTMLElement => element !== undefined,
+    )
+    authoringScrollSnapshot = roots
+      .flatMap((root) => [root, ...root.querySelectorAll<HTMLElement>('*')])
+      .filter((element) => element.scrollTop !== 0 || element.scrollLeft !== 0)
+      .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }))
+  }
+
+  function restoreAuthoringScroll(): void {
+    for (const { element, top, left } of authoringScrollSnapshot) {
+      if (!element.isConnected) continue
+      element.scrollTop = top
+      element.scrollLeft = left
+    }
+  }
+
+  $effect.pre(() => {
+    const hidden = authoringHidden
+    if (hidden && !authoringWasHidden) captureAuthoringScroll()
+    authoringWasHidden = hidden
+  })
+
+  $effect(() => {
+    const hidden = authoringHidden
+    if (authoringScrollSnapshot.length === 0) return
+    restoreAuthoringScroll()
+    const frame = requestAnimationFrame(() => {
+      restoreAuthoringScroll()
+      if (!hidden) authoringScrollSnapshot = []
+    })
+    return () => cancelAnimationFrame(frame)
+  })
 
   $effect.pre(() => {
     const panelPresentation = workbenchPresentation.panels
@@ -465,12 +508,6 @@
 
     previousPanelPresentation = panelPresentation
     previousSplitPresentation = splitPresentation
-  })
-
-  $effect(() => {
-    if (workspacePanelHost) workspacePanelHost.toggleAttribute('inert', workspacePanelHidden)
-    if (editorColumnHost) editorColumnHost.toggleAttribute('inert', authoringHidden)
-    if (inspectorPanelHost) inspectorPanelHost.toggleAttribute('inert', inspectorPanelHidden)
   })
 
   const inspectorContract = $derived(
@@ -644,6 +681,26 @@
     workspacePanelOpener = opener
     await tick()
     workspacePanelHost?.querySelector<HTMLElement>('.drawer-close')?.focus()
+  }
+
+  function rememberActivityOpener(opener: HTMLElement, activity: ActivityId): void {
+    if (isPageActivity(activity)) pageOpener = opener
+    else workspacePanelOpener = opener
+  }
+
+  function rememberPageOpener(opener: HTMLElement | undefined): void {
+    if (opener?.isConnected) pageOpener = opener
+  }
+
+  async function returnToAuthoringSurface(): Promise<void> {
+    const opener = pageOpener
+    returnToWorkflow()
+    await tick()
+    const target = opener?.isConnected
+      ? opener
+      : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
+    target?.focus()
+    pageOpener = undefined
   }
 
   async function closeWorkspaceDrawer(): Promise<void> {
@@ -1158,7 +1215,12 @@
     await refreshWorkspace()
   }
 
-  function openExampleDocumentation(example: ExampleDescriptor, topicId: string): void {
+  function openExampleDocumentation(
+    example: ExampleDescriptor,
+    topicId: string,
+    opener: HTMLButtonElement,
+  ): void {
+    rememberPageOpener(opener)
     exampleDocumentationProfile = example.profile
     documentationNavigationSequence += 1
     documentationNavigationRequest = { id: documentationNavigationSequence, topicId: `contract:${topicId}` }
@@ -1723,7 +1785,7 @@
     <ActivityRail
       {commandSurface}
       workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
-      onActivityInvoke={(opener) => (workspacePanelOpener = opener)}
+      onActivityInvoke={rememberActivityOpener}
     />
     {#if workbenchSurface === 'authoring' && workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
       <button type="button" class="drawer-scrim" aria-label="Close open panels" onclick={() => void closeOpenDrawer()}
@@ -1734,6 +1796,7 @@
       class="panel left-panel"
       class:drawer-open={!workspacePanelHidden}
       hidden={authoringHidden}
+      {...(workspacePanelHidden ? { inert: true } : {})}
       aria-label="Workspace panel"
       aria-hidden={workspacePanelHidden ? 'true' : undefined}
     >
@@ -1786,7 +1849,7 @@
       class="editor-column"
       aria-label="Workflow workspace"
       hidden={authoringHidden}
-      inert={authoringHidden}
+      {...(authoringHidden ? { inert: true } : {})}
       aria-hidden={authoringHidden ? 'true' : undefined}
     >
       <div class="editor-tabs" role="group" aria-label="Editor mode">
@@ -1908,7 +1971,8 @@
             definition: $documentSessionStore.pair.definition.path,
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
-          onDocumentation={(id) => {
+          onDocumentation={(id, opener) => {
+            rememberPageOpener(opener)
             exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
             documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
@@ -1964,6 +2028,7 @@
       class="panel inspector-panel"
       class:drawer-open={!inspectorPanelHidden}
       hidden={authoringHidden}
+      {...(inspectorPanelHidden ? { inert: true } : {})}
       aria-label="Inspector"
       aria-hidden={inspectorPanelHidden ? 'true' : undefined}
     >
@@ -2015,7 +2080,7 @@
         title="Settings"
         description="Manage the application."
         showBack
-        onBack={returnToWorkflow}
+        onBack={returnToAuthoringSurface}
       >
         <div class="settings-stack">
           <BrandSettings
@@ -2074,9 +2139,10 @@
         title="Git"
         description="Inspect local repository status, history, and workflow versions."
         showBack
-        onBack={returnToWorkflow}
+        onBack={returnToAuthoringSurface}
       >
         <GitView
+          embedded
           onSelectCommit={loadHistoricalGitPair}
           currentDefinition={$documentSessionStore.pair?.definition.text}
           currentCompanion={$documentSessionStore.pair?.companion?.text}
@@ -2098,7 +2164,7 @@
         title="Documentation"
         description="Browse the bundled offline workflow reference."
         showBack
-        onBack={returnToWorkflow}
+        onBack={returnToAuthoringSurface}
       >
         {#if documentationIndex}
           <DocumentationView
@@ -2122,10 +2188,11 @@
         title="Examples"
         description="Explore validated bundled workflows and create editable copies."
         showBack
-        onBack={returnToWorkflow}
+        onBack={returnToAuthoringSurface}
       >
         {#if examples.length > 0}
           <ExampleGallery
+            embedded
             {examples}
             topicLabels={exampleTopicLabels}
             onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}

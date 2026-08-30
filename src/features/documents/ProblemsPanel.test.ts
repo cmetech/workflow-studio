@@ -59,7 +59,8 @@ describe('ProblemsPanel', () => {
       onDocumentation,
     })
 
-    await fireEvent.click(screen.getByRole('button', { name: /required node field/i }))
-    expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt')
+    const opener = screen.getByRole('button', { name: /required node field/i })
+    await fireEvent.click(opener)
+    expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt', opener)
   })
 })

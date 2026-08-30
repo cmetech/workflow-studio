@@ -8,7 +8,7 @@
     issues: readonly ValidationIssue[]
     paths: Readonly<Record<DocumentKind, string | null>>
     execute?: CommandSurface['executeCommand']
-    onDocumentation?: ((id: string) => void) | undefined
+    onDocumentation?: ((id: string, opener: HTMLButtonElement) => void) | undefined
   }
 
   interface IssueGroup {
@@ -48,9 +48,9 @@
     return layer[0]?.toUpperCase() + layer.slice(1)
   }
 
-  function focusIssue(issue: ValidationIssue): void {
+  function focusIssue(issue: ValidationIssue, opener: HTMLButtonElement): void {
     if (issue.documentationId) {
-      onDocumentation?.(issue.documentationId)
+      onDocumentation?.(issue.documentationId, opener)
       return
     }
     selectProblem(issue)
@@ -83,7 +83,7 @@
                     <button
                       type="button"
                       aria-label={`${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
-                      onclick={() => focusIssue(issue)}
+                      onclick={(event) => focusIssue(issue, event.currentTarget)}
                     >
                       <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
                       <span class="issue-copy">

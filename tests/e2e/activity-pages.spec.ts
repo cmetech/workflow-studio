@@ -9,7 +9,7 @@ nodes:
   - id: publish
     command: /publish
     depends_on: [prepare]
-`
+${Array.from({ length: 80 }, (_, index) => `# retained scroll line ${index}\n`).join('')}`
 
 test('preserves exact authoring state across full-workbench page navigation', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -26,8 +26,17 @@ test('preserves exact authoring state across full-workbench page navigation', as
   await expect(inspectorSelection).toHaveText('prepare')
   await expect.poll(async () => (await e2eSnapshot(page)).layout).not.toBeNull()
   const layoutBefore = (await e2eSnapshot(page)).layout
+  const yamlScroller = page.locator('[aria-label="Definition YAML"] .cm-scroller')
+  await yamlScroller.evaluate((element) => {
+    element.style.maxHeight = '12rem'
+    element.style.overflowY = 'auto'
+    element.scrollTop = 120
+  })
+  const yamlScrollBefore = await yamlScroller.evaluate((element) => element.scrollTop)
+  expect(yamlScrollBefore).toBeGreaterThan(0)
 
-  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  const settings = page.getByRole('button', { name: 'Settings', exact: true })
+  await settings.click()
   await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible()
   await expect(
     page.getByRole('region', { name: 'Workflow workspace', includeHidden: true }),
@@ -38,5 +47,7 @@ test('preserves exact authoring state across full-workbench page navigation', as
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(UNSAVED_YAML)
   await expect(page.locator('.svelte-flow__node.selected').filter({ hasText: 'prepare' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Split', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(settings).toBeFocused()
+  await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBe(yamlScrollBefore)
   expect((await e2eSnapshot(page)).layout).toEqual(layoutBefore)
 })

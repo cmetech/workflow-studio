@@ -907,6 +907,67 @@ nodes:
     expect(authoring).not.toHaveAttribute('inert')
   })
 
+  it('restores focus to the rail control that opened a full-workbench page', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
+    render(App)
+    await waitForSetupReady()
+
+    const settings = screen.getByRole('button', { name: 'Settings' })
+    await fireEvent.click(settings)
+    await fireEvent.click(await screen.findByRole('button', { name: 'Back to Workflow' }))
+
+    await waitFor(() => expect(settings).toHaveFocus())
+  })
+
+  it('restores focus to a mounted Problems documentation opener after returning to authoring', async () => {
+    const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\nnodes: []\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      legacy.contract_digest,
+    )
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      issues: [
+        {
+          code: 'nodes_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Add at least one node.',
+          document: 'definition',
+          documentationId: 'workflow-definition',
+        },
+      ],
+      structurallyValid: false,
+    })
+    render(App)
+    await waitForSetupReady()
+
+    const problem = screen.getByRole('button', { name: /add at least one node/i })
+    await fireEvent.click(problem)
+    await screen.findByRole('region', { name: 'Documentation' })
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
+
+    await waitFor(() => expect(problem).toHaveFocus())
+  })
+
   it('mounts the local Git activity view from feature-owned Git state', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [])
     const gitStatus = vi.fn(async () => ({ entries: [] }))

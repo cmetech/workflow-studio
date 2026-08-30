@@ -21,6 +21,7 @@
     onSetIdentity?: ((identity: { userName: string; userEmail: string }) => void | Promise<void>) | undefined
     onCreateVersion?:
       ((message: string) => void | CreateVersionOutcome | Promise<void | CreateVersionOutcome>) | undefined
+    embedded?: boolean
   }
   let {
     onSelectCommit,
@@ -33,6 +34,7 @@
     onInitialize,
     onSetIdentity,
     onCreateVersion,
+    embedded = false,
   }: Props = $props()
   let selected = $state<GitPairSnapshot | null>(null)
   let selectedOid = $state<string | undefined>()
@@ -103,8 +105,8 @@
   }
 </script>
 
-<section class="git-view" aria-labelledby="git-view-title">
-  <h2 id="git-view-title">Git</h2>
+<section class="git-view" aria-labelledby={embedded ? undefined : 'git-view-title'}>
+  {#if !embedded}<h2 id="git-view-title">Git</h2>{/if}
   {#if $gitState.phase === 'loading'}
     <p role="status">Refreshing local Git…</p>
   {:else if $gitState.phase === 'error'}

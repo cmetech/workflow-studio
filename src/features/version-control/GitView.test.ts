@@ -6,6 +6,13 @@ import GitView from './GitView.svelte'
 describe('GitView', () => {
   afterEach(resetGitState)
 
+  it('omits its standalone landmark and title when embedded in a workbench page', () => {
+    render(GitView, { props: { onSelectCommit: vi.fn(), embedded: true } } as never)
+
+    expect(screen.queryByRole('region', { name: 'Git' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Git' })).not.toBeInTheDocument()
+  })
+
   it('shows branch, pair status, both diffs, and chronological history', () => {
     setGitInspection({
       pair: { definitionPath: 'flow.yaml', companionPath: null },

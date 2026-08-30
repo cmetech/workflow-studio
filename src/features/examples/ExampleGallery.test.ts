@@ -22,6 +22,19 @@ const example: ExampleDescriptor = {
 }
 
 describe('ExampleGallery', () => {
+  it('omits its standalone landmark and title when embedded in a workbench page', () => {
+    render(ExampleGallery, {
+      examples: [example],
+      topicLabels: {},
+      onCreateEditableCopy: vi.fn(),
+      onOpenDocumentation: vi.fn(),
+      embedded: true,
+    } as never)
+
+    expect(screen.queryByRole('region', { name: 'Examples' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Examples' })).not.toBeInTheDocument()
+  })
+
   it('previews immutable example YAML and delegates editable-copy creation', async () => {
     const onCreateEditableCopy = vi.fn(async () => undefined)
     const onOpenDocumentation = vi.fn()
@@ -41,6 +54,6 @@ describe('ExampleGallery', () => {
     const topic = screen.getByRole('button', { name: 'Open documentation: Workflow definition' })
     await fireEvent.keyDown(topic, { key: 'Enter' })
     await fireEvent.click(topic)
-    expect(onOpenDocumentation).toHaveBeenCalledWith(example, 'workflow-definition')
+    expect(onOpenDocumentation).toHaveBeenCalledWith(example, 'workflow-definition', topic)
   })
 })
