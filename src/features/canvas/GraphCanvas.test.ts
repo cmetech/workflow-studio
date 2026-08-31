@@ -185,6 +185,82 @@ describe('GraphCanvas', () => {
     unsubscribe()
   })
 
+  it('does not republish unchanged positions for an edge-only projection refresh', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: { ...projection, edges: [] },
+      layout,
+    })
+    await tick()
+
+    expect(publications).toEqual([])
+    unsubscribe()
+  })
+
+  it('does not reset positions between consecutive bound node updates after an edge-only projection refresh', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    setCanvasSelection(['collect'])
+    await tick()
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: { ...projection, edges: [] },
+      layout,
+    })
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 5, y: 0 } },
+      }),
+    )
+    rendered.component.nudge(false, 'right')
+    await tick()
+
+    expect($canvasPositions.get().collect).toEqual({ x: 10, y: 0 })
+    expect(publications).toEqual([
+      { ...layout.nodePositions, collect: { x: 5, y: 0 } },
+      { ...layout.nodePositions, collect: { x: 10, y: 0 } },
+    ])
+    unsubscribe()
+  })
+
+  it('does not re-read projection inputs for a bound selection update after an edge-only refresh', async () => {
+    let positionReads = 0
+    const trackedLayout = {
+      ...layout,
+      get nodePositions() {
+        positionReads += 1
+        return layout.nodePositions
+      },
+    }
+    const rendered = renderCanvas({ projection, layout: trackedLayout })
+    await tick()
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: { ...projection, edges: [] },
+      layout: trackedLayout,
+    })
+    await tick()
+    const baseline = positionReads
+
+    await fireEvent.click(rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!)
+    await tick()
+
+    expect(positionReads).toBe(baseline)
+  })
+
   it('accepts a validated node-kind HTML drop at exact flow coordinates', async () => {
     const onDropNodeKind = vi.fn()
     const { container } = renderCanvas({ projection, layout, onDropNodeKind })

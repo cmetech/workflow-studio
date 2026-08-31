@@ -12,7 +12,9 @@ export function activateCanvasWorkflowIdentity(workflowId: string | null): void 
 }
 
 export function replaceCanvasPositions(positions: Readonly<Record<string, CanvasPosition>>): void {
-  $canvasPositions.set(clonePositions(positions))
+  const next = clonePositions(positions)
+  if (samePositions($canvasPositions.get(), next)) return
+  $canvasPositions.set(next)
 }
 
 export function moveCanvasPosition(id: string, position: CanvasPosition): void {
@@ -49,4 +51,16 @@ function clonePositions(positions: Readonly<Record<string, CanvasPosition>>): Re
 
 function validPosition(position: CanvasPosition): boolean {
   return Number.isFinite(position.x) && Number.isFinite(position.y)
+}
+
+function samePositions(
+  left: Readonly<Record<string, CanvasPosition>>,
+  right: Readonly<Record<string, CanvasPosition>>,
+): boolean {
+  const leftIds = Object.keys(left)
+  const rightIds = Object.keys(right)
+  return (
+    leftIds.length === rightIds.length &&
+    leftIds.every((id) => left[id]?.x === right[id]?.x && left[id]?.y === right[id]?.y)
+  )
 }

@@ -76,7 +76,7 @@ function reuseUnchangedCanvasElements(previous: CanvasProjection, next: CanvasPr
   }
 }
 
-function sameCanvasNode(left: CanvasNode, right: CanvasNode): boolean {
+export function sameCanvasNode(left: CanvasNode, right: CanvasNode): boolean {
   return (
     left.id === right.id &&
     left.type === right.type &&

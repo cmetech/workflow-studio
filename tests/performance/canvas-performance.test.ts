@@ -2,8 +2,15 @@ import { fireEvent, render } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-import { canvasCapacityForProjection, createMemoizedCanvasProjector } from '$src/features/canvas/project-canvas'
-import { createCanvasSelectionReconciler } from '$src/features/canvas/reconcile-canvas-selection'
+import {
+  canvasCapacityForProjection,
+  createMemoizedCanvasProjector,
+  projectCanvas,
+} from '$src/features/canvas/project-canvas'
+import {
+  createCanvasSelectionReconciler,
+  reconcileCanvasNodeSelection,
+} from '$src/features/canvas/reconcile-canvas-selection'
 import { commandRegistry } from '$src/lib/commands/registry'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import {
@@ -172,7 +179,10 @@ describe('250-node canvas performance contract', () => {
     expect(unchanged.nodes.every((node, index) => node === first.nodes[index])).toBe(true)
 
     const changedProjectedNodes = [...projected.nodes]
-    changedProjectedNodes[127] = { ...changedProjectedNodes[127]! }
+    changedProjectedNodes[127] = {
+      ...changedProjectedNodes[127]!,
+      data: { ...changedProjectedNodes[127]!.data, summary: 'Changed projected summary' },
+    }
     const oneProjectionChange = reconcileSelection(changedProjectedNodes, ['node-125'])
 
     expect(oneProjectionChange.nodes).not.toBe(first.nodes)
@@ -193,6 +203,109 @@ describe('250-node canvas performance contract', () => {
     expect(removed.selection).toEqual([])
     expect(removed.nodes).toHaveLength(249)
     expect(removed.nodes.some(({ id, selected }) => id === 'node-126' || selected)).toBe(false)
+  })
+
+  it('restores unchanged 250-node selection without cloning the render array or node objects', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const selectedNodes = projected.nodes.map((node) => (node.id === 'node-125' ? { ...node, selected: true } : node))
+
+    const unchanged = reconcileCanvasNodeSelection(selectedNodes, ['node-125'])
+
+    expect(unchanged).toBe(selectedNodes)
+    expect(unchanged.every((node, index) => node === selectedNodes[index])).toBe(true)
+
+    const changed = reconcileCanvasNodeSelection(selectedNodes, ['node-126'])
+    expect(changed).not.toBe(selectedNodes)
+    expect(changed[125]).not.toBe(selectedNodes[125])
+    expect(changed[126]).not.toBe(selectedNodes[126])
+    expect(changed.every((node, index) => index === 125 || index === 126 || node === selectedNodes[index])).toBe(true)
+  })
+
+  it('keeps the bound runtime-decorated 250-node array when projection and selection are unchanged', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+    const initial = reconcileSelection(projected.nodes, ['node-125'])
+    const liveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+
+    const unchanged = reconcileSelection(projected.nodes, ['node-125'], liveNodes)
+
+    expect(unchanged.nodes).toBe(liveNodes)
+    expect(unchanged.nodes.every((node, index) => node === liveNodes[index])).toBe(true)
+  })
+
+  it('publishes one genuine projected node change while preserving unchanged bound node identities', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+    const initial = reconcileSelection(projected.nodes, ['node-125'])
+    const liveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+    const changedProjectedNodes = [...projected.nodes]
+    changedProjectedNodes[127] = {
+      ...changedProjectedNodes[127]!,
+      data: { ...changedProjectedNodes[127]!.data, summary: 'Changed projected summary' },
+    }
+
+    const changed = reconcileSelection(changedProjectedNodes, ['node-125'], liveNodes)
+
+    expect(changed.nodes).not.toBe(liveNodes)
+    expect(changed.nodes[127]).toBe(changedProjectedNodes[127])
+    expect(changed.nodes.every((node, index) => index === 127 || node === liveNodes[index])).toBe(true)
+  })
+
+  it('publishes an issue-derived node change while preserving unaffected bound node identities', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+    const initial = reconcileSelection(projected.nodes, ['node-125'])
+    const liveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+    const changedProjectedNodes = [...projected.nodes]
+    changedProjectedNodes[127] = {
+      ...changedProjectedNodes[127]!,
+      data: { ...changedProjectedNodes[127]!.data, errorCount: 1, requiredIssueCount: 1 },
+    }
+
+    const changed = reconcileSelection(changedProjectedNodes, ['node-125'], liveNodes)
+
+    expect(changed.nodes[127]).toBe(changedProjectedNodes[127])
+    expect(changed.nodes.every((node, index) => index === 127 || node === liveNodes[index])).toBe(true)
+  })
+
+  it('clones only bound nodes whose authoritative selection changes', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+    const initial = reconcileSelection(projected.nodes, ['node-125'])
+    const liveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+
+    const changed = reconcileSelection(projected.nodes, ['node-126'], liveNodes)
+
+    expect(changed.nodes).not.toBe(liveNodes)
+    expect(changed.nodes[125]).not.toBe(liveNodes[125])
+    expect(changed.nodes[126]).not.toBe(liveNodes[126])
+    expect(changed.nodes.every((node, index) => index === 125 || index === 126 || node === liveNodes[index])).toBe(true)
+  })
+
+  it('preserves arranged live node identities across the persisted-layout projection echo', () => {
+    const fixture = createLargeWorkflowFixture()
+    const initialProjected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+    const initial = reconcileSelection(initialProjected.nodes, ['node-125'])
+    const initialLiveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+    const arrangedProjected = projectCanvas(fixture.projection, fixture.layout, { arrange: true })
+    const arranged = reconcileSelection(arrangedProjected.nodes, ['node-125'], initialLiveNodes)
+    expect(arranged.nodes[0]).toBe(arrangedProjected.nodes[0])
+    expect(arranged.nodes[0]!.position).toEqual(arrangedProjected.nodes[0]!.position)
+    expect(arranged.nodes[0]!.position).not.toEqual(initialLiveNodes[0]!.position)
+    const arrangedLiveNodes = arranged.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
+    const echoedLayout = { ...fixture.layout, nodePositions: arrangedProjected.positions }
+    const echoedProjected = projectCanvas(fixture.projection, echoedLayout)
+
+    const echoed = reconcileSelection(echoedProjected.nodes, ['node-125'], arrangedLiveNodes)
+
+    expect(echoed.nodes).toBe(arrangedLiveNodes)
+    expect(echoed.nodes.every((node, index) => node === arrangedLiveNodes[index])).toBe(true)
   })
 
   it('reuses unchanged render objects when one dependency changes at canvas capacity', () => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, setContext } from 'svelte'
+  import { onDestroy, onMount, setContext, untrack } from 'svelte'
   import { Background, BackgroundVariant, SelectionMode, SvelteFlow, type Viewport } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import type { CommandSurface } from '$src/lib/commands/registry'
@@ -27,7 +27,7 @@
     type CanvasPosition,
   } from './types'
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
-  import { createCanvasSelectionReconciler } from './reconcile-canvas-selection'
+  import { createCanvasSelectionReconciler, reconcileCanvasNodeSelection } from './reconcile-canvas-selection'
   import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } from './canvas-projection-refresh'
   import {
     authoritativeNodeIds,
@@ -216,7 +216,9 @@
       return
     }
     const projected = deriveCanvas()
-    flowNodes = withAuthoritativeSelection(projected.nodes)
+    const currentNodes = untrack(() => flowNodes)
+    const nextNodes = withAuthoritativeSelection(projected.nodes, currentNodes)
+    if (nextNodes !== currentNodes) flowNodes = nextNodes
     flowEdges = withSurfaceEdgeSelection(projected.edges)
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
@@ -276,15 +278,15 @@
   export function arrange(): void {
     if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
-    flowNodes = withAuthoritativeSelection(projected.nodes)
+    flowNodes = withAuthoritativeSelection(projected.nodes, flowNodes)
     flowEdges = withSurfaceEdgeSelection(projected.edges)
     replaceCanvasPositions(projected.positions)
     schedulePersist(layoutWithPositions())
   }
 
-  function withAuthoritativeSelection(nodes: readonly CanvasNode[]): CanvasNode[] {
+  function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
     const currentSelection = canvasSelectionStore.get()
-    const reconciled = reconcileSelection(nodes, currentSelection)
+    const reconciled = reconcileSelection(nodes, currentSelection, currentNodes)
     if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)
     return reconciled.nodes
   }
@@ -492,8 +494,9 @@
   }
 
   function restoreSurfaceSelection(): void {
-    const selectedIds = new Set(canvasSelectionStore.get())
-    flowNodes = flowNodes.map((node) => ({ ...node, selected: selectedIds.has(node.id) }))
+    const selectedIds = canvasSelectionStore.get()
+    const nextNodes = reconcileCanvasNodeSelection(flowNodes, selectedIds)
+    if (nextNodes !== flowNodes) flowNodes = nextNodes
     selection = [...selectedIds]
   }
 
