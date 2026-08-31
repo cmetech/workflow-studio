@@ -313,6 +313,61 @@ describe('Inspector', () => {
     expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedField, value: '/review' })
   })
 
+  it('preserves an uncommitted code draft across a transient disabled refresh of the same binding', async () => {
+    const initialCommit = vi.fn()
+    const disabledCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields: [codeField],
+      values: { 'command.node.command': '' },
+      selectionLabel: 'collect',
+      selectionNodeId: 'collect',
+      bindingIdentity: 'workflow:0:0:collect',
+      onCommit: initialCommit,
+    })
+    const command = screen.getByRole('textbox', { name: 'Command' })
+    await fireEvent.input(command, { target: { value: '/review' } })
+
+    const disabledField = { ...codeField, description: 'Temporarily unavailable command.' }
+    await rerender({
+      fields: [disabledField],
+      values: { 'command.node.command': '' },
+      selectionLabel: 'collect',
+      selectionNodeId: 'collect',
+      bindingIdentity: 'workflow:0:0:collect',
+      disabledReason: 'The YAML projection is stale.',
+      onCommit: disabledCommit,
+    })
+
+    expect(command.isConnected).toBe(true)
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBe(command)
+    expect(command).toBeDisabled()
+    expect(command).toHaveValue('/review')
+    expect(screen.queryByRole('button', { name: 'Reset Command draft' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove Command' })).not.toBeInTheDocument()
+
+    const refreshedField = { ...codeField, description: 'Current command.' }
+    await rerender({
+      fields: [refreshedField],
+      values: { 'command.node.command': '' },
+      selectionLabel: 'collect',
+      selectionNodeId: 'collect',
+      bindingIdentity: 'workflow:0:0:collect',
+      disabledReason: undefined,
+      onCommit: refreshedCommit,
+    })
+
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBe(command)
+    expect(command).toBeEnabled()
+    expect(command).toHaveValue('/review')
+    expect(screen.getByRole('button', { name: 'Reset Command draft' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Remove Command' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(disabledCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedField, value: '/review' })
+  })
+
   it.each([
     ['text', fields[0]!, 'review', 'current-review'],
     ['textarea', { ...fields[1]!, section: 'General' }, 'ready', 'current condition'],

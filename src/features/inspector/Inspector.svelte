@@ -136,81 +136,63 @@
         <strong>{selectionCount} nodes selected</strong>
         <p>Choose one node to edit its fields.</p>
       </div>
-    {:else if disabledReason}
-      <p class="disabled-reason" aria-live="polite">{disabledReason}</p>
-      {#each visibleFields as field (field.id)}
-        {@const resolution = resolveWidget(field)}
-        {#if resolution.ok}
-          {@const Widget = resolution.definition.component}
+    {:else}
+      {#if disabledReason}<p class="disabled-reason" aria-live="polite">{disabledReason}</p>{/if}
+      {#if activeTab === 'Docs'}
+        <div class="docs">
+          <ContextDocs field={contextualDocField} index={documentationIndex} />
+        </div>
+      {:else if visibleFields.length === 0}
+        <p class="empty">No {activeTab.toLowerCase()} fields apply to this selection.</p>
+      {:else}
+        {#each visibleFields as field (field.id)}
+          {@const resolution = resolveWidget(field)}
           <div
             class="field"
             class:deferred={field.status !== 'supported'}
             onfocusin={() => selectDocumentationField(field)}
           >
-            {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
-              <Widget
-                {field}
-                value={values[field.id]}
-                present={Object.hasOwn(values, field.id)}
-                disabled={true}
-                issues={fieldIssues(field)}
-                {onCommit}
-              />
-            {/key}
-          </div>
-        {/if}
-      {/each}
-    {:else if activeTab === 'Docs'}
-      <div class="docs">
-        <ContextDocs field={contextualDocField} index={documentationIndex} />
-      </div>
-    {:else if visibleFields.length === 0}
-      <p class="empty">No {activeTab.toLowerCase()} fields apply to this selection.</p>
-    {:else}
-      {#each visibleFields as field (field.id)}
-        {@const resolution = resolveWidget(field)}
-        <div
-          class="field"
-          class:deferred={field.status !== 'supported'}
-          onfocusin={() => selectDocumentationField(field)}
-        >
-          <div class="field-meta">
-            {#if field.status !== 'supported'}<span class="badge">{field.status}</span>{/if}
-            {#if !Object.hasOwn(values, field.id) && field.hasDefault}<span class="badge"
-                >inherited default: {String(field.defaultValue)}</span
-              >{/if}
-            {#if Object.hasOwn(values, field.id) && field.hasDefault && sameValue(values[field.id], field.defaultValue)}<span
-                class="badge">explicit default: {String(field.defaultValue)}</span
-              >{/if}
-            {#if field.unit}<span class="badge">{field.unit}</span>{/if}
-          </div>
-          {#if resolution.ok}
-            {@const Widget = resolution.definition.component}
-            {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
-              <Widget
-                {field}
-                value={values[field.id]}
-                present={Object.hasOwn(values, field.id)}
-                issues={fieldIssues(field)}
-                {onCommit}
-              />
-            {/key}
-            <div class="field-actions">
-              <button type="button" data-variant="ghost" onclick={() => resetDraft(field)}
-                >Reset {field.label} draft</button
-              >
-              {#if !field.required && Object.hasOwn(values, field.id)}<button
-                  type="button"
-                  data-variant="danger"
-                  onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
+            <div class="field-meta">
+              {#if field.status !== 'supported'}<span class="badge">{field.status}</span>{/if}
+              {#if !Object.hasOwn(values, field.id) && field.hasDefault}<span class="badge"
+                  >inherited default: {String(field.defaultValue)}</span
                 >{/if}
+              {#if Object.hasOwn(values, field.id) && field.hasDefault && sameValue(values[field.id], field.defaultValue)}<span
+                  class="badge">explicit default: {String(field.defaultValue)}</span
+                >{/if}
+              {#if field.unit}<span class="badge">{field.unit}</span>{/if}
             </div>
-          {:else}
-            <p class="unsupported" role="status">{resolution.message} YAML is preserved; this field is read-only.</p>
-          {/if}
-          {#if field.examples.length > 0}<p class="example">Example: {JSON.stringify(field.examples[0])}</p>{/if}
-        </div>
-      {/each}
+            {#if resolution.ok}
+              {@const Widget = resolution.definition.component}
+              {#key `${bindingIdentity}:${field.id}:${resetVersions[field.id] ?? 0}`}
+                <Widget
+                  {field}
+                  value={values[field.id]}
+                  present={Object.hasOwn(values, field.id)}
+                  disabled={Boolean(disabledReason)}
+                  issues={fieldIssues(field)}
+                  {onCommit}
+                />
+              {/key}
+              {#if !disabledReason}
+                <div class="field-actions">
+                  <button type="button" data-variant="ghost" onclick={() => resetDraft(field)}
+                    >Reset {field.label} draft</button
+                  >
+                  {#if !field.required && Object.hasOwn(values, field.id)}<button
+                      type="button"
+                      data-variant="danger"
+                      onclick={() => void onCommit?.({ field, remove: true })}>Remove {field.label}</button
+                    >{/if}
+                </div>
+              {/if}
+            {:else}
+              <p class="unsupported" role="status">{resolution.message} YAML is preserved; this field is read-only.</p>
+            {/if}
+            {#if field.examples.length > 0}<p class="example">Example: {JSON.stringify(field.examples[0])}</p>{/if}
+          </div>
+        {/each}
+      {/if}
     {/if}
   </div>
 </section>
