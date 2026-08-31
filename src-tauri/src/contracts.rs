@@ -35,6 +35,7 @@ use tauri_plugin_dialog::DialogExt;
 
 const MAX_CONTRACT_BYTES: usize = 512 * 1024;
 const CLI_TIMEOUT: Duration = Duration::from_secs(10);
+const CLI_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(10);
 const CACHE_DIRECTORY: &str = "contracts-v1";
 const CACHE_INDEX: &str = "index.json";
 static NEXT_CACHE_TEMP: AtomicU64 = AtomicU64::new(1);
@@ -624,6 +625,14 @@ fn grant_state_error() -> ContractError {
 }
 
 fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult<Vec<u8>> {
+    run_hermes_cli_with_spawn(executable, profile, Command::spawn)
+}
+
+fn run_hermes_cli_with_spawn(
+    executable: &Path,
+    profile: ContractProfile,
+    mut spawn: impl FnMut(&mut Command) -> std::io::Result<std::process::Child>,
+) -> ContractResult<Vec<u8>> {
     let mut command = Command::new(executable);
     command
         .args([
@@ -643,12 +652,24 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_SUSPENDED);
-    let mut child = command.spawn().map_err(|error| {
-        contract_error(
-            "contract_cli_spawn_failed",
-            format!("Could not start the selected Hermes executable: {error}"),
-        )
-    })?;
+    let started = Instant::now();
+    let mut child = loop {
+        match spawn(&mut command) {
+            Ok(child) => break child,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && started.elapsed() < CLI_TIMEOUT =>
+            {
+                thread::sleep(CLI_SPAWN_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(contract_error(
+                    "contract_cli_spawn_failed",
+                    format!("Could not start the selected Hermes executable: {error}"),
+                ));
+            }
+        }
+    };
     #[cfg(unix)]
     let process_id = child.id();
     #[cfg(windows)]
@@ -669,7 +690,6 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
     thread::spawn(move || {
         let _ = stderr_sender.send(read_stream_bounded(stderr));
     });
-    let started = Instant::now();
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -1090,8 +1110,8 @@ fn contract_error(code: &'static str, message: impl Into<String>) -> ContractErr
 mod tests {
     use super::{
         cache_load_at, cache_write_at, grant_contract_file, read_contract_file,
-        read_granted_contract_file, run_hermes_cli, ContractCacheStoredEntry, ContractGrantState,
-        ContractProfile, MAX_CONTRACT_BYTES,
+        read_granted_contract_file, run_hermes_cli, run_hermes_cli_with_spawn,
+        ContractCacheStoredEntry, ContractGrantState, ContractProfile, MAX_CONTRACT_BYTES,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1164,8 +1184,29 @@ mod tests {
         let (_directory, executable) = fixture("sleep 30 & exit 0");
         let started = std::time::Instant::now();
         let error = run_hermes_cli(&executable, ContractProfile::HermesLegacy).unwrap_err();
-        assert_eq!(error.code, "contract_cli_timeout");
+        assert_eq!(error.code, "contract_cli_timeout", "{}", error.message);
         assert!(started.elapsed() < std::time::Duration::from_secs(12));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retries_a_transient_process_limit_error_before_starting_the_cli() {
+        let (_directory, executable) = fixture("printf '{}'");
+        let mut attempts = 0;
+
+        let output =
+            run_hermes_cli_with_spawn(&executable, ContractProfile::HermesLegacy, |command| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(std::io::Error::from_raw_os_error(libc::EAGAIN))
+                } else {
+                    command.spawn()
+                }
+            })
+            .unwrap();
+
+        assert_eq!(output, b"{}");
+        assert_eq!(attempts, 2);
     }
 
     #[test]
