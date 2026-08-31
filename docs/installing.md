@@ -1,6 +1,6 @@
 # Installing Workflow Studio
 
-Workflow Studio v1.0.3 publishes native installers from the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow publishes `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
+Workflow Studio v1.0.4 publishes native installers from the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow publishes `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
 
 ## Supported targets
 
@@ -10,25 +10,25 @@ Workflow Studio v1.0.3 publishes native installers from the public `cmetech/work
 | macOS | Intel | `LOOP24-Workflow-Studio_<version>_macos_x86_64.dmg` |
 | Windows | x64 | `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.exe` |
 
-Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in v1.0.3.
+Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in v1.0.4.
 
 ## One-line verified installer launch
 
-These versioned commands bootstrap v1.0.3 directly. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
+These versioned commands bootstrap v1.0.4 directly. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
 
 macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.3/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.4/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.3/scripts/install.ps1')
+iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.4/scripts/install.ps1')
 ```
 
-Both commands use immutable v1.0.3 bootstrap URLs. On macOS, the script selects the correct CPU artifact, downloads and verifies the DMG, then opens it; you complete installation by dragging Workflow Studio to Applications. On Windows, the script downloads and verifies the x64 NSIS executable, then launches the installer flow automatically. The installed app verifies first-party Tauri updater signatures before applying updates; those signatures are separate from operating-system publisher signing.
+Both commands use immutable v1.0.4 bootstrap URLs. On macOS, the script selects the correct CPU artifact, downloads and verifies the DMG, then opens it; you complete installation by dragging Workflow Studio to Applications. On Windows, the script downloads and verifies the x64 NSIS executable, then launches the installer flow automatically. The installed app verifies first-party Tauri updater signatures before applying updates; those signatures are separate from operating-system publisher signing.
 
 Each script chooses only an exact OS/architecture filename, downloads `SHA256SUMS` from the matching release tag, computes SHA-256 locally, and launches only after an exact match. A mismatch stops installation. Linux and unsupported architectures fail clearly without downloading or launching an installer.
 
@@ -46,7 +46,7 @@ Run the NSIS setup executable. Microsoft Defender SmartScreen may show “Window
 
 ### Linux
 
-Linux packaging is deferred. The v1.0.3 bootstrap does not support Linux and does not download a fallback artifact.
+Linux packaging is deferred. The v1.0.4 bootstrap does not support Linux and does not download a fallback artifact.
 
 ## First launch, Git, and updates
 
