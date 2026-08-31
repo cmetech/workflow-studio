@@ -167,6 +167,24 @@ describe('GraphCanvas', () => {
     expect($canvasPositions.get()).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
   })
 
+  it('does not republish live positions for an updated-at-only persistence echo', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection,
+      layout: { ...layout, updatedAt: '2026-08-30T12:00:00.000Z' },
+    })
+    await tick()
+
+    expect(publications).toEqual([])
+    unsubscribe()
+  })
+
   it('accepts a validated node-kind HTML drop at exact flow coordinates', async () => {
     const onDropNodeKind = vi.fn()
     const { container } = renderCanvas({ projection, layout, onDropNodeKind })

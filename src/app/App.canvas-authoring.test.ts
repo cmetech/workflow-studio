@@ -221,7 +221,7 @@ import {
   updateDocumentSession,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
-import { $canvasPositions, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
+import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import {
@@ -912,14 +912,30 @@ describe('App canvas authoring composition', () => {
     await fireEvent.keyDown(canvas, { key: '0' })
     await waitFor(() => expect(viewport.style.transform).toContain('scale(1)'))
 
+    const collectNode = canvas.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    const reviewNode = canvas.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
     setCanvasSelection(['collect'])
     await tick()
     await fireEvent.keyDown(canvas, { key: 'f', shiftKey: true })
     await waitFor(() => expect(viewport.style.transform).toContain('scale(3.0303030303030303)'))
     await fireEvent.keyDown(canvas, { key: 'ArrowRight' })
     expect($canvasPositions.get().collect).toEqual({ x: 5, y: 0 })
+    expect($canvasPositions.get().review).toEqual({ x: 320, y: 0 })
+    expect(collectNode.style.transform).toContain('translate(5px, 0px)')
+    expect(reviewNode.style.transform).toContain('translate(320px, 0px)')
+    expect(canvas.querySelector('.svelte-flow__node[data-id="review"]')).toBe(reviewNode)
+    expect($canvasSelection.get()).toEqual(['collect'])
+    setCanvasSelection(['collect', 'review'])
+    await tick()
     await fireEvent.keyDown(canvas, { key: 'ArrowDown', shiftKey: true })
     expect($canvasPositions.get().collect).toEqual({ x: 5, y: 20 })
+    expect($canvasPositions.get().review).toEqual({ x: 320, y: 20 })
+    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.collect).toEqual({ x: 5, y: 20 }))
+    expect(canvas.querySelector('.svelte-flow__node[data-id="collect"]')).toBe(collectNode)
+    expect(canvas.querySelector('.svelte-flow__node[data-id="review"]')).toBe(reviewNode)
+    expect(collectNode.style.transform).toContain('translate(5px, 20px)')
+    expect(reviewNode.style.transform).toContain('translate(320px, 20px)')
+    expect($canvasSelection.get()).toEqual(['collect', 'review'])
     rendered.unmount()
   })
 

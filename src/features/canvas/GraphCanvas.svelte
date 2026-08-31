@@ -12,7 +12,6 @@
   import {
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
-    moveCanvasPosition,
     moveCanvasPositions,
     replaceCanvasPositions,
     setCanvasSelection,
@@ -29,6 +28,7 @@
   } from './types'
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
   import { createCanvasSelectionReconciler } from './reconcile-canvas-selection'
+  import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } from './canvas-projection-refresh'
   import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
@@ -128,6 +128,7 @@
   let canvasMounted = false
   let surfaceWasInactive = false
   let restoringSurfaceSelection = false
+  let previousProjectionRefresh: CanvasProjectionRefreshSnapshot | undefined
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
     canMutate: canAuthor(),
@@ -174,10 +175,29 @@
 
   $effect(() => {
     if (!surfaceActive) return
+    const nextRefresh: CanvasProjectionRefreshSnapshot = {
+      projection,
+      issues,
+      workflowIdentity,
+      stale,
+      readOnly,
+      transitionLocked,
+    }
+    if (
+      !shouldRefreshCanvasProjection(
+        previousProjectionRefresh,
+        nextRefresh,
+        layout.nodePositions,
+        canvasPositionsStore.get(),
+      )
+    ) {
+      return
+    }
     const projected = deriveCanvas()
     flowNodes = withAuthoritativeSelection(projected.nodes)
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
+    previousProjectionRefresh = nextRefresh
   })
 
   $effect(() => {
@@ -345,10 +365,18 @@
           : direction === 'left'
             ? { x: -amount, y: 0 }
             : { x: amount, y: 0 }
-    for (const id of selection) {
-      const position = canvasPositionsStore.get()[id]
-      if (position) moveCanvasPosition(id, { x: position.x + delta.x, y: position.y + delta.y })
-    }
+    const positions = canvasPositionsStore.get()
+    const updates = selection.flatMap((id) => {
+      const position = positions[id]
+      return position ? [{ id, position: { x: position.x + delta.x, y: position.y + delta.y } }] : []
+    })
+    if (updates.length === 0) return
+    const nudgedPositions = new Map(updates.map(({ id, position }) => [id, position]))
+    flowNodes = flowNodes.map((node) => {
+      const position = nudgedPositions.get(node.id)
+      return position ? { ...node, position: { ...position } } : node
+    })
+    moveCanvasPositions(updates)
     schedulePersist(layoutWithPositions())
   }
 
