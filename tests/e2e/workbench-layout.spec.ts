@@ -296,6 +296,9 @@ test('keyboard edge picker consumes Escape before its Inspector drawer', async (
   await expect(edgePicker).toBeHidden()
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText('Edge creation cancelled.')
   await expect(inspector).not.toHaveAttribute('inert')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(createEdge).toBeEnabled()
+  await expect(page.getByRole('region', { name: 'Workflow inspector' })).toContainText('prepare')
 
   await page.keyboard.press('Escape')
   await expect(inspector).toHaveAttribute('inert', '')

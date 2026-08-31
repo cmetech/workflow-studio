@@ -294,10 +294,13 @@ test('Escape clears edge-only and mixed selection without projection resurrectio
   await dependency.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
   await expect(prepare).toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  const inspector = page.getByRole('region', { name: 'Workflow inspector' })
+  await expect(inspector.getByText('prepare', { exact: true }).first()).toBeVisible()
   await dependency.press('Escape')
   await expect(prepare).not.toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
   await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+  await expect(inspector.getByText('Workflow', { exact: true }).first()).toBeVisible()
 
   const mixedRefresh = edgeOnlyRefresh.replace(
     'description: Verify cleared edge selection after projection refresh.',
@@ -321,6 +324,8 @@ test('picker-priority Escape clears mixed selection without projection resurrect
   await dependency.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
   await expect(prepare).toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  const inspector = page.getByRole('region', { name: 'Workflow inspector' })
+  await expect(inspector.getByText('prepare', { exact: true }).first()).toBeVisible()
 
   await page.getByRole('button', { name: 'Create Edge' }).click()
   await expect(page.getByText('Create edge from prepare', { exact: true })).toBeVisible()
@@ -332,6 +337,7 @@ test('picker-priority Escape clears mixed selection without projection resurrect
   await expect(prepare).not.toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
   await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+  await expect(inspector.getByText('Workflow', { exact: true }).first()).toBeVisible()
 
   const refreshedDefinition = SEEDED_YAML.replace(
     'description: Verify the complete authoring path.',

@@ -548,6 +548,22 @@ describe('GraphCanvas', () => {
     unsubscribe()
   })
 
+  it('clears rendered node selection together with the authoritative store', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
+
+    await fireEvent.click(selectedNode)
+    await tick()
+    expect($canvasSelection.get()).toEqual(['review'])
+    expect(selectedNode).toHaveClass('selected')
+
+    rendered.component.cancel()
+    await tick()
+
+    expect($canvasSelection.get()).toEqual([])
+    expect(selectedNode).not.toHaveClass('selected')
+  })
+
   it('prunes a selected node removed while the authoring surface is inactive', async () => {
     const onOpenInspector = vi.fn()
     const rendered = renderCanvas({ projection, layout, onOpenInspector })

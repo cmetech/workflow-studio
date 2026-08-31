@@ -370,7 +370,9 @@
     if (event.key === 'Escape') {
       event.preventDefault()
       cancelEdge()
-      clearSurfaceSelection()
+      if (event.target instanceof Element && event.target.closest('.svelte-flow__node, .svelte-flow__edge')) {
+        clearSurfaceSelection()
+      }
       return
     }
     if (!targets.length) return
@@ -405,6 +407,7 @@
   function clearSurfaceSelection(): void {
     edgeSelectionState = clearEdgeSelection(edgeSelectionState)
     clearSelectionGestures()
+    flowNodes = flowNodes.map((node) => (node.selected ? { ...node, selected: false } : node))
     flowEdges = flowEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
     selectionChanged([])
   }
