@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '1.0.5'
+const RELEASE_VERSION = '1.0.6'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
@@ -68,7 +68,7 @@ describe('version one release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 1.0.5', () => {
+  it('keeps every package and native release version synchronized at 1.0.6', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -80,8 +80,8 @@ describe('version one release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "1\.0\.5"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.5"/)
+    expect(cargoManifest).toMatch(/^version = "1\.0\.6"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "1\.0\.6"/)
   })
 
   it('changes the npm lockfile only for the synchronized version and pinned local Geist packages', () => {
@@ -118,13 +118,13 @@ describe('version one release metadata', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "1.0.5"',
+      'name = "workflow-studio"\nversion = "1.0.6"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
-  it('documents the v1.0.5 bootstrap contract and unsigned platform warnings', () => {
+  it('retains the immutable v1.0.5 bootstrap while documenting the v1.0.6 release', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
@@ -138,6 +138,7 @@ describe('version one release metadata', () => {
     )
     expect(installing).toContain('install the latest published release')
     expect(installing).toContain('immutable v1.0.5 bootstrap URLs')
+    expect(installing).toContain('Workflow Studio v1.0.6 release process')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -150,21 +151,28 @@ describe('version one release metadata', () => {
     expect(installing).not.toContain('/v1.0.4/scripts/install')
   })
 
-  it('records the recovery history and current release-verification totals', () => {
+  it('records the immutable v1.0.5 failure and current v1.0.6 verification evidence', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
       expect(document).toMatch(/v1\.0\.2[^\n]*unpublished[^\n]*failed draft/i)
       expect(document).toMatch(/v1\.0\.3[^\n]*recovery release/i)
       expect(document).toMatch(/v1\.0\.4[^\n]*unpublished[^\n]*failed[^\n]*empty draft/i)
-      expect(document).toMatch(/v1\.0\.5[^\n]*content-aware workbench remediation/i)
+      expect(document).toMatch(/v1\.0\.5[^\n]*unpublished[^\n]*no release[^\n]*33355845811/i)
+      expect(document).toMatch(/v1\.0\.6[^\n]*content-aware workbench remediation/i)
     }
 
     const acceptance = readFileSync('docs/verification/version-1-release-acceptance.md', 'utf8')
-    expect(acceptance).toContain('1,155 TypeScript unit/component/integration tests')
+    expect(acceptance).toContain('0ecb5bd46a49cebe4037825856411d8ead5db17f')
+    expect(acceptance).toContain('base CI run `33413849179`')
+    expect(acceptance).toContain('1 flaky, 293 passed')
+    expect(acceptance).toMatch(/WebKit[^\n]*activity-pages[^\n]*initial timeout[^\n]*passed on retry/i)
+    expect(acceptance).toContain('clean 294/294')
+    expect(acceptance).toContain('1,206 TypeScript unit/component/integration tests')
     expect(acceptance).toContain('245 Rust unit tests')
     expect(acceptance).toContain('24 real Git integration tests')
-    expect(acceptance).toContain('276 Playwright E2E tests')
+    expect(acceptance).toContain('294 Playwright E2E tests')
+    expect(acceptance).toMatch(/Windows[^\n]*installed-app[^\n]*(?:not performed|open)/i)
   })
 
   it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {
