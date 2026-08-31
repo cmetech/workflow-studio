@@ -63,6 +63,7 @@
     clampProblemsHeight,
     resolveOverlayPanelWidths,
     resolveWorkbenchPresentation,
+    type WorkbenchPresentation,
   } from '$src/lib/layout/workbench-layout'
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
@@ -323,6 +324,7 @@
   let workbenchWidth = $state(1280)
   let workbenchHeight = $state(700)
   let editorWidth = $state(720)
+  let compactPanelViewport = $state(false)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
   let pageOpener = $state<HTMLElement | undefined>()
@@ -460,7 +462,11 @@
   const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
   const workbenchSurface = $derived(resolveWorkbenchSurface($activeActivity, $workspace.id !== null))
   const authoringHidden = $derived(workbenchSurface !== 'authoring')
-  const workbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
+  const measuredWorkbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
+  const workbenchPresentation = $derived({
+    panels: compactPanelViewport ? 'drawers' : 'docked',
+    split: measuredWorkbenchPresentation.split,
+  } satisfies WorkbenchPresentation)
   const storedPanels = $derived($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 })
   const clampedPanels = $derived(clampDockedPanels(storedPanels, workbenchWidth))
   const overlayPanels = $derived(resolveOverlayPanelWidths(storedPanels, workbenchWidth))
@@ -1554,6 +1560,12 @@
     void brandController.initialize().catch((error: unknown) => {
       workspaceError = error instanceof Error ? error.message : 'The saved brand could not be loaded.'
     })
+    const compactPanelMedia = window.matchMedia('(max-width: 1279px)')
+    const synchronizeCompactPanelViewport = () => {
+      compactPanelViewport = compactPanelMedia.matches
+    }
+    synchronizeCompactPanelViewport()
+    compactPanelMedia.addEventListener('change', synchronizeCompactPanelViewport)
     const unbindCanvas = setCanvasCommandHandlers({
       addNode: () => {
         if (graphCanvas) graphCanvas.requestAdd()
@@ -1651,6 +1663,7 @@
     let dispose: (() => void) | undefined = () => {
       if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
       resizeObserver.disconnect()
+      compactPanelMedia.removeEventListener('change', synchronizeCompactPanelViewport)
       unbindCanvas()
     }
     let disposed = false
@@ -2971,6 +2984,34 @@
     z-index: 40;
     top: 8rem;
     left: 17rem;
+  }
+
+  @media (max-width: 1279px) {
+    .workbench {
+      grid-template-columns: 3rem minmax(0, 1fr);
+    }
+
+    .workbench[data-panel-presentation='docked'] .panel {
+      position: absolute;
+      z-index: 20;
+      top: 0;
+      bottom: 0;
+      display: block;
+      box-shadow: 0 1rem 3rem var(--color-shadow);
+    }
+
+    .workbench[data-panel-presentation='docked'] .left-panel {
+      left: 3rem;
+      display: grid;
+      width: var(--overlay-left-panel-width);
+      transform: translateX(-100%);
+    }
+
+    .workbench[data-panel-presentation='docked'] .inspector-panel {
+      right: 0;
+      width: var(--overlay-right-panel-width);
+      transform: translateX(100%);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

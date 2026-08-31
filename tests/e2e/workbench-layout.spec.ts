@@ -382,6 +382,121 @@ test('real viewport resize keeps focus in Explorer and Inspector when docked pan
   await expect(advanced).toBeFocused()
 })
 
+test('responsive panel state and CSS use closed drawer semantics before deferred measurement catches up', async ({
+  page,
+}) => {
+  await openPairAt(page, 1440, 900)
+  await page.getByRole('group', { name: 'prompt node prepare', exact: true }).focus()
+
+  await page.evaluate(() => {
+    const snapshots: {
+      readonly presentation: string | null
+      readonly editor: { readonly left: number; readonly right: number; readonly width: number }
+      readonly explorerExpanded: string | null
+      readonly workspace: {
+        readonly left: number
+        readonly right: number
+        readonly position: string
+        readonly inert: boolean
+        readonly ariaHidden: string | null
+      }
+      readonly inspector: {
+        readonly left: number
+        readonly right: number
+        readonly position: string
+        readonly inert: boolean
+        readonly ariaHidden: string | null
+      }
+    }[] = []
+    Object.defineProperty(window, '__WORKBENCH_COMPACT_RESIZE_SNAPSHOTS__', { value: snapshots })
+
+    const workbench = document.querySelector<HTMLElement>('.workbench')!
+    const editor = document.querySelector<HTMLElement>('[aria-label="Workflow workspace"]')!
+    const workspace = document.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+    const inspector = document.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || entry.contentRect.width >= 1280) return
+      const editorBounds = editor.getBoundingClientRect()
+      const workspaceBounds = workspace.getBoundingClientRect()
+      const inspectorBounds = inspector.getBoundingClientRect()
+      snapshots.push({
+        presentation: workbench.dataset.panelPresentation ?? null,
+        editor: { left: editorBounds.left, right: editorBounds.right, width: editorBounds.width },
+        explorerExpanded: document.querySelector('[data-activity="explorer"]')?.getAttribute('aria-expanded') ?? null,
+        workspace: {
+          left: workspaceBounds.left,
+          right: workspaceBounds.right,
+          position: getComputedStyle(workspace).position,
+          inert: workspace.inert,
+          ariaHidden: workspace.getAttribute('aria-hidden'),
+        },
+        inspector: {
+          left: inspectorBounds.left,
+          right: inspectorBounds.right,
+          position: getComputedStyle(inspector).position,
+          inert: inspector.inert,
+          ariaHidden: inspector.getAttribute('aria-hidden'),
+        },
+      })
+      observer.disconnect()
+    })
+    observer.observe(workbench)
+  })
+
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await expect(page.locator('.workbench')).toHaveAttribute('data-panel-presentation', 'docked')
+  await page.setViewportSize({ width: 1279, height: 800 })
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              __WORKBENCH_COMPACT_RESIZE_SNAPSHOTS__: readonly unknown[]
+            }
+          ).__WORKBENCH_COMPACT_RESIZE_SNAPSHOTS__.length,
+      ),
+    )
+    .toBe(1)
+
+  const snapshot = await page.evaluate(
+    () =>
+      (
+        window as unknown as {
+          __WORKBENCH_COMPACT_RESIZE_SNAPSHOTS__: readonly {
+            readonly presentation: string | null
+            readonly editor: { readonly left: number; readonly right: number; readonly width: number }
+            readonly explorerExpanded: string | null
+            readonly workspace: {
+              readonly left: number
+              readonly right: number
+              readonly position: string
+              readonly inert: boolean
+              readonly ariaHidden: string | null
+            }
+            readonly inspector: {
+              readonly left: number
+              readonly right: number
+              readonly position: string
+              readonly inert: boolean
+              readonly ariaHidden: string | null
+            }
+          }[]
+        }
+      ).__WORKBENCH_COMPACT_RESIZE_SNAPSHOTS__[0],
+  )
+  expect(snapshot).toBeDefined()
+  expect(snapshot!.presentation).toBe('drawers')
+  expect(snapshot!.explorerExpanded).toBe('false')
+  expect(snapshot!.editor).toEqual({ left: 48, right: 1279, width: 1231 })
+  expect(snapshot!.workspace.position).toBe('absolute')
+  expect(snapshot!.workspace).toMatchObject({ inert: true, ariaHidden: 'true' })
+  expect(snapshot!.workspace.right).toBeLessThanOrEqual(snapshot!.editor.left)
+  expect(snapshot!.inspector.position).toBe('absolute')
+  expect(snapshot!.inspector).toMatchObject({ inert: true, ariaHidden: 'true' })
+  expect(snapshot!.inspector.left).toBeGreaterThanOrEqual(snapshot!.editor.right)
+})
+
 test('resize-created Inspector drawer restores focus to the currently selected node', async ({ page }) => {
   await openPairAt(page, 1024, 700)
 

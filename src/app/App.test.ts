@@ -72,11 +72,42 @@ class TestResizeObserver {
   }
 }
 
+class TestMediaQueryList extends EventTarget implements MediaQueryList {
+  static instances: TestMediaQueryList[] = []
+  matches = false
+  onchange: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null = null
+
+  constructor(readonly media: string) {
+    super()
+    TestMediaQueryList.instances.push(this)
+  }
+
+  addListener(callback: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null): void {
+    if (callback) this.addEventListener('change', callback as EventListener)
+  }
+
+  removeListener(callback: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null): void {
+    if (callback) this.removeEventListener('change', callback as EventListener)
+  }
+
+  publish(matches: boolean): void {
+    this.matches = matches
+    this.dispatchEvent(new Event('change'))
+  }
+}
+
 async function publishResize(target: Element, width: number, height?: number): Promise<void> {
   const observer = TestResizeObserver.instances.find((candidate) => candidate.targets.has(target))
   if (!observer) throw new Error('Expected the stable workbench boundary to be observed.')
   observer.publish(target, width, height)
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
+
+async function publishCompactPanelMedia(matches: boolean): Promise<void> {
+  const query = TestMediaQueryList.instances.find(({ media }) => media === '(max-width: 1279px)')
+  if (!query) throw new Error('Expected the compact panel media query to be observed.')
+  query.publish(matches)
+  await tick()
 }
 
 const contractResolverTestState = vi.hoisted(() => ({
@@ -188,6 +219,7 @@ describe('App', () => {
     const workbench = container.querySelector('.workbench')!
     const editor = screen.getByRole('region', { name: 'Workflow workspace' })
 
+    await publishCompactPanelMedia(true)
     await publishResize(workbench, 1024)
     await publishResize(editor, 976)
     await tick()
@@ -266,6 +298,7 @@ describe('App', () => {
     const workbench = container.querySelector('.workbench')!
     const editor = screen.getByRole('region', { name: 'Workflow workspace' })
 
+    await publishCompactPanelMedia(true)
     await publishResize(workbench, 1024)
     await publishResize(editor, 976)
     await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
@@ -549,16 +582,7 @@ describe('App', () => {
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
-      value: vi.fn((query: string) => ({
-        matches: false,
-        media: query,
-        onchange: null,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
+      value: vi.fn((query: string) => new TestMediaQueryList(query)),
     })
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
   })
@@ -571,6 +595,7 @@ describe('App', () => {
     showEditorMode('visual')
     $workspacePanelOpen.set(false)
     $inspectorPanelOpen.set(false)
+    TestMediaQueryList.instances = []
     TestResizeObserver.instances = []
     clearWorkspace()
     closeDocumentSession()
