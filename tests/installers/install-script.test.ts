@@ -108,9 +108,9 @@ describe('release asset verification', () => {
     expect(build.status, build.stderr?.toString()).toBe(0)
   }, 600_000)
   it.each([
-    ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.dmg'],
-    ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_1.0.4_macos_x86_64.dmg'],
-    ['windows', 'x86_64', 'LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.exe'],
+    ['darwin', 'aarch64', 'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.dmg'],
+    ['darwin', 'x86_64', 'LOOP24-Workflow-Studio_1.0.5_macos_x86_64.dmg'],
+    ['windows', 'x86_64', 'LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.exe'],
   ])('selects exactly one %s/%s installer', (os, arch, expected) => {
     expect(selectInstallerAsset(fixture.assets, fixture.tag, os, arch).name).toBe(expected)
   })
@@ -131,10 +131,10 @@ describe('release asset verification', () => {
     expect(SUPPORTED_TARGETS).toEqual(['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'])
   })
 
-  it('accepts exactly the v1.0.4 macOS and Windows public inventory', () => {
+  it('accepts exactly the v1.0.5 macOS and Windows public inventory', () => {
     expect(validateReleaseManifest(fixture)).toEqual({
-      tag: 'v1.0.4',
-      version: '1.0.4',
+      tag: 'v1.0.5',
+      version: '1.0.5',
       assetCount: 10,
       updaterTargets: SUPPORTED_TARGETS,
     })
@@ -147,11 +147,11 @@ describe('release asset verification', () => {
     }
     const normalized = normalizeUpdaterManifest(updater, fixture.tag)
     expect(normalized.platforms['darwin-aarch64-app']).toEqual({
-      url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.4/LOOP24-Workflow-Studio_1.0.4_macos_aarch64.app.tar.gz',
+      url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.5/LOOP24-Workflow-Studio_1.0.5_macos_aarch64.app.tar.gz',
       signature: 'signed-darwin-arm',
     })
     expect(normalized.platforms['windows-x86_64'].url).toContain(
-      '/v1.0.4/LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.exe',
+      '/v1.0.5/LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.exe',
     )
     expect(updater.platforms['windows-x86_64']!.url).toContain('api.github.com')
   })
@@ -189,15 +189,15 @@ describe('release asset verification', () => {
   })
 
   it.each([
-    'Other-Workflow-Studio_1.0.4_linux_x86_64.AppImage',
+    'Other-Workflow-Studio_1.0.5_linux_x86_64.AppImage',
     'LOOP24-Workflow-Studio_9.9.9_linux_x86_64.AppImage',
-    '../LOOP24-Workflow-Studio_1.0.4_linux_x86_64.AppImage',
-    'LOOP24-Workflow-Studio_1.0.4_linux_x86_64/app.AppImage',
-    'loop24-workflow-studio_1.0.4_linux_x86_64.AppImage',
-    'LOOP24-Workflow-Studio_1.0.4_linux_x86_64.AppImage\nsecond',
+    '../LOOP24-Workflow-Studio_1.0.5_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.5_linux_x86_64/app.AppImage',
+    'loop24-workflow-studio_1.0.5_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.5_linux_x86_64.AppImage\nsecond',
   ])('rejects a wrong-brand/version or unsafe asset name: %s', (name) => {
     const invalid = manifestWith((copy) => {
-      const existing = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.exe')
+      const existing = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.exe')
       Object.assign(existing, { name })
     })
     expect(() => validateReleaseManifest(invalid)).toThrow()
@@ -205,17 +205,17 @@ describe('release asset verification', () => {
 
   it('rejects case-folded collisions and duplicate installers', () => {
     const invalid = manifestWith((copy) => {
-      const installer = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.exe')
+      const installer = fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.exe')
       copy.assets.push({ ...installer, name: installer.name.toLowerCase() })
     })
     expect(() => validateReleaseManifest(invalid)).toThrow(/collision/i)
   })
 
   it.each([
-    'LOOP24-Workflow-Studio_1.0.4_linux_x86_64.AppImage',
-    'LOOP24-Workflow-Studio_1.0.4_linux_x86_64.deb',
-    'LOOP24-Workflow-Studio_1.0.4_linux_x86_64.rpm',
-    'LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.nsis.zip',
+    'LOOP24-Workflow-Studio_1.0.5_linux_x86_64.AppImage',
+    'LOOP24-Workflow-Studio_1.0.5_linux_x86_64.deb',
+    'LOOP24-Workflow-Studio_1.0.5_linux_x86_64.rpm',
+    'LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.nsis.zip',
     'unexpected-release-note.txt',
   ])('rejects stale Linux or unknown release assets: %s', (name) => {
     const invalid = manifestWith((copy) => {
@@ -227,7 +227,7 @@ describe('release asset verification', () => {
   it('rejects stale Linux updater keys', () => {
     const invalid = manifestWith((copy) => {
       copy.updater.platforms['linux-x86_64'] = {
-        url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.4/LOOP24-Workflow-Studio_1.0.4_linux_x86_64.AppImage.tar.gz',
+        url: 'https://github.com/cmetech/workflow-studio/releases/download/v1.0.5/LOOP24-Workflow-Studio_1.0.5_linux_x86_64.AppImage.tar.gz',
         signature: 'signed-linux',
       }
     })
@@ -236,7 +236,7 @@ describe('release asset verification', () => {
 
   it('rejects missing checksums, signature companions, updater targets, and empty bytes', () => {
     const noChecksum = manifestWith((copy) => {
-      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.dmg').sha256 = undefined
+      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.dmg').sha256 = undefined
     })
     const noSignature = manifestWith((copy) => {
       copy.assets = copy.assets.filter((asset) => !asset.name.endsWith('macos_aarch64.app.tar.gz.sig'))
@@ -245,7 +245,7 @@ describe('release asset verification', () => {
       delete copy.updater.platforms['windows-x86_64']
     })
     const zeroBytes = manifestWith((copy) => {
-      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.dmg').size = 0
+      fixtureAsset(copy, 'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.dmg').size = 0
     })
 
     expect(() => validateReleaseManifest(noChecksum)).toThrow(/checksum/i)
@@ -257,7 +257,7 @@ describe('release asset verification', () => {
   it('rejects updater URLs for unknown or cross-release assets', () => {
     const invalid = manifestWith((copy) => {
       copy.updater.platforms['windows-x86_64']!.url =
-        'https://github.com/cmetech/workflow-studio/releases/download/v1.0.4/not-uploaded.tar.gz'
+        'https://github.com/cmetech/workflow-studio/releases/download/v1.0.5/not-uploaded.tar.gz'
     })
     expect(() => validateReleaseManifest(invalid)).toThrow(/not present/i)
   })
@@ -307,7 +307,7 @@ describe('release asset verification', () => {
         { encoding: 'utf8' },
       )
       expect(unpublished.status).toBe(1)
-      expect(unpublished.stderr).toContain('exact v1.0.4 release')
+      expect(unpublished.stderr).toContain('exact v1.0.5 release')
       expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('api.github.com')
 
       const normalized = spawnSync(
@@ -316,7 +316,7 @@ describe('release asset verification', () => {
         { encoding: 'utf8' },
       )
       expect(normalized.status).toBe(0)
-      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('/releases/download/v1.0.4/')
+      expect(readFileSync(join(directory, 'latest.json'), 'utf8')).toContain('/releases/download/v1.0.5/')
 
       const checksummed = spawnSync(
         process.execPath,
@@ -366,7 +366,7 @@ describe('release asset verification', () => {
     const updaterPath = join(directory, 'latest.json')
     const updaterBytes = readFileSync(updaterPath, 'utf8')
     try {
-      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.4_linux_x86_64.AppImage'), 'stale')
+      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.5_linux_x86_64.AppImage'), 'stale')
 
       const normalization = spawnSync(
         process.execPath,
@@ -437,7 +437,7 @@ describe('release asset verification', () => {
   it('rejects updater bytes with an invalid cryptographic signature before checksumming', () => {
     const { root, directory, tauriConfig } = materializeCryptoRelease()
     try {
-      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.app.tar.gz'), 'Test')
+      writeFileSync(join(directory, 'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.app.tar.gz'), 'Test')
       const result = spawnSync(
         process.execPath,
         [
@@ -707,11 +707,11 @@ interface DraftLifecycleState {
 function draftLifecycleRelease(overrides: Partial<DraftLifecycleRelease> = {}): DraftLifecycleRelease {
   return {
     id: 73,
-    tag_name: 'v1.0.4',
+    tag_name: 'v1.0.5',
     target_commitish: 'a'.repeat(40),
     draft: true,
     prerelease: false,
-    name: 'LOOP24 Workflow Studio v1.0.4',
+    name: 'LOOP24 Workflow Studio v1.0.5',
     body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
     assets: [],
     ...overrides,
@@ -775,7 +775,7 @@ process.exit(64)
       GH_TOKEN: 'test-token',
       GITHUB_OUTPUT: outputPath,
       GITHUB_REPOSITORY: 'cmetech/workflow-studio',
-      TAG: 'v1.0.4',
+      TAG: 'v1.0.5',
       EXPECTED_COMMIT: 'a'.repeat(40),
     },
   })
@@ -828,7 +828,7 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('Application commit')
   })
 
-  it('creates the v1.0.4 draft only after two clean absence reads', () => {
+  it('creates the v1.0.5 draft only after two clean absence reads', () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[]], [[]]],
@@ -841,9 +841,9 @@ describe('release workflow contract', () => {
       expect(invocation.output).toBe('release_id=73\n')
       expect(invocation.state.payloads).toEqual([
         {
-          tag_name: 'v1.0.4',
+          tag_name: 'v1.0.5',
           target_commitish: 'a'.repeat(40),
-          name: 'LOOP24 Workflow Studio v1.0.4',
+          name: 'LOOP24 Workflow Studio v1.0.5',
           body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
           draft: true,
           prerelease: false,
@@ -893,7 +893,7 @@ describe('release workflow contract', () => {
     [
       'duplicate exact releases',
       [[draftLifecycleRelease({ id: 72 }), draftLifecycleRelease({ id: 73 })]],
-      /expected exactly one release tagged v1\.0\.4; found 2/i,
+      /expected exactly one release tagged v1\.0\.5; found 2/i,
     ],
     ['a wrong-commit release', [[draftLifecycleRelease({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
     ['a published release', [[draftLifecycleRelease({ draft: false })]], /must be a draft/i],
@@ -1236,26 +1236,26 @@ npm run examples:check`)
       bundle?: { createUpdaterArtifacts?: boolean | string }
     }
     const tauri = jobSteps('build').find((step) => step.id === 'tauri')
-    const updaterName = 'LOOP24-Workflow-Studio_1.0.4_windows_x86_64-setup.exe'
+    const updaterName = 'LOOP24-Workflow-Studio_1.0.5_windows_x86_64-setup.exe'
 
     expect(config.bundle?.createUpdaterArtifacts).toBe(true)
     expect(tauri?.with?.releaseAssetNamePattern).toBe(
       'LOOP24-Workflow-Studio_[version]_${{ matrix.platform }}_${{ matrix.arch }}[setup][ext]',
     )
     expect(fixture.assets.map((asset) => asset.name)).toEqual([
-      'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.dmg',
-      'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.app.tar.gz',
-      'LOOP24-Workflow-Studio_1.0.4_macos_aarch64.app.tar.gz.sig',
-      'LOOP24-Workflow-Studio_1.0.4_macos_x86_64.dmg',
-      'LOOP24-Workflow-Studio_1.0.4_macos_x86_64.app.tar.gz',
-      'LOOP24-Workflow-Studio_1.0.4_macos_x86_64.app.tar.gz.sig',
+      'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.dmg',
+      'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.app.tar.gz',
+      'LOOP24-Workflow-Studio_1.0.5_macos_aarch64.app.tar.gz.sig',
+      'LOOP24-Workflow-Studio_1.0.5_macos_x86_64.dmg',
+      'LOOP24-Workflow-Studio_1.0.5_macos_x86_64.app.tar.gz',
+      'LOOP24-Workflow-Studio_1.0.5_macos_x86_64.app.tar.gz.sig',
       updaterName,
       `${updaterName}.sig`,
       'latest.json',
       'SHA256SUMS',
     ])
     const normalized = normalizeUpdaterManifest(fixture.updater, fixture.tag)
-    const windowsUrl = `https://github.com/cmetech/workflow-studio/releases/download/v1.0.4/${updaterName}`
+    const windowsUrl = `https://github.com/cmetech/workflow-studio/releases/download/v1.0.5/${updaterName}`
     expect(normalized.platforms['windows-x86_64'].url).toBe(windowsUrl)
     expect(normalized.platforms['windows-x86_64-nsis'].url).toBe(windowsUrl)
     expect(normalized.platforms['windows-x86_64'].signature).toBe(normalized.platforms['windows-x86_64-nsis'].signature)
@@ -1306,7 +1306,7 @@ npm run examples:check`)
     const sentinel = join(root, 'verifier-arguments')
     const harnessPath = join(root, 'nsis-gate.ps1')
     mkdirSync(bundleDirectory, { recursive: true })
-    writeFileSync(join(bundleDirectory, 'workflow-studio_1.0.4_x64-setup.exe'), 'fixture')
+    writeFileSync(join(bundleDirectory, 'workflow-studio_1.0.5_x64-setup.exe'), 'fixture')
     const gate = namedStep('build', 'Verify extracted Windows NSIS payload').run!.replaceAll(
       '${{ matrix.rust_target }}',
       'x86_64-pc-windows-msvc',
@@ -1571,13 +1571,13 @@ if ($errors.Count -ne 0) {
 })
 
 describe('release documentation contract', () => {
-  it('documents immutable v1.0.4 bootstrap commands and checksum verification', () => {
+  it('documents immutable v1.0.5 bootstrap commands and checksum verification', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
     expect(installing).toContain(
-      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.4/scripts/install.sh | sh',
+      'curl -fsSL https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.5/scripts/install.sh | sh',
     )
     expect(installing).toContain(
-      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.4/scripts/install.ps1')",
+      "iex (irm 'https://raw.githubusercontent.com/cmetech/workflow-studio/v1.0.5/scripts/install.ps1')",
     )
     expect(installing).toContain('SHA256SUMS')
     expect(installing).toContain('Right-click')
