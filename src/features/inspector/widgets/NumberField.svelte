@@ -1,11 +1,26 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import type { WidgetProps } from '$src/lib/forms/types'
   import { validateSchemaValue } from '$src/lib/forms/structured-draft'
   import FieldDiagnostics from './FieldDiagnostics.svelte'
   let { field, value, disabled = false, issues = [], onCommit }: WidgetProps = $props()
-  let draft = $derived(value === undefined ? '' : String(value))
+  const initialDraft = untrack(() => normalizeDraft(value))
+  let authoritativeDraft = $state(initialDraft)
+  let draft = $state(initialDraft)
   let localErrors = $state<readonly string[]>([])
   const invalid = $derived(issues.length > 0 || localErrors.length > 0)
+
+  $effect(() => {
+    const next = normalizeDraft(value)
+    if (next === authoritativeDraft) return
+    authoritativeDraft = next
+    draft = next
+    localErrors = []
+  })
+
+  function normalizeDraft(input: unknown): string {
+    return input === undefined ? '' : String(input)
+  }
 
   function apply(): void {
     const number = Number(draft)

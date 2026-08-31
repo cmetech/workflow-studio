@@ -99,6 +99,10 @@ export function structuredDraftValue(draft: StructuredDraft): unknown {
   return Object.fromEntries(draft.entries.map((entry) => [entry.key, structuredDraftValue(entry.value)]))
 }
 
+export function sameStructuredValue(left: unknown, right: unknown): boolean {
+  return deepEqual(left, right)
+}
+
 export function validateStructuredDraft(draft: StructuredDraft, label = 'Value'): readonly string[] {
   const schema = draft.kind === 'union' ? draft.value.schema : draft.schema
   return [...draftShapeErrors(draft, label), ...validateSchemaValue(structuredDraftValue(draft), schema, label)]

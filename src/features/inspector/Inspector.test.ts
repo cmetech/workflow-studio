@@ -66,6 +66,29 @@ const enumField: FormField = {
   constraints: { enum: [1, '1', false] },
 }
 
+const numberField: FormField = {
+  ...fields[0]!,
+  id: 'prompt.node.attempts',
+  label: 'Attempts',
+  fieldPath: 'nodes[].attempts',
+  pathTemplate: ['nodes', '$node', 'attempts'],
+  widget: 'number',
+  required: false,
+  schema: { type: 'integer' },
+  constraints: { minimum: 1, maximum: 10 },
+}
+
+const codeField: FormField = {
+  ...fields[0]!,
+  id: 'command.node.command',
+  label: 'Command',
+  fieldPath: 'nodes[].command',
+  pathTemplate: ['nodes', '$node', 'command'],
+  nodeKinds: ['command'],
+  widget: 'code',
+  required: false,
+}
+
 describe('Inspector', () => {
   it('renders accessible roving tabs and field semantics from contract descriptors', async () => {
     render(Inspector, { fields, values: { 'prompt.node.id': 'review' }, selectionLabel: 'review' })
@@ -119,6 +142,240 @@ describe('Inspector', () => {
     await fireEvent.click(screen.getByRole('button', { name: /apply node id/i }))
     expect(onCommit).toHaveBeenCalledWith(expect.objectContaining({ field: fields[0], value: 'other-renamed' }))
   })
+
+  it('preserves an uncommitted text draft when diagnostics refresh the same binding', async () => {
+    const initialCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields,
+      values: { 'prompt.node.id': 'review' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: initialCommit,
+    })
+    const input = screen.getByRole('textbox', { name: /node id.*required/i })
+    await fireEvent.input(input, { target: { value: 'review-draft' } })
+
+    const refreshedFields = fields.map((field) => ({ ...field, description: `Refreshed ${field.description}` }))
+    await rerender({
+      fields: refreshedFields,
+      values: { 'prompt.node.id': 'review' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: refreshedCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+          nodeId: 'review',
+        },
+      ],
+    })
+
+    expect(input.isConnected).toBe(true)
+    expect(screen.getByRole('textbox', { name: /node id.*required/i })).toBe(input)
+    expect(input).toHaveValue('review-draft')
+    await fireEvent.click(screen.getByRole('button', { name: /apply node id/i }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedFields[0], value: 'review-draft' })
+  })
+
+  it('preserves an uncommitted textarea draft when diagnostics refresh the same binding', async () => {
+    const draftFields = [{ ...fields[1]!, section: 'General' }]
+    const initialCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields: draftFields,
+      values: { 'prompt.node.when': 'ready' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: initialCommit,
+    })
+    const when = screen.getByRole('textbox', { name: 'When' })
+    await fireEvent.input(when, { target: { value: 'draft condition' } })
+
+    const refreshedFields = draftFields.map((field) => ({ ...field, description: 'Refreshed condition.' }))
+    await rerender({
+      fields: refreshedFields,
+      values: { 'prompt.node.when': 'ready' },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: refreshedCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+          nodeId: 'review',
+        },
+      ],
+    })
+
+    expect(screen.getByRole('textbox', { name: 'When' })).toBe(when)
+    expect(when).toHaveValue('draft condition')
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply When' }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedFields[0], value: 'draft condition' })
+  })
+
+  it('preserves an uncommitted number draft when diagnostics refresh the same binding', async () => {
+    const initialCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields: [numberField],
+      values: { 'prompt.node.attempts': 2 },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: initialCommit,
+    })
+    const attempts = screen.getByRole('spinbutton', { name: 'Attempts' })
+    await fireEvent.input(attempts, { target: { value: '4' } })
+
+    const refreshedField = { ...numberField, description: 'Refreshed attempts.' }
+    await rerender({
+      fields: [refreshedField],
+      values: { 'prompt.node.attempts': 2 },
+      selectionLabel: 'review',
+      selectionNodeId: 'review',
+      bindingIdentity: 'workflow:0:0:review',
+      onCommit: refreshedCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+          nodeId: 'review',
+        },
+      ],
+    })
+
+    expect(screen.getByRole('spinbutton', { name: 'Attempts' })).toBe(attempts)
+    expect(attempts).toHaveValue(4)
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Attempts' }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedField, value: 4 })
+  })
+
+  it('preserves an uncommitted code draft when diagnostics refresh the same binding', async () => {
+    const initialCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const { rerender } = render(Inspector, {
+      fields: [codeField],
+      values: { 'command.node.command': 'collect' },
+      selectionLabel: 'collect',
+      selectionNodeId: 'collect',
+      bindingIdentity: 'workflow:0:0:collect',
+      onCommit: initialCommit,
+    })
+    const command = screen.getByRole('textbox', { name: 'Command' })
+    await fireEvent.input(command, { target: { value: '/review' } })
+
+    const refreshedField = { ...codeField, description: 'Refreshed command.' }
+    await rerender({
+      fields: [refreshedField],
+      values: { 'command.node.command': 'collect' },
+      selectionLabel: 'collect',
+      selectionNodeId: 'collect',
+      bindingIdentity: 'workflow:0:0:collect',
+      onCommit: refreshedCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+          nodeId: 'collect',
+        },
+      ],
+    })
+
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBe(command)
+    expect(command).toHaveValue('/review')
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({ field: refreshedField, value: '/review' })
+  })
+
+  it.each([
+    ['text', fields[0]!, 'review', 'current-review'],
+    ['textarea', { ...fields[1]!, section: 'General' }, 'ready', 'current condition'],
+    ['number', numberField, 2, 5],
+    ['code', codeField, 'collect', '/current'],
+  ] as const)(
+    'adopts the current authoritative %s value after a new binding initially mounts with the previous value',
+    async (_widget, initialField, previousValue, currentValue) => {
+      const initialCommit = vi.fn()
+      const transitionalCommit = vi.fn()
+      const currentCommit = vi.fn()
+      const { rerender } = render(Inspector, {
+        fields: [initialField],
+        values: { [initialField.id]: previousValue },
+        selectionLabel: 'previous',
+        selectionNodeId: 'previous',
+        bindingIdentity: 'workflow:0:0:previous',
+        onCommit: initialCommit,
+      })
+      const initialControl = screen.getByLabelText(new RegExp(initialField.label, 'i'))
+
+      const transitionalField = { ...initialField, description: `Transitional ${initialField.description}` }
+      await rerender({
+        fields: [transitionalField],
+        values: { [initialField.id]: previousValue },
+        selectionLabel: 'current',
+        selectionNodeId: 'current',
+        bindingIdentity: 'workflow:0:1:current',
+        onCommit: transitionalCommit,
+      })
+      const currentControl = screen.getByLabelText(new RegExp(initialField.label, 'i'))
+      expect(currentControl).not.toBe(initialControl)
+      expect(currentControl).toHaveValue(previousValue)
+
+      const currentField = { ...initialField, description: `Current ${initialField.description}` }
+      await rerender({
+        fields: [currentField],
+        values: { [initialField.id]: currentValue },
+        selectionLabel: 'current',
+        selectionNodeId: 'current',
+        bindingIdentity: 'workflow:0:1:current',
+        onCommit: currentCommit,
+        issues: [
+          {
+            code: 'runtime_advisory',
+            layer: 'operational',
+            severity: 'warning',
+            blocking: false,
+            message: 'The runtime is unavailable.',
+            document: 'definition',
+            nodeId: 'current',
+          },
+        ],
+      })
+
+      expect(screen.getByLabelText(new RegExp(initialField.label, 'i'))).toBe(currentControl)
+      expect(currentControl).toHaveValue(currentValue)
+      await fireEvent.click(screen.getByRole('button', { name: `Apply ${initialField.label}` }))
+      expect(initialCommit).not.toHaveBeenCalled()
+      expect(transitionalCommit).not.toHaveBeenCalled()
+      expect(currentCommit).toHaveBeenCalledWith({ field: currentField, value: currentValue })
+    },
+  )
 
   it('shows a multi-selection summary and disables stale or read-only mutations', () => {
     const { rerender } = render(Inspector, {

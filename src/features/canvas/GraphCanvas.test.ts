@@ -505,7 +505,7 @@ describe('GraphCanvas', () => {
     expect($canvasSelection.get()).toEqual(['collect'])
   })
 
-  it('keeps the selected node authoritative when projection diagnostics refresh', async () => {
+  it('keeps the selected node authoritative without publishing an empty selection when projection diagnostics refresh', async () => {
     const rendered = renderCanvas({ projection, layout })
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
@@ -515,6 +515,9 @@ describe('GraphCanvas', () => {
     expect($canvasSelection.get()).toEqual(['review'])
     expect(selectedNode).toHaveClass('selected')
     expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+
+    const publishedSelections: string[][] = []
+    const unsubscribe = $canvasSelection.subscribe((ids) => publishedSelections.push([...ids]))
 
     const refreshedProjection: WorkflowProjection = {
       ...projection,
@@ -541,6 +544,8 @@ describe('GraphCanvas', () => {
     expect($canvasSelection.get()).toEqual(['review'])
     expect(rendered.container.querySelector('.svelte-flow__node[data-id="review"]')).toHaveClass('selected')
     expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+    expect(publishedSelections).toEqual([['review']])
+    unsubscribe()
   })
 
   it('prunes a selected node removed while the authoring surface is inactive', async () => {

@@ -82,6 +82,113 @@ describe('recursive structured inspector controls', () => {
     expect(onCommit).toHaveBeenCalledWith({ field: objectField, value: { max_attempts: 4, on_error: 'continue' } })
   })
 
+  it('preserves an uncommitted structured draft when diagnostics refresh the same binding', async () => {
+    const initialCommit = vi.fn()
+    const refreshedCommit = vi.fn()
+    const objectField = field({
+      id: 'retry',
+      label: 'Retry',
+      schema: {
+        type: 'object',
+        required: ['max_attempts'],
+        properties: {
+          max_attempts: { type: 'integer', title: 'Max attempts', minimum: 1, maximum: 10 },
+          on_error: { type: 'string', title: 'On error' },
+        },
+      },
+    })
+    const rendered = render(ObjectField, {
+      field: objectField,
+      value: { max_attempts: 2, on_error: 'fail' },
+      present: true,
+      onCommit: initialCommit,
+    })
+    const attempts = screen.getByRole('spinbutton', { name: 'Max attempts' })
+    await fireEvent.input(attempts, { target: { value: '4' } })
+
+    const refreshedField = { ...objectField, description: 'Refreshed retry.' }
+    await rendered.rerender({
+      field: refreshedField,
+      value: { on_error: 'fail', max_attempts: 2 },
+      present: true,
+      onCommit: refreshedCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+        },
+      ],
+    })
+
+    expect(screen.getByRole('spinbutton', { name: 'Max attempts' })).toBe(attempts)
+    expect(attempts).toHaveValue(4)
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Retry' }))
+    expect(initialCommit).not.toHaveBeenCalled()
+    expect(refreshedCommit).toHaveBeenCalledWith({
+      field: refreshedField,
+      value: { max_attempts: 4, on_error: 'fail' },
+    })
+  })
+
+  it('adopts current structured authority after a new binding initially mounts with the previous value', async () => {
+    const initialField = field({
+      id: 'retry',
+      label: 'Retry',
+      schema: {
+        type: 'object',
+        required: ['max_attempts'],
+        properties: { max_attempts: { type: 'integer', title: 'Max attempts', minimum: 1, maximum: 10 } },
+      },
+    })
+    const initial = render(ObjectField, {
+      field: initialField,
+      value: { max_attempts: 2 },
+      present: true,
+    })
+    expect(screen.getByRole('spinbutton', { name: 'Max attempts' })).toHaveValue(2)
+    initial.unmount()
+
+    const transitionalCommit = vi.fn()
+    const currentCommit = vi.fn()
+    const transitionalField = { ...initialField, description: 'Transitional retry.' }
+    const currentBinding = render(ObjectField, {
+      field: transitionalField,
+      value: { max_attempts: 2 },
+      present: true,
+      onCommit: transitionalCommit,
+    })
+    const attempts = screen.getByRole('spinbutton', { name: 'Max attempts' })
+    expect(attempts).toHaveValue(2)
+
+    const currentField = { ...initialField, description: 'Current retry.' }
+    await currentBinding.rerender({
+      field: currentField,
+      value: { max_attempts: 6 },
+      present: true,
+      onCommit: currentCommit,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+        },
+      ],
+    })
+
+    expect(screen.getByRole('spinbutton', { name: 'Max attempts' })).toBe(attempts)
+    expect(attempts).toHaveValue(6)
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Retry' }))
+    expect(transitionalCommit).not.toHaveBeenCalled()
+    expect(currentCommit).toHaveBeenCalledWith({ field: currentField, value: { max_attempts: 6 } })
+  })
+
   it('keeps map keys as draft entries and blocks duplicate keys before serialization', async () => {
     const onCommit = vi.fn()
     const mapField = field({

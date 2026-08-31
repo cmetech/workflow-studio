@@ -1174,6 +1174,52 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('keeps an inspector draft mounted through a same-workflow projection diagnostics refresh', async () => {
+    const rendered = await renderAuthoringApp()
+    setCanvasSelection(['collect'])
+    const command = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Command' })
+    await fireEvent.input(command, { target: { value: '/review' } })
+
+    const publishedSelections: string[][] = []
+    const unsubscribe = $canvasSelection.subscribe((ids) => publishedSelections.push([...ids]))
+    const revision = $documentSession.get().revision!
+    const refreshedProjection = projection()
+    receiveDocumentAnalysis({
+      ...revision,
+      structurallyValid: true,
+      issues: [
+        {
+          code: 'runtime_advisory',
+          layer: 'operational',
+          severity: 'warning',
+          blocking: false,
+          message: 'The runtime is unavailable.',
+          document: 'definition',
+          nodeId: 'collect',
+        },
+      ],
+      projection: {
+        ...refreshedProjection,
+        nodes: refreshedProjection.nodes.map((node) => ({ ...node })),
+      },
+    })
+    await tick()
+    await tick()
+
+    expect(command.isConnected).toBe(true)
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBe(command)
+    expect(command).toHaveValue('/review')
+    expect(publishedSelections.length).toBeGreaterThan(0)
+    expect(publishedSelections.every((ids) => ids.length === 1 && ids[0] === 'collect')).toBe(true)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('command: /review'))
+    expect(historyStore.get().undo).toHaveLength(1)
+
+    unsubscribe()
+    rendered.unmount()
+  })
+
   it('edits workflow fields with no node selection and migrates layout on an inspector ID rename', async () => {
     let rendered = await renderAuthoringApp()
     const workflowName = await screen.findByRole('textbox', { name: /workflow name.*required/i })
