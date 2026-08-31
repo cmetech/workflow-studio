@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import ModalShell from '$src/app/ModalShell.svelte'
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { displayKeybindings } from '$src/lib/commands/keybindings'
@@ -8,9 +9,10 @@
     registry: CommandSurface
     context: CommandContext
     onClose?: () => void
+    onExecuted?: (commandId: string) => void | Promise<void>
     opener?: HTMLElement | undefined
   }
-  let { registry, context, onClose, opener }: Props = $props()
+  let { registry, context, onClose, onExecuted, opener }: Props = $props()
   let query = $state('')
   let activeIndex = $state(0)
   const commands = $derived(
@@ -42,8 +44,14 @@
   }
   async function execute(): Promise<void> {
     if (!active || !active.enabled(context)) return
-    const result = await registry.executeCommand(active.id, context)
-    if (result.commandPalette === 'close') close()
+    const commandId = active.id
+    const result = await registry.executeCommand(commandId, context)
+    if (result.commandPalette === 'close') {
+      close()
+      await tick()
+      await tick()
+    }
+    await onExecuted?.(commandId)
   }
   function close(): void {
     onClose?.()

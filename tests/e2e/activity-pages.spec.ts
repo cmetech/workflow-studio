@@ -86,27 +86,29 @@ test('Settings exposes one responsive keyboard-operable category at a time', asy
   await expect(page.getByRole('tabpanel', { name: 'About' })).toBeVisible()
 })
 
-test('Welcome replaces inactive authoring chrome while preserving activity access', async ({ page }) => {
-  await page.setViewportSize({ width: 1024, height: 700 })
-  await page.goto('/')
+test('Welcome keeps authoring chrome inert and Explorer collapsed at desktop and compact widths', async ({ page }) => {
+  for (const width of [1440, 512]) {
+    await page.setViewportSize({ width, height: width === 512 ? 350 : 900 })
+    await page.goto('/')
 
-  const welcome = page.getByRole('region', { name: 'Welcome' })
-  await expect(welcome).toBeVisible()
-  await expect(welcome.getByRole('button', { name: 'Open Folder' })).toBeVisible()
-  await expect(page.getByRole('navigation', { name: 'Activities' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })).toHaveAttribute(
-    'hidden',
-    '',
-  )
-  await expect(page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })).toHaveAttribute(
-    'inert',
-    '',
-  )
-  await expect(page.getByRole('complementary', { name: 'Inspector', includeHidden: true })).toHaveAttribute(
-    'hidden',
-    '',
-  )
-  await expect(welcome.getByRole('group', { name: 'Editor mode' })).toHaveCount(0)
+    const welcome = page.getByRole('region', { name: 'Welcome' })
+    const explorer = page.getByRole('button', { name: 'Explorer', exact: true })
+    const workspace = page.getByRole('region', { name: 'Workflow workspace', includeHidden: true })
+    await expect(welcome).toBeVisible()
+    await expect(welcome.getByRole('button', { name: 'Open Folder' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Activities' })).toBeVisible()
+    await expect(explorer).toHaveAttribute('aria-expanded', 'false')
+    await expect(workspace).toHaveAttribute('hidden', '')
+    await expect(workspace).toHaveAttribute('inert', '')
+    await expect(page.getByRole('complementary', { name: 'Inspector', includeHidden: true })).toHaveAttribute(
+      'hidden',
+      '',
+    )
+    await explorer.click()
+    await expect(explorer).toHaveAttribute('aria-expanded', 'false')
+    await expect(workspace).toHaveAttribute('inert', '')
+    await expect(welcome.getByRole('group', { name: 'Editor mode' })).toHaveCount(0)
+  }
 })
 
 test('Examples and Documentation reveal selected detail immediately and keep the last result reachable', async ({
@@ -203,9 +205,9 @@ test('active Example page owns pointer hit testing after long authoring and page
   await expect.poll(async () => (await e2eSnapshot(page)).workspacePaths).not.toEqual(before)
 })
 
-test('Documentation moves keyboard focus into narrow detail and restores the result', async ({ page }) => {
+test('Documentation transfers selected-result focus across both responsive presentation changes', async ({ page }) => {
   await openSeededPair(page)
-  await page.setViewportSize({ width: 560, height: 700 })
+  await page.setViewportSize({ width: 1024, height: 700 })
   await page.getByRole('button', { name: 'Documentation', exact: true }).click()
   const search = page.getByRole('searchbox', { name: 'Search documentation' })
   await search.fill('Workflow definition')
@@ -215,9 +217,29 @@ test('Documentation moves keyboard focus into narrow detail and restores the res
   await search.press('Enter')
 
   const back = page.getByRole('button', { name: 'Back to Results' })
+  await page.setViewportSize({ width: 560, height: 700 })
   await expect(back).toBeFocused()
-  await back.press('Enter')
+  await page.setViewportSize({ width: 1024, height: 700 })
   await expect(page.locator(`[id="${resultId}"]`)).toBeFocused()
+})
+
+test('command-palette page navigation focuses its destination and returns to the exact YAML opener', async ({
+  page,
+}) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'YAML', exact: true }).click()
+  const yamlContent = page.locator('[aria-label="Definition YAML"] .cm-content')
+  await yamlContent.focus()
+  await expect(yamlContent).toBeFocused()
+  await page.keyboard.press('F1')
+  const search = page.getByRole('combobox', { name: 'Search commands' })
+  await search.fill('Settings')
+  await search.press('Enter')
+
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden()
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeFocused()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+  await expect(yamlContent).toBeFocused()
 })
 
 test('Git is a contained full-workbench page and falls back to unified diff when narrow', async ({ page }) => {

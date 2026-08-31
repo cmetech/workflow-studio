@@ -7,16 +7,17 @@ and [implementation plan](../superpowers/plans/2026-08-30-workflow-studio-conten
 ## Candidate identity
 
 - Branch: `fix/native-dialog-and-rail-centering`
-- Second-round review-fix parent commit: `2652f30aabdd109f7e3742b7eb4d4e60dc54ee43`
-- Parent subject: `fix: address Task 10 review findings`
+- Final whole-branch review-fix parent commit: `5c55a4f1d2f23ea36e5526248cb2c5851c20bc70`
+- Parent subject: `fix: address Task 10 review round 2`
 - Host: Apple silicon, macOS 26.5.1 (25F80)
 - Rust toolchain: `rustc 1.88.0 (6b00bc388 2025-06-23)`, `cargo 1.88.0 (873a06493 2025-05-10)`
 - System WebKit framework: `21624`
 - Verification date: 2026-08-30
 
-The second-round review-fix commit cannot contain its own hash. Its stable 6-file source/test manifest SHA-256 is
-`00136115c2631de06f7fcbdfab5a26091199b9e980fd7697624a6c4578d450ba`. Reproduce that identity from the committed
-review fix with:
+The final whole-branch review-fix commit cannot contain its own hash or encompassing Git tree hash. Its exact,
+stable 26-file source/test manifest SHA-256 is
+`84ea3ecdca3a7344d9402af8d1d7c504995e67898bab55c7d3b2ae9e145803b2`. Reproduce that production/test tree identity
+from the committed review fix with:
 
 ```bash
 git diff-tree --no-commit-id --name-only -r --diff-filter=ACMR HEAD^ HEAD -- src tests \
@@ -27,28 +28,32 @@ git diff-tree --no-commit-id --name-only -r --diff-filter=ACMR HEAD^ HEAD -- src
   | shasum -a 256
 ```
 
-The final review-fix commit hash is also recorded in the ignored SDD execution report after commit creation.
+The final review-fix commit and encompassing Git tree hashes are recorded in the ignored SDD execution report after
+commit creation.
 
 ## Review-fix coverage
 
-- Controllable deferred-analysis tests prove overlapping visual mutations and intervening authoritative YAML edits
-  cannot overwrite the current workflow. Commit compare-and-swap covers workflow ID, generation, definition and
-  companion paths, companion presence, and both revisions.
-- Worker unavailable, runtime `error`, `messageerror`, and bounded no-response timeout paths settle as visible canvas
-  rejections. Worker listeners, timers, and registration waiters are cleaned up. No main-thread validation fallback
-  was added.
-- Registration-only worker `error`, `messageerror`, and bounded registration-timeout paths now reject even without a
-  current analysis request. Terminal failure and disposal cancel pending edit, analysis, and registration timers and
-  clear every registration waiter. A debounced edit cannot dispatch after terminal failure.
-- Exporting the already active exact workflow pair preserves its current worker analysis rather than reopening the
-  pair and invalidating that analysis. Non-active export targets retain the prior activation and exact-identity checks.
-- One shared exact-geometry helper now checks Welcome, authoring, Settings, Examples, Documentation, Git,
-  Inspector/Problems, and every modal at all four geometries in both configured engines. The production recovery,
-  blocked-export, collision-export, active-brand-removal, initialize-repository, and repository-identity states are
-  included through deterministic real-UI scenarios.
-- Port-drag counters are reset and inspected before mouse-up for the rejected and valid gestures. Repeated diagnostics
-  assert the complete page-error and console-error collections are empty. The long Windows selected workspace and Git
-  repository roots are identical, while the entire prior path, long ref, commit subject, and containment are asserted.
+- The 512x350 authoring regression measures editor, graph, pointer viewport, menu, and final menu-item descendants.
+  The menu is bounded and scrollable, retains a canvas viewport of at least 44 CSS pixels, stays outside the pointer
+  viewport, and exposes a real hittable final action in Chromium and WebKit.
+- Repeated identical blocking diagnostics retain occurrence identity. A real 39-diagnostic Export opens and closes
+  its blocking dialog with 39 list items and empty complete page-error and console-error collections.
+- Controllable deferred-analysis tests prove visual mutation compare-and-swap covers contract digest, workflow and
+  pair identity, YAML revisions, saved revisions, saved generation, and disk hashes. Concurrent Save and same-profile
+  contract-switch results cannot be overwritten by a stale mutation.
+- Position deltas retain a workspace/workflow/path layout lease through the analysis boundary. A delayed mutation for
+  workflow A cannot write node positions into workflow B after activation.
+- A first non-active Export awaits exact-revision worker analysis and exports the selected pair in one invocation.
+  Already-active exact Export continues to preserve its current analysis.
+- Page commands use one opener-aware navigation path. Palette navigation from Definition YAML focuses the Settings
+  heading after modal teardown and Back returns focus to that exact editor opener.
+- Example preview Back restores the automatically captured list scroll and preview opener after remount. Documentation
+  transfers selected-result focus to Back on wide-to-narrow reflow and back to the result on narrow-to-wide reflow;
+  the Chromium transition passed ten consecutive focused repetitions after the final focus-lease fix.
+- Explorer reports collapsed on Welcome at desktop and compact widths, and F1 opens Command Palette from CodeMirror
+  while ordinary editable typing/native editing bindings remain protected.
+- The prior worker timeout/cleanup, no-main-thread-validation fallback, exact modal matrix, Split threshold, local-only
+  Git, port-drag counters, 250-node/500-edge capacity, and modal top-layer/Escape gates remain green.
 
 ## Automated gates
 
@@ -64,34 +69,37 @@ were run with the task-provided `CARGO_HOME`, `RUSTUP_HOME`, and `PATH` values.
 | `npm run examples:check` | PASS; bundled examples validated |
 | `npm run resources:verify` | PASS; 32 packaged files verified |
 | `npm run test:unit -- tests/performance tests/accessibility` | PASS; 4 files, 12 tests |
-| `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | PASS; 121 files, 1,133 tests |
+| `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1` | PASS; 121 files, 1,141 tests, no unhandled errors |
 | `CARGO_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo RUSTUP_HOME=/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup PATH=/private/tmp/workflow-studio-remediation-toolchain-20260830/cargo/bin:/private/tmp/workflow-studio-remediation-toolchain-20260830/rustup/toolchains/1.88.0-aarch64-apple-darwin/bin:$PATH npm run test:rust` | PASS; 245 library tests and 24 Git integration tests |
 | `npm run build` | PASS; 874 modules transformed |
-| `npm run test:e2e` | PASS; 270 tests across Chromium and Playwright WebKit |
+| `npm run test:e2e` | PASS; 276 tests across Chromium and Playwright WebKit |
 | `git diff --check` | PASS |
 
-The original focused adversarial matrix was exactly 104/104 at parent `6106624` with this command:
+The final whole-branch adversarial matrix passed exactly 266/266 with this command:
 
 ```bash
-npx playwright test tests/e2e/activity-pages.spec.ts tests/e2e/canvas-capacity.spec.ts \
+npx playwright test tests/e2e/activity-pages.spec.ts tests/e2e/examples-and-docs.spec.ts \
   tests/e2e/modal-layout.spec.ts tests/e2e/workbench-containment.spec.ts \
-  tests/e2e/workbench-layout.spec.ts --project=chromium --project=webkit --workers=1
-```
-
-After the second review expanded those same files with all six omitted production modal states, the exact same command
-passed 232/232. The exact geometry-only command passed 168/168:
-
-```bash
-npx playwright test tests/e2e/workbench-containment.spec.ts tests/e2e/modal-layout.spec.ts \
+  tests/e2e/workbench-layout.spec.ts tests/e2e/workspace-authoring.spec.ts \
+  tests/e2e/canvas-capacity.spec.ts tests/e2e/workbench-style.spec.ts \
   --project=chromium --project=webkit --workers=1
 ```
 
-The coverage includes all four exact geometries, effective 200% reflow, active-page hit testing, repeated diagnostics
-with empty page-error and console-error collections, long bounded content, real modality, focus restoration,
-authoring-state preservation, and compact Split behavior. The capacity test uses a semantic 250-node/500-edge
-projection and performs real drag, valid connection, rejected cycle, navigation, Inspector, and Problems actions.
-Chromium recorded no authoring long task over 50 ms and zero parse, validation, layout, Git, native, or file work
-during node pointer movement and before mouse-up on both port drags.
+After the continuous-height canvas adjustment, the new 512x350 descendant test and the pre-existing pointer-viewport
+invariant passed 4/4 in both engines with:
+
+```bash
+npx playwright test tests/e2e/workbench-layout.spec.ts tests/e2e/workspace-authoring.spec.ts \
+  --project=chromium --project=webkit --workers=1 \
+  --grep 'usable canvas|canvas menu stays outside'
+```
+
+The matrix includes all four exact geometries, effective 200% descendant containment and hit testing, repeated Export
+diagnostics, responsive master-detail restoration, opener-aware palette navigation, long bounded content, real
+modality, authoring-state preservation, and compact Split behavior. The capacity test uses a semantic
+250-node/500-edge projection and performs real drag, valid connection, rejected cycle, navigation, Inspector, and
+Problems actions. Chromium recorded no authoring long task over 50 ms and zero parse, validation, layout, Git, native,
+or file work during node pointer movement and before mouse-up on both port drags.
 
 Playwright WebKit is browser-engine evidence. It is not described here as an installed Tauri/WebView result.
 
@@ -108,8 +116,8 @@ npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json
 
 | Artifact | Identity | SHA-256 |
 | --- | --- | --- |
-| `src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg` | macOS arm64, app 1.0.3, debug/unsigned DMG; second-round source manifest above | `ce568265676bef7e4e648544d31ebca1f9874dc12be6801c97e1ee3d7aa89a82` |
-| `src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio` | Mach-O arm64 executable, ad-hoc linker signature; second-round source manifest above | `34bc2c524c2e517f5b25fd19aae1a98a69c2129584fca8016e3c27b4e9f04c34` |
+| `src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg` | macOS arm64, app 1.0.3, debug/unsigned DMG; final source manifest above | `65a39d27149334e180cf48b1201e3d125a60429c277cd09eb1555a13af3b7435` |
+| `src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio` | Mach-O arm64 executable, ad-hoc linker signature; final source manifest above | `41b64131aa76a8393a379de597b2925d984c4b4e0a26d5aca08dd3373a37b080` |
 
 The checksums, mount, copy, detach, launch, and temporary install identity are reproducible from these exact commands:
 
@@ -118,8 +126,8 @@ shasum -a 256 \
   'src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg' \
   'src-tauri/target/debug/bundle/macos/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 
-mktemp -d /private/tmp/workflow-studio-task10-round2.XXXXXX
-# Result: /private/tmp/workflow-studio-task10-round2.0egnKx
+mktemp -d /private/tmp/workflow-studio-final-fix.XXXXXX
+# Result: /private/tmp/workflow-studio-final-fix.AA441f
 
 hdiutil attach -readonly -nobrowse \
   'src-tauri/target/debug/bundle/dmg/LOOP24 Workflow Studio_1.0.3_aarch64.dmg'
@@ -127,21 +135,22 @@ hdiutil attach -readonly -nobrowse \
 # /Volumes/LOOP24 Workflow Studio 1 and passed image CRC verification.
 
 ditto '/Volumes/LOOP24 Workflow Studio 1/LOOP24 Workflow Studio.app' \
-  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app'
+  '/private/tmp/workflow-studio-final-fix.AA441f/LOOP24 Workflow Studio.app'
 shasum -a 256 \
-  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
+  '/private/tmp/workflow-studio-final-fix.AA441f/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 hdiutil detach /dev/disk7
 
 env HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
   ALL_PROXY=http://127.0.0.1:9 NO_PROXY= \
-  '/private/tmp/workflow-studio-task10-round2.0egnKx/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
+  '/private/tmp/workflow-studio-final-fix.AA441f/LOOP24 Workflow Studio.app/Contents/MacOS/workflow-studio'
 ps -ax -o pid=,command= \
-  | rg '/private/tmp/workflow-studio-task10-round2\.0egnKx/LOOP24 Workflow Studio\.app/Contents/MacOS/workflow-studio'
+  | rg '/private/tmp/workflow-studio-final-fix\.AA441f/LOOP24 Workflow Studio\.app/Contents/MacOS/workflow-studio'
 ```
 
-The copied second-round review artifact launched and remained alive after the deliberately dead proxy produced the
-expected updater network failure. It was then terminated with `Ctrl-C`, and a repeated `ps`/`rg` check returned no
-process. No extended installed interaction matrix was repeated for this review artifact.
+The copied final-review artifact's Mach-O checksum exactly matched the bundled app. It launched and remained alive
+after the deliberately dead proxy produced the expected updater network failure. It was then terminated with
+`Ctrl-C`, and a repeated `ps`/`rg` check returned no process. No extended installed interaction matrix was repeated
+for this review artifact.
 
 ### Initial Task 10 installed macOS smoke observations
 
@@ -169,10 +178,10 @@ These limitations keep the installed-platform gate open; this record does not cl
 
 ## Windows status
 
-Windows artifact creation and installed-app checks were not performed. The Task 10 commit was not remotely
-reachable, and pushing or dispatching the authenticated Windows workflow was expressly out of scope. No existing
-Windows artifact at this exact candidate was available for non-mutating verification. Playwright Chromium/WebKit
-results are not substituted for Windows WebView2 evidence.
+Windows artifact creation and installed-app checks were not performed. The final review-fix commit was not pushed,
+and dispatching the authenticated Windows workflow was expressly out of scope. No existing Windows artifact at this
+exact candidate was available for non-mutating verification. Playwright Chromium/WebKit results are not substituted
+for Windows WebView2 evidence.
 
 ## Advisories and open gates
 

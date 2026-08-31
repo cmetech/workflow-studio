@@ -115,7 +115,11 @@ export async function dispatchKeybinding(
     'meta+a',
     'ctrl+a',
   ])
-  if (editable && (nativeEditingBinding.has(binding) || (!event.metaKey && !event.ctrlKey && !event.altKey)))
+  if (
+    editable &&
+    event.key !== 'F1' &&
+    (nativeEditingBinding.has(binding) || (!event.metaKey && !event.ctrlKey && !event.altKey))
+  )
     return { status: 'ignored-editable' }
 
   if (event.key === 'Escape') {

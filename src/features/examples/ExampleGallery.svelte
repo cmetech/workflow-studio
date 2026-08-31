@@ -28,13 +28,30 @@
   let selectedExample = $state<ExampleDescriptor | null>(null)
   let gallery = $state<HTMLElement>()
   let previewBack = $state<HTMLButtonElement>()
+  let previewReturn = $state<{ readonly exampleId: string; readonly scrollTop: number } | null>(null)
 
   async function selectExample(example: ExampleDescriptor): Promise<void> {
+    const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
+    previewReturn = { exampleId: example.id, scrollTop: pageScroll?.scrollTop ?? 0 }
     selectedExample = example
     await tick()
-    const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
     if (pageScroll) pageScroll.scrollTop = 0
     previewBack?.focus({ preventScroll: true })
+  }
+
+  async function returnToExamples(): Promise<void> {
+    const restoration = previewReturn
+    selectedExample = null
+    await tick()
+    if (!restoration) return
+    const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
+    if (pageScroll) pageScroll.scrollTop = restoration.scrollTop
+    const target = Array.from(gallery?.querySelectorAll<HTMLButtonElement>('[data-example-preview]') ?? []).find(
+      (button) => button.dataset.examplePreview === restoration.exampleId,
+    )
+    target?.focus({ preventScroll: true })
+    if (pageScroll) pageScroll.scrollTop = restoration.scrollTop
+    previewReturn = null
   }
 </script>
 
@@ -54,7 +71,7 @@
   {:else if selectedExample}
     <section class="preview" aria-label={`${selectedExample.title} preview`}>
       <header class="preview-header">
-        <button bind:this={previewBack} type="button" data-variant="ghost" onclick={() => (selectedExample = null)}
+        <button bind:this={previewBack} type="button" data-variant="ghost" onclick={() => void returnToExamples()}
           >Back to Examples</button
         >
         <div>
@@ -141,7 +158,9 @@
             {/each}
           </div>
           <div class="actions">
-            <button type="button" onclick={() => void selectExample(example)}>Preview {example.title}</button>
+            <button type="button" data-example-preview={example.id} onclick={() => void selectExample(example)}
+              >Preview {example.title}</button
+            >
             <button type="button" onclick={() => onCreateEditableCopy(example)}
               >Create Editable Copy: {example.title}</button
             >

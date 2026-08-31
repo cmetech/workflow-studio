@@ -60,4 +60,15 @@ describe('ActivityRail', () => {
     expect(explorer).toHaveAttribute('aria-expanded', 'true')
     expect(settings).not.toHaveAttribute('aria-current')
   })
+
+  it('does not report a contextual panel expanded while Welcome owns the workbench', () => {
+    showActivity('explorer')
+    const registry = createCommandRegistry()
+    for (const command of listCommands()) registry.registerCommand(command)
+    render(ActivityRail, {
+      props: { commandSurface: registry, workspacePanelExpanded: true, authoringSurfaceActive: false },
+    } as never)
+
+    expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'false')
+  })
 })

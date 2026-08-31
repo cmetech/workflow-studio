@@ -13,6 +13,17 @@ describe('ImportExportDialog', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toHaveAttribute('data-variant', 'secondary')
   })
 
+  it('renders repeated blocking diagnostics as independent export occurrences', () => {
+    render(ImportExportDialog, {
+      mode: 'export',
+      blockingIssues: ['Duplicate node ID.', 'Duplicate node ID.'],
+    })
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+    expect(screen.getAllByText('Duplicate node ID.')).toHaveLength(2)
+    expect(screen.getByRole('dialog', { name: 'Export workflow' })).toBeVisible()
+  })
+
   it('names the exact YAML pair in collision confirmation and excludes application data', async () => {
     const onConfirm = vi.fn()
     render(ImportExportDialog, {

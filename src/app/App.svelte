@@ -287,6 +287,7 @@
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
   let keyboardShortcutsOpener = $state<HTMLElement | null>(null)
+  let commandPaletteOpener = $state<HTMLElement | undefined>()
   let explorerCatalogOperation = $state.raw<
     { readonly phase: 'ready' | 'loading' } | { readonly phase: 'error'; readonly message: string }
   >({ phase: 'ready' })
@@ -325,6 +326,7 @@
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
   let pageOpener = $state<HTMLElement | undefined>()
+  let pageFocusRequest = $state(0)
   let inspectorDrawerOwner = $state<
     { readonly kind: 'explicit'; readonly opener: HTMLElement | undefined } | { readonly kind: 'resize' } | undefined
   >()
@@ -728,12 +730,27 @@
   }
 
   function rememberActivityOpener(opener: HTMLElement, activity: ActivityId): void {
-    if (isPageActivity(activity)) pageOpener = opener
+    if (isPageActivity(activity)) routePageNavigation(activity, opener)
     else workspacePanelOpener = opener
   }
 
-  function rememberPageOpener(opener: HTMLElement | undefined): void {
+  function routePageNavigation(activity: ActivityId, opener: HTMLElement | undefined, activate = false): boolean {
+    if (!isPageActivity(activity)) return false
     if (opener?.isConnected) pageOpener = opener
+    pageFocusRequest += 1
+    if (activate) showActivity(activity)
+    return true
+  }
+
+  function completePageCommand(commandId: string, opener: HTMLElement | undefined): boolean {
+    if (!commandId.startsWith('view.activity.')) return false
+    const activity = commandId.slice('view.activity.'.length) as ActivityId
+    return routePageNavigation(activity, opener)
+  }
+
+  function commandPaletteExecuted(commandId: string): void {
+    completePageCommand(commandId, commandPaletteOpener ?? keyboardShortcutsOpener ?? undefined)
+    commandPaletteOpener = undefined
   }
 
   async function returnToAuthoringSurface(): Promise<void> {
@@ -817,13 +834,22 @@
     if (entry?.readOnly === true) return { unavailable: 'This workflow is read-only.' }
     const layout = activeLayoutStore.get()
     if (!layout) return { unavailable: 'Canvas layout is unavailable.' }
+    const layoutLease = {
+      workspaceId: layout.workspaceId,
+      workflowId: session.pair.workflowId,
+      definitionPath: session.pair.definition.path,
+    }
 
     return {
       pair: session.pair,
+      revision: session.revision,
       projection,
       contract,
       positions: canvasPositionsStore.get(),
-      getCurrentPair: () => documentSessionStore.get().pair,
+      getCurrentSnapshot: () => {
+        const current = documentSessionStore.get()
+        return current.pair && current.revision ? { pair: current.pair, revision: current.revision } : null
+      },
       applyMutation: (pair, mutation, contract) => applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker),
       commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
@@ -832,13 +858,22 @@
       },
       commitPositions: async (updates) => {
         const active = activeLayoutStore.get()
-        if (!active) return
-        const nodePositions = { ...active.nodePositions }
+        const current = documentSessionStore.get().pair
+        if (
+          !active ||
+          workspace.get().id !== layoutLease.workspaceId ||
+          active.workspaceId !== layoutLease.workspaceId ||
+          active.workflowPath !== layoutLease.definitionPath ||
+          current?.workflowId !== layoutLease.workflowId ||
+          current.definition.path !== layoutLease.definitionPath
+        )
+          return
+        const nodePositions = { ...layout.nodePositions }
         for (const [id, position] of Object.entries(updates)) {
           if (position) nodePositions[id] = { ...position }
           else delete nodePositions[id]
         }
-        await persistCanvasLayout({ ...active, nodePositions, updatedAt: new Date().toISOString() })
+        await persistCanvasLayout({ ...layout, nodePositions, updatedAt: new Date().toISOString() })
       },
       // The invoking surface owns the single live announcement. GraphCanvas uses
       // its named polite region; dialogs and commands surface their returned result.
@@ -1283,11 +1318,10 @@
   }
 
   function openExampleDocumentation(example: ExampleDescriptor, topicId: string, opener: HTMLButtonElement): void {
-    rememberPageOpener(opener)
     exampleDocumentationProfile = example.profile
     documentationNavigationSequence += 1
     documentationNavigationRequest = { id: documentationNavigationSequence, topicId: `contract:${topicId}` }
-    showActivity('documentation')
+    routePageNavigation('documentation', opener, true)
   }
 
   function analyzeCandidateInWorker(input: {
@@ -1413,6 +1447,18 @@
     },
     confirm: confirmExact,
     currentDocument: () => documentSessionStore.get(),
+    analyzeExact: (pair, revision) => {
+      const contract = contracts.find((candidate) => candidate.contract_digest === revision.contractDigest)
+      if (!contract) {
+        return Promise.reject(
+          new WorkspaceActionError(
+            'contract_unavailable',
+            'The exact authoring contract for the selected workflow is unavailable.',
+          ),
+        )
+      }
+      return analyzePairInWorker(pair, contract)
+    },
     confirmExportCollision,
     presentOutcome: (action, outcome) => {
       if (!outcome || typeof outcome !== 'object' || !('status' in outcome)) return
@@ -1713,6 +1759,12 @@
               : undefined
         const workspacePanelWasOpen = $workspacePanelOpen
         if (
+          event.key === 'F1' ||
+          ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'p')
+        ) {
+          commandPaletteOpener = keyboardOpener
+        }
+        if (
           context.surface === 'canvas' &&
           (nodeChordState.pending || (!event.shiftKey && event.key.toLowerCase() === 'n'))
         ) {
@@ -1727,6 +1779,7 @@
             if (
               result.status === 'executed' &&
               result.commandId.startsWith('view.activity.') &&
+              !completePageCommand(result.commandId, keyboardOpener) &&
               workbenchPresentation.panels === 'drawers'
             ) {
               if ($workspacePanelOpen) await focusWorkspaceDrawer(keyboardOpener)
@@ -1874,6 +1927,7 @@
     <ActivityRail
       {commandSurface}
       workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
+      authoringSurfaceActive={workbenchSurface === 'authoring'}
       onActivityInvoke={rememberActivityOpener}
     />
     {#if workbenchSurface === 'authoring' && workbenchPresentation.panels === 'drawers' && ($workspacePanelOpen || $inspectorPanelOpen)}
@@ -2073,11 +2127,10 @@
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
           onDocumentation={(id, opener) => {
-            rememberPageOpener(opener)
             exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
             documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
-            showActivity('documentation')
+            routePageNavigation('documentation', opener, true)
           }}
         />
         {#if $documentWorkspaceState.analysisError}
@@ -2243,6 +2296,7 @@
         title="Settings"
         description="Manage the application."
         showBack
+        focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
         <SettingsPage
@@ -2258,6 +2312,7 @@
         title="Git"
         description="Inspect local repository status, history, and workflow versions."
         showBack
+        focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
         <GitView
@@ -2284,6 +2339,7 @@
         title="Documentation"
         description="Browse the bundled offline workflow reference."
         showBack
+        focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
         {#if documentationIndex}
@@ -2308,6 +2364,7 @@
         title="Examples"
         description="Explore validated bundled workflows and create editable copies."
         showBack
+        focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
         <ExampleGallery
@@ -2484,7 +2541,9 @@
     <CommandPalette
       registry={commandSurface}
       context={keyboardContext(document.activeElement)}
+      opener={commandPaletteOpener ?? keyboardShortcutsOpener ?? undefined}
       onClose={closeCommandPalette}
+      onExecuted={commandPaletteExecuted}
     />
   {/if}
   {#if $keyboardShortcutsOpen}

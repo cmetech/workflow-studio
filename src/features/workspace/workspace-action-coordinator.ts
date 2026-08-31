@@ -1,4 +1,5 @@
 import type { WorkflowProfile } from '$src/lib/contract/types'
+import { isAnalysisCurrent } from '$src/lib/documents/revisions'
 import type { DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
 import type { WorkspaceReadResult } from '$src/lib/native/types'
 import type { WorkflowPairEntry, WorkspaceEntry } from '$src/lib/workspace/types'
@@ -66,6 +67,7 @@ export interface WorkspaceActionCoordinatorDependencies {
     analysis: DocumentAnalysis | null
     revision: DocumentRevision | null
   }
+  analyzeExact(pair: WorkflowPairText, revision: DocumentRevision): Promise<DocumentAnalysis>
   confirmExportCollision(paths: readonly string[]): Promise<boolean>
   presentOutcome?(action: WorkspaceIntent['kind'], outcome: unknown): void
 }
@@ -161,10 +163,22 @@ export function createWorkspaceActionCoordinator(dependencies: WorkspaceActionCo
             'The opened document does not match the exact workflow selected for export.',
           )
         }
+        const pair = document.pair
+        const revision = document.revision
+        const analysis =
+          document.analysis && isAnalysisCurrent(revision, document.analysis)
+            ? document.analysis
+            : await dependencies.analyzeExact(pair, revision)
+        if (!isAnalysisCurrent(revision, analysis)) {
+          throw new WorkspaceActionCoordinatorError(
+            'workspace_document_identity_mismatch',
+            'The selected workflow analysis did not match the exact document revision opened for export.',
+          )
+        }
         const outcome = await dependencies.actions.exportWorkflow({
-          pair: document.pair,
-          analysis: document.analysis,
-          activeRevision: document.revision,
+          pair,
+          analysis,
+          activeRevision: revision,
           confirmCollision: dependencies.confirmExportCollision,
         })
         dependencies.presentOutcome?.(intent.kind, outcome)

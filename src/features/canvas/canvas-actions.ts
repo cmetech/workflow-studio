@@ -4,7 +4,8 @@ import {
   type ApplyWorkflowMutationResult,
   type YamlTransaction,
 } from '$src/lib/documents/transactions'
-import type { WorkflowPairText } from '$src/lib/documents/types'
+import { isAnalysisCurrent } from '$src/lib/documents/revisions'
+import type { DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
 import type { ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
 import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
@@ -13,11 +14,12 @@ import type { CanvasPosition } from './types'
 
 export interface CanvasActionContext {
   readonly pair: WorkflowPairText
+  readonly revision: DocumentRevision
   readonly projection: WorkflowProjection
   readonly contract: AuthoringContract
   readonly positions: Readonly<Record<string, CanvasPosition>>
   readonly applyMutation?: typeof applyWorkflowMutation
-  readonly getCurrentPair?: () => WorkflowPairText | null
+  readonly getCurrentSnapshot: () => { readonly pair: WorkflowPairText; readonly revision: DocumentRevision } | null
   readonly commit: (
     pair: WorkflowPairText,
     transaction: YamlTransaction,
@@ -311,14 +313,35 @@ export async function commitMutation(
     context.announce(message)
     return { status: 'rejected', code: result.code, message }
   }
-  const currentPair = context.getCurrentPair?.() ?? context.pair
-  if (!transactionBaseIsCurrent(currentPair, context.pair, result.transaction)) {
+  const current = context.getCurrentSnapshot()
+  if (
+    !current ||
+    !isAnalysisCurrent(current.revision, context.revision) ||
+    !transactionBaseIsCurrent(current.pair, context.pair, result.transaction) ||
+    !persistenceBaseIsCurrent(current.pair, context.pair)
+  ) {
     const message = 'The workflow changed before the canvas action could commit. Review the current YAML and retry.'
     context.announce(message)
     return { status: 'rejected', code: 'stale_document', message }
   }
   await context.commit(result.pair, result.transaction, result.analysis)
   return { status: 'committed', pair: result.pair, transaction: result.transaction }
+}
+
+function persistenceBaseIsCurrent(pair: WorkflowPairText, originalPair: WorkflowPairText): boolean {
+  if (
+    pair.savedGeneration !== originalPair.savedGeneration ||
+    pair.definition.savedRevision !== originalPair.definition.savedRevision ||
+    pair.definition.diskHash !== originalPair.definition.diskHash
+  )
+    return false
+  if (pair.companion === null || originalPair.companion === null) {
+    return pair.companion === null && originalPair.companion === null
+  }
+  return (
+    pair.companion.savedRevision === originalPair.companion.savedRevision &&
+    pair.companion.diskHash === originalPair.companion.diskHash
+  )
 }
 
 function transactionBaseIsCurrent(

@@ -697,12 +697,13 @@
 <style>
   .graph-canvas {
     position: relative;
+    container-type: size;
     display: grid;
     grid-template-rows: auto auto auto minmax(0, 1fr);
     width: 100%;
     min-width: 0;
     height: 100%;
-    min-height: 18rem;
+    min-height: 0;
     overflow: hidden;
     background: var(--color-canvas);
   }

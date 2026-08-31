@@ -7,19 +7,21 @@
     title: string
     description: string
     showBack?: boolean
+    focusRequest?: number
     onBack?: () => void | Promise<void>
     children?: Snippet
   }
 
-  let { activity, title, description, showBack = false, onBack, children }: Props = $props()
+  let { activity, title, description, showBack = false, focusRequest = 0, onBack, children }: Props = $props()
   let heading = $state<HTMLHeadingElement>()
-  let lastFocusRequest: Props['activity'] | undefined
+  let lastFocusRequest: string | undefined
   const headingId = $derived(`activity-page-${activity}-title`)
 
   $effect(() => {
     const requestedActivity = activity
-    if (requestedActivity === 'welcome' || requestedActivity === lastFocusRequest) return
-    lastFocusRequest = requestedActivity
+    const requestKey = `${requestedActivity}:${focusRequest}`
+    if (requestedActivity === 'welcome' || requestKey === lastFocusRequest) return
+    lastFocusRequest = requestKey
     void tick().then(() => {
       if (activity === requestedActivity) heading?.focus()
     })

@@ -6,6 +6,11 @@ import {
   type CoordinatedWorkspaceActions,
 } from './workspace-action-coordinator'
 
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  return { promise: new Promise<T>((settle) => (resolve = settle)), resolve }
+}
+
 const entry: WorkflowPairEntry = {
   kind: 'workflow',
   id: 'workspace:flow.yaml',
@@ -79,6 +84,7 @@ describe('workspace action coordinator', () => {
       promptCompanion: async () => ({ profile: 'hermes-legacy', metadata: {} }),
       confirm: async () => true,
       currentDocument: () => ({ pair, analysis: { ...revision, issues: [], structurallyValid: true }, revision }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: async () => true,
     })
 
@@ -127,6 +133,7 @@ describe('workspace action coordinator', () => {
       promptCompanion: vi.fn(),
       confirm: vi.fn(),
       currentDocument: () => ({ pair: null, analysis: null, revision: null }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: vi.fn(),
     })
 
@@ -188,6 +195,7 @@ describe('workspace action coordinator', () => {
       promptCompanion: vi.fn(),
       confirm: vi.fn(),
       currentDocument: () => ({ pair, analysis, revision }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: vi.fn(async () => true),
     })
 
@@ -195,6 +203,82 @@ describe('workspace action coordinator', () => {
 
     expect(open).not.toHaveBeenCalled()
     expect(exportWorkflow).toHaveBeenCalledWith(expect.objectContaining({ pair, analysis, activeRevision: revision }))
+  })
+
+  it('awaits exact analysis before the first export attempt for a newly activated pair', async () => {
+    const pair = {
+      workflowId: entry.id,
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'target-definition',
+        kind: 'definition' as const,
+        path: entry.definitionPath,
+        text: 'name: Flow\n',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'a'.repeat(64),
+      },
+      companion: {
+        id: 'target-companion',
+        kind: 'companion' as const,
+        path: entry.companionPath!,
+        text: 'language_compatibility: hermes-legacy\n',
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'b'.repeat(64),
+      },
+    }
+    const revision = {
+      workflowId: entry.id,
+      pairGeneration: 0,
+      definitionPath: entry.definitionPath,
+      companionPath: entry.companionPath,
+      definitionRevision: 0,
+      companionRevision: 0,
+      contractDigest: `sha256:${'1'.repeat(64)}` as const,
+    }
+    const exactAnalysis = { ...revision, issues: [], structurallyValid: true }
+    const analysis = deferred<typeof exactAnalysis>()
+    const exportWorkflow = vi.fn(async () => ({ status: 'exported' as const, paths: [], results: [] }))
+    const analyzeExact = vi.fn(() => analysis.promise)
+    let active = false
+    const dependencies = {
+      actions: {
+        duplicateWorkflow: vi.fn(),
+        renameWorkflow: vi.fn(),
+        createCompanion: vi.fn(),
+        removeCompanion: vi.fn(),
+        exportWorkflow,
+        trashWorkflow: vi.fn(),
+      },
+      getEntry: () => entry,
+      getWorkspaceId: () => 'workspace',
+      read: vi.fn(),
+      open: vi.fn(async () => {
+        active = true
+      }),
+      refresh: vi.fn(),
+      promptRename: vi.fn(),
+      promptCompanion: vi.fn(),
+      confirm: vi.fn(),
+      currentDocument: () =>
+        active ? { pair, analysis: null, revision } : { pair: null, analysis: null, revision: null },
+      analyzeExact,
+      confirmExportCollision: vi.fn(async () => true),
+    }
+    const coordinate = createWorkspaceActionCoordinator(dependencies)
+
+    const pending = coordinate({ kind: 'workflow.export', revision: 1, targetEntryId: entry.id })
+    await vi.waitFor(() => expect(analyzeExact).toHaveBeenCalledWith(pair, revision))
+    expect(exportWorkflow).not.toHaveBeenCalled()
+    analysis.resolve(exactAnalysis)
+    await pending
+
+    expect(exportWorkflow).toHaveBeenCalledOnce()
+    expect(exportWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ pair, analysis: exactAnalysis, activeRevision: revision }),
+    )
   })
 
   it('rejects export when awaited open did not replace a previously active document with the target pair', async () => {
@@ -244,6 +328,7 @@ describe('workspace action coordinator', () => {
           contractDigest: `sha256:${'1'.repeat(64)}`,
         },
       }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: vi.fn(),
     })
 
@@ -274,6 +359,7 @@ describe('workspace action coordinator', () => {
       promptCompanion: vi.fn(),
       confirm: vi.fn(),
       currentDocument: () => ({ pair: null, analysis: null, revision: null }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: vi.fn(),
     })
 
@@ -302,6 +388,7 @@ describe('workspace action coordinator', () => {
       promptCompanion: vi.fn(),
       confirm: vi.fn(),
       currentDocument: () => ({ pair: null, analysis: null, revision: null }),
+      analyzeExact: vi.fn(),
       confirmExportCollision: vi.fn(),
       presentOutcome,
     })

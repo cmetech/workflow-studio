@@ -106,6 +106,35 @@ describe('keybindings', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
+  it('opens the advertised F1 command palette while CodeMirror owns focus', async () => {
+    const run = vi.fn()
+    const registry = createCommandRegistry()
+    registry.registerCommand({
+      id: 'workbench.command-palette',
+      label: 'Command Palette',
+      category: 'View',
+      defaultBindings: ['F1'],
+      enabled: () => true,
+      run,
+    })
+    const editor = document.createElement('div')
+    editor.className = 'cm-editor'
+    const content = document.createElement('div')
+    content.className = 'cm-content'
+    content.contentEditable = 'true'
+    editor.append(content)
+
+    const result = await dispatchKeybinding(keyboard('F1'), {
+      registry,
+      context: { surface: 'yaml', canMutate: true, hasSelection: false },
+      target: content,
+      platform: 'mac',
+    })
+
+    expect(result).toMatchObject({ status: 'executed', commandId: 'workbench.command-palette' })
+    expect(run).toHaveBeenCalledOnce()
+  })
+
   it('runs the highest-priority Escape cancellation before registry commands', async () => {
     const cancelled = vi.fn()
     const registry = createCommandRegistry()

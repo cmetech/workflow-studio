@@ -5,7 +5,7 @@ import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contrac
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { applyWorkflowMutation } from '$src/lib/documents/transactions'
 import type { WorkflowPairText } from '$src/lib/documents/types'
-import { editDocumentText } from '$src/lib/documents/revisions'
+import { createDocumentRevision, editDocumentText } from '$src/lib/documents/revisions'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import {
   addNode,
@@ -190,18 +190,22 @@ function parsedNodes(text: string): Record<string, unknown>[] {
 
 function actionContext(text = source) {
   let current = pair(text)
+  let currentRevision = createDocumentRevision(current, contract.contract_digest)
   const apply = vi.fn(applyWorkflowMutation)
   const commit = vi.fn((next: WorkflowPairText) => {
     current = next
+    currentRevision = createDocumentRevision(next, contract.contract_digest)
   })
   const commitPositions = vi.fn()
   const announce = vi.fn()
   const context: CanvasActionContext = {
     pair: current,
+    revision: currentRevision,
     projection: projection(text),
     contract,
     positions: { root: { x: 0, y: 0 }, middle: { x: 320, y: 0 }, leaf: { x: 640, y: 0 } },
     applyMutation: apply,
+    getCurrentSnapshot: () => ({ pair: current, revision: currentRevision }),
     commit,
     commitPositions,
     announce,
@@ -248,12 +252,16 @@ describe('canvas YAML actions', () => {
     const firstAnalysis = deferred<typeof firstResult>()
     const secondAnalysis = deferred<typeof secondResult>()
     const pending = [firstAnalysis, secondAnalysis]
-    let activePair = base
+    let activePair: WorkflowPairText = base
     const fixture = actionContext()
     const context = {
       ...fixture.context,
       pair: base,
-      getCurrentPair: () => activePair,
+      revision: createDocumentRevision(base, contract.contract_digest),
+      getCurrentSnapshot: () => ({
+        pair: activePair,
+        revision: createDocumentRevision(activePair, contract.contract_digest),
+      }),
       applyMutation: vi.fn(() => pending.shift()!.promise),
       commit: vi.fn((next: WorkflowPairText) => {
         activePair = next
@@ -286,7 +294,11 @@ describe('canvas YAML actions', () => {
     const context = {
       ...fixture.context,
       pair: base,
-      getCurrentPair: () => activePair,
+      revision: createDocumentRevision(base, contract.contract_digest),
+      getCurrentSnapshot: () => ({
+        pair: activePair,
+        revision: createDocumentRevision(activePair, contract.contract_digest),
+      }),
       applyMutation: vi.fn(() => analysis.promise),
       commit: vi.fn((next: WorkflowPairText) => {
         activePair = next
@@ -300,6 +312,80 @@ describe('canvas YAML actions', () => {
     await expect(visual).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
     expect(activePair.definition.text).toContain('description: YAML edit')
     expect(activePair.definition.text).not.toContain('description: Visual edit')
+    expect(context.commit).not.toHaveBeenCalled()
+  })
+
+  it('rejects pending visual analysis after a same-profile contract digest switch', async () => {
+    const base = pair()
+    const baseRevision = createDocumentRevision(base, contract.contract_digest)
+    const replacementDigest = `sha256:${'b'.repeat(64)}` as const
+    const mutation = {
+      type: 'set-field' as const,
+      document: 'definition' as const,
+      path: ['description'] as const,
+      value: 'Visual edit under the old contract',
+    }
+    const visualResult = await applyWorkflowMutation(base, mutation, contract)
+    const analysis = deferred<typeof visualResult>()
+    const fixture = actionContext()
+    let activeRevision = baseRevision
+    const context = {
+      ...fixture.context,
+      pair: base,
+      revision: baseRevision,
+      getCurrentSnapshot: () => ({ pair: base, revision: activeRevision }),
+      applyMutation: vi.fn(() => analysis.promise),
+      commit: vi.fn(),
+    }
+
+    const visual = commitMutation(context, mutation)
+    activeRevision = { ...baseRevision, contractDigest: replacementDigest }
+    analysis.resolve(visualResult)
+
+    await expect(visual).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
+    expect(context.commit).not.toHaveBeenCalled()
+  })
+
+  it('preserves newer save metadata when a save completes while visual analysis is pending', async () => {
+    const base = {
+      ...pair(),
+      savedGeneration: 0,
+      definition: { ...pair().definition, savedRevision: 2, diskHash: 'sha256:before-save' },
+    }
+    const baseRevision = createDocumentRevision(base, contract.contract_digest)
+    const mutation = {
+      type: 'set-field' as const,
+      document: 'definition' as const,
+      path: ['description'] as const,
+      value: 'Pending visual edit',
+    }
+    const visualResult = await applyWorkflowMutation(base, mutation, contract)
+    const analysis = deferred<typeof visualResult>()
+    const fixture = actionContext()
+    let activePair: WorkflowPairText = base
+    const context = {
+      ...fixture.context,
+      pair: base,
+      revision: baseRevision,
+      getCurrentSnapshot: () => ({ pair: activePair, revision: baseRevision }),
+      applyMutation: vi.fn(() => analysis.promise),
+      commit: vi.fn((next: WorkflowPairText) => {
+        activePair = next
+      }),
+    }
+
+    const visual = commitMutation(context, mutation)
+    activePair = {
+      ...base,
+      savedGeneration: base.generation,
+      definition: { ...base.definition, savedRevision: base.definition.revision, diskHash: 'sha256:after-save' },
+    }
+    analysis.resolve(visualResult)
+
+    await expect(visual).resolves.toMatchObject({ status: 'rejected', code: 'stale_document' })
+    expect(activePair.savedGeneration).toBe(base.generation)
+    expect(activePair.definition.savedRevision).toBe(base.definition.revision)
+    expect(activePair.definition.diskHash).toBe('sha256:after-save')
     expect(context.commit).not.toHaveBeenCalled()
   })
 
@@ -347,7 +433,11 @@ describe('canvas YAML actions', () => {
     const context = {
       ...fixture.context,
       pair: base,
-      getCurrentPair: () => activePair,
+      revision: createDocumentRevision(base, contract.contract_digest),
+      getCurrentSnapshot: () => ({
+        pair: activePair,
+        revision: createDocumentRevision(activePair, contract.contract_digest),
+      }),
       applyMutation: vi.fn(() => analysis.promise),
       commit: vi.fn(),
     }
@@ -453,21 +543,25 @@ describe('canvas YAML actions', () => {
     }
     for (const descriptor of productionContract.node_kinds) {
       const fixture = actionContext()
+      const productionPair: WorkflowPairText = {
+        ...fixture.context.pair,
+        companion: {
+          id: 'companion',
+          kind: 'companion',
+          path: 'actions.hermes.yaml',
+          text: 'language_compatibility: archon-2026-07\n',
+          revision: 1,
+          savedRevision: 1,
+          diskHash: 'sha256:companion',
+        },
+      }
+      const productionRevision = createDocumentRevision(productionPair, productionContract.contract_digest)
       const productionContext: CanvasActionContext = {
         ...fixture.context,
         contract: productionContract,
-        pair: {
-          ...fixture.context.pair,
-          companion: {
-            id: 'companion',
-            kind: 'companion',
-            path: 'actions.hermes.yaml',
-            text: 'language_compatibility: archon-2026-07\n',
-            revision: 1,
-            savedRevision: 1,
-            diskHash: 'sha256:companion',
-          },
-        },
+        pair: productionPair,
+        revision: productionRevision,
+        getCurrentSnapshot: () => ({ pair: productionPair, revision: productionRevision }),
       }
 
       const result = await addNode(productionContext, descriptor, { viewportCenter: { x: 900, y: 420 } })

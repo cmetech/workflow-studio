@@ -65,13 +65,13 @@
   async function closeMore(): Promise<void> {
     moreOpen = false
     await tick()
-    moreTrigger?.focus()
+    moreTrigger?.focus({ preventScroll: true })
   }
 
   async function openMore(): Promise<void> {
     moreOpen = true
     await tick()
-    menuItems()[0]?.focus()
+    menuItems()[0]?.focus({ preventScroll: true })
   }
 
   function menuItems(): HTMLElement[] {
@@ -112,7 +112,8 @@
     if (nextIndex === null) return
     event.preventDefault()
     event.stopPropagation()
-    items[nextIndex]?.focus()
+    items[nextIndex]?.focus({ preventScroll: true })
+    items[nextIndex]?.scrollIntoView?.({ block: 'nearest' })
   }
 
   function handleWindowPointerDown(event: PointerEvent): void {
@@ -240,8 +241,11 @@
     width: max-content;
     min-width: 12rem;
     max-width: min(18rem, calc(100vw - 2rem));
+    max-height: min(13rem, max(2.5rem, calc(100cqh - 6.25rem)));
     margin-top: 0.35rem;
     padding: 0.35rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-surface-elevated);
@@ -260,6 +264,18 @@
 
     .canvas-toolbar > button {
       padding-inline: 0.45rem;
+    }
+  }
+
+  @media (max-height: 25rem) {
+    .canvas-toolbar {
+      padding-block: 0;
+    }
+
+    .more-menu {
+      max-height: 2.5rem;
+      margin-top: 0;
+      padding: 0.15rem;
     }
   }
 

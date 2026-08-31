@@ -203,6 +203,35 @@ modalAtEveryExactGeometry(
   },
 )
 
+test('real repeated blocking export diagnostics render without page or console errors', async ({ page }) => {
+  const pageErrors: string[] = []
+  const consoleErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text())
+  })
+  await page.setViewportSize({ width: 512, height: 350 })
+  await page.goto('/?scenario=repeated-diagnostics')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+  const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
+  await pair.click()
+  await expect(page.getByRole('region', { name: 'Problems' }).getByRole('button')).toHaveCount(39)
+  await pair.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Export' }).click()
+
+  const dialog = page.getByRole('dialog', { name: 'Export workflow' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('listitem')).toHaveCount(39)
+  const close = dialog.getByRole('button', { name: 'Close' })
+  await close.scrollIntoViewIfNeeded()
+  await expect(close).toBeVisible()
+  await close.click()
+  await expect(dialog).toBeHidden()
+  expect(pageErrors).toEqual([])
+  expect(consoleErrors).toEqual([])
+})
+
 modalAtEveryExactGeometry(
   'Export Collision is a top-layer modal with persistent replacement actions',
   async (page, geometry) => {

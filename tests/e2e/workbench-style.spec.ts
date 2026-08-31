@@ -30,7 +30,7 @@ test('centers activity buttons and icons on the rail axis', async ({ page }) => 
   const rail = page.getByRole('navigation', { name: 'Activities' })
   const explorer = page.getByRole('button', { name: 'Explorer', exact: true })
   await expect(explorer).toBeVisible()
-  await expect(explorer).toHaveAttribute('aria-expanded', 'true')
+  await expect(explorer).toHaveAttribute('aria-expanded', 'false')
 
   const geometry = await rail.evaluate((element) => {
     const center = (node: Element) => {

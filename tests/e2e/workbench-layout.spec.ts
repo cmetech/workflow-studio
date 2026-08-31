@@ -99,6 +99,63 @@ test('effective 200% reflow keeps authoring, status, and compact Split inside th
   expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.innerHeight)
 })
 
+test('effective 200% reflow keeps a usable canvas and every More action contained and hittable', async ({ page }) => {
+  await openPairAt(page, 512, 350)
+  const viewport = page.getByRole('region', { name: 'Workflow canvas viewport' })
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  const menu = page.getByRole('menu', { name: 'More canvas actions' })
+  const lastAction = menu.getByRole('menuitem', { name: 'Fit Graph' })
+
+  const initial = await page.evaluate(() => {
+    const bounds = (selector: string) => document.querySelector<HTMLElement>(selector)!.getBoundingClientRect()
+    const editorBounds = bounds('[aria-label="Workflow workspace"]')
+    const graphBounds = bounds('[aria-label="Workflow graph"]')
+    const viewportBounds = bounds('[aria-label="Workflow canvas viewport"]')
+    const menuElement = document.querySelector<HTMLElement>('[role="menu"][aria-label="More canvas actions"]')!
+    const menuBounds = menuElement.getBoundingClientRect()
+    return {
+      editor: { top: editorBounds.top, bottom: editorBounds.bottom },
+      graph: { top: graphBounds.top, bottom: graphBounds.bottom },
+      viewportHeight: viewportBounds.height,
+      menu: { top: menuBounds.top, bottom: menuBounds.bottom },
+      menuScrollHeight: menuElement.scrollHeight,
+      menuClientHeight: menuElement.clientHeight,
+    }
+  })
+  expect(initial.graph.top).toBeGreaterThanOrEqual(initial.editor.top)
+  expect(initial.graph.bottom).toBeLessThanOrEqual(initial.editor.bottom)
+  expect(initial.viewportHeight).toBeGreaterThanOrEqual(44)
+  expect(initial.menu.top).toBeGreaterThanOrEqual(initial.graph.top)
+  expect(initial.menu.bottom).toBeLessThanOrEqual(initial.graph.bottom)
+  expect(initial.menuScrollHeight).toBeGreaterThan(initial.menuClientHeight)
+
+  await lastAction.scrollIntoViewIfNeeded()
+  await lastAction.focus()
+  await expect(lastAction).toBeFocused()
+  expect(
+    await lastAction.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return (
+        document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)?.closest('button') ===
+        element
+      )
+    }),
+  ).toBe(true)
+  const [menuBox, actionBox, viewportBox] = await Promise.all([
+    menu.boundingBox(),
+    lastAction.boundingBox(),
+    viewport.boundingBox(),
+  ])
+  expect(menuBox).not.toBeNull()
+  expect(actionBox).not.toBeNull()
+  expect(viewportBox).not.toBeNull()
+  expect(actionBox!.y).toBeGreaterThanOrEqual(menuBox!.y)
+  expect(actionBox!.y + actionBox!.height).toBeLessThanOrEqual(menuBox!.y + menuBox!.height)
+  expect(viewportBox!.height).toBeGreaterThanOrEqual(44)
+  await lastAction.click()
+  await expect(menu).toBeHidden()
+})
+
 for (const width of [1024, 1280]) {
   test(`keeps both Explorer actions inside the workspace panel at ${width}px`, async ({ page }) => {
     await openPairAt(page, width, 700)

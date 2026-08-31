@@ -19,9 +19,15 @@
   interface Props {
     commandSurface: CommandSurface
     workspacePanelExpanded?: boolean
+    authoringSurfaceActive?: boolean
     onActivityInvoke?: (opener: HTMLButtonElement, activity: ActivityId) => void
   }
-  let { commandSurface, workspacePanelExpanded = true, onActivityInvoke }: Props = $props()
+  let {
+    commandSurface,
+    workspacePanelExpanded = true,
+    authoringSurfaceActive = true,
+    onActivityInvoke,
+  }: Props = $props()
 
   const activities: readonly { id: ActivityId; icon: typeof Files }[] = [
     { id: 'explorer', icon: Files },
@@ -49,7 +55,7 @@
         aria-expanded={isPageActivity(activity.id)
           ? undefined
           : $activeActivity === activity.id
-            ? workspacePanelExpanded
+            ? authoringSurfaceActive && workspacePanelExpanded
             : false}
         class:active={$activeActivity === activity.id}
         title={command.title}

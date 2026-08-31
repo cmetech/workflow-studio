@@ -53,7 +53,8 @@ test('reveals a preview selected from a lower card at desktop and reflow widths'
     const lowerPreview = page.getByRole('button', { name: /^Preview / }).last()
     const previewName = (await lowerPreview.textContent())!.replace(/^Preview /, '')
     await lowerPreview.scrollIntoViewIfNeeded()
-    expect(await pageBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    const scrollBefore = await pageBody.evaluate((element) => element.scrollTop)
+    expect(scrollBefore).toBeGreaterThan(0)
 
     await lowerPreview.click()
 
@@ -67,5 +68,7 @@ test('reveals a preview selected from a lower card at desktop and reflow widths'
     expect(await pageBody.evaluate((element) => element.scrollTop)).toBe(0)
 
     await back.click()
+    await expect(lowerPreview).toBeFocused()
+    await expect.poll(() => pageBody.evaluate((element) => element.scrollTop)).toBe(scrollBefore)
   }
 })

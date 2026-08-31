@@ -39,7 +39,7 @@
       <div role="alert">
         <strong>Resolve structural issues before export.</strong>
         <ul>
-          {#each blockingIssues as issue (issue)}<li>{issue}</li>{/each}
+          {#each blockingIssues as issue, occurrence (`${issue}\0${occurrence}`)}<li>{issue}</li>{/each}
         </ul>
       </div>
     {:else}

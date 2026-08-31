@@ -1,6 +1,7 @@
 import { parse } from 'yaml'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
+import { createDocumentRevision } from '$src/lib/documents/revisions'
 import { applyWorkflowMutation } from '$src/lib/documents/transactions'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
@@ -196,9 +197,11 @@ function intersects(left: { x: number; y: number }, right: { x: number; y: numbe
 
 function context(text = source, activeContract = contract()) {
   const currentPair = pair(text, activeContract.profile)
+  const revision = createDocumentRevision(currentPair, activeContract.contract_digest)
   const commit = vi.fn(() => undefined)
   return {
     pair: currentPair,
+    revision,
     projection: projection(text, activeContract.profile),
     contract: activeContract,
     positions: {
@@ -208,6 +211,7 @@ function context(text = source, activeContract = contract()) {
       finish: { x: 960, y: 0 },
     },
     applyMutation: vi.fn(applyWorkflowMutation),
+    getCurrentSnapshot: () => ({ pair: currentPair, revision }),
     commit,
     commitPositions: vi.fn(),
     announce: vi.fn(),

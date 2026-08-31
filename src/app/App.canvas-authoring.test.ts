@@ -475,6 +475,96 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('does not apply delayed-worker positions to a workflow activated after the YAML commit', async () => {
+    class ControlledDocumentWorker {
+      static pending: Array<() => Promise<void>> = []
+      private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+      private readonly cache = createDocumentWorkerCache()
+
+      static async releaseAll(): Promise<void> {
+        const pending = ControlledDocumentWorker.pending.splice(0)
+        await Promise.all(pending.map((deliver) => deliver()))
+      }
+
+      postMessage(message: DocumentWorkerRequest): void {
+        const deliver = async () => {
+          const response = await processDocumentWorkerRequest(message, this.cache)
+          for (const listener of this.listeners) {
+            listener({ data: response } as MessageEvent<DocumentWorkerResponse>)
+          }
+        }
+        if (message.type === 'analyze') ControlledDocumentWorker.pending.push(deliver)
+        else void deliver()
+      }
+
+      addEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+        if (type === 'message') this.listeners.add(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+      }
+
+      removeEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+        if (type === 'message') this.listeners.delete(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+      }
+
+      terminate(): void {
+        this.listeners.clear()
+      }
+    }
+    const originalWorker = globalThis.Worker
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ControlledDocumentWorker })
+    const rendered = await renderAuthoringApp()
+    await ControlledDocumentWorker.releaseAll()
+    const replacementPair = {
+      workflowId: 'workflow:workspace:other.yaml',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'workflow:workspace:other.yaml:definition',
+        kind: 'definition' as const,
+        path: 'other.yaml',
+        text: source,
+        revision: 0,
+        savedRevision: 0,
+        diskHash: 'b'.repeat(64),
+      },
+      companion: null,
+    }
+    const replacementLayout = {
+      schemaVersion: 1 as const,
+      workspaceId: 'workspace',
+      workflowPath: 'other.yaml',
+      nodePositions: { collect: { x: 40, y: 40 }, review: { x: 360, y: 40 } },
+      viewport: { x: 10, y: 20, zoom: 0.9 },
+      panels: { left: 240, right: 300, problems: 160 },
+      editorMode: 'visual' as const,
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    }
+    let replaced = false
+    const unsubscribe = $documentSession.subscribe((session) => {
+      if (replaced || !session.pair?.definition.text.includes('id: command')) return
+      replaced = true
+      openDocumentSession(replacementPair, digest)
+      setActiveLayout(replacementLayout)
+    })
+
+    try {
+      await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
+      await fireEvent.click(screen.getByRole('option', { name: /command/i }))
+      await waitFor(() => expect(ControlledDocumentWorker.pending.length).toBeGreaterThan(0))
+      expect(replaced).toBe(false)
+      await ControlledDocumentWorker.releaseAll()
+      await waitFor(() => expect(replaced).toBe(true))
+      await tick()
+
+      expect($documentSession.get().pair).toBe(replacementPair)
+      expect(activeLayoutStore.get()).toEqual(replacementLayout)
+      expect(activeLayoutStore.get()?.nodePositions.command).toBeUndefined()
+    } finally {
+      unsubscribe()
+      rendered.unmount()
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
+  })
+
   it('keeps an incomplete projected node canvas-read-only while Inspector repairs it and valid analysis resumes authoring', async () => {
     const draftText = `${source}  - id: command\n    command: ""\n`
     const rendered = await renderAuthoringApp({ text: draftText })

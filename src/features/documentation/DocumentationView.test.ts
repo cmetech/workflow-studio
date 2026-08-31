@@ -56,20 +56,36 @@ index.tokenIndex = new Map([
   ['dependencies', new Set(['guide:dag'])],
 ])
 
-function useNarrowPresentation(matches: boolean): void {
+function useNarrowPresentation(matches: boolean): { setMatches(next: boolean): void } {
+  let current = matches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
   vi.stubGlobal(
     'matchMedia',
     vi.fn((query: string) => ({
-      matches: matches && query === '(max-width: 48rem)',
+      get matches() {
+        return current && query === '(max-width: 48rem)'
+      },
       media: query,
       onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) =>
+        listeners.add(listener),
+      ),
+      removeEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) =>
+        listeners.delete(listener),
+      ),
       addListener: vi.fn(),
       removeListener: vi.fn(),
       dispatchEvent: vi.fn(),
     })),
   )
+  return {
+    setMatches(next: boolean) {
+      current = next
+      for (const listener of listeners) {
+        listener({ matches: next, media: '(max-width: 48rem)' } as MediaQueryListEvent)
+      }
+    },
+  }
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -142,6 +158,23 @@ describe('DocumentationView', () => {
     await fireEvent.click(result)
 
     expect(result).toHaveFocus()
+  })
+
+  it('transfers selected-result focus across both responsive presentation changes', async () => {
+    const presentation = useNarrowPresentation(false)
+    render(DocumentationView, { index })
+    const result = screen.getByRole('option', { name: /DAG dependencies/i })
+    result.focus()
+    await fireEvent.click(result)
+
+    // Chromium can drop focus when the responsive stylesheet hides the
+    // navigation before the MediaQueryList change callback runs.
+    result.blur()
+    presentation.setMatches(true)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
+
+    presentation.setMatches(false)
+    await waitFor(() => expect(result).toHaveFocus())
   })
 
   it('filters and keyboard-navigates offline search results without using fetch, and records history', async () => {

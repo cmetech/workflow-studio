@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import { renderMarkdown } from '$src/lib/docs/render-markdown'
   import { searchDocumentation } from '$src/lib/docs/build-index'
   import type { DocumentationIndex, DocumentationTopic, DocumentationTopicKind } from '$src/lib/docs/types'
@@ -22,8 +22,12 @@
   let consumedTopicId = $state<string | undefined>()
   let reconciledIndex: DocumentationIndex | undefined
   let article = $state<HTMLElement>()
+  let navigation = $state<HTMLElement>()
   let searchInput = $state<HTMLInputElement>()
   let backToResults = $state<HTMLButtonElement>()
+  let narrowPresentation = $state(window.matchMedia?.('(max-width: 48rem)').matches ?? false)
+  let responsiveFocusOwned = false
+  let presentationQuery: MediaQueryList | undefined
   const results = $derived(searchDocumentation(index, query, kind))
 
   function activeResultId(): string | undefined {
@@ -32,6 +36,8 @@
   }
 
   function select(topic: DocumentationTopic): void {
+    const focused = document.activeElement
+    responsiveFocusOwned = focused instanceof Node && navigation?.contains(focused) === true
     selected = topic
     history = [topic.id, ...history.filter((id) => id !== topic.id)].slice(0, 5)
     void revealSelectedTopic(topic.id)
@@ -41,13 +47,15 @@
     await tick()
     if (selected?.id !== topicId) return
     if (article) article.scrollTop = 0
-    if (!window.matchMedia?.('(max-width: 48rem)').matches) return
+    if (!narrowPresentation) return
     const pageScroll = article?.closest<HTMLElement>('[data-page-scroll]')
     if (pageScroll) pageScroll.scrollTop = 0
+    responsiveFocusOwned = true
     backToResults?.focus({ preventScroll: true })
   }
 
   function returnToResults(): void {
+    responsiveFocusOwned = false
     const selectedId = selected?.id
     selected = null
     void tick().then(() => {
@@ -57,6 +65,46 @@
       target?.focus()
     })
   }
+
+  function selectedResultTarget(): HTMLElement | undefined {
+    const selectedId = selected?.id
+    return selectedId ? (document.getElementById(`documentation-result-${selectedId}`) ?? searchInput) : searchInput
+  }
+
+  function presentationChanged(event: MediaQueryListEvent): void {
+    const wasNarrow = narrowPresentation
+    narrowPresentation = event.matches
+    if (!selected || wasNarrow === narrowPresentation) return
+    const focused = document.activeElement
+    if (narrowPresentation && ((focused instanceof Node && navigation?.contains(focused)) || responsiveFocusOwned)) {
+      void tick().then(() => {
+        responsiveFocusOwned = true
+        backToResults?.focus({ preventScroll: true })
+      })
+    } else if (!narrowPresentation && (focused === backToResults || responsiveFocusOwned)) {
+      responsiveFocusOwned = false
+      void tick().then(() => selectedResultTarget()?.focus({ preventScroll: true }))
+    }
+  }
+
+  function focusChanged(event: FocusEvent): void {
+    if (!responsiveFocusOwned || event.target === backToResults) return
+    if (event.target instanceof Node && navigation?.contains(event.target)) return
+    responsiveFocusOwned = false
+  }
+
+  onMount(() => {
+    presentationQuery = window.matchMedia?.('(max-width: 48rem)')
+    if (!presentationQuery) return
+    narrowPresentation = presentationQuery.matches
+    presentationQuery.addEventListener?.('change', presentationChanged)
+    document.addEventListener('focusin', focusChanged)
+  })
+
+  onDestroy(() => {
+    presentationQuery?.removeEventListener?.('change', presentationChanged)
+    document.removeEventListener('focusin', focusChanged)
+  })
 
   $effect(() => {
     if (index === reconciledIndex) return
@@ -129,6 +177,7 @@
 <section class="documentation" aria-label="Offline documentation" data-profile={index.topics[0]?.profile}>
   <div class="documentation-layout" class:detail-active={selected !== null}>
     <section
+      bind:this={navigation}
       class="documentation-navigation"
       data-testid="documentation-navigation"
       aria-label="Documentation navigation"
