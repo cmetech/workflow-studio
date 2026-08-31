@@ -29,7 +29,7 @@
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
-  import { applyWorkflowMutation } from '$src/lib/documents/transactions'
+  import { applyWorkflowMutation, type ApplyWorkflowMutationResult } from '$src/lib/documents/transactions'
   import type { WorkflowMutation } from '$src/lib/yaml/mutations'
   import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
   import {
@@ -1048,7 +1048,14 @@
       mutationContract = proposedContract
     }
 
-    const result = await applyWorkflowMutation(session.pair, mutation, mutationContract)
+    let result: ApplyWorkflowMutationResult
+    try {
+      result = await applyWorkflowMutation(session.pair, mutation, mutationContract, analyzePairInWorker)
+    } catch (error) {
+      workspaceError =
+        error instanceof Error ? error.message : 'Document analysis failed before the Inspector edit could be applied.'
+      return
+    }
     if (!result.ok) {
       workspaceError = result.message
       return

@@ -124,6 +124,50 @@ function pair(source = validSource, revision = 3): WorkflowPairText {
 }
 
 describe('workflow YAML transactions', () => {
+  it('crosses a macrotask boundary before patching when the browser scheduler is unavailable', async () => {
+    let boundaryReached = false
+    let patchSawBoundary = false
+    let observedPatchStart = false
+    const observedContract = new Proxy(mutationContract, {
+      get(target, property, receiver) {
+        if (property === 'limits' && !observedPatchStart) {
+          observedPatchStart = true
+          patchSawBoundary = boundaryReached
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const schedulerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler')
+    Reflect.deleteProperty(globalThis, 'scheduler')
+
+    try {
+      const boundaryChannel = new MessageChannel()
+      const boundary = new Promise<void>((resolve) => {
+        boundaryChannel.port1.onmessage = () => {
+          boundaryReached = true
+          boundaryChannel.port1.close()
+          boundaryChannel.port2.close()
+          resolve()
+        }
+      })
+      boundaryChannel.port2.postMessage(undefined)
+      const operation = applyWorkflowMutation(
+        pair(),
+        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        observedContract,
+      )
+
+      await boundary
+      const result = await operation
+
+      expect(result).toMatchObject({ ok: true })
+      expect(patchSawBoundary).toBe(true)
+    } finally {
+      if (schedulerDescriptor) Object.defineProperty(globalThis, 'scheduler', schedulerDescriptor)
+      else Reflect.deleteProperty(globalThis, 'scheduler')
+    }
+  })
+
   it('yields to the browser before a structural mutation starts patching YAML', async () => {
     const events: string[] = []
     let observedPatchStart = false
@@ -155,6 +199,57 @@ describe('workflow YAML transactions', () => {
 
       expect(result).toMatchObject({ ok: true })
       expect(events.slice(0, 2)).toEqual(['yield', 'patch'])
+    } finally {
+      if (schedulerDescriptor) Object.defineProperty(globalThis, 'scheduler', schedulerDescriptor)
+      else Reflect.deleteProperty(globalThis, 'scheduler')
+    }
+  })
+
+  it('yields again between structural YAML patching and synchronous analysis', async () => {
+    const events: string[] = []
+    let observedPatchStart = false
+    const observedContract = new Proxy(mutationContract, {
+      get(target, property, receiver) {
+        if (property === 'limits' && !observedPatchStart) {
+          observedPatchStart = true
+          events.push('patch')
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const schedulerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler')
+    Object.defineProperty(globalThis, 'scheduler', {
+      configurable: true,
+      value: {
+        yield: async () => {
+          events.push('yield')
+        },
+      },
+    })
+
+    try {
+      const result = await applyWorkflowMutation(
+        pair(),
+        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        observedContract,
+        async (proposedPair) => {
+          events.push('analyze')
+          return {
+            workflowId: proposedPair.workflowId,
+            pairGeneration: proposedPair.generation,
+            definitionPath: proposedPair.definition.path,
+            companionPath: proposedPair.companion?.path ?? null,
+            definitionRevision: proposedPair.definition.revision,
+            companionRevision: proposedPair.companion?.revision ?? null,
+            contractDigest: mutationContract.contract_digest,
+            issues: [],
+            structurallyValid: true,
+          }
+        },
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      expect(events).toEqual(['yield', 'patch', 'yield', 'analyze'])
     } finally {
       if (schedulerDescriptor) Object.defineProperty(globalThis, 'scheduler', schedulerDescriptor)
       else Reflect.deleteProperty(globalThis, 'scheduler')

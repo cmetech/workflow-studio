@@ -284,6 +284,13 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   await node.press('Enter')
   const inspector = page.locator('aside[aria-label="Inspector"]')
   await expect(inspector).not.toHaveAttribute('inert')
+  const beforeInspectorEdit = (await e2eSnapshot(page)).definitionText
+  const commandField = inspector.getByRole('textbox', { name: /Command.*Required/i })
+  await commandField.fill('/capacity-edited')
+  await inspector.getByRole('button', { name: 'Apply Command' }).click()
+  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).not.toBe(beforeInspectorEdit)
+  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toContain('    command: /capacity-edited\n')
+  await checkpoint('inspector field applied')
   await page.getByRole('button', { name: 'Close inspector' }).click()
   await checkpoint('inspector complete')
 

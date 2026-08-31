@@ -733,6 +733,40 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('preserves Inspector state and reports worker analysis rejection without an unhandled promise', async () => {
+    const rendered = await renderAuthoringApp()
+    const workerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      setCanvasSelection(['collect'])
+      await tick()
+      const before = $documentSession.get()
+      const commandField = await screen.findByRole('textbox', { name: 'Command' })
+      await fireEvent.input(commandField, { target: { value: '/worker-failure' } })
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, value: undefined })
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply Command' }))
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Document analysis worker is unavailable.')
+      expect(unhandled).toEqual([])
+      expect($documentSession.get().pair).toBe(before.pair)
+      expect($documentSession.get().analysis).toBe(before.analysis)
+      expect(historyStore.get().undo).toHaveLength(0)
+      expect(commandField).toHaveValue('/worker-failure')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      if (workerDescriptor) Object.defineProperty(globalThis, 'Worker', workerDescriptor)
+      else Reflect.deleteProperty(globalThis, 'Worker')
+      rendered.unmount()
+    }
+  })
+
   it('mounts the Nodes activity and authors one YAML transaction by click or exact-position HTML drop', async () => {
     showActivity('nodes')
     let rendered = await renderAuthoringApp()

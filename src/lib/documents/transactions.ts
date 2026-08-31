@@ -93,6 +93,7 @@ export async function applyWorkflowMutation(
   const proposedPair = editDocumentText(pair, documentKind, proposedText)
   let structuralAnalysis: DocumentAnalysis | undefined
   if (requiresStructuralValidation(mutation)) {
+    await yieldBeforeStructuralValidation()
     const analysis = await analyze(proposedPair, contract)
     structuralAnalysis = analysis
     if (!analysis.structurallyValid && !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract))) {
@@ -154,7 +155,23 @@ function analyzeMutationLocally(pair: WorkflowPairText, contract: AuthoringContr
 async function yieldBeforeStructuralValidation(): Promise<void> {
   const browserScheduler = (globalThis as typeof globalThis & { readonly scheduler?: { yield?: () => Promise<void> } })
     .scheduler
-  if (browserScheduler?.yield) await browserScheduler.yield()
+  if (browserScheduler?.yield) {
+    await browserScheduler.yield()
+    return
+  }
+  await new Promise<void>((resolve) => {
+    if (typeof MessageChannel === 'undefined') {
+      setTimeout(resolve, 0)
+      return
+    }
+    const channel = new MessageChannel()
+    channel.port1.onmessage = () => {
+      channel.port1.close()
+      channel.port2.close()
+      resolve()
+    }
+    channel.port2.postMessage(undefined)
+  })
 }
 
 function progressiveDraftMutation(mutation: WorkflowMutation, contract: AuthoringContract): boolean {
