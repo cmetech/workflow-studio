@@ -436,7 +436,8 @@ describe('keyboard-only workflow authoring', () => {
     let picker = await openAddNodeWithKeyboard(user)
     await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
     await waitFor(() => expect(projection($documentSession.get().pair!.definition.text).nodes).toHaveLength(2))
-    expectVisibleKeyboardFocus(canvas)
+    await waitFor(() => expect(picker).not.toBeInTheDocument())
+    await waitFor(() => expectVisibleKeyboardFocus(canvas))
 
     const pairAfterAdd = $documentSession.get().pair!
     await waitFor(() => {
@@ -470,7 +471,8 @@ describe('keyboard-only workflow authoring', () => {
       const nodes = projection($documentSession.get().pair!.definition.text).nodes
       expect(nodes.find(({ id }) => id === 'command-2')?.dependsOn).toEqual(['command'])
     })
-    expectVisibleKeyboardFocus(canvas)
+    await waitFor(() => expect(picker).not.toBeInTheDocument())
+    await waitFor(() => expectVisibleKeyboardFocus(canvas))
     await waitForCurrentAnalysis()
 
     await selectNodeWithKeyboard(user, 'command-2')
