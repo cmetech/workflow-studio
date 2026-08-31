@@ -499,7 +499,7 @@ describe('keyboard-only workflow authoring', () => {
     })
 
     const saveTarget = await screen.findByRole('tab', { name: 'General' })
-    expectVisibleKeyboardFocus(saveTarget)
+    await waitFor(() => expectVisibleKeyboardFocus(saveTarget))
     await user.keyboard(/mac/i.test(navigator.platform) ? '{Meta>}s{/Meta}' : '{Control>}s{/Control}')
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0]).toContain('id: final-command')

@@ -33,6 +33,7 @@
     authoritativeNodeIds,
     clearEdgeSelection,
     commitEdgeSelection,
+    createCanvasEdgeSelectionReconciler,
     emptyEdgeSelectionState,
     reconcileEdgeSelection,
   } from './edge-selection-state'
@@ -107,6 +108,7 @@
   const edgeTypes = { workflow: WorkflowEdge }
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
   const reconcileSelection = createCanvasSelectionReconciler()
+  const reconcileSurfaceEdges = createCanvasEdgeSelectionReconciler()
   const inspectorRelationship: CanvasInspectorRelationship = {
     controls: () => inspectorControls,
     expanded: () => inspectorExpanded,
@@ -219,7 +221,9 @@
     const currentNodes = untrack(() => flowNodes)
     const nextNodes = withAuthoritativeSelection(projected.nodes, currentNodes)
     if (nextNodes !== currentNodes) flowNodes = nextNodes
-    flowEdges = withSurfaceEdgeSelection(projected.edges)
+    const currentEdges = untrack(() => flowEdges)
+    const nextEdges = withSurfaceEdgeSelection(projected.edges, currentEdges)
+    if (nextEdges !== currentEdges) flowEdges = nextEdges
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
   })
@@ -279,7 +283,7 @@
     if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
     flowNodes = withAuthoritativeSelection(projected.nodes, flowNodes)
-    flowEdges = withSurfaceEdgeSelection(projected.edges)
+    flowEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
     replaceCanvasPositions(projected.positions)
     schedulePersist(layoutWithPositions())
   }
@@ -291,7 +295,7 @@
     return reconciled.nodes
   }
 
-  function withSurfaceEdgeSelection(edges: readonly CanvasEdge[]): CanvasEdge[] {
+  function withSurfaceEdgeSelection(edges: readonly CanvasEdge[], currentEdges: readonly CanvasEdge[]): CanvasEdge[] {
     const previousState = edgeSelectionState
     edgeSelectionState = reconcileEdgeSelection(
       edgeSelectionState,
@@ -304,8 +308,7 @@
     ) {
       clearSelectionGestures()
     }
-    const selectedIds = new Set(edgeSelectionState.edgeIds)
-    return edges.map((edge) => (selectedIds.has(edge.id) ? { ...edge, selected: true } : edge))
+    return reconcileSurfaceEdges(edges, currentEdges, edgeSelectionState.edgeIds)
   }
 
   function nodeIds(): readonly string[] {

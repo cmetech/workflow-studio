@@ -1,6 +1,6 @@
 import fc from 'fast-check'
-import { describe, expect, it } from 'vitest'
-import { parse } from 'yaml'
+import { describe, expect, it, vi } from 'vitest'
+import { Document, parse } from 'yaml'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import aliases from '../../../tests/fixtures/yaml/patch-golden/aliases.yaml?raw'
 import ambiguousNodesAlias from '../../../tests/fixtures/yaml/patch-golden/ambiguous-nodes-alias.yaml?raw'
@@ -79,6 +79,102 @@ function expectExactPrefixAndSuffix(source: string, output: string, start: numbe
 }
 
 describe('source-preserving YAML patches', () => {
+  it.each([
+    ['plain', 'next-value', 'plain: next-value # plain comment'],
+    ['single', "next 'single'", "single: 'next ''single''' # single comment"],
+    ['double', 'next "double"', 'double: "next \\"double\\"" # double comment'],
+    ['literal', 'next\nliteral', 'literal: |-\n  next\n  literal\n'],
+    ['folded', 'next folded value', 'folded: >-\n  next folded value\n'],
+  ] as const)('source-patches an existing %s scalar without cloning the YAML document', (key, value, expected) => {
+    const source = `# keep header
+plain: old-value # plain comment
+single: 'old ''single''' # single comment
+double: "old \\"double\\"" # double comment
+literal: |-
+  old
+  literal
+folded: >-
+  old folded value
+unknown: {keep: "exact", spacing: [one,  two]}
+# keep footer
+`
+    const clone = vi.spyOn(Document.prototype, 'clone')
+    try {
+      const result = patchWorkflowDocument(
+        source,
+        { type: 'set-field', document: 'definition', path: [key], value },
+        mutationContract,
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      if (!result.ok) return
+      expect(result.text).toContain(expected)
+      expect(parse(result.text)[key]).toBe(value)
+      expect(result.text).toContain('unknown: {keep: "exact", spacing: [one,  two]}\n# keep footer\n')
+      expect(clone).not.toHaveBeenCalled()
+    } finally {
+      clone.mockRestore()
+    }
+  })
+
+  it.each([
+    ['literal', '|-', 'next\nliteral', 'outer:\n  x: |-\n    next\n    literal\n  y: z\n'],
+    ['folded', '>-', 'next folded', 'outer:\n  x: >-\n    next folded\n  y: z\n'],
+  ] as const)(
+    'source-patches an empty nested %s block scalar without consuming the following sibling',
+    (_style, indicator, value, expected) => {
+      const source = `outer:\n  x: ${indicator}\n  y: z\n`
+      const clone = vi.spyOn(Document.prototype, 'clone')
+      try {
+        const result = patchWorkflowDocument(
+          source,
+          { type: 'set-field', document: 'definition', path: ['outer', 'x'], value },
+          mutationContract,
+        )
+
+        expect(result).toEqual({ ok: true, text: expected })
+        expect(parse(result.ok ? result.text : '')).toEqual({ outer: { x: value, y: 'z' } })
+        expect(clone).not.toHaveBeenCalled()
+      } finally {
+        clone.mockRestore()
+      }
+    },
+  )
+
+  it('falls back to the general patcher when a plain scalar needs a different safe style', () => {
+    const source = 'name: Flow\nmetadata: old # keep comment\nunknown: keep\n'
+    const clone = vi.spyOn(Document.prototype, 'clone')
+    try {
+      const result = patchWorkflowDocument(
+        source,
+        { type: 'set-field', document: 'definition', path: ['metadata'], value: 'colon: value' },
+        mutationContract,
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      if (!result.ok) return
+      expect(parse(result.text)).toMatchObject({ metadata: 'colon: value', unknown: 'keep' })
+      expect(result.text).toContain('unknown: keep\n')
+      expect(clone).toHaveBeenCalledOnce()
+    } finally {
+      clone.mockRestore()
+    }
+  })
+
+  it('rejects malformed YAML before attempting the scalar source-range fast path', () => {
+    const result = patchWorkflowDocument(
+      'name: [unterminated\n',
+      { type: 'set-field', document: 'definition', path: ['name'], value: 'Flow' },
+      mutationContract,
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'mutation_invalid_yaml',
+      message: 'The YAML document cannot be patched safely.',
+    })
+  })
+
   it('sets and deletes nested fields while preserving unrelated byte slices', () => {
     const setResult = patchWorkflowDocument(
       richDefinition,

@@ -181,12 +181,18 @@ export class DocumentWorkspaceController {
     return pair
   }
 
-  changed(pair: WorkflowPairText, origin: DocumentSyncOrigin = 'visual'): void {
+  changed(pair: WorkflowPairText, origin: DocumentSyncOrigin = 'visual', analysis?: DocumentAnalysis): void {
     if (this.publicationSuppressed()) return
-    const revision = $documentSession.get().revision
-    if (!revision || $documentSession.get().pair?.workflowId !== pair.workflowId) return
-    updateDocumentSession(pair, revision.contractDigest, origin)
+    const session = $documentSession.get()
+    const revision = session.revision
+    if (!revision || session.pair?.workflowId !== pair.workflowId) return
+    const suppliedAnalysis = analysis && this.analysisMatchesDocumentContract(pair, analysis) ? analysis : undefined
+    const analysisAccepted = updateDocumentSession(pair, revision.contractDigest, origin, suppliedAnalysis)
     this.dependencies.recoveryDrafts.changed(pair)
+    if (analysisAccepted && analysis) {
+      this.reconcileAnalysisLayout(analysis)
+      return
+    }
     this.reconcileDocumentContract(pair, 'edit')
   }
 
@@ -626,15 +632,30 @@ export class DocumentWorkspaceController {
     }
     if ($documentWorkspace.get().missingChange) return
     receiveDocumentAnalysis(analysis)
+    this.reconcileAnalysisLayout(analysis)
+  }
+
+  private reconcileAnalysisLayout(analysis: DocumentAnalysis): void {
     const session = $documentSession.get()
     const layout = $activeLayout.get()
     if (session.analysis !== analysis || !session.pair || !layout || !isLayoutProjection(analysis.projection)) return
     const reconciled = reconcileLayout(analysis.projection, layout)
+    if (reconciled === layout) return
     setActiveLayout(reconciled)
     const hashes = session.pair.definition.diskHash
       ? { definition: session.pair.definition.diskHash, companion: session.pair.companion?.diskHash ?? null }
       : undefined
     void this.dependencies.layout.saveLayout(reconciled, hashes)
+  }
+
+  private analysisMatchesDocumentContract(pair: WorkflowPairText, analysis: DocumentAnalysis): boolean {
+    const selected = selectedWorkflowProfile(pair)
+    return Boolean(
+      this.documentContract &&
+      selected.status === 'selected' &&
+      selected.profile === this.documentContract.profile &&
+      analysis.contractDigest === this.documentContract.contract_digest,
+    )
   }
 
   private receiveAnalysisError(message: string): void {

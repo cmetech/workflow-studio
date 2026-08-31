@@ -3,9 +3,12 @@ import {
   authoritativeNodeIds,
   clearEdgeSelection,
   commitEdgeSelection,
+  createCanvasEdgeSelectionReconciler,
   emptyEdgeSelectionState,
+  reconcileCanvasEdgeSelection,
   reconcileEdgeSelection,
 } from './edge-selection-state'
+import type { CanvasEdge } from './types'
 
 describe('edge selection state', () => {
   it('keeps committed mixed selection authoritative across projection publication', () => {
@@ -60,5 +63,63 @@ describe('edge selection state', () => {
 
     expect(nextWorkflow.edgeIds).toEqual([])
     expect(nextWorkflow.nodeIds).toBeNull()
+  })
+
+  it('retains an unchanged 500-edge render array and every edge identity', () => {
+    const edges: CanvasEdge[] = Array.from({ length: 500 }, (_, index) => ({
+      id: `dependency:${index}->${index + 1}`,
+      type: 'workflow',
+      source: String(index),
+      target: String(index + 1),
+    }))
+
+    const reconciled = reconcileCanvasEdgeSelection(edges, edges, [])
+
+    expect(reconciled).toBe(edges)
+    expect(reconciled.every((edge, index) => edge === edges[index])).toBe(true)
+  })
+
+  it('changes only the edge whose selection flag changed', () => {
+    const edges: CanvasEdge[] = [
+      { id: 'dependency:a->b', type: 'workflow', source: 'a', target: 'b' },
+      { id: 'dependency:b->c', type: 'workflow', source: 'b', target: 'c' },
+    ]
+
+    const selected = reconcileCanvasEdgeSelection(edges, edges, ['dependency:b->c'])
+
+    expect(selected).not.toBe(edges)
+    expect(selected[0]).toBe(edges[0])
+    expect(selected[1]).toEqual({ ...edges[1], selected: true })
+  })
+
+  it('does not reprocess an unchanged 500-edge projection with stable selection', () => {
+    let propertyReads = 0
+    const edges: CanvasEdge[] = Array.from(
+      { length: 500 },
+      (_, index) =>
+        new Proxy(
+          {
+            id: `dependency:${index}->${index + 1}`,
+            type: 'workflow',
+            source: String(index),
+            target: String(index + 1),
+          } satisfies CanvasEdge,
+          {
+            get(target, property, receiver) {
+              propertyReads += 1
+              return Reflect.get(target, property, receiver)
+            },
+          },
+        ),
+    )
+    const selectedIds = [edges[499]!.id]
+    const reconcile = createCanvasEdgeSelectionReconciler()
+    const selected = reconcile(edges, edges, selectedIds)
+    propertyReads = 0
+
+    const unchanged = reconcile(edges, selected, selectedIds)
+
+    expect(unchanged).toBe(selected)
+    expect(propertyReads).toBe(0)
   })
 })

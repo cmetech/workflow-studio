@@ -97,10 +97,12 @@ export function updateDocumentSession(
   pair: WorkflowPairText,
   contractDigest: ContractDigest,
   origin: DocumentSyncOrigin = 'unknown',
-): void {
+  suppliedAnalysis?: DocumentAnalysis,
+): boolean {
   const revision = createDocumentRevision(pair, contractDigest)
   const current = $documentSession.get()
-  const analysis = current.analysis
+  const suppliedAnalysisAccepted = Boolean(suppliedAnalysis && isAnalysisCurrent(revision, suppliedAnalysis))
+  const analysis = suppliedAnalysisAccepted ? suppliedAnalysis! : current.analysis
   const syncOrigins = mergeSyncOrigins(current.pair, pair, origin)
   $documentSession.set({
     pair,
@@ -108,6 +110,7 @@ export function updateDocumentSession(
     analysis: analysis && isAnalysisCurrent(revision, analysis) ? analysis : null,
   })
   $documentSyncOrigins.set(syncOrigins)
+  return suppliedAnalysisAccepted
 }
 
 export function receiveDocumentAnalysis(analysis: DocumentAnalysis): void {

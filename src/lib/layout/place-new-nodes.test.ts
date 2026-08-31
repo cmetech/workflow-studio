@@ -173,4 +173,19 @@ describe('layout reconciliation', () => {
     expect(parse(yaml)).toEqual(semanticBefore)
     expect(yaml).not.toMatch(/nodePositions|viewport|panels|editorMode|layout/i)
   })
+
+  it('retains the complete saved layout identity when all 250 projected positions are unchanged', () => {
+    const nodes = Array.from({ length: 250 }, (_, index) => ({ id: `node-${index.toString().padStart(3, '0')}` }))
+    const saved: LayoutRecordV1 = {
+      ...baseLayout,
+      nodePositions: Object.fromEntries(
+        nodes.map(({ id }, index) => [id, { x: (index % 25) * 320, y: Math.floor(index / 25) * 160 }]),
+      ),
+    }
+
+    const reconciled = reconcileLayout(projection(nodes), saved)
+
+    expect(reconciled).toBe(saved)
+    expect(reconciled.nodePositions).toBe(saved.nodePositions)
+  })
 })

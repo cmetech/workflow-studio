@@ -72,7 +72,6 @@
     $documentSession as documentSessionStore,
     $documentSyncOrigins as documentSyncOriginsStore,
     openDocumentSession,
-    receiveDocumentAnalysis,
   } from '$src/stores/documents'
   import { $activeLayout as activeLayoutStore, setActiveLayout } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
@@ -859,8 +858,7 @@
       applyMutation: (pair, mutation, contract) => applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker),
       commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
-        documentWorkspace.changed(pair, 'visual')
-        if (analysis) receiveDocumentAnalysis(analysis)
+        documentWorkspace.changed(pair, 'visual', analysis)
       },
       commitPositions: async (updates) => {
         const active = activeLayoutStore.get()
@@ -996,11 +994,11 @@
       const result = await renameNode(
         {
           ...context,
-          commit: (pair, transaction) => {
+          commit: (pair, transaction, analysis) => {
             if (formBindingIdentity(node.id) !== expectedIdentity) return
             didCommit = true
             historyStore.set(recordTransaction(historyStore.get(), transaction))
-            documentWorkspace.changed(pair, 'form')
+            documentWorkspace.changed(pair, 'form', analysis)
           },
           commitPositions: (updates) => (didCommit ? context.commitPositions(updates) : undefined),
         },
@@ -1065,7 +1063,7 @@
       return
     }
     historyStore.set(recordTransaction(historyStore.get(), result.transaction))
-    documentWorkspace.changed(result.pair, 'form')
+    documentWorkspace.changed(result.pair, 'form', result.analysis)
   }
 
   async function chooseCanvasNode(descriptor: NodeKindDescriptor): Promise<void> {

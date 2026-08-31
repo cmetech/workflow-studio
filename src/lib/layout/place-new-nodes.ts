@@ -29,7 +29,20 @@ export function reconcileLayout(projection: LayoutProjection, saved: LayoutRecor
     }
   }
 
-  return { ...saved, nodePositions: Object.fromEntries(positions) }
+  const nodePositions = Object.fromEntries(positions)
+  return samePositionRecords(saved.nodePositions, nodePositions) ? saved : { ...saved, nodePositions }
+}
+
+function samePositionRecords(
+  left: Readonly<Record<string, Position>>,
+  right: Readonly<Record<string, Position>>,
+): boolean {
+  const leftIds = Object.keys(left)
+  const rightIds = Object.keys(right)
+  return (
+    leftIds.length === rightIds.length &&
+    leftIds.every((id) => left[id]?.x === right[id]?.x && left[id]?.y === right[id]?.y)
+  )
 }
 
 export function migrateVisualNodeRename(saved: LayoutRecordV1, from: string, to: string): LayoutRecordV1 {

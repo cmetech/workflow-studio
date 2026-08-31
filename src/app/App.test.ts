@@ -1269,6 +1269,53 @@ nodes:
     expect($documentSession.get().pair).toBe(before)
   })
 
+  it('publishes an Inspector node-ID rename once with its prevalidated current analysis', async () => {
+    const source = `name: Inspector publication
+description: Exercise the prevalidated rename path.
+nodes:
+  - id: collect
+    command: Gather
+`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': source } })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const originalWorker = globalThis.Worker
+    let unbind: (() => void) | undefined
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      const node = await screen.findByRole('group', { name: /command node collect$/i })
+      setCanvasSelection(['collect'])
+      await tick()
+      await fireEvent.click(within(node).getByRole('button', { name: 'Inspector for collect' }))
+      await waitFor(() => expect(screen.getByRole('complementary', { name: 'Inspector' })).not.toHaveAttribute('inert'))
+      const field = await screen.findByRole('textbox', { name: /^Id/i })
+      const publications: Array<{ readonly revision: number; readonly analysisRevision: number | null }> = []
+      let observed = $documentSession.get()
+      unbind = $documentSession.subscribe((session) => {
+        if (session === observed) return
+        observed = session
+        publications.push({
+          revision: session.pair?.definition.revision ?? -1,
+          analysisRevision: session.analysis?.definitionRevision ?? null,
+        })
+      })
+
+      await fireEvent.input(field, { target: { value: 'gather' } })
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply Id' }))
+      await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('  - id: gather\n'))
+
+      expect(publications).toEqual([{ revision: 1, analysisRevision: 1 }])
+      expect($documentSession.get().analysis?.definitionRevision).toBe(1)
+    } finally {
+      unbind?.()
+      if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+      else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
+  })
+
   it('keeps the last valid graph and authoritative CodeMirror instance mounted across editor modes', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [
       { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },

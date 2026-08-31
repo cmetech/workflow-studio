@@ -143,6 +143,75 @@ afterEach(() => {
 })
 
 describe('DocumentWorkspaceController', () => {
+  it('publishes a prevalidated form edit without invalidating the graph or scheduling duplicate analysis', async () => {
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    vi.mocked(client.schedule).mockClear()
+    const edited = editDocumentText(opened!, 'definition', 'name: edited\n')
+    const analysis: DocumentAnalysis = {
+      ...createDocumentRevision(edited, digest),
+      issues: [],
+      structurallyValid: true,
+      projection: {
+        profile: 'hermes-legacy',
+        definition: { name: 'edited' },
+        companion: null,
+        nodes: [],
+        edges: [],
+      },
+    }
+    let publications = 0
+    const unbind = $documentSession.subscribe(() => {
+      publications += 1
+    })
+    publications = 0
+
+    try {
+      controller.changed(edited, 'form', analysis)
+
+      expect($documentSession.get()).toMatchObject({ pair: edited, analysis })
+      expect($documentSession.get().analysis).toBe(analysis)
+      expect(publications).toBe(1)
+      expect(client.schedule).not.toHaveBeenCalled()
+      expect(deps.recoveryDrafts.changed).toHaveBeenLastCalledWith(edited)
+    } finally {
+      unbind()
+    }
+  })
+
+  it('schedules analysis when a supplied result is stale or has the wrong contract digest', async () => {
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    vi.mocked(client.schedule).mockClear()
+    const edited = editDocumentText(opened!, 'definition', 'name: edited\n')
+    const stale: DocumentAnalysis = {
+      ...createDocumentRevision(opened!, digest),
+      issues: [],
+      structurallyValid: true,
+    }
+
+    controller.changed(edited, 'form', stale)
+
+    expect(client.schedule).toHaveBeenCalledOnce()
+    expect($documentSession.get().analysis).toBeNull()
+
+    vi.mocked(client.schedule).mockClear()
+    const editedAgain = editDocumentText(edited, 'definition', 'name: edited again\n')
+    const wrongDigest: DocumentAnalysis = {
+      ...createDocumentRevision(editedAgain, archonContract.contract_digest),
+      issues: [],
+      structurallyValid: true,
+    }
+
+    controller.changed(editedAgain, 'form', wrongDigest)
+
+    expect(client.schedule).toHaveBeenCalledOnce()
+    expect(client.schedule).toHaveBeenCalledWith(editedAgain, contract, 'edit')
+    expect($documentSession.get().analysis).toBeNull()
+  })
+
   it('switches exact contracts for form legacy-to-Archon and YAML Archon-to-legacy profile migrations', async () => {
     const { deps, client } = dependencies({
       read: vi.fn(async (path: string) =>
@@ -159,7 +228,13 @@ describe('DocumentWorkspaceController', () => {
     vi.mocked(client.schedule).mockClear()
 
     const legacyPair = $documentSession.get().pair!
-    controller.changed(editDocumentText(legacyPair, 'companion', 'language_compatibility: archon-2026-07\n'), 'form')
+    const archonPair = editDocumentText(legacyPair, 'companion', 'language_compatibility: archon-2026-07\n')
+    controller.changed(archonPair, 'form', {
+      ...createDocumentRevision(archonPair, archonContract.contract_digest),
+      issues: [],
+      structurallyValid: true,
+      projection: { profile: 'archon-2026-07', nodes: [], edges: [] },
+    })
     await vi.waitFor(() =>
       expect(client.schedule).toHaveBeenLastCalledWith(
         expect.objectContaining({ companion: expect.objectContaining({ text: expect.stringContaining('archon') }) }),
@@ -169,8 +244,11 @@ describe('DocumentWorkspaceController', () => {
     )
     expect($documentSession.get().revision?.contractDigest).toBe(archonContract.contract_digest)
 
-    const archonPair = $documentSession.get().pair!
-    controller.changed(editDocumentText(archonPair, 'companion', 'language_compatibility: hermes-legacy\n'), 'user')
+    const currentArchonPair = $documentSession.get().pair!
+    controller.changed(
+      editDocumentText(currentArchonPair, 'companion', 'language_compatibility: hermes-legacy\n'),
+      'user',
+    )
     await vi.waitFor(() =>
       expect(client.schedule).toHaveBeenLastCalledWith(
         expect.objectContaining({ companion: expect.objectContaining({ text: expect.stringContaining('legacy') }) }),
@@ -1023,6 +1101,45 @@ describe('DocumentWorkspaceController', () => {
         expect.objectContaining({ definition: pair!.definition.diskHash }),
       ),
     )
+  })
+
+  it('retains and does not save an active layout whose analyzed projection is unchanged', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    const existingLayout = {
+      schemaVersion: 1 as const,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      nodePositions: { build: { x: 320, y: 160 } },
+      viewport: { x: 0, y: 0, zoom: 1 },
+      panels: { left: 280, right: 320, problems: 180 },
+      editorMode: 'visual' as const,
+      updatedAt: '2026-08-30T12:00:00.000Z',
+    }
+    const { deps } = dependencies({
+      layout: {
+        loadLayout: vi.fn(async () => existingLayout),
+        saveLayout: vi.fn(),
+        renameWorkflowPath: vi.fn(),
+      },
+      createAnalysisClient: vi.fn((onAnalysis) => {
+        publish = onAnalysis
+        return { schedule: vi.fn(), dispose: vi.fn() }
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const pair = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const activeLayout = $activeLayout.get()
+    expect(activeLayout).toEqual(existingLayout)
+
+    publish?.({
+      ...createDocumentRevision(pair!, digest),
+      issues: [],
+      structurallyValid: true,
+      projection: { nodes: [{ id: 'build', kind: 'command', value: 'make', dependsOn: [], options: {} }] },
+    })
+
+    expect($activeLayout.get()).toBe(activeLayout)
+    expect(deps.layout.saveLayout).not.toHaveBeenCalled()
   })
 
   it('migrates the complete active identity once and reschedules analysis after rename', async () => {

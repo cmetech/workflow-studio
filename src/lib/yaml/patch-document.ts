@@ -1,14 +1,4 @@
-import {
-  isAlias,
-  isMap,
-  isScalar,
-  isSeq,
-  stringify,
-  type Document,
-  type Scalar,
-  type YAMLMap,
-  type YAMLSeq,
-} from 'yaml'
+import { isAlias, isMap, isScalar, isSeq, Scalar, stringify, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { DocumentKind } from '$src/lib/documents/types'
 import { parseWorkflowYaml } from './parse-document'
@@ -102,6 +92,15 @@ export function patchWorkflowDocument(
       return { ok: false, code: 'mutation_path_missing', message: 'The requested YAML path does not exist.' }
     }
     if (mutation.type === 'set-field') {
+      const scalarPatch = patchExistingScalarSourceRange(
+        source,
+        document,
+        mutation.path,
+        mutation.value,
+        contract,
+        documentKind,
+      )
+      if (scalarPatch) return scalarPatch
       const working = document.clone() as Document.Parsed
       setPreservingScalarStyle(working, mutation.path, mutation.value)
       return patchClonedPaths(source, document, working, [mutation.path], contract, documentKind)
@@ -269,6 +268,70 @@ interface SourceEdit {
   start: number
   end: number
   text: string
+}
+
+function patchExistingScalarSourceRange(
+  source: string,
+  document: Document.Parsed,
+  path: readonly (string | number)[],
+  value: unknown,
+  contract: AuthoringContract,
+  documentKind: DocumentKind,
+): PatchWorkflowDocumentResult | null {
+  const current = document.getIn(path, true)
+  if (!isScalar(current) || !isScalarCompatible(value) || current.anchor || current.tag) return null
+  const range = nodeRange(current)
+  if (!range) return null
+  const replacement = new Scalar(value)
+  if (current.type !== undefined) replacement.type = current.type
+  if (current.format !== undefined) replacement.format = current.format
+  if (current.minFractionDigits !== undefined) replacement.minFractionDigits = current.minFractionDigits
+  let rendered: string
+  try {
+    rendered = stringify(replacement, { lineWidth: 0 })
+  } catch {
+    return null
+  }
+  if (!rendered.endsWith('\n') || !sameScalarStyle(current.type, rendered)) return null
+  const block = current.type === Scalar.BLOCK_LITERAL || current.type === Scalar.BLOCK_FOLDED
+  const replacementText = block
+    ? indentBlockScalar(rendered, blockContentIndentation(source, range))
+    : rendered.slice(0, -1)
+  const text = applySourceEdits(source, [{ start: range[0], end: range[1], text: replacementText }])
+  const verified = parseWorkflowYaml(text, { document: documentKind, maxBytes: contract.limits.max_document_bytes })
+  if (!verified.parsed) return null
+  const patched = verified.parsed.document.getIn(path, true)
+  return isScalar(patched) && Object.is(patched.value, value) ? { ok: true, text } : null
+}
+
+function sameScalarStyle(type: Scalar.Type | undefined, rendered: string): boolean {
+  if (type === Scalar.QUOTE_SINGLE) return rendered.startsWith("'")
+  if (type === Scalar.QUOTE_DOUBLE) return rendered.startsWith('"')
+  if (type === Scalar.BLOCK_LITERAL) return rendered.startsWith('|')
+  if (type === Scalar.BLOCK_FOLDED) return rendered.startsWith('>')
+  return (
+    !rendered.startsWith("'") && !rendered.startsWith('"') && !rendered.startsWith('|') && !rendered.startsWith('>')
+  )
+}
+
+function blockContentIndentation(source: string, range: readonly [number, number, number]): string {
+  const contentStart = source.indexOf('\n', range[0])
+  if (contentStart !== -1 && contentStart < range[1]) {
+    const content = source.slice(contentStart + 1, range[1])
+    const match = content.match(/^([ \t]+)\S/m)
+    if (match?.[1]) return match[1]
+  }
+  const linePrefix = source.slice(lineStart(source, range[0]), range[0])
+  return `${linePrefix.match(/^[ \t]*/)?.[0] ?? ''}  `
+}
+
+function indentBlockScalar(rendered: string, indentation: string): string {
+  return rendered
+    .split('\n')
+    .map((line, index, lines) =>
+      index === 0 || (index === lines.length - 1 && line === '') ? line : `${indentation}${line}`,
+    )
+    .join('\n')
 }
 
 function patchClonedPaths(

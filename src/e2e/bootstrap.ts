@@ -11,6 +11,8 @@ import { loadBrandManifest } from '$src/lib/branding/load-brand'
 import type { StoredBrandPack } from '$src/lib/native/types'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
 import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
+import { isAnalysisCurrent } from '$src/lib/documents/revisions'
+import { $activeLayout } from '$src/stores/layout'
 import { $documentSession } from '$src/stores/documents'
 import { historyStore } from '$src/stores/history'
 
@@ -177,10 +179,27 @@ interface E2EState {
   readonly projectionEdgeCount: number
 }
 
+interface CapacityProbe {
+  readonly definitionRevision: number
+  readonly analysisRevision: number | null
+  readonly analysisCurrent: boolean
+  readonly nodeCount: number
+  readonly edgeCount: number
+  readonly commandApplied: boolean
+  readonly layoutPosition: { readonly x: number; readonly y: number } | null
+}
+
+interface PersistedLayoutProbe {
+  readonly saveCount: number
+  readonly position: { readonly x: number; readonly y: number } | null
+}
+
 declare global {
   interface Window {
     __WORKFLOW_STUDIO_E2E__?: {
       snapshot(): Promise<E2EState>
+      capacityProbe(nodeId: string): CapacityProbe
+      persistedLayoutProbe(nodeId: string): PersistedLayoutProbe
       triggerExternalChange(): Promise<void>
       prepareCapacityConnection(): Promise<void>
       metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']>
@@ -333,6 +352,8 @@ export async function installRuntimeBootstrap(): Promise<void> {
         },
       ])
     : null
+  let persistedCapacityLayout = largeCanvasLayout
+  let persistedLayoutSaveCount = 0
   let brandSelection = 0
   let activeBrandId = scenario === 'active-brand-removal-modal' ? 'northstar' : 'loop24'
 
@@ -664,6 +685,12 @@ export async function installRuntimeBootstrap(): Promise<void> {
     layoutLoad: async () => layout,
     layoutSave: async (content) => {
       layout = content
+      persistedLayoutSaveCount += 1
+      const entries = JSON.parse(content) as Array<{ readonly layout?: ReturnType<typeof capacityLayout> }>
+      persistedCapacityLayout =
+        entries.find(
+          (entry) => entry.layout?.workspaceId === 'browser-workspace' && entry.layout.workflowPath === DEFINITION_PATH,
+        )?.layout ?? null
     },
     onWorkspaceChanged: async (handler) => {
       workspaceChangeHandlers.add(handler)
@@ -675,6 +702,30 @@ export async function installRuntimeBootstrap(): Promise<void> {
   window.__WORKFLOW_STUDIO_E2E__ = {
     metrics: () => metrics.snapshot(),
     resetMetrics: () => metrics.reset(),
+    capacityProbe(nodeId): CapacityProbe {
+      const session = $documentSession.get()
+      const projection = session.analysis?.projection
+      const workflow = isWorkflowProjection(projection) ? projection : null
+      const position = $activeLayout.get()?.nodePositions[nodeId]
+      return {
+        definitionRevision: session.pair?.definition.revision ?? 0,
+        analysisRevision: session.analysis?.definitionRevision ?? null,
+        analysisCurrent: Boolean(
+          session.revision && session.analysis && isAnalysisCurrent(session.revision, session.analysis),
+        ),
+        nodeCount: workflow?.nodes.length ?? 0,
+        edgeCount: workflow?.edges.length ?? 0,
+        commandApplied: workflow?.nodes.find(({ id }) => id === nodeId)?.value === '/capacity-edited',
+        layoutPosition: position ? { x: position.x, y: position.y } : null,
+      }
+    },
+    persistedLayoutProbe(nodeId): PersistedLayoutProbe {
+      const position = persistedCapacityLayout?.nodePositions[nodeId]
+      return {
+        saveCount: persistedLayoutSaveCount,
+        position: position ? { x: position.x, y: position.y } : null,
+      }
+    },
     async triggerExternalChange(): Promise<void> {
       const current = await base.workspaceRead(DEFINITION_PATH)
       await base.workspaceWrite({
