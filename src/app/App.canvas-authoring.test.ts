@@ -565,6 +565,88 @@ describe('App canvas authoring composition', () => {
     }
   })
 
+  it('preserves newer same-workflow layout state when delayed analysis commits node positions', async () => {
+    class ControlledDocumentWorker {
+      static pending: Array<() => Promise<void>> = []
+      private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
+      private readonly cache = createDocumentWorkerCache()
+
+      static async releaseAll(): Promise<void> {
+        const pending = ControlledDocumentWorker.pending.splice(0)
+        await Promise.all(pending.map((deliver) => deliver()))
+      }
+
+      postMessage(message: DocumentWorkerRequest): void {
+        const deliver = async () => {
+          const response = await processDocumentWorkerRequest(message, this.cache)
+          for (const listener of this.listeners) {
+            listener({ data: response } as MessageEvent<DocumentWorkerResponse>)
+          }
+        }
+        if (message.type === 'analyze') ControlledDocumentWorker.pending.push(deliver)
+        else void deliver()
+      }
+
+      addEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+        if (type === 'message') this.listeners.add(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+      }
+
+      removeEventListener(type: 'message' | 'error' | 'messageerror', listener: EventListener): void {
+        if (type === 'message') this.listeners.delete(listener as (event: MessageEvent<DocumentWorkerResponse>) => void)
+      }
+
+      terminate(): void {
+        this.listeners.clear()
+      }
+    }
+    const originalWorker = globalThis.Worker
+    const bridge = createBrowserBridge()
+    setNativeBridgeForTest(bridge)
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, value: ControlledDocumentWorker })
+    const rendered = await renderAuthoringApp()
+    await ControlledDocumentWorker.releaseAll()
+    const concurrentLayout = {
+      schemaVersion: 1 as const,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      nodePositions: { collect: { x: 42, y: 84 }, review: { x: 512, y: 160 } },
+      viewport: { x: 73, y: -41, zoom: 1.35 },
+      panels: { left: 333, right: 377, problems: 211 },
+      editorMode: 'split' as const,
+      updatedAt: '2026-08-30T20:00:00.000Z',
+    }
+
+    try {
+      await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
+      await fireEvent.click(screen.getByRole('option', { name: /command/i }))
+      await waitFor(() => expect(ControlledDocumentWorker.pending.length).toBeGreaterThan(0))
+      showEditorMode('split')
+      setActiveLayout(concurrentLayout)
+
+      await ControlledDocumentWorker.releaseAll()
+      await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
+      await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.command).toEqual({ x: 0, y: 0 }))
+
+      const active = activeLayoutStore.get()!
+      expect(active.nodePositions).toEqual({
+        collect: { x: 42, y: 84 },
+        review: { x: 512, y: 160 },
+        command: { x: 0, y: 0 },
+      })
+      expect(active.viewport).toEqual({ x: 73, y: -41, zoom: 1.35 })
+      expect(active.panels).toEqual({ left: 333, right: 377, problems: 211 })
+      expect(active.editorMode).toBe('split')
+
+      await waitFor(async () => expect(await bridge.layoutLoad()).not.toBeNull())
+      const persisted = JSON.parse((await bridge.layoutLoad())!) as Array<{ layout: typeof active }>
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]?.layout).toEqual(active)
+    } finally {
+      rendered.unmount()
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+    }
+  })
+
   it('keeps an incomplete projected node canvas-read-only while Inspector repairs it and valid analysis resumes authoring', async () => {
     const draftText = `${source}  - id: command\n    command: ""\n`
     const rendered = await renderAuthoringApp({ text: draftText })

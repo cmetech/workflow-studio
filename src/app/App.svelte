@@ -868,12 +868,12 @@
           current.definition.path !== layoutLease.definitionPath
         )
           return
-        const nodePositions = { ...layout.nodePositions }
+        const nodePositions = { ...active.nodePositions }
         for (const [id, position] of Object.entries(updates)) {
           if (position) nodePositions[id] = { ...position }
           else delete nodePositions[id]
         }
-        await persistCanvasLayout({ ...layout, nodePositions, updatedAt: new Date().toISOString() })
+        await persistCanvasLayout({ ...active, nodePositions, updatedAt: new Date().toISOString() })
       },
       // The invoking surface owns the single live announcement. GraphCanvas uses
       // its named polite region; dialogs and commands surface their returned result.
