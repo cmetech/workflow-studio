@@ -3,6 +3,7 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
 import { canvasCapacityForProjection, createMemoizedCanvasProjector } from '$src/features/canvas/project-canvas'
+import { createCanvasSelectionReconciler } from '$src/features/canvas/reconcile-canvas-selection'
 import { commandRegistry } from '$src/lib/commands/registry'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import {
@@ -157,6 +158,41 @@ describe('250-node canvas performance contract', () => {
         )
       }),
     ).toBe(true)
+  })
+
+  it('reconciles 250-node selection without replacing unchanged render identities', () => {
+    const fixture = createLargeWorkflowFixture()
+    const projected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
+    const reconcileSelection = createCanvasSelectionReconciler()
+
+    const first = reconcileSelection(projected.nodes, ['node-125'])
+    const unchanged = reconcileSelection(projected.nodes, ['node-125'])
+
+    expect(unchanged.nodes).toBe(first.nodes)
+    expect(unchanged.nodes.every((node, index) => node === first.nodes[index])).toBe(true)
+
+    const changedProjectedNodes = [...projected.nodes]
+    changedProjectedNodes[127] = { ...changedProjectedNodes[127]! }
+    const oneProjectionChange = reconcileSelection(changedProjectedNodes, ['node-125'])
+
+    expect(oneProjectionChange.nodes).not.toBe(first.nodes)
+    expect(oneProjectionChange.nodes[127]).not.toBe(first.nodes[127])
+    expect(oneProjectionChange.nodes.every((node, index) => index === 127 || node === first.nodes[index])).toBe(true)
+
+    const oneSelectionChange = reconcileSelection(changedProjectedNodes, ['node-126'])
+    expect(oneSelectionChange.nodes[125]).not.toBe(oneProjectionChange.nodes[125])
+    expect(oneSelectionChange.nodes[126]).not.toBe(oneProjectionChange.nodes[126])
+    expect(
+      oneSelectionChange.nodes.every(
+        (node, index) => index === 125 || index === 126 || node === oneProjectionChange.nodes[index],
+      ),
+    ).toBe(true)
+
+    const withoutSelectedNode = changedProjectedNodes.filter(({ id }) => id !== 'node-126')
+    const removed = reconcileSelection(withoutSelectedNode, ['node-126'])
+    expect(removed.selection).toEqual([])
+    expect(removed.nodes).toHaveLength(249)
+    expect(removed.nodes.some(({ id, selected }) => id === 'node-126' || selected)).toBe(false)
   })
 
   it('reuses unchanged render objects when one dependency changes at canvas capacity', () => {

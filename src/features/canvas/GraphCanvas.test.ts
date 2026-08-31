@@ -4,7 +4,15 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
-import { commandRegistry, createCommandRegistry, listCommands, type CommandSurface } from '$src/lib/commands/registry'
+import {
+  CommandDisabledError,
+  commandRegistry,
+  createCommandRegistry,
+  listCommands,
+  setCanvasCommandHandlers,
+  type CanvasCommandHandlers,
+  type CommandSurface,
+} from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
 import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
@@ -401,6 +409,124 @@ describe('GraphCanvas', () => {
     await tick()
 
     expect($canvasSelection.get()).toEqual(['collect'])
+  })
+
+  it('keeps the selected node authoritative when projection diagnostics refresh', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
+
+    await fireEvent.click(selectedNode)
+    await tick()
+
+    expect($canvasSelection.get()).toEqual(['review'])
+    expect(selectedNode).toHaveClass('selected')
+    expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+
+    const refreshedProjection: WorkflowProjection = {
+      ...projection,
+      nodes: projection.nodes.map((node) => ({ ...node })),
+    }
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: refreshedProjection,
+      layout,
+      issues: [
+        {
+          code: 'schema_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Command is required.',
+          document: 'definition',
+          nodeId: 'collect',
+        },
+      ],
+    })
+    await tick()
+
+    expect($canvasSelection.get()).toEqual(['review'])
+    expect(rendered.container.querySelector('.svelte-flow__node[data-id="review"]')).toHaveClass('selected')
+    expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+  })
+
+  it('prunes a selected node removed while the authoring surface is inactive', async () => {
+    const onOpenInspector = vi.fn()
+    const rendered = renderCanvas({ projection, layout, onOpenInspector })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
+
+    await fireEvent.click(selectedNode)
+    await tick()
+    expect($canvasSelection.get()).toEqual(['review'])
+
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection,
+      layout,
+      surfaceActive: false,
+      onOpenInspector,
+    })
+    const projectionWithoutReview: WorkflowProjection = {
+      ...projection,
+      nodes: projection.nodes.filter(({ id }) => id !== 'review'),
+      edges: [],
+    }
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: projectionWithoutReview,
+      layout,
+      surfaceActive: false,
+      onOpenInspector,
+    })
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: projectionWithoutReview,
+      layout,
+      surfaceActive: true,
+      onOpenInspector,
+    })
+    await tick()
+
+    expect($canvasSelection.get()).toEqual([])
+    expect(rendered.container.querySelector('.svelte-flow__node.selected')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+
+    const noOp = vi.fn()
+    const handlers: CanvasCommandHandlers = {
+      addNode: noOp,
+      addAfterSelection: noOp,
+      selectAll: noOp,
+      copySelection: noOp,
+      deleteSelection: noOp,
+      duplicateSelection: noOp,
+      pasteSelection: noOp,
+      arrange: noOp,
+      zoomIn: noOp,
+      zoomOut: noOp,
+      actualSize: noOp,
+      fitGraph: noOp,
+      fitSelection: noOp,
+      nudge: noOp,
+      openInspector: () => rendered.component.openInspector(),
+      cancel: noOp,
+      createEdge: noOp,
+    }
+    const unbind = setCanvasCommandHandlers(handlers)
+    try {
+      await expect(
+        commandRegistry.executeCommand('canvas.open-inspector', {
+          surface: 'canvas',
+          canMutate: true,
+          hasSelection: $canvasSelection.get().length > 0,
+        }),
+      ).rejects.toBeInstanceOf(CommandDisabledError)
+      expect(onOpenInspector).not.toHaveBeenCalled()
+    } finally {
+      unbind()
+    }
+
+    await fireEvent.keyDown(canvas, { key: 'Enter' })
+    expect(onOpenInspector).not.toHaveBeenCalled()
   })
 
   it('flushes a pending drag-stop persistence before the canvas closes', async () => {

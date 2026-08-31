@@ -28,6 +28,7 @@
     type CanvasPosition,
   } from './types'
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
+  import { createCanvasSelectionReconciler } from './reconcile-canvas-selection'
   import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
@@ -92,6 +93,7 @@
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
+  const reconcileSelection = createCanvasSelectionReconciler()
   const inspectorRelationship: CanvasInspectorRelationship = {
     controls: () => inspectorControls,
     expanded: () => inspectorExpanded,
@@ -107,7 +109,7 @@
   }
   setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)
   const initialProjection = deriveCanvas()
-  let flowNodes = $state.raw<CanvasNode[]>(initialProjection.nodes)
+  let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
@@ -173,7 +175,7 @@
   $effect(() => {
     if (!surfaceActive) return
     const projected = deriveCanvas()
-    flowNodes = projected.nodes
+    flowNodes = withAuthoritativeSelection(projected.nodes)
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
   })
@@ -232,10 +234,17 @@
   export function arrange(): void {
     if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
-    flowNodes = projected.nodes
+    flowNodes = withAuthoritativeSelection(projected.nodes)
     flowEdges = projected.edges
     replaceCanvasPositions(projected.positions)
     schedulePersist(layoutWithPositions())
+  }
+
+  function withAuthoritativeSelection(nodes: readonly CanvasNode[]): CanvasNode[] {
+    const currentSelection = canvasSelectionStore.get()
+    const reconciled = reconcileSelection(nodes, currentSelection)
+    if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)
+    return reconciled.nodes
   }
 
   function nodeIds(): readonly string[] {
