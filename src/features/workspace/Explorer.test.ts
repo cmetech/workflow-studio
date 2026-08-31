@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { tick } from 'svelte'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import App from '$src/app/App.svelte'
 import type { WorkspaceTreeEntry } from '$src/lib/workspace/types'
 import { showActivity } from '$src/stores/shell'
@@ -56,6 +56,22 @@ const tree: readonly WorkspaceTreeEntry[] = [
 ]
 
 describe('Explorer', () => {
+  beforeAll(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    })
+  })
+
   afterEach(() => {
     clearWorkspace()
     showActivity('explorer')
