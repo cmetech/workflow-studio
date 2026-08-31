@@ -79,6 +79,8 @@ export async function applyWorkflowMutation(
     }
   }
 
+  if (requiresStructuralValidation(mutation)) await yieldBeforeStructuralValidation()
+
   let proposedText: string
   if (mutation.type === 'replace-document') {
     proposedText = mutation.text
@@ -91,7 +93,6 @@ export async function applyWorkflowMutation(
   const proposedPair = editDocumentText(pair, documentKind, proposedText)
   let structuralAnalysis: DocumentAnalysis | undefined
   if (requiresStructuralValidation(mutation)) {
-    await yieldBeforeStructuralValidation()
     const analysis = await analyze(proposedPair, contract)
     structuralAnalysis = analysis
     if (!analysis.structurallyValid && !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract))) {

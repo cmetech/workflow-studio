@@ -124,6 +124,43 @@ function pair(source = validSource, revision = 3): WorkflowPairText {
 }
 
 describe('workflow YAML transactions', () => {
+  it('yields to the browser before a structural mutation starts patching YAML', async () => {
+    const events: string[] = []
+    let observedPatchStart = false
+    const observedContract = new Proxy(mutationContract, {
+      get(target, property, receiver) {
+        if (property === 'limits' && !observedPatchStart) {
+          observedPatchStart = true
+          events.push('patch')
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const schedulerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'scheduler')
+    Object.defineProperty(globalThis, 'scheduler', {
+      configurable: true,
+      value: {
+        yield: async () => {
+          events.push('yield')
+        },
+      },
+    })
+
+    try {
+      const result = await applyWorkflowMutation(
+        pair(),
+        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        observedContract,
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      expect(events.slice(0, 2)).toEqual(['yield', 'patch'])
+    } finally {
+      if (schedulerDescriptor) Object.defineProperty(globalThis, 'scheduler', schedulerDescriptor)
+      else Reflect.deleteProperty(globalThis, 'scheduler')
+    }
+  })
+
   it('creates one atomic pair transaction with revision boundaries and selection hints', async () => {
     const current = pair()
     const result = await applyWorkflowMutation(
