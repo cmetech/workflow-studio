@@ -187,11 +187,57 @@ class TestResizeObserver {
   }
 }
 
+class TestMediaQueryList extends EventTarget implements MediaQueryList {
+  static instances: TestMediaQueryList[] = []
+  matches = false
+  private changeHandler: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null = null
+
+  constructor(readonly media: string) {
+    super()
+    TestMediaQueryList.instances.push(this)
+  }
+
+  get onchange(): ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null {
+    return this.changeHandler
+  }
+
+  set onchange(callback: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null) {
+    if (this.changeHandler) this.removeEventListener('change', this.changeHandler as EventListener)
+    this.changeHandler = callback
+    if (callback) this.addEventListener('change', callback as EventListener)
+  }
+
+  addListener(callback: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null): void {
+    if (callback) this.addEventListener('change', callback as EventListener)
+  }
+
+  removeListener(callback: ((this: MediaQueryList, event: MediaQueryListEvent) => unknown) | null): void {
+    if (callback) this.removeEventListener('change', callback as EventListener)
+  }
+
+  publish(matches: boolean): void {
+    this.matches = matches
+    const event = new Event('change') as MediaQueryListEvent
+    Object.defineProperties(event, {
+      matches: { value: matches },
+      media: { value: this.media },
+    })
+    this.dispatchEvent(event)
+  }
+}
+
 async function publishResize(target: Element, width: number): Promise<void> {
   const observer = TestResizeObserver.instances.find((candidate) => candidate.targets.has(target))
   if (!observer) throw new Error('Expected the workbench boundary to be observed.')
   observer.publish(target, width)
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
+
+async function publishMediaQuery(media: string, matches: boolean): Promise<void> {
+  const query = TestMediaQueryList.instances.find((candidate) => candidate.media === media)
+  if (!query) throw new Error(`Expected ${media} to be observed.`)
+  query.publish(matches)
+  await tick()
 }
 
 function modifierChord(key: string): string {
@@ -277,12 +323,7 @@ describe('keyboard-only workflow authoring', () => {
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
-      value: vi.fn((query: string) => ({
-        matches: false,
-        media: query,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
+      value: vi.fn((query: string) => new TestMediaQueryList(query)),
     })
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     vi.stubGlobal('Worker', RealAnalysisWorker)
@@ -307,6 +348,7 @@ describe('keyboard-only workflow authoring', () => {
     closeKeyboardShortcuts()
     closeTransientPanels()
     showEditorMode('visual')
+    TestMediaQueryList.instances = []
     TestResizeObserver.instances = []
     historyStore.set(createHistoryState())
     $documentWorkspace.set({
@@ -363,6 +405,7 @@ describe('keyboard-only workflow authoring', () => {
 
     const workbench = rendered.container.querySelector<HTMLElement>('.workbench')!
     const editorWorkspace = screen.getByRole('region', { name: 'Workflow workspace' })
+    await publishMediaQuery('(max-width: 1279px)', true)
     await publishResize(workbench, 1024)
     await publishResize(editorWorkspace, 976)
     await tick()
