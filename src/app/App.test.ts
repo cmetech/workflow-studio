@@ -626,8 +626,10 @@ describe('App', () => {
       screen.getAllByRole('button', { name: 'Open Folder' }).every((button) => !button.hasAttribute('disabled')),
     ).toBe(true)
     expect(within(welcome).getByRole('button', { name: 'Open Folder' })).toHaveAttribute('data-variant', 'primary')
-    expect(container.querySelector('.editor-column')).toHaveAttribute('hidden')
-    expect(container.querySelector('.inspector-panel')).toHaveAttribute('hidden')
+    expect(container.querySelector('.editor-column')).toHaveClass('authoring-inactive')
+    expect(container.querySelector('.editor-column')).toHaveAttribute('inert')
+    expect(container.querySelector('.inspector-panel')).toHaveClass('authoring-inactive')
+    expect(container.querySelector('.inspector-panel')).toHaveAttribute('inert')
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
@@ -1032,7 +1034,8 @@ nodes:
     expect(screen.getAllByRole('tab')).toHaveLength(4)
     expect(screen.getByRole('tabpanel', { name: 'Appearance' })).toBeVisible()
     for (const layer of [workspacePanel, authoring, inspector]) {
-      expect(layer).toHaveAttribute('hidden')
+      expect(layer).not.toHaveAttribute('hidden')
+      expect(layer).toHaveClass('authoring-inactive')
       expect(layer).toHaveAttribute('inert')
       expect(layer).toHaveAttribute('aria-hidden', 'true')
     }
@@ -1042,6 +1045,7 @@ nodes:
     expect(screen.queryByRole('region', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Workflow workspace' })).toBe(authoring)
     expect(authoring).not.toHaveAttribute('hidden')
+    expect(authoring).not.toHaveClass('authoring-inactive')
     expect(authoring).not.toHaveAttribute('inert')
   })
 

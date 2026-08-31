@@ -66,6 +66,92 @@ test('preserves exact authoring state across full-workbench page navigation', as
   await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBe(yamlScrollBefore)
 })
 
+test('keeps the inactive authoring graph laid out and isolated behind full-workbench pages', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await openSeededPair(page)
+
+  const retainedAuthoring = await page.evaluateHandle(() => ({
+    workspace: document.querySelector<HTMLElement>('[aria-label="Workflow workspace"]')!,
+    graph: document.querySelector<HTMLElement>('[aria-label="Workflow graph"]')!,
+    node: document.querySelector<HTMLElement>('.svelte-flow__node')!,
+    edge: document.querySelector<SVGGElement>('.svelte-flow__edge')!,
+  }))
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  const settingsPage = page.getByRole('region', { name: 'Settings' })
+  const contracts = settingsPage.getByRole('tab', { name: 'Workflow Contracts' })
+  await expect(settingsPage).toBeVisible()
+
+  const inactiveState = await retainedAuthoring.evaluate((retained) => {
+    const workspaceBounds = retained.workspace.getBoundingClientRect()
+    const graphBounds = retained.graph.getBoundingClientRect()
+    const nodeBounds = retained.node.getBoundingClientRect()
+    const workspaceStyle = getComputedStyle(retained.workspace)
+    const control = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).find(
+      (element) => element.textContent?.trim() === 'Workflow Contracts',
+    )!
+    const controlBounds = control.getBoundingClientRect()
+    return {
+      connected: [retained.workspace, retained.graph, retained.node, retained.edge].every(
+        (element) => element.isConnected,
+      ),
+      identityRetained:
+        document.querySelector('[aria-label="Workflow workspace"]') === retained.workspace &&
+        document.querySelector('[aria-label="Workflow graph"]') === retained.graph &&
+        document.querySelector('.svelte-flow__node') === retained.node &&
+        document.querySelector('.svelte-flow__edge') === retained.edge,
+      workspace: {
+        inert: retained.workspace.inert,
+        ariaHidden: retained.workspace.getAttribute('aria-hidden'),
+        width: workspaceBounds.width,
+        height: workspaceBounds.height,
+        visibility: workspaceStyle.visibility,
+        opacity: workspaceStyle.opacity,
+        pointerEvents: workspaceStyle.pointerEvents,
+      },
+      graph: { width: graphBounds.width, height: graphBounds.height },
+      node: { width: nodeBounds.width, height: nodeBounds.height },
+      pageControlOwnsHit: control.contains(
+        document.elementFromPoint(
+          controlBounds.left + controlBounds.width / 2,
+          controlBounds.top + controlBounds.height / 2,
+        ),
+      ),
+    }
+  })
+  expect(inactiveState.connected).toBe(true)
+  expect(inactiveState.identityRetained).toBe(true)
+  expect(inactiveState.workspace).toMatchObject({
+    inert: true,
+    ariaHidden: 'true',
+    visibility: 'hidden',
+    opacity: '0',
+    pointerEvents: 'none',
+  })
+  expect(inactiveState.workspace.width).toBeGreaterThan(0)
+  expect(inactiveState.workspace.height).toBeGreaterThan(0)
+  expect(inactiveState.graph.width).toBeGreaterThan(0)
+  expect(inactiveState.graph.height).toBeGreaterThan(0)
+  expect(inactiveState.node.width).toBeGreaterThan(0)
+  expect(inactiveState.node.height).toBeGreaterThan(0)
+  expect(inactiveState.pageControlOwnsHit).toBe(true)
+
+  await contracts.click()
+  await expect(page.getByRole('heading', { name: 'Workflow contracts' })).toBeVisible()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+
+  expect(
+    await retainedAuthoring.evaluate((retained) => {
+      return (
+        document.querySelector('[aria-label="Workflow workspace"]') === retained.workspace &&
+        document.querySelector('[aria-label="Workflow graph"]') === retained.graph &&
+        document.querySelector('.svelte-flow__node') === retained.node &&
+        document.querySelector('.svelte-flow__edge') === retained.edge
+      )
+    }),
+  ).toBe(true)
+})
+
 test('Settings exposes one responsive keyboard-operable category at a time', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 700 })
   await page.goto('/')
@@ -98,11 +184,11 @@ test('Welcome keeps authoring chrome inert and Explorer collapsed at desktop and
     await expect(welcome.getByRole('button', { name: 'Open Folder' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Activities' })).toBeVisible()
     await expect(explorer).toHaveAttribute('aria-expanded', 'false')
-    await expect(workspace).toHaveAttribute('hidden', '')
+    await expect(workspace).not.toHaveAttribute('hidden')
     await expect(workspace).toHaveAttribute('inert', '')
-    await expect(page.getByRole('complementary', { name: 'Inspector', includeHidden: true })).toHaveAttribute(
+    await expect(workspace).toHaveAttribute('aria-hidden', 'true')
+    await expect(page.getByRole('complementary', { name: 'Inspector', includeHidden: true })).not.toHaveAttribute(
       'hidden',
-      '',
     )
     await explorer.click()
     await expect(explorer).toHaveAttribute('aria-expanded', 'false')

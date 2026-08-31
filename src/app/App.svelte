@@ -1951,7 +1951,7 @@
       bind:this={workspacePanelHost}
       class="panel left-panel"
       class:drawer-open={!workspacePanelHidden}
-      hidden={authoringHidden}
+      class:authoring-inactive={authoringHidden}
       {...workspacePanelHidden ? { inert: true } : {}}
       aria-label="Workspace panel"
       aria-hidden={workspacePanelHidden ? 'true' : undefined}
@@ -2009,9 +2009,9 @@
     <section
       bind:this={editorColumnHost}
       class="editor-column"
+      class:authoring-inactive={authoringHidden}
       data-has-problems={$documentSessionStore.pair ? 'true' : 'false'}
       aria-label="Workflow workspace"
-      hidden={authoringHidden}
       {...authoringHidden ? { inert: true } : {}}
       aria-hidden={authoringHidden ? 'true' : undefined}
     >
@@ -2200,7 +2200,7 @@
       bind:this={inspectorPanelHost}
       class="panel inspector-panel"
       class:drawer-open={!inspectorPanelHidden}
-      hidden={authoringHidden}
+      class:authoring-inactive={authoringHidden}
       {...inspectorPanelHidden ? { inert: true } : {}}
       aria-label="Inspector"
       aria-hidden={inspectorPanelHidden ? 'true' : undefined}
@@ -2760,9 +2760,9 @@
     background: var(--color-surface);
   }
 
-  .left-panel[hidden],
-  .inspector-panel[hidden] {
-    display: none;
+  .authoring-inactive {
+    visibility: hidden;
+    opacity: 0;
     pointer-events: none;
   }
 
@@ -2775,12 +2775,18 @@
     grid-template-columns: 3rem minmax(0, 1fr);
   }
 
+  .workbench[data-panel-presentation='drawers'] .editor-column {
+    grid-column: 2;
+  }
+
   .workbench[data-panel-presentation='drawers'] .panel {
     position: absolute;
     z-index: 20;
     top: 0;
     bottom: 0;
     display: block;
+    grid-column: auto;
+    grid-row: auto;
     transition: transform 120ms ease-out;
     box-shadow: 0 1rem 3rem var(--color-shadow);
   }
@@ -2849,6 +2855,8 @@
 
   .left-panel {
     display: grid;
+    grid-column: 2;
+    grid-row: 1;
     grid-template-rows: minmax(0, 1fr);
     border-right: 1px solid var(--color-border);
   }
@@ -2860,11 +2868,15 @@
   }
 
   .inspector-panel {
+    grid-column: 4;
+    grid-row: 1;
     border-left: 1px solid var(--color-border);
   }
 
   .editor-column {
     display: grid;
+    grid-column: 3;
+    grid-row: 1;
     grid-template-rows: 2.625rem minmax(0, 1fr);
     min-width: 0;
     background: var(--color-canvas);
@@ -2872,11 +2884,6 @@
 
   .editor-column[data-has-problems='true'] {
     grid-template-rows: 2.625rem minmax(0, 1fr) var(--problems-height);
-  }
-
-  .editor-column[hidden] {
-    display: none;
-    pointer-events: none;
   }
 
   .editor-tabs {
@@ -2991,12 +2998,18 @@
       grid-template-columns: 3rem minmax(0, 1fr);
     }
 
+    .editor-column {
+      grid-column: 2;
+    }
+
     .workbench[data-panel-presentation='docked'] .panel {
       position: absolute;
       z-index: 20;
       top: 0;
       bottom: 0;
       display: block;
+      grid-column: auto;
+      grid-row: auto;
       box-shadow: 0 1rem 3rem var(--color-shadow);
     }
 
