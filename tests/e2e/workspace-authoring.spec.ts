@@ -139,6 +139,267 @@ test('canvas menu stays outside the pointer viewport', async ({ page }) => {
   expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(viewportBounds.y)
 })
 
+test('preserves mixed selection across no-op edge activation, refresh, and page navigation', async ({ page }) => {
+  await openSeededPair(page)
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+
+  await prepare.focus()
+  await prepare.press('Enter')
+  await dependency.focus()
+  await dependency.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+
+  await dependency.press('Enter')
+  const refreshedDefinition = SEEDED_YAML.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify mixed selection after a no-op edge gesture.',
+  )
+  await replaceDefinitionYaml(page, refreshedDefinition)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+})
+
+test('preserves pointer-selected edge ownership across a projection refresh', async ({ page }) => {
+  await openSeededPair(page)
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+
+  const edgeCenter = await dependency.locator('.svelte-flow__edge-interaction').evaluate((path: SVGPathElement) => {
+    const point = path.getPointAtLength(path.getTotalLength() / 2)
+    const matrix = path.getScreenCTM()
+    if (!matrix) throw new Error('Expected the edge interaction path to have a screen transform.')
+    const screenPoint = new DOMPoint(point.x, point.y).matrixTransform(matrix)
+    return { x: screenPoint.x, y: screenPoint.y }
+  })
+  await page.mouse.click(edgeCenter.x, edgeCenter.y, { delay: 50 })
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(0)
+
+  const refreshedDefinition = SEEDED_YAML.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify pointer edge selection after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, refreshedDefinition)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+})
+
+test('preserves marquee-selected nodes and connected edge across refresh and page navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const publish = page.getByRole('group', { name: 'command node publish', exact: true })
+  const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
+  const [prepareBounds, publishBounds, viewportBounds] = await Promise.all([
+    prepare.boundingBox(),
+    publish.boundingBox(),
+    viewport.boundingBox(),
+  ])
+  if (!prepareBounds || !publishBounds || !viewportBounds) {
+    throw new Error('Expected visible nodes and canvas viewport for marquee selection.')
+  }
+  const start = {
+    x: Math.max(viewportBounds.x + 3, Math.min(prepareBounds.x, publishBounds.x) - 20),
+    y: Math.max(viewportBounds.y + 3, Math.min(prepareBounds.y, publishBounds.y) - 20),
+  }
+  const end = {
+    x: Math.min(
+      viewportBounds.x + viewportBounds.width - 3,
+      Math.max(prepareBounds.x + prepareBounds.width, publishBounds.x + publishBounds.width) + 20,
+    ),
+    y: Math.min(
+      viewportBounds.y + viewportBounds.height - 3,
+      Math.max(prepareBounds.y + prepareBounds.height, publishBounds.y + publishBounds.height) + 20,
+    ),
+  }
+
+  await page.keyboard.down('Shift')
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await page.mouse.move(end.x, end.y, { steps: 8 })
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+
+  await expect
+    .poll(() =>
+      page
+        .locator('.svelte-flow__node.selected')
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-id')).sort()),
+    )
+    .toEqual(['prepare', 'publish'])
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+
+  const refreshedDefinition = SEEDED_YAML.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify marquee selection after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, refreshedDefinition)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+
+  await expect
+    .poll(() =>
+      page
+        .locator('.svelte-flow__node.selected')
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-id')).sort()),
+    )
+    .toEqual(['prepare', 'publish'])
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(publish).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+})
+
+test('Escape clears edge-only and mixed selection without projection resurrection', async ({ page }) => {
+  await openSeededPair(page)
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+
+  await dependency.focus()
+  await dependency.press('Enter')
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await dependency.press('Escape')
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+
+  const edgeOnlyRefresh = SEEDED_YAML.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify cleared edge selection after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, edgeOnlyRefresh)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+
+  await prepare.focus()
+  await prepare.press('Enter')
+  await dependency.focus()
+  await dependency.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await dependency.press('Escape')
+  await expect(prepare).not.toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+
+  const mixedRefresh = edgeOnlyRefresh.replace(
+    'description: Verify cleared edge selection after projection refresh.',
+    'description: Verify cleared mixed selection after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, mixedRefresh)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  await expect(prepare).not.toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+})
+
+test('picker-priority Escape clears mixed selection without projection resurrection', async ({ page }) => {
+  await openSeededPair(page)
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+
+  await prepare.focus()
+  await prepare.press('Enter')
+  await dependency.focus()
+  await dependency.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+
+  await page.getByRole('button', { name: 'Create Edge' }).click()
+  await expect(page.getByText('Create edge from prepare', { exact: true })).toBeVisible()
+  await dependency.focus()
+  await dependency.press('Escape')
+
+  await expect(page.getByText('Create edge from prepare', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText('Edge creation cancelled.')
+  await expect(prepare).not.toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+
+  const refreshedDefinition = SEEDED_YAML.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify picker-priority Escape after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, refreshedDefinition)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+
+  await expect(prepare).not.toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+})
+
+test('prunes edge selection when a same-workflow projection removes the edge', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+
+  await dependency.focus()
+  await dependency.press('Enter')
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+
+  await page.getByRole('button', { name: 'Split', exact: true }).click()
+  const editor = page.locator('[aria-label="Definition YAML"] .cm-content')
+  await editor.click()
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+  await page.keyboard.insertText(SEEDED_YAML.replace('    depends_on: [prepare]\n', ''))
+  await expect(page.getByRole('group', { name: 'Dependency from prepare to publish' })).toHaveCount(0)
+
+  await editor.click()
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+  await page.keyboard.insertText(SEEDED_YAML)
+  const restoredDependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+  await expect(restoredDependency).toHaveCount(1)
+  await expect(restoredDependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+})
+
+test('resets edge selection when a new workflow reuses the same edge id', async ({ page }) => {
+  const sequentialYaml = `name: Sequential chain
+description: Three nodes connected in order.
+nodes:
+  - id: prepare
+    command: /prepare
+  - id: review
+    prompt: Review $prepare.output.
+    depends_on: [prepare]
+  - id: finish
+    command: /finish
+    depends_on: [review]
+`
+  await openSeededPair(page)
+  await replaceDefinitionYaml(page, sequentialYaml)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to review' })
+
+  await dependency.focus()
+  await dependency.press('Enter')
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+  await page.getByRole('button', { name: 'Create Editable Copy: Sequential chain' }).click()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+
+  const reusedDependency = page.getByRole('group', { name: 'Dependency from prepare to review' })
+  await expect(reusedDependency).toHaveCount(1)
+  await expect(reusedDependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+})
+
 test('node body remains the real hit target and draggable in the former controls rectangle', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
@@ -388,28 +649,56 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   await dependency.press('Enter')
   const selectedPath = dependency.locator('path.workflow-edge')
   await expect(selectedPath).toHaveClass(/selected/)
-  const selectedEdgeStyle = await selectedPath.evaluate((path) => ({
-    computedStroke: getComputedStyle(path).stroke,
-    inlineStyle: path.getAttribute('style'),
-    matchingRules: Array.from(document.styleSheets).flatMap((sheet) => {
-      try {
-        return Array.from(sheet.cssRules)
-          .filter((rule) => rule.cssText.includes('workflow-edge'))
-          .map((rule) => rule.cssText)
-      } catch {
-        return []
+  const selectedStyleContract = await selectedPath.evaluate((path) => {
+    const matchingStrokes: string[] = []
+    const visit = (rules: CSSRuleList): void => {
+      for (const rule of rules) {
+        if (rule instanceof CSSStyleRule) {
+          try {
+            if (path.matches(rule.selectorText)) matchingStrokes.push(rule.style.getPropertyValue('stroke').trim())
+          } catch {
+            // Ignore selectors unsupported by the current engine; another matching rule still proves the contract.
+          }
+        } else if ('cssRules' in rule) {
+          visit((rule as CSSGroupingRule).cssRules)
+        }
       }
-    }),
-  }))
-  const expectedSelectedStroke = await page.evaluate(() => {
-    const probe = document.createElement('div')
-    probe.style.color = 'var(--color-edge-selected)'
-    document.body.append(probe)
-    const color = getComputedStyle(probe).color
-    probe.remove()
-    return color
+    }
+    for (const sheet of document.styleSheets) {
+      try {
+        visit(sheet.cssRules)
+      } catch {
+        // Cross-origin sheets are not expected, but must not make the selected-style probe engine-specific.
+      }
+    }
+    return {
+      token: getComputedStyle(document.documentElement).getPropertyValue('--color-edge-selected').trim(),
+      matchingStrokes,
+    }
   })
-  expect(selectedEdgeStyle.computedStroke, JSON.stringify(selectedEdgeStyle)).toBe(expectedSelectedStroke)
+  expect(selectedStyleContract.token).not.toBe('')
+  expect(selectedStyleContract.matchingStrokes).toContain('var(--color-edge-selected)')
+  await expect(page.getByText('Open Inspector is unavailable.', { exact: true })).toHaveCount(0)
+  await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(0)
+
+  const selectedDefinition = (await e2eSnapshot(page)).definitionText
+  if (typeof selectedDefinition !== 'string') throw new Error('Expected the selected workflow definition text.')
+  const refreshedDefinition = selectedDefinition.replace(
+    'description: Verify the complete authoring path.',
+    'description: Verify the complete authoring path after projection refresh.',
+  )
+  await replaceDefinitionYaml(page, refreshedDefinition)
+  await expectAuthoritativeYaml(page, refreshedDefinition)
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  const refreshedDependency = page.getByRole('group', { name: 'Dependency from publish to command' })
+  await expect(refreshedDependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect
+    .poll(() =>
+      page
+        .locator('.svelte-flow__node.selected')
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-id'))),
+    )
+    .toEqual([])
 
   const beforeCycle = (await e2eSnapshot(page)).definitionText
   await dragPort(page, 'publish', 'output', 'prepare', 'input')

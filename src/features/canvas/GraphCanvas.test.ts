@@ -704,6 +704,31 @@ describe('GraphCanvas', () => {
     expect(screen.getByLabelText('Dependencies leaving collect')).not.toHaveAttribute('tabindex', '0')
   })
 
+  it.each(['Enter', ' '])('owns focused-edge %j after target processing without preventing default', async (key) => {
+    const { container } = renderCanvas({ projection, layout })
+    const flow = container.querySelector<HTMLElement>('.svelte-flow')!
+    const edge = document.createElement('div')
+    const targetHandler = vi.fn(() => edge.classList.add('selected'))
+    const outerHandler = vi.fn()
+    edge.className = 'svelte-flow__edge'
+    edge.tabIndex = 0
+    edge.addEventListener('keydown', targetHandler)
+    flow.append(edge)
+    window.addEventListener('keydown', outerHandler)
+
+    try {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+      edge.dispatchEvent(event)
+
+      expect(targetHandler).toHaveBeenCalledOnce()
+      expect(edge).toHaveClass('selected')
+      expect(event.defaultPrevented).toBe(false)
+      expect(outerHandler).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', outerHandler)
+    }
+  })
+
   it('retargets a collapsed node Inspector button before toggling that selected node closed', async () => {
     const rendered = render(GraphCanvasInspectorHarness, {
       props: { canvasProps: { commandSurface: commandRegistry, projection, layout } },

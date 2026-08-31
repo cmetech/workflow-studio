@@ -29,6 +29,13 @@
   import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
   import { createCanvasSelectionReconciler } from './reconcile-canvas-selection'
   import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } from './canvas-projection-refresh'
+  import {
+    authoritativeNodeIds,
+    clearEdgeSelection,
+    commitEdgeSelection,
+    emptyEdgeSelectionState,
+    reconcileEdgeSelection,
+  } from './edge-selection-state'
   import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
@@ -65,6 +72,12 @@
     onToggleInspector?: (expanded: boolean, invoker: HTMLElement) => void | Promise<void>
     onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
   }
+
+  type KeyboardSelectionGesture =
+    | { readonly token: number; readonly kind: 'edge'; readonly nodeIds: readonly string[] }
+    | { readonly token: number; readonly kind: 'surface' }
+
+  type PointerSelectionGesture = 'edge' | 'surface' | 'marquee'
 
   let {
     commandSurface,
@@ -114,6 +127,7 @@
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
+  let edgeSelectionState = emptyEdgeSelectionState()
   let authoringFeedback = $state('')
   let edgeSourceId = $state<string | null>(null)
   let edgeTargetIndex = $state(0)
@@ -124,7 +138,15 @@
   let pendingLayout: LayoutRecordV1 | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
   let pendingSelection: readonly string[] | null = null
+  let pendingKeyboardSelectionGesture: KeyboardSelectionGesture | null = null
+  let keyboardSelectionGestureToken = 0
+  let keyboardSelectionGestureExpiry: ReturnType<typeof setTimeout> | undefined
+  let pointerSelectionGesture: PointerSelectionGesture | null = null
+  let pointerSelectionGestureExpiry: ReturnType<typeof setTimeout> | undefined
+  let pendingSurfaceSelectionPayload:
+    { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] } | undefined
   let selectionPublicationQueued = false
+  let surfaceSelectionPublicationQueued = false
   let canvasMounted = false
   let surfaceWasInactive = false
   let restoringSurfaceSelection = false
@@ -195,7 +217,7 @@
     }
     const projected = deriveCanvas()
     flowNodes = withAuthoritativeSelection(projected.nodes)
-    flowEdges = projected.edges
+    flowEdges = withSurfaceEdgeSelection(projected.edges)
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
   })
@@ -255,7 +277,7 @@
     if (readOnly || stale || transitionLocked) return
     const projected = projectCanvas(projection, layout, { issues, arrange: true })
     flowNodes = withAuthoritativeSelection(projected.nodes)
-    flowEdges = projected.edges
+    flowEdges = withSurfaceEdgeSelection(projected.edges)
     replaceCanvasPositions(projected.positions)
     schedulePersist(layoutWithPositions())
   }
@@ -265,6 +287,23 @@
     const reconciled = reconcileSelection(nodes, currentSelection)
     if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)
     return reconciled.nodes
+  }
+
+  function withSurfaceEdgeSelection(edges: readonly CanvasEdge[]): CanvasEdge[] {
+    const previousState = edgeSelectionState
+    edgeSelectionState = reconcileEdgeSelection(
+      edgeSelectionState,
+      workflowIdentity,
+      edges.map(({ id }) => id),
+    )
+    if (
+      previousState.workflowIdentity !== edgeSelectionState.workflowIdentity ||
+      (previousState.edgeIds.length > 0 && edgeSelectionState.edgeIds.length === 0)
+    ) {
+      clearSelectionGestures()
+    }
+    const selectedIds = new Set(edgeSelectionState.edgeIds)
+    return edges.map((edge) => (selectedIds.has(edge.id) ? { ...edge, selected: true } : edge))
   }
 
   function nodeIds(): readonly string[] {
@@ -329,6 +368,7 @@
     if (event.key === 'Escape') {
       event.preventDefault()
       cancelEdge()
+      clearSurfaceSelection()
       return
     }
     if (!targets.length) return
@@ -345,8 +385,25 @@
     }
   }
 
+  function ownEdgeKeyboardActivation(event: KeyboardEvent): void {
+    if (
+      (event.key === 'Enter' || event.key === ' ') &&
+      event.target instanceof Element &&
+      event.target.closest('.svelte-flow__edge')
+    ) {
+      event.stopPropagation()
+    }
+  }
+
   export function cancel(): void {
     if (cancelEdge()) return
+    clearSurfaceSelection()
+  }
+
+  function clearSurfaceSelection(): void {
+    edgeSelectionState = clearEdgeSelection(edgeSelectionState)
+    clearSelectionGestures()
+    flowEdges = flowEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
     selectionChanged([])
   }
 
@@ -440,8 +497,85 @@
     selection = [...selectedIds]
   }
 
-  function resumeSelectionPublication(): void {
+  function clearKeyboardSelectionGesture(): void {
+    pendingKeyboardSelectionGesture = null
+    if (keyboardSelectionGestureExpiry) clearTimeout(keyboardSelectionGestureExpiry)
+    keyboardSelectionGestureExpiry = undefined
+  }
+
+  function stageKeyboardSelectionGesture(
+    gesture: { readonly kind: 'edge'; readonly nodeIds: readonly string[] } | { readonly kind: 'surface' },
+  ): void {
+    clearKeyboardSelectionGesture()
+    const token = ++keyboardSelectionGestureToken
+    pendingKeyboardSelectionGesture = { token, ...gesture }
+    keyboardSelectionGestureExpiry = setTimeout(() => {
+      if (pendingKeyboardSelectionGesture?.token === token) pendingKeyboardSelectionGesture = null
+      keyboardSelectionGestureExpiry = undefined
+    }, 0)
+  }
+
+  function beginPointerSelectionGesture(kind: PointerSelectionGesture): void {
+    if (pointerSelectionGestureExpiry) clearTimeout(pointerSelectionGestureExpiry)
+    pointerSelectionGestureExpiry = undefined
+    pointerSelectionGesture = kind
+  }
+
+  function schedulePointerSelectionEnd(): void {
+    if (pointerSelectionGestureExpiry) clearTimeout(pointerSelectionGestureExpiry)
+    pointerSelectionGestureExpiry = setTimeout(() => {
+      pointerSelectionGesture = null
+      pointerSelectionGestureExpiry = undefined
+    }, 0)
+  }
+
+  function finishPointerSelectionGesture(event: MouseEvent): void {
+    if (event.button !== 0) return
+    const target = event.target
+    if (pointerSelectionGesture === null && target instanceof Element) {
+      if (target.closest('.svelte-flow__edge')) beginPointerSelectionGesture('edge')
+      else if (target.closest('.svelte-flow__node, .svelte-flow__pane')) beginPointerSelectionGesture('surface')
+    }
+    schedulePointerSelectionEnd()
+  }
+
+  function clearPointerSelectionGesture(): void {
+    pointerSelectionGesture = null
+    if (pointerSelectionGestureExpiry) clearTimeout(pointerSelectionGestureExpiry)
+    pointerSelectionGestureExpiry = undefined
+  }
+
+  function clearSelectionGestures(): void {
+    clearKeyboardSelectionGesture()
+    clearPointerSelectionGesture()
+  }
+
+  function resumeSelectionPublication(event: Event): void {
     restoringSurfaceSelection = false
+
+    const target = event.target
+
+    if (!(target instanceof Element)) return
+    if (event instanceof MouseEvent && event.type === 'pointerdown' && event.button !== 0) return
+
+    const edgeTarget = target.closest('.svelte-flow__edge')
+    if (event instanceof KeyboardEvent) {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      if (edgeTarget) {
+        if (edgeTarget.classList.contains('selected')) return
+        stageKeyboardSelectionGesture({
+          kind: 'edge',
+          nodeIds: event.metaKey || event.ctrlKey ? [...canvasSelectionStore.get()] : [],
+        })
+      } else if (target.closest('.svelte-flow__node, .svelte-flow__pane')) {
+        stageKeyboardSelectionGesture({ kind: 'surface' })
+      }
+      return
+    }
+
+    if (event.type !== 'pointerdown') return
+    if (edgeTarget) beginPointerSelectionGesture('edge')
+    else if (target.closest('.svelte-flow__node, .svelte-flow__pane')) beginPointerSelectionGesture('surface')
   }
 
   function scheduleSelectionChanged(ids: readonly string[]): void {
@@ -454,6 +588,50 @@
       const next = pendingSelection
       pendingSelection = null
       if (canvasMounted && surfaceActive && next) selectionChanged(next)
+    })
+  }
+
+  function surfaceSelectionChanged({ nodes, edges }: { nodes: CanvasNode[]; edges: CanvasEdge[] }): void {
+    pendingSurfaceSelectionPayload = {
+      nodeIds: nodes.map(({ id }) => id),
+      edgeIds: edges.map(({ id }) => id),
+    }
+    if (surfaceSelectionPublicationQueued) return
+    surfaceSelectionPublicationQueued = true
+    queueMicrotask(() => {
+      surfaceSelectionPublicationQueued = false
+      if (!canvasMounted || !surfaceActive) return
+      const payload = pendingSurfaceSelectionPayload
+      pendingSurfaceSelectionPayload = undefined
+      if (!payload) return
+      const availableEdgeIds = new Set(projection.edges.map(({ id }) => id))
+      const keyboardGesture = pendingKeyboardSelectionGesture
+      const hasAuthoritativeGesture = pointerSelectionGesture !== null || keyboardGesture !== null
+      const nextEdgeIds = hasAuthoritativeGesture
+        ? payload.edgeIds.filter((id) => availableEdgeIds.has(id))
+        : edgeSelectionState.edgeIds
+      let intendedNodeIds: readonly string[] = authoritativeNodeIds(edgeSelectionState, canvasSelectionStore.get())
+
+      if (keyboardGesture?.kind === 'edge') {
+        intendedNodeIds = keyboardGesture.nodeIds
+      } else if (hasAuthoritativeGesture) {
+        intendedNodeIds = payload.nodeIds
+      }
+
+      if (keyboardGesture) clearKeyboardSelectionGesture()
+
+      const previousEdgeIds = edgeSelectionState.edgeIds
+      edgeSelectionState = commitEdgeSelection(edgeSelectionState, workflowIdentity, nextEdgeIds, intendedNodeIds)
+
+      if (
+        nextEdgeIds.length === 0 &&
+        intendedNodeIds.length === 0 &&
+        previousEdgeIds.length === 0 &&
+        canvasSelectionStore.get().length === 0
+      ) {
+        return
+      }
+      scheduleSelectionChanged(intendedNodeIds)
     })
   }
 
@@ -610,6 +788,9 @@
     root.addEventListener('workflowbeforedelete', beforeDeleteEvent)
     root.addEventListener('workflowselectionchange', selectionEvent)
     root.addEventListener('pointerdown', resumeSelectionPublication, true)
+    root.addEventListener('pointerup', schedulePointerSelectionEnd, true)
+    root.addEventListener('pointercancel', clearPointerSelectionGesture, true)
+    root.addEventListener('click', finishPointerSelectionGesture, true)
     root.addEventListener('keydown', resumeSelectionPublication, true)
     root.addEventListener('keydown', handleEdgeKeydown)
     motionQuery.addEventListener?.('change', motionChanged)
@@ -625,6 +806,9 @@
       root.removeEventListener('workflowbeforedelete', beforeDeleteEvent)
       root.removeEventListener('workflowselectionchange', selectionEvent)
       root.removeEventListener('pointerdown', resumeSelectionPublication, true)
+      root.removeEventListener('pointerup', schedulePointerSelectionEnd, true)
+      root.removeEventListener('pointercancel', clearPointerSelectionGesture, true)
+      root.removeEventListener('click', finishPointerSelectionGesture, true)
       root.removeEventListener('keydown', resumeSelectionPublication, true)
       root.removeEventListener('keydown', handleEdgeKeydown)
       motionQuery.removeEventListener?.('change', motionChanged)
@@ -633,6 +817,7 @@
   })
 
   onDestroy(() => {
+    clearSelectionGestures()
     void flushPersistence().catch(onPersistenceError)
   })
 </script>
@@ -701,6 +886,7 @@
       multiSelectionKey={['Meta', 'Control']}
       panActivationKey="Space"
       panOnDrag={true}
+      onkeydown={ownEdgeKeyboardActivation}
       minZoom={0.1}
       maxZoom={4}
       fitViewOptions={{ padding: 0.18, duration: 0 }}
@@ -710,7 +896,9 @@
       onnodedragstop={({ targetNode, nodes }) => {
         handleDragStop(dragDetail(nodes, targetNode))
       }}
-      onselectionchange={({ nodes }) => scheduleSelectionChanged(nodes.map(({ id }) => id))}
+      onselectionstart={() => beginPointerSelectionGesture('marquee')}
+      onselectionend={schedulePointerSelectionEnd}
+      onselectionchange={surfaceSelectionChanged}
       onconnect={({ source, target }) => {
         if (source && target) {
           void handleAuthoringResult(
