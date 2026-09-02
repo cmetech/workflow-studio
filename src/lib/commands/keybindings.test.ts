@@ -37,6 +37,15 @@ describe('keybindings', () => {
       })
       expect(windows.defaultPrevented).toBe(true)
       expect($keyboardShortcutsOpen.get()).toBe(true)
+
+      closeKeyboardShortcuts()
+      const linux = keyboard('/', { ctrlKey: true })
+      expect(await dispatchKeybinding(linux, { registry: commandRegistry, context, platform: 'linux' })).toEqual({
+        status: 'executed',
+        commandId: 'workbench.keyboard-shortcuts',
+      })
+      expect(linux.defaultPrevented).toBe(true)
+      expect($keyboardShortcutsOpen.get()).toBe(true)
     } finally {
       closeKeyboardShortcuts()
     }

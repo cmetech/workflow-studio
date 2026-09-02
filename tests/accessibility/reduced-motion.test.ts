@@ -6,6 +6,11 @@ import { commandRegistry } from '$src/lib/commands/registry'
 import { clearCanvasState } from '$src/stores/canvas'
 import { createLargeWorkflowFixture } from '../performance/large-workflow'
 import statusBarSource from '$src/app/StatusBar.svelte?raw'
+import documentationViewSource from '$src/features/documentation/DocumentationView.svelte?raw'
+import documentationOverviewSource from '$src/features/documentation/DocumentationOverview.svelte?raw'
+import documentationTopicListSource from '$src/features/documentation/DocumentationTopicList.svelte?raw'
+import documentationArticleSource from '$src/features/documentation/DocumentationArticle.svelte?raw'
+import keyboardShortcutsSource from '$src/features/commands/KeyboardShortcuts.svelte?raw'
 
 function createMotionPreference(initialMatches = false) {
   let matches = initialMatches
@@ -56,6 +61,22 @@ describe('canvas reduced-motion contract', () => {
     expect(statusBarSource).toContain('@media (forced-colors: active)')
     expect(statusBarSource).not.toMatch(/transition\s*:/)
     expect(statusBarSource).not.toMatch(/animation\s*:/)
+  })
+
+  it('keeps documentation and shortcut navigation immediate with forced-color affordances', () => {
+    const sources = [
+      documentationViewSource,
+      documentationOverviewSource,
+      documentationTopicListSource,
+      documentationArticleSource,
+      keyboardShortcutsSource,
+    ]
+    for (const source of sources) {
+      expect(source).toContain('@media (forced-colors: active)')
+      const motionDeclarations = [...source.matchAll(/(?:transition|animation)\s*:\s*([^;}\n]+)/g)]
+      for (const declaration of motionDeclarations) expect(declaration[1]?.trim()).toMatch(/^none(?:\s+!important)?$/)
+    }
+    expect(keyboardShortcutsSource).toContain('@media (prefers-reduced-motion: reduce)')
   })
 
   it('reacts to runtime preference changes, keeps keyboard viewport movement instant, and cleans up', async () => {

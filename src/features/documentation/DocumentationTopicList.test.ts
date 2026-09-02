@@ -137,6 +137,14 @@ describe('DocumentationTopicList', () => {
     expect(screen.queryByRole('button', { name: 'Context, Bash node' })).not.toBeInTheDocument()
   })
 
+  it('announces only the concise successful search result count', () => {
+    render(DocumentationTopicList, { ...defaultProps, mode: 'reference', query: 'context' })
+
+    expect(screen.getByRole('status')).toHaveTextContent('7 results for “context”.')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Command node')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Prompt node')
+  })
+
   it('marks only a highlighted rendered search result as current', async () => {
     const { rerender } = render(DocumentationTopicList, {
       ...defaultProps,

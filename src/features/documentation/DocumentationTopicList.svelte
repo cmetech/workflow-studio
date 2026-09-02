@@ -146,6 +146,10 @@
 
 {#if query.trim()}
   {#if results.length > 0}
+    <p class="search-status" role="status">
+      {results.length}
+      {results.length === 1 ? 'result' : 'results'} for “{query}”.
+    </p>
     <ul class="result-list" aria-label="Documentation results">
       {#each results as topic (topic.id)}
         <li>
@@ -331,6 +335,16 @@
   .empty-results {
     margin: 0;
     color: var(--color-text-muted);
+  }
+  .search-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   @media (forced-colors: active) {
     button,

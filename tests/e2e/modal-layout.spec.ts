@@ -349,6 +349,7 @@ modalAtEveryExactGeometry(
       dialog.getByRole('button', { name: 'Close keyboard shortcuts' }),
       geometry,
     )
+    await expect(dialog.getByRole('searchbox', { name: 'Search keyboard shortcuts' })).toBeVisible()
   },
 )
 
