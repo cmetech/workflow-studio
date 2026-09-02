@@ -415,7 +415,7 @@
     border: 1px solid var(--color-border);
   }
   [role='tab'][aria-selected='true'] {
-    color: var(--color-on-accent);
+    color: var(--color-accent-contrast);
     background: var(--color-accent);
   }
   .search-controls {
