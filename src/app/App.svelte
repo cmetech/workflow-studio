@@ -18,8 +18,8 @@
   import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
   import { buildDocumentationIndex } from '$src/lib/docs/build-index'
-  import { GUIDE_PRESENTATION } from '$src/lib/docs/navigation'
-  import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
+  import { createDocumentationGuides } from '$src/lib/docs/guide-sources'
+  import type { DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import SettingsPage from '$src/features/settings/SettingsPage.svelte'
@@ -162,19 +162,7 @@
     import: 'default',
     query: '?raw',
   }) as Readonly<Record<string, string>>
-  const bundledGuides: readonly DocumentationGuide[] = Object.entries(bundledGuideSources)
-    .map(([path, body]) => {
-      const id = path.split('/').at(-1)?.replace(/\.md$/, '') ?? path
-      const presentation = GUIDE_PRESENTATION[id]
-      if (!presentation) throw new Error(`Missing documentation guide metadata: ${id}`)
-      return {
-        id,
-        title: body.match(/^#\s+(.+)$/m)?.[1] ?? id,
-        body,
-        ...presentation,
-      }
-    })
-    .sort((left, right) => left.id.localeCompare(right.id))
+  const bundledGuides = createDocumentationGuides(bundledGuideSources)
   const native = getNativeBridge()
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void

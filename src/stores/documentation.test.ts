@@ -27,14 +27,16 @@ const topic = (id: string): DocumentationTopic => ({
 
 function indexWith(...ids: string[]): DocumentationIndex {
   const topics = ids.map(topic)
+  const fields = topics.filter(({ kind }) => kind === 'field')
+  const guides = topics.filter(({ kind }) => kind === 'guide')
   return {
     topics,
     byId: new Map(topics.map((item) => [item.id, item])),
     searchText: new Map(),
     tokenIndex: new Map(),
-    guideGroups: new Map(),
-    referenceGroups: new Map(),
-    duplicateTitleGroups: new Map(),
+    guideGroups: guides.length > 0 ? new Map([['getting-started', guides]]) : new Map(),
+    referenceGroups: fields.length > 0 ? new Map([['common-node-settings', fields]]) : new Map(),
+    duplicateTitleGroups: fields.length > 1 ? new Map([['context', fields]]) : new Map(),
   }
 }
 
@@ -61,16 +63,23 @@ describe('documentation session store', () => {
     expect($documentSession.get()).toBe(documentState)
   })
 
-  it('reconciles selection, history, and highlight by stable topic ID when a profile removes topics', () => {
+  it('reconciles topic state and keeps only disclosure IDs that exist in the rebuilt index', () => {
     updateDocumentationSession({
       selectedTopicId: 'field:prompt.node.context',
       history: ['field:removed', 'guide:quick-start', 'field:prompt.node.context'],
       highlightedTopicId: 'field:removed',
-      expandedGroupIds: ['reference:common-node-settings', 'duplicate:context'],
+      expandedGroupIds: [
+        'reference:common-node-settings',
+        'duplicate:context',
+        'reference:removed-group',
+        'duplicate:removed-title',
+      ],
       articleScrollTop: 140,
     })
 
-    reconcileDocumentationSession(indexWith('field:prompt.node.context', 'guide:quick-start'))
+    reconcileDocumentationSession(
+      indexWith('field:prompt.node.context', 'field:bash.node.context', 'guide:quick-start'),
+    )
 
     expect($documentationSession.get()).toMatchObject({
       selectedTopicId: 'field:prompt.node.context',
@@ -94,7 +103,7 @@ describe('documentation session store', () => {
     })
 
     reconcileDocumentationSession(indexWith('guide:quick-start'))
-    expect($documentationSession.get()).toMatchObject({ history: [] })
+    expect($documentationSession.get()).toMatchObject({ history: [], expandedGroupIds: [] })
     expect($documentationSession.get()).not.toHaveProperty('selectedTopicId')
     expect($documentationSession.get()).not.toHaveProperty('highlightedTopicId')
 

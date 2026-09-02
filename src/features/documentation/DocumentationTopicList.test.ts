@@ -145,7 +145,7 @@ describe('DocumentationTopicList', () => {
     expect(screen.getByRole('status')).not.toHaveTextContent('Prompt node')
   })
 
-  it('marks only a highlighted rendered search result as current', async () => {
+  it('styles only a highlighted rendered button without presenting it as a combobox option', async () => {
     const { rerender } = render(DocumentationTopicList, {
       ...defaultProps,
       mode: 'reference',
@@ -153,7 +153,8 @@ describe('DocumentationTopicList', () => {
       highlightedTopicId: 'field:prompt.node.context',
     })
 
-    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).toHaveClass('highlighted')
+    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).not.toHaveAttribute('aria-current')
 
     await rerender({
       ...defaultProps,
@@ -161,7 +162,7 @@ describe('DocumentationTopicList', () => {
       query: 'context prompt',
       highlightedTopicId: 'field:bash.node.context',
     })
-    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).not.toHaveClass('highlighted')
   })
 
   it('adds YAML locations when real bundled topics collide on title and node qualifier', async () => {

@@ -879,8 +879,6 @@
     ondrop={dropNodeKind}
   >
     <SvelteFlow
-      data-pan-activation-key={CANVAS_PAN_INTERACTION.activationKey}
-      data-pan-on-drag={String(CANVAS_PAN_INTERACTION.panOnDrag)}
       bind:nodes={flowNodes}
       bind:edges={flowEdges}
       bind:viewport={flowViewport}

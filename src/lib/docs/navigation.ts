@@ -1,7 +1,13 @@
 import type { DocumentationRenderer, GuideGroupId, ReferenceGroupId } from './types'
 
 export interface GuideGroup { readonly id: GuideGroupId; readonly title: string }
-export interface GuidePresentation { readonly group: GuideGroupId; readonly useWhen: string; readonly renderer?: DocumentationRenderer }
+export interface GuidePresentation {
+  readonly group: GuideGroupId
+  readonly order: number
+  readonly description: string
+  readonly useWhen: string
+  readonly renderer?: DocumentationRenderer
+}
 export interface DocumentationTask { readonly id: string; readonly title: string; readonly description: string; readonly topicId: string }
 export interface ReferenceEntryPoint { readonly group: ReferenceGroupId; readonly title: string; readonly description: string }
 
@@ -12,18 +18,79 @@ export const GUIDE_GROUPS: readonly GuideGroup[] = [
 ]
 
 export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
-  'quick-start': { group: 'getting-started', useWhen: 'Use this when you want to create and save your first workflow.' },
-  'workflow-pairs': { group: 'getting-started', useWhen: 'Use this when you need to understand definition and companion YAML files.' },
-  'dag-dependencies': { group: 'build-graph', useWhen: 'Use this when you are connecting steps or resolving dependency order.' },
-  'conditions-and-outputs': { group: 'build-graph', useWhen: 'Use this when a condition or output should control a later step.' },
-  'loops-and-approvals': { group: 'build-graph', useWhen: 'Use this when your graph needs repeated work or an approval gate.' },
-  'retry-and-triggers': { group: 'configure-behavior', useWhen: 'Use this when you need to configure retries or trigger rules.' },
-  'companion-policies': { group: 'configure-behavior', useWhen: 'Use this when workflow policy belongs in the companion file.' },
-  'profiles-and-compatibility': { group: 'configure-behavior', useWhen: 'Use this when a workflow profile or compatibility finding needs review.' },
-  'problems-and-validation': { group: 'review-recover', useWhen: 'Use this when a validation problem blocks saving or export.' },
-  'git-versions': { group: 'review-recover', useWhen: 'Use this when you want to inspect or create a local Git version.' },
-  troubleshooting: { group: 'review-recover', useWhen: 'Use this when an authoring problem needs practical recovery steps.' },
-  'keyboard-shortcuts': { group: 'use-application', useWhen: 'Use this when you want to work faster with keyboard shortcuts.', renderer: 'keyboard-shortcuts' },
+  'quick-start': {
+    group: 'getting-started',
+    order: 10,
+    description: 'Create and save a small structurally valid workflow.',
+    useWhen: 'Use this when you want to create and save your first workflow.',
+  },
+  'workflow-pairs': {
+    group: 'getting-started',
+    order: 20,
+    description: 'Understand how definition and companion YAML files work together.',
+    useWhen: 'Use this when you need to understand definition and companion YAML files.',
+  },
+  'dag-dependencies': {
+    group: 'build-graph',
+    order: 30,
+    description: 'Connect nodes with valid acyclic dependencies.',
+    useWhen: 'Use this when you are connecting steps or resolving dependency order.',
+  },
+  'conditions-and-outputs': {
+    group: 'build-graph',
+    order: 40,
+    description: 'Reference upstream outputs safely in conditions.',
+    useWhen: 'Use this when a condition or output should control a later step.',
+  },
+  'loops-and-approvals': {
+    group: 'build-graph',
+    order: 50,
+    description: 'Use loop and approval nodes inside an acyclic graph.',
+    useWhen: 'Use this when your graph needs repeated work or an approval gate.',
+  },
+  'retry-and-triggers': {
+    group: 'configure-behavior',
+    order: 60,
+    description: 'Configure retry policies and trigger rules.',
+    useWhen: 'Use this when you need to configure retries or trigger rules.',
+  },
+  'companion-policies': {
+    group: 'configure-behavior',
+    order: 70,
+    description: 'Place delivery and policy settings in companion YAML.',
+    useWhen: 'Use this when workflow policy belongs in the companion file.',
+  },
+  'profiles-and-compatibility': {
+    group: 'configure-behavior',
+    order: 80,
+    description: 'Choose profiles and interpret compatibility findings.',
+    useWhen: 'Use this when a workflow profile or compatibility finding needs review.',
+  },
+  'problems-and-validation': {
+    group: 'review-recover',
+    order: 90,
+    description: 'Resolve structural blockers and distinguish runtime advisories.',
+    useWhen: 'Use this when a validation problem blocks saving or export.',
+  },
+  'git-versions': {
+    group: 'review-recover',
+    order: 100,
+    description: 'Review and record local workflow versions with Git.',
+    useWhen: 'Use this when you want to inspect or create a local Git version.',
+  },
+  troubleshooting: {
+    group: 'review-recover',
+    order: 110,
+    description: 'Recover from common authoring problems.',
+    useWhen: 'Use this when an authoring problem needs practical recovery steps.',
+  },
+  'keyboard-shortcuts': {
+    group: 'use-application',
+    order: 120,
+    description: 'Find registered commands, node chords, and canvas gestures.',
+    useWhen: 'Use this when you want to work faster with keyboard shortcuts.',
+    renderer: 'keyboard-shortcuts',
+  },
 }
 
 export const START_HERE = [

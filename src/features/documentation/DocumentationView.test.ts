@@ -159,6 +159,53 @@ describe('DocumentationView', () => {
     expect(screen.getByRole('button', { name: 'Context, Bash node' })).toBeVisible()
   })
 
+  it('keeps exactly one mode tab selected and moves its roving focus with Arrow, Home, and End', async () => {
+    render(DocumentationView, { index })
+    const overview = screen.getByRole('tab', { name: 'Overview' })
+    const guidesTab = screen.getByRole('tab', { name: 'Guides' })
+    const reference = screen.getByRole('tab', { name: 'Reference' })
+
+    expect(overview).toHaveAttribute('tabindex', '0')
+    expect(guidesTab).toHaveAttribute('tabindex', '-1')
+    expect(reference).toHaveAttribute('tabindex', '-1')
+    overview.focus()
+
+    await fireEvent.keyDown(overview, { key: 'ArrowRight' })
+    await waitFor(() => expect(guidesTab).toHaveFocus())
+    expect(guidesTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('tab').filter((tab) => tab.getAttribute('aria-selected') === 'true')).toHaveLength(1)
+
+    await fireEvent.keyDown(guidesTab, { key: 'End' })
+    await waitFor(() => expect(reference).toHaveFocus())
+    expect(reference).toHaveAttribute('aria-selected', 'true')
+
+    await fireEvent.keyDown(reference, { key: 'Home' })
+    await waitFor(() => expect(overview).toHaveFocus())
+    expect(overview).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it.each(['Guides', 'Reference'] as const)(
+    'keeps %s active with an empty query when All documentation persists across a remount',
+    async (mode) => {
+      const first = render(DocumentationView, { index })
+      await fireEvent.click(screen.getByRole('tab', { name: mode }))
+      await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
+
+      expect(screen.getByRole('tab', { name: mode })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getAllByRole('tab').filter((tab) => tab.getAttribute('aria-selected') === 'true')).toHaveLength(1)
+      expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('')
+      if (mode === 'Guides') expect(screen.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+      else expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toBeVisible()
+
+      first.unmount()
+      render(DocumentationView, { index })
+      expect(screen.getByRole('tab', { name: mode })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('checkbox', { name: 'All documentation' })).toBeChecked()
+      if (mode === 'Guides') expect(screen.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+      else expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toBeVisible()
+    },
+  )
+
   it('bypasses Overview for an exact contextual request and restores the prior Back target', async () => {
     const onTopicConsumed = vi.fn()
     render(DocumentationView, {
@@ -208,6 +255,33 @@ describe('DocumentationView', () => {
     await waitFor(() => expect(opener).toHaveFocus())
   })
 
+  it('preserves the outer navigation origin while following an internal article link', async () => {
+    render(DocumentationView, { index })
+    const opener = screen.getByRole('button', { name: /^Quick Start$/ })
+
+    await fireEvent.click(opener)
+    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: DAG dependencies' }))
+    expect(screen.getByRole('article', { name: 'DAG dependencies' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('restores a stable navigation origin after an activity-style unmount before Back to Results', async () => {
+    const first = render(DocumentationView, { index })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
+    const opener = screen.getByRole('button', { name: 'Workflow pairs, Guide' })
+    await fireEvent.click(opener)
+    expect(screen.getByRole('article', { name: 'Workflow pairs' })).toBeVisible()
+
+    first.unmount()
+    render(DocumentationView, { index })
+    expect(screen.getByRole('article', { name: 'Workflow pairs' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow pairs, Guide' })).toHaveFocus())
+  })
+
   it('restores focus to the exact duplicate child that opened an article', async () => {
     render(DocumentationView, { index })
     await fireEvent.click(screen.getByRole('tab', { name: 'Reference' }))
@@ -221,7 +295,7 @@ describe('DocumentationView', () => {
     await waitFor(() => expect(opener).toHaveFocus())
   })
 
-  it('searches the selected scope, exposes All documentation, and publishes only rendered highlights', async () => {
+  it('searches the selected scope with ordinary tabbable results and no partial combobox semantics', async () => {
     render(DocumentationView, { index })
     await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
     const search = screen.getByRole('searchbox', { name: 'Search documentation' })
@@ -229,15 +303,22 @@ describe('DocumentationView', () => {
     expect(screen.getByRole('status')).toHaveTextContent('No guides match “context prompt”')
 
     await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
-    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).toBeVisible()
-    expect(search).toHaveAttribute('aria-activedescendant', 'documentation-result-field:prompt.node.context')
+    const result = screen.getByRole('button', { name: 'Context, Prompt node' })
+    expect(result).toBeVisible()
+    expect(result).toHaveProperty('tabIndex', 0)
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+
+    search.focus()
+    const arrow = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    search.dispatchEvent(arrow)
+    expect(arrow.defaultPrevented).toBe(false)
+    expect(search).toHaveFocus()
   })
 
   it('moves focus into narrow detail and restores the opener across responsive presentation changes', async () => {
     const presentation = useNarrowPresentation(false)
     render(DocumentationView, { index })
     const opener = screen.getByRole('button', { name: /Fix a validation problem/i })
-    opener.focus()
     await fireEvent.click(opener)
 
     presentation.setMatches(true)

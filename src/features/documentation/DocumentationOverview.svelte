@@ -21,7 +21,11 @@
     <ol>
       {#each START_HERE as item (item.topicId)}
         <li>
-          <button type="button" onclick={(event) => onSelectTopic(item.topicId, event.currentTarget)}>
+          <button
+            type="button"
+            data-documentation-focus-origin={`start:${item.topicId}`}
+            onclick={(event) => onSelectTopic(item.topicId, event.currentTarget)}
+          >
             {item.title}
           </button>
         </li>
@@ -33,7 +37,12 @@
     <h2 id="common-tasks-heading">Common tasks</h2>
     <div class="cards">
       {#each DOCUMENTATION_TASKS as task (task.id)}
-        <button type="button" class="card" onclick={(event) => onSelectTopic(task.topicId, event.currentTarget)}>
+        <button
+          type="button"
+          class="card"
+          data-documentation-focus-origin={`task:${task.id}`}
+          onclick={(event) => onSelectTopic(task.topicId, event.currentTarget)}
+        >
           <strong>{task.title}</strong>
           <span>{task.description}</span>
         </button>
@@ -45,7 +54,12 @@
     <h2 id="browse-reference-heading">Browse reference</h2>
     <div class="cards reference-cards">
       {#each REFERENCE_ENTRY_POINTS as entry (entry.group)}
-        <button type="button" class="card" onclick={(event) => onBrowseReference(entry.group, event.currentTarget)}>
+        <button
+          type="button"
+          class="card"
+          data-documentation-focus-origin={`reference-entry:${entry.group}`}
+          onclick={(event) => onBrowseReference(entry.group, event.currentTarget)}
+        >
           <strong>{entry.title}</strong>
           <span>{entry.description}</span>
         </button>

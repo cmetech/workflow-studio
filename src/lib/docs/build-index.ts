@@ -24,7 +24,8 @@ export function buildDocumentationIndex(contract: AuthoringContract, guides: rea
     })),
     ...guides.map((guide) => guideTopic(contract, guide)),
   ]
-  const enrichedTopics = [...assignRepeatedFieldGroups(topics)].sort(compareTopics)
+  const relatedTopics = assignRelatedGuides(topics)
+  const enrichedTopics = [...assignRepeatedFieldGroups(relatedTopics)].sort(compareTopics)
   const searchText = new Map(enrichedTopics.map((topic) => [topic.id, normalize(topicSearchText(topic))]))
   const tokenIndex = new Map<string, Set<string>>()
   for (const [id, text] of searchText) {
@@ -39,7 +40,12 @@ export function buildDocumentationIndex(contract: AuthoringContract, guides: rea
     byId: new Map(enrichedTopics.map((topic) => [topic.id, topic])),
     searchText,
     tokenIndex,
-    guideGroups: groupTopics(enrichedTopics, GUIDE_GROUPS.map(({ id }) => id), 'guideGroup'),
+    guideGroups: groupTopics(
+      enrichedTopics,
+      GUIDE_GROUPS.map(({ id }) => id),
+      'guideGroup',
+      compareGuideTopics,
+    ),
     referenceGroups: groupTopics(enrichedTopics, referenceGroupIds, 'referenceGroup'),
     duplicateTitleGroups: duplicateGroups(enrichedTopics),
   }
@@ -114,10 +120,36 @@ function guideTopic(contract: AuthoringContract, guide: DocumentationGuide): Doc
   const useWhen = presentation?.useWhen ?? guide.useWhen
   const renderer = presentation?.renderer ?? guide.renderer ?? 'markdown'
   return {
-    id: `guide:${guide.id}`, kind: 'guide', title: guide.title, description: guide.description ?? firstSentence(guide.body), body: guide.body,
+    id: `guide:${guide.id}`, kind: 'guide', title: guide.title, description: guide.description, body: guide.body,
     qualifier: 'Guide', useWhen, breadcrumb: ['Guides', guideGroupLabel(group)], renderer, examples: [], status: 'supported', profile: contract.profile,
-    fieldPaths: [], guideGroup: group,
+    fieldPaths: [], guideGroup: group, guideOrder: guide.order,
   }
+}
+
+function assignRelatedGuides(topics: readonly DocumentationTopic[]): readonly DocumentationTopic[] {
+  const knownTopicIds = new Set(topics.map(({ id }) => id))
+  const guides = topics.filter(({ kind }) => kind === 'guide').sort(compareGuideTopics)
+  const guideIdsByTarget = new Map<string, string[]>()
+  for (const guide of guides) {
+    for (const targetId of exactTopicAnchors(guide.body)) {
+      if (!knownTopicIds.has(targetId) || targetId === guide.id) continue
+      const guideIds = guideIdsByTarget.get(targetId) ?? []
+      if (!guideIds.includes(guide.id)) guideIds.push(guide.id)
+      guideIdsByTarget.set(targetId, guideIds)
+    }
+  }
+  return topics.map((topic) => {
+    const guideIds = guideIdsByTarget.get(topic.id)
+    if (!guideIds?.length) return topic
+    const existing = topic.relatedTopicIds ?? []
+    return { ...topic, relatedTopicIds: [...guideIds, ...existing.filter((id) => !guideIds.includes(id))] }
+  })
+}
+
+function exactTopicAnchors(markdown: string): readonly string[] {
+  return [...markdown.matchAll(/\]\(#((?:field|node|contract|guide):[^)\s]+)\)/g)].flatMap((match) =>
+    match[1] ? [match[1]] : [],
+  )
 }
 
 function qualifierForField(contract: AuthoringContract, field: FormField): string {
@@ -150,8 +182,13 @@ function assignRepeatedFieldGroups(topics: readonly DocumentationTopic[]): reado
   })
 }
 
-function groupTopics<Key extends GuideGroupId | ReferenceGroupId>(topics: readonly DocumentationTopic[], keys: readonly Key[], property: 'guideGroup' | 'referenceGroup'): ReadonlyMap<Key, readonly DocumentationTopic[]> {
-  return new Map(keys.map((key) => [key, topics.filter((topic) => topic[property] === key).sort(compareTopics)]))
+function groupTopics<Key extends GuideGroupId | ReferenceGroupId>(
+  topics: readonly DocumentationTopic[],
+  keys: readonly Key[],
+  property: 'guideGroup' | 'referenceGroup',
+  compare: (left: DocumentationTopic, right: DocumentationTopic) => number = compareTopics,
+): ReadonlyMap<Key, readonly DocumentationTopic[]> {
+  return new Map(keys.map((key) => [key, topics.filter((topic) => topic[property] === key).sort(compare)]))
 }
 
 function duplicateGroups(topics: readonly DocumentationTopic[]): ReadonlyMap<string, readonly DocumentationTopic[]> {
@@ -182,7 +219,10 @@ function compatibilityFor(contract: AuthoringContract, fieldPath: string): Contr
 
 function scoreTopic(topic: DocumentationTopic, queryTokens: readonly string[], text: string): number {
   if (queryTokens.length === 0) return 0
-  const title = normalize(topic.title), qualifier = normalize(topic.qualifier), identifier = normalize(topic.id), query = queryTokens.join(' ')
+  const title = normalizedPhrase(topic.title)
+  const qualifier = normalizedPhrase(topic.qualifier)
+  const identifier = normalizedPhrase(topic.id)
+  const query = queryTokens.join(' ')
   let score = `${title} ${qualifier}` === query || identifier === query ? 1_000 : 0
   for (const token of queryTokens) {
     if (!text.includes(token)) return -1
@@ -213,9 +253,12 @@ function topicSearchText(topic: DocumentationTopic): string {
 function compareTopics(left: DocumentationTopic, right: DocumentationTopic): number {
   return left.title.localeCompare(right.title) || left.qualifier.localeCompare(right.qualifier) || left.id.localeCompare(right.id)
 }
+function compareGuideTopics(left: DocumentationTopic, right: DocumentationTopic): number {
+  return (left.guideOrder ?? Number.MAX_SAFE_INTEGER) - (right.guideOrder ?? Number.MAX_SAFE_INTEGER) || compareTopics(left, right)
+}
 function referenceGroupLabel(group: ReferenceGroupId): string { return group.replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()) }
 function guideGroupLabel(group: GuideGroupId): string { return GUIDE_GROUPS.find(({ id }) => id === group)?.title ?? group }
 function tokenize(value: string): readonly string[] { return normalize(value).split(/[^a-z0-9]+/).filter(Boolean) }
+function normalizedPhrase(value: string): string { return tokenize(value).join(' ') }
 function normalize(value: string): string { return value.toLocaleLowerCase('en-US') }
 function formatValue(value: unknown): string { return typeof value === 'string' ? value : JSON.stringify(value) }
-function firstSentence(markdown: string): string { return markdown.replace(/^#+\s*/gm, '').split(/[.!?]\s/)[0]?.trim() || 'Offline authoring guide.' }

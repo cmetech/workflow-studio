@@ -45,6 +45,32 @@ describe('documentation navigation metadata', () => {
     expect(Object.values(GUIDE_PRESENTATION).every(({ useWhen }) => useWhen.trim().length > 0)).toBe(true)
   })
 
+  it('defines explicit search descriptions and journey order for every bundled guide', () => {
+    expect(
+      Object.values(GUIDE_PRESENTATION).every(
+        (presentation) =>
+          typeof presentation.description === 'string' &&
+          presentation.description.trim().length > 0 &&
+          Number.isInteger(presentation.order),
+      ),
+    ).toBe(true)
+
+    expect(
+      GUIDE_GROUPS.map(({ id }) =>
+        Object.entries(GUIDE_PRESENTATION)
+          .filter(([, presentation]) => presentation.group === id)
+          .sort((left, right) => left[1].order - right[1].order)
+          .map(([guideId]) => guideId),
+      ),
+    ).toEqual([
+      ['quick-start', 'workflow-pairs'],
+      ['dag-dependencies', 'conditions-and-outputs', 'loops-and-approvals'],
+      ['retry-and-triggers', 'companion-policies', 'profiles-and-compatibility'],
+      ['problems-and-validation', 'git-versions', 'troubleshooting'],
+      ['keyboard-shortcuts'],
+    ])
+  })
+
   it('keeps reference entry points at concept level', () => {
     expect(REFERENCE_ENTRY_POINTS.map(({ group }) => group)).toEqual([
       'node-types',

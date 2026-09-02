@@ -572,6 +572,13 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
 
+    await fireEvent.click(screen.getByRole('button', { name: /^Quick Start$/ }))
+    const quickStartArticle = screen.getByRole('article', { name: 'Quick Start' })
+    expect(within(quickStartArticle).getAllByRole('heading', { name: 'Quick Start' })).toHaveLength(1)
+    expect(within(quickStartArticle).getByRole('heading', { name: 'Quick Start' }).tagName).toBe('H2')
+    expect(quickStartArticle.querySelector('h1')).toBeNull()
+    await fireEvent.click(within(quickStartArticle).getByRole('button', { name: 'Back to Results' }))
+
     await fireEvent.click(screen.getByRole('button', { name: /Work faster with keyboard shortcuts/i }))
     expect(screen.getByText('Injected Save Workflow Pair')).toBeVisible()
   })
@@ -649,6 +656,71 @@ describe('App', () => {
       expect(screen.getByRole('article', { name: 'Workflow pairs' })).toHaveProperty('scrollTop', 147)
     })
   })
+
+  it.each([
+    { mode: 'Guides', articleName: 'Quick Start' },
+    { mode: 'Reference', articleName: 'Context' },
+  ] as const)(
+    'restores the empty-query $mode mode, All scope, article, and semantic focus origin after an activity round trip',
+    async ({ mode, articleName }) => {
+      const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+      openDocumentSession(
+        {
+          workflowId: `workflow:workspace:${mode.toLowerCase()}-round-trip.yaml`,
+          generation: 0,
+          savedGeneration: 0,
+          definition: {
+            id: `${mode.toLowerCase()}-round-trip:definition`,
+            kind: 'definition',
+            path: `${mode.toLowerCase()}-round-trip.yaml`,
+            text: `name: ${mode} round trip\ndescription: Documentation host\nnodes:\n  - id: review\n    prompt: Review\n`,
+            revision: 0,
+            savedRevision: 0,
+            diskHash: null,
+          },
+          companion: null,
+        },
+        legacy.contract_digest,
+      )
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+      await fireEvent.click(screen.getByRole('tab', { name: mode }))
+      await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
+
+      const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+      expect(search).toHaveValue('')
+      let opener: HTMLElement
+      if (mode === 'Guides') {
+        opener = screen.getByRole('button', { name: 'Quick Start, Guide' })
+      } else {
+        await fireEvent.click(screen.getByRole('button', { name: /Context, used by \d+ node types/ }))
+        opener = screen.getByRole('button', { name: 'Context, Prompt node' })
+      }
+      opener.focus()
+      await fireEvent.click(opener)
+      expect(screen.getByRole('article', { name: articleName })).toBeVisible()
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
+      expect(await screen.findByRole('region', { name: 'Examples' })).toBeVisible()
+      await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+
+      const selectedTab = screen.getByRole('tab', { name: mode })
+      expect(selectedTab).toHaveAttribute('aria-selected', 'true')
+      expect(selectedTab).toHaveAttribute('tabindex', '0')
+      expect(screen.getByRole('checkbox', { name: 'All documentation' })).toBeChecked()
+      expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('')
+      const restoredArticle = screen.getByRole('article', { name: articleName })
+      expect(restoredArticle).toBeVisible()
+
+      await fireEvent.click(within(restoredArticle).getByRole('button', { name: 'Back to Results' }))
+      const restoredOpener =
+        mode === 'Guides'
+          ? screen.getByRole('button', { name: 'Quick Start, Guide' })
+          : screen.getByRole('button', { name: 'Context, Prompt node' })
+      await waitFor(() => expect(restoredOpener).toHaveFocus())
+    },
+  )
 
   it('opens a legacy example topic without an active document', async () => {
     showActivity('examples')

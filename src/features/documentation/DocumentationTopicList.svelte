@@ -118,6 +118,7 @@
               <button
                 type="button"
                 aria-label={topicAccessibleName(topic)}
+                data-documentation-focus-origin={`reference-topic:${topic.id}`}
                 onclick={(event) => onSelect(topic, event.currentTarget)}
               >
                 <strong>{topic.title}</strong><span>{topic.qualifier}</span>
@@ -133,6 +134,7 @@
       <button
         type="button"
         aria-label={topicAccessibleName(entry.topic)}
+        data-documentation-focus-origin={`reference-topic:${entry.topic.id}`}
         onclick={(event) => onSelect(entry.topic, event.currentTarget)}
       >
         <strong>{entry.topic.title}</strong><span>{entry.topic.qualifier}</span>
@@ -157,7 +159,7 @@
             type="button"
             id={`documentation-result-${topic.id}`}
             aria-label={topicAccessibleName(topic)}
-            aria-current={topic.id === highlightedTopicId ? 'true' : undefined}
+            data-documentation-focus-origin={`search-result:${topic.id}`}
             class:highlighted={topic.id === highlightedTopicId}
             onfocus={() => onHighlight(topic.id)}
             onmouseenter={() => onHighlight(topic.id)}
@@ -190,6 +192,7 @@
               <button
                 type="button"
                 aria-label={`${topic.title}, ${topic.qualifier}`}
+                data-documentation-focus-origin={`guide-topic:${topic.id}`}
                 onclick={(event) => onSelect(topic, event.currentTarget)}
               >
                 <strong>{topic.title}</strong>

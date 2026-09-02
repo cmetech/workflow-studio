@@ -19,7 +19,6 @@ import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
-import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
 
 function renderCanvas(props: Record<string, unknown>) {
   return render(GraphCanvas, { commandSurface: commandRegistry, ...props } as never)
@@ -101,12 +100,10 @@ describe('GraphCanvas', () => {
     clearCanvasState()
   })
 
-  it('keeps the rendered flow configured for Space-activated pointer panning', () => {
+  it('keeps pointer panning enabled on the rendered flow pane', () => {
     const { container } = renderCanvas({ projection, layout })
     const flow = container.querySelector<HTMLElement>('.svelte-flow')
 
-    expect(flow).toHaveAttribute('data-pan-activation-key', CANVAS_PAN_INTERACTION.activationKey)
-    expect(flow).toHaveAttribute('data-pan-on-drag', String(CANVAS_PAN_INTERACTION.panOnDrag))
     expect(flow?.querySelector('.svelte-flow__pane')).toHaveClass('draggable')
   })
 

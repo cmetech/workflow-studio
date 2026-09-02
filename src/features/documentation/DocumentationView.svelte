@@ -5,7 +5,14 @@
   import DocumentationTopicList from './DocumentationTopicList.svelte'
   import { searchDocumentation } from '$src/lib/docs/build-index'
   import { commandRegistry, type CommandSurface } from '$src/lib/commands/registry'
-  import type { DocumentationIndex, DocumentationMode, DocumentationTopic, ReferenceGroupId } from '$src/lib/docs/types'
+  import type {
+    DocumentationFocusOrigin,
+    DocumentationIndex,
+    DocumentationMode,
+    DocumentationSearchMode,
+    DocumentationTopic,
+    ReferenceGroupId,
+  } from '$src/lib/docs/types'
   import {
     $documentationSession as documentationSessionStore,
     reconcileDocumentationSession,
@@ -37,28 +44,24 @@
   let navigation = $state<HTMLElement>()
   let searchInput = $state<HTMLInputElement>()
   let transientNavigationMode = $state<'guides' | 'reference' | undefined>()
-  let selectionOpener: HTMLElement | undefined
-  let modeBeforeAll: Exclude<DocumentationMode, 'all'> = 'overview'
   let narrowPresentation = $state(window.matchMedia?.('(max-width: 48rem)').matches ?? false)
   let responsiveFocusOwned = false
   let presentationQuery: MediaQueryList | undefined
   let unsubscribeSession: (() => void) | undefined
 
+  const documentationModes = ['overview', 'guides', 'reference'] as const satisfies readonly DocumentationMode[]
   const selected = $derived(session.selectedTopicId ? (index.byId.get(session.selectedTopicId) ?? null) : null)
   const presentationMode = $derived(modeForPresentation(session.mode, selected))
   const navigationMode = $derived<DocumentationMode>(transientNavigationMode ?? session.mode)
-  const searchMode = $derived<'guides' | 'reference' | 'all'>(navigationMode === 'overview' ? 'all' : navigationMode)
-  const searchResults = $derived(
-    session.query.trim() ? searchDocumentation(index, session.query, { mode: searchMode }) : [],
+  const searchMode = $derived<DocumentationSearchMode>(
+    session.searchScope === 'all' || navigationMode === 'overview' ? 'all' : navigationMode,
   )
-  const activeResultId = $derived(
-    searchResults.some(({ id }) => id === session.highlightedTopicId)
-      ? `documentation-result-${session.highlightedTopicId}`
-      : undefined,
+  const topicListMode = $derived<DocumentationSearchMode>(
+    session.query.trim() ? searchMode : navigationMode === 'overview' ? 'all' : navigationMode,
   )
 
   function modeForPresentation(mode: DocumentationMode, topic: DocumentationTopic | null): DocumentationMode {
-    if (!topic || mode === 'all') return mode
+    if (!topic) return mode
     const topicMode: DocumentationMode = topic.kind === 'guide' ? 'guides' : 'reference'
     return mode === topicMode ? mode : topicMode
   }
@@ -71,16 +74,32 @@
     return articleElement()?.querySelector<HTMLButtonElement>('.back-to-results') ?? undefined
   }
 
+  function captureFocusOrigin(opener: HTMLElement | undefined, topicId: string): DocumentationFocusOrigin | null {
+    const key = opener?.dataset.documentationFocusOrigin
+    return key ? { key, topicId } : null
+  }
+
+  function resolveFocusOrigin(origin: DocumentationFocusOrigin | null): HTMLElement | undefined {
+    if (!origin || !layout) return undefined
+    return [...layout.querySelectorAll<HTMLElement>('[data-documentation-focus-origin]')].find(
+      (element) => element.dataset.documentationFocusOrigin === origin.key,
+    )
+  }
+
   function selectTopic(topic: DocumentationTopic, opener?: HTMLElement): void {
     const focused = document.activeElement
-    selectionOpener = opener
-    responsiveFocusOwned = narrowPresentation || (focused instanceof Node && navigation?.contains(focused) === true)
+    const fromArticle = Boolean(opener && articleElement()?.contains(opener))
+    responsiveFocusOwned =
+      narrowPresentation ||
+      (opener instanceof Node && navigation?.contains(opener) === true) ||
+      (focused instanceof Node && navigation?.contains(focused) === true)
     updateDocumentationSession({
       selectedTopicId: topic.id,
       history: [topic.id, ...session.history.filter((id) => id !== topic.id)].slice(0, 5),
       articleScrollTop: 0,
+      focusOrigin: fromArticle ? session.focusOrigin : captureFocusOrigin(opener, topic.id),
     })
-    void revealSelectedTopic(topic.id, Boolean(opener && articleElement()?.contains(opener)))
+    void revealSelectedTopic(topic.id, fromArticle)
   }
 
   async function revealSelectedTopic(selectedId: string, fromArticle = false): Promise<void> {
@@ -100,17 +119,18 @@
 
   function returnToResults(): void {
     const article = articleElement()
-    const opener = selectionOpener
+    const focusOrigin = session.focusOrigin
     const selectedId = session.selectedTopicId
     responsiveFocusOwned = false
     transientNavigationMode = undefined
     updateDocumentationSession({
       selectedTopicId: undefined,
       articleScrollTop: article?.scrollTop ?? session.articleScrollTop,
+      focusOrigin: null,
     })
     void tick().then(() => {
       const exactResult = selectedId ? document.getElementById(`documentation-result-${selectedId}`) : undefined
-      const target = opener?.isConnected ? opener : (exactResult ?? searchInput ?? selectedTab())
+      const target = resolveFocusOrigin(focusOrigin) ?? exactResult ?? searchInput ?? selectedTab()
       target?.focus({ preventScroll: true })
       if (navigation) navigation.scrollTop = session.navigationScrollTop
     })
@@ -121,52 +141,41 @@
     return selectedTab ?? undefined
   }
 
-  function setMode(mode: Exclude<DocumentationMode, 'all'>): void {
-    modeBeforeAll = mode
-    selectionOpener = undefined
+  function setMode(mode: DocumentationMode): void {
     transientNavigationMode = undefined
     const expandedGroupIds =
       mode === 'reference'
         ? [...session.expandedGroupIds.filter((id) => !id.startsWith('reference:')), 'reference:common-node-settings']
         : session.expandedGroupIds
+    const scope: DocumentationSearchMode = session.searchScope === 'all' || mode === 'overview' ? 'all' : mode
     updateDocumentationSession({
       mode,
       selectedTopicId: undefined,
-      highlightedTopicId: undefined,
+      highlightedTopicId: session.query.trim()
+        ? searchDocumentation(index, session.query, { mode: scope })[0]?.id
+        : undefined,
       expandedGroupIds,
+      focusOrigin: null,
     })
   }
 
   function setAllDocumentation(checked: boolean): void {
-    if (checked) {
-      if (session.mode !== 'all') modeBeforeAll = session.mode
-      const highlightedTopicId = searchDocumentation(index, session.query, { mode: 'all' })[0]?.id
-      updateDocumentationSession({ mode: 'all', highlightedTopicId })
-    } else {
-      const mode = modeBeforeAll
-      const scope = mode === 'overview' ? 'all' : mode
-      const highlightedTopicId = searchDocumentation(index, session.query, { mode: scope })[0]?.id
-      updateDocumentationSession({ mode, highlightedTopicId })
-    }
+    const scope: DocumentationSearchMode = checked || session.mode === 'overview' ? 'all' : session.mode
+    const highlightedTopicId = session.query.trim()
+      ? searchDocumentation(index, session.query, { mode: scope })[0]?.id
+      : undefined
+    updateDocumentationSession({ searchScope: checked ? 'all' : 'active-mode', highlightedTopicId })
   }
 
   function setQuery(query: string): void {
-    let mode = session.mode
-    if (query && mode === 'overview') {
-      modeBeforeAll = 'overview'
-      mode = 'all'
-    } else if (!query && mode === 'all') {
-      mode = modeBeforeAll
-    }
-    const scope = mode === 'overview' ? 'all' : mode
+    const scope: DocumentationSearchMode =
+      session.searchScope === 'all' || session.mode === 'overview' ? 'all' : session.mode
     const highlightedTopicId = query ? searchDocumentation(index, query, { mode: scope })[0]?.id : undefined
-    updateDocumentationSession({ query, mode, highlightedTopicId })
+    updateDocumentationSession({ query, highlightedTopicId })
   }
 
-  function browseReference(group: ReferenceGroupId, opener: HTMLElement): void {
-    selectionOpener = opener
+  function browseReference(group: ReferenceGroupId): void {
     transientNavigationMode = undefined
-    modeBeforeAll = 'reference'
     const groupId = `reference:${group}`
     updateDocumentationSession({
       mode: 'reference',
@@ -183,25 +192,25 @@
     updateDocumentationSession({ expandedGroupIds })
   }
 
-  function searchKeydown(event: KeyboardEvent): void {
-    if (!session.query.trim() || searchResults.length === 0) return
-    const currentIndex = searchResults.findIndex(({ id }) => id === session.highlightedTopicId)
-    if (event.key === 'ArrowDown') {
-      const nextIndex = Math.min(currentIndex + 1, searchResults.length - 1)
-      updateDocumentationSession({ highlightedTopicId: searchResults[Math.max(0, nextIndex)]?.id })
-      event.preventDefault()
-    } else if (event.key === 'ArrowUp') {
-      const nextIndex = Math.max(currentIndex <= 0 ? 0 : currentIndex - 1, 0)
-      updateDocumentationSession({ highlightedTopicId: searchResults[nextIndex]?.id })
-      event.preventDefault()
-    } else if (event.key === 'Enter') {
-      const topic = searchResults.find(({ id }) => id === session.highlightedTopicId)
-      if (topic) {
-        const opener = document.getElementById(`documentation-result-${topic.id}`) ?? searchInput
-        selectTopic(topic, opener)
-        event.preventDefault()
-      }
+  function modeTabKeydown(event: KeyboardEvent, currentIndex: number): void {
+    let nextIndex: number | undefined
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % documentationModes.length
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + documentationModes.length) % documentationModes.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = documentationModes.length - 1
     }
+    if (nextIndex === undefined) return
+    event.preventDefault()
+    const mode = documentationModes[nextIndex]
+    if (!mode) return
+    setMode(mode)
+    void tick().then(() =>
+      layout?.querySelector<HTMLElement>(`[data-documentation-mode="${mode}"]`)?.focus({ preventScroll: true }),
+    )
   }
 
   function presentationChanged(event: MediaQueryListEvent): void {
@@ -217,7 +226,7 @@
     } else if (!narrowPresentation && (focused === backButton() || responsiveFocusOwned)) {
       responsiveFocusOwned = false
       void tick().then(() => {
-        const target = selectionOpener?.isConnected ? selectionOpener : selectedTab()
+        const target = resolveFocusOrigin(session.focusOrigin) ?? selectedTab()
         target?.focus({ preventScroll: true })
       })
     }
@@ -301,13 +310,15 @@
       onscroll={() => updateDocumentationSession({ navigationScrollTop: navigation?.scrollTop ?? 0 })}
     >
       <div class="mode-tabs" role="tablist" aria-label="Documentation mode">
-        {#each ['overview', 'guides', 'reference'] as mode (mode)}
+        {#each documentationModes as mode, index (mode)}
           <button
             type="button"
             role="tab"
             aria-selected={presentationMode === mode}
-            onclick={() => setMode(mode as 'overview' | 'guides' | 'reference')}
-            >{mode[0]?.toUpperCase()}{mode.slice(1)}</button
+            tabindex={presentationMode === mode ? 0 : -1}
+            data-documentation-mode={mode}
+            onclick={() => setMode(mode)}
+            onkeydown={(event) => modeTabKeydown(event, index)}>{mode[0]?.toUpperCase()}{mode.slice(1)}</button
           >
         {/each}
       </div>
@@ -320,15 +331,13 @@
             type="search"
             value={session.query}
             aria-controls="documentation-results"
-            aria-activedescendant={activeResultId}
             oninput={(event) => setQuery(event.currentTarget.value)}
-            onkeydown={searchKeydown}
           />
         </label>
         <label class="all-documentation">
           <input
             type="checkbox"
-            checked={session.mode === 'all'}
+            checked={session.searchScope === 'all'}
             onchange={(event) => setAllDocumentation(event.currentTarget.checked)}
           />
           All documentation
@@ -348,7 +357,7 @@
           <DocumentationTopicList
             {...session.highlightedTopicId ? { highlightedTopicId: session.highlightedTopicId } : {}}
             {index}
-            mode={searchMode}
+            mode={topicListMode}
             query={session.query}
             expandedGroupIds={session.expandedGroupIds}
             onSelect={selectTopic}
@@ -363,7 +372,11 @@
           {#each session.history as id (id)}
             {@const topic = index.byId.get(id)}
             {#if topic}
-              <button type="button" onclick={(event) => selectTopic(topic, event.currentTarget)}>
+              <button
+                type="button"
+                data-documentation-focus-origin={`history:${topic.id}`}
+                onclick={(event) => selectTopic(topic, event.currentTarget)}
+              >
                 {topic.title} — {topic.id}
               </button>
             {/if}

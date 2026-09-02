@@ -1,7 +1,9 @@
 import type { ContractItemStatus, WorkflowProfile } from '$src/lib/contract/types'
 
 export type DocumentationTopicKind = 'node' | 'field' | 'guide' | 'contract'
-export type DocumentationMode = 'overview' | 'guides' | 'reference' | 'all'
+export type DocumentationMode = 'overview' | 'guides' | 'reference'
+export type DocumentationSearchMode = Exclude<DocumentationMode, 'overview'> | 'all'
+export type DocumentationSearchScope = 'active-mode' | 'all'
 export type GuideGroupId =
   | 'getting-started'
   | 'build-graph'
@@ -39,6 +41,7 @@ export interface DocumentationTopic {
   readonly required?: boolean
   readonly defaultValue?: unknown
   readonly guideGroup?: GuideGroupId
+  readonly guideOrder?: number
   readonly referenceGroup?: ReferenceGroupId
 }
 
@@ -46,19 +49,26 @@ export interface DocumentationGuide {
   readonly id: string
   readonly title: string
   readonly body: string
-  readonly description?: string
+  readonly description: string
   readonly group: GuideGroupId
+  readonly order: number
   readonly useWhen: string
   readonly renderer?: DocumentationRenderer
 }
 
 export interface DocumentationSearchOptions {
-  readonly mode: Exclude<DocumentationMode, 'overview'>
+  readonly mode: DocumentationSearchMode
   readonly referenceGroup?: ReferenceGroupId
+}
+
+export interface DocumentationFocusOrigin {
+  readonly key: string
+  readonly topicId: string
 }
 
 export interface DocumentationSessionState {
   readonly mode: DocumentationMode
+  readonly searchScope: DocumentationSearchScope
   readonly query: string
   readonly selectedTopicId?: string
   readonly history: readonly string[]
@@ -66,6 +76,7 @@ export interface DocumentationSessionState {
   readonly expandedGroupIds: readonly string[]
   readonly navigationScrollTop: number
   readonly articleScrollTop: number
+  readonly focusOrigin: DocumentationFocusOrigin | null
 }
 
 export interface DocumentationIndex {
