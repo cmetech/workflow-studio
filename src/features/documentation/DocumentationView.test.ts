@@ -1,60 +1,96 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import DocumentationView from './DocumentationView.svelte'
-import ContextDocs from './ContextDocs.svelte'
-import type { DocumentationIndex } from '$src/lib/docs/types'
-import type { FormField } from '$src/lib/forms/types'
+import { resetDocumentationSession } from '$src/stores/documentation'
+import type { DocumentationIndex, DocumentationTopic, GuideGroupId } from '$src/lib/docs/types'
+import { createCommandRegistry } from '$src/lib/commands/registry'
 
-const index: DocumentationIndex = {
-  topics: [
-    {
-      id: 'node:prompt',
-      kind: 'node',
-      title: 'Prompt',
-      description: 'Prompt node.',
-      body: 'Node body',
-      examples: [],
-      status: 'supported',
-      profile: 'archon-2026-07',
-      fieldPaths: [],
-    },
-    {
-      id: 'field:prompt.node.prompt',
-      kind: 'field',
-      title: 'Prompt',
-      description: 'Prompt field.',
-      body: 'Field body',
-      examples: [],
-      status: 'supported',
-      profile: 'archon-2026-07',
-      fieldPaths: ['nodes[].prompt'],
-    },
-    {
-      id: 'guide:dag',
-      kind: 'guide',
-      title: 'DAG dependencies',
-      description: 'Guide.',
-      body: '[Prompt field](#field:prompt.node.prompt) [Missing node](#node:missing) [Malformed](#field:../bad) [External](https://docs.example.test)',
-      examples: [],
-      status: 'supported',
-      profile: 'archon-2026-07',
-      fieldPaths: [],
-    },
-  ],
-  byId: new Map(),
-  searchText: new Map(),
-  tokenIndex: new Map(),
+const guide = (id: string, title: string, group: GuideGroupId): DocumentationTopic => ({
+  id: `guide:${id}`,
+  kind: 'guide',
+  title,
+  description: `${title} guide.`,
+  body: id === 'quick-start' ? '[DAG dependencies](#guide:dag-dependencies)' : `${title} body.`,
+  qualifier: 'Guide',
+  useWhen: `Use this when ${title.toLowerCase()} helps the current task.`,
+  breadcrumb: ['Guides', group === 'getting-started' ? 'Getting started' : 'Build the graph'],
+  renderer: 'markdown',
+  examples: [],
+  status: 'supported',
+  profile: 'archon-2026-07',
+  fieldPaths: [],
+  guideGroup: group,
+})
+
+const nodeKinds = ['command', 'prompt', 'bash', 'script', 'loop', 'approval', 'cancel'] as const
+const contexts: DocumentationTopic[] = nodeKinds.map((kind) => ({
+  id: `field:${kind}.node.context`,
+  kind: 'field',
+  title: 'Context',
+  description: `${kind} context.`,
+  body: `${kind} context body.`,
+  qualifier: `${kind[0]!.toUpperCase()}${kind.slice(1)} node`,
+  useWhen: `Use this when ${kind} context must be configured.`,
+  breadcrumb: ['Reference', 'Common node settings'],
+  renderer: 'markdown',
+  examples: [],
+  status: 'supported',
+  profile: 'archon-2026-07',
+  fieldPaths: ['nodes[].context'],
+  nodeKinds: [kind],
+  referenceGroup: 'common-node-settings',
+}))
+
+const guides = [
+  guide('quick-start', 'Quick Start', 'getting-started'),
+  guide('workflow-pairs', 'Workflow pairs', 'getting-started'),
+  guide('dag-dependencies', 'DAG dependencies', 'build-graph'),
+  guide('problems-and-validation', 'Problems and validation', 'review-recover'),
+  guide('keyboard-shortcuts', 'Keyboard shortcuts', 'use-application'),
+]
+
+function makeIndex(topics: readonly DocumentationTopic[] = [...contexts, ...guides]): DocumentationIndex {
+  const searchText = new Map(
+    topics.map((topic) => [
+      topic.id,
+      `${topic.title} ${topic.qualifier} ${topic.description} ${topic.nodeKinds?.join(' ') ?? ''}`.toLowerCase(),
+    ]),
+  )
+  const tokenIndex = new Map<string, Set<string>>()
+  for (const [id, text] of searchText) {
+    for (const token of text.split(/[^a-z0-9]+/).filter(Boolean)) {
+      const ids = tokenIndex.get(token) ?? new Set<string>()
+      ids.add(id)
+      tokenIndex.set(token, ids)
+    }
+  }
+  return {
+    topics,
+    byId: new Map(topics.map((topic) => [topic.id, topic])),
+    searchText,
+    tokenIndex,
+    guideGroups: new Map([
+      ['getting-started', guides.filter((topic) => topic.guideGroup === 'getting-started')],
+      ['build-graph', guides.filter((topic) => topic.guideGroup === 'build-graph')],
+      ['review-recover', guides.filter((topic) => topic.guideGroup === 'review-recover')],
+      ['use-application', guides.filter((topic) => topic.guideGroup === 'use-application')],
+    ]),
+    referenceGroups: new Map([['common-node-settings', contexts]]),
+    duplicateTitleGroups: new Map([['context', contexts]]),
+  }
 }
-index.byId = new Map(index.topics.map((topic) => [topic.id, topic]))
-index.searchText = new Map(
-  index.topics.map((topic) => [topic.id, `${topic.title} ${topic.id} ${topic.body}`.toLowerCase()]),
-)
-index.tokenIndex = new Map([
-  ['prompt', new Set(['node:prompt', 'field:prompt.node.prompt'])],
-  ['field', new Set(['field:prompt.node.prompt'])],
-  ['dag', new Set(['guide:dag'])],
-  ['dependencies', new Set(['guide:dag'])],
-])
+
+const index = makeIndex()
+
+const commandSurface = createCommandRegistry()
+commandSurface.registerCommand({
+  id: 'document.save',
+  label: 'Save Workflow Pair',
+  category: 'File',
+  defaultBindings: ['Mod+S'],
+  enabled: () => true,
+  run: () => undefined,
+})
 
 function useNarrowPresentation(matches: boolean): { setMatches(next: boolean): void } {
   let current = matches
@@ -88,253 +124,252 @@ function useNarrowPresentation(matches: boolean): { setMatches(next: boolean): v
   }
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  resetDocumentationSession()
+  vi.unstubAllGlobals()
+})
 
 describe('DocumentationView', () => {
-  it('keeps results and the selected article as master-detail siblings', async () => {
+  it('opens on the task-led Overview without instantiating the exhaustive reference list', () => {
     render(DocumentationView, { index })
 
-    await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
-
-    const article = screen.getByRole('article', { name: 'DAG dependencies' })
-    expect(article).toBeVisible()
-    expect(screen.getByTestId('documentation-navigation')).not.toContainElement(article)
-    expect(article.parentElement).toBe(screen.getByTestId('documentation-navigation').parentElement)
-    expect(screen.getByRole('button', { name: 'Back to Results' })).toBeVisible()
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Fix a validation problem/i })).toBeVisible()
+    expect(screen.queryByText('Context', { selector: 'strong' })).not.toBeInTheDocument()
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 
-  it('announces an empty search result set explicitly', async () => {
+  it('switches between journey-grouped Guides and grouped Reference without merging duplicate topics', async () => {
     render(DocumentationView, { index })
 
-    await fireEvent.input(screen.getByRole('searchbox', { name: 'Search documentation' }), {
-      target: { value: 'nothing-can-match-this-query' },
-    })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
+    expect(screen.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Build the graph' })).toBeVisible()
 
-    expect(screen.getByRole('status')).toHaveTextContent('No documentation matches')
-  })
-
-  it('moves keyboard focus into narrow detail and restores the selected result', async () => {
-    useNarrowPresentation(true)
-    render(DocumentationView, { index })
-    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
-    await fireEvent.input(search, { target: { value: 'Prompt' } })
-    const selectedResult = document.getElementById(search.getAttribute('aria-activedescendant')!)!
-    search.focus()
-
-    await fireEvent.keyDown(search, { key: 'Enter' })
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
-    await waitFor(() => expect(selectedResult).toHaveFocus())
-  })
-
-  it('resets narrow article scroll and returns to search when an internal topic is filtered out', async () => {
-    useNarrowPresentation(true)
-    render(DocumentationView, { index })
-    await fireEvent.change(screen.getByRole('combobox', { name: 'Topic type' }), { target: { value: 'guide' } })
-    await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
-    const article = screen.getByRole('article')
-    article.scrollTop = 120
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Prompt field' }))
-
-    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
-    expect(article.scrollTop).toBe(0)
-    expect(article).toContainElement(document.activeElement as HTMLElement)
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
-    await waitFor(() => expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveFocus())
-  })
-
-  it('preserves result focus when wide master-detail selection opens', async () => {
-    useNarrowPresentation(false)
-    render(DocumentationView, { index })
-    const result = screen.getByRole('option', { name: /DAG dependencies/i })
-    result.focus()
-
-    await fireEvent.click(result)
-
-    expect(result).toHaveFocus()
-  })
-
-  it('transfers selected-result focus across both responsive presentation changes', async () => {
-    const presentation = useNarrowPresentation(false)
-    render(DocumentationView, { index })
-    const result = screen.getByRole('option', { name: /DAG dependencies/i })
-    result.focus()
-    await fireEvent.click(result)
-
-    // Chromium can drop focus when the responsive stylesheet hides the
-    // navigation before the MediaQueryList change callback runs.
-    result.blur()
-    presentation.setMatches(true)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
-
-    presentation.setMatches(false)
-    await waitFor(() => expect(result).toHaveFocus())
-  })
-
-  it('filters and keyboard-navigates offline search results without using fetch, and records history', async () => {
-    const onOpenExternal = vi.fn()
-    const fetchStub = vi.fn()
-    vi.stubGlobal('fetch', fetchStub)
-    render(DocumentationView, { index, onOpenExternal })
-
-    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
-    await fireEvent.input(search, { target: { value: 'Prompt' } })
-    expect(within(screen.getByRole('listbox')).getAllByRole('option')).toHaveLength(2)
-    await fireEvent.keyDown(search, { key: 'ArrowDown' })
-    await fireEvent.keyDown(search, { key: 'Enter' })
-    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
-    expect(screen.getByRole('navigation', { name: 'Documentation history' })).toBeVisible()
-    expect(fetchStub).not.toHaveBeenCalled()
-
-    await fireEvent.change(screen.getByRole('combobox', { name: 'Topic type' }), { target: { value: 'guide' } })
-    await fireEvent.input(search, { target: { value: 'DAG' } })
-    await fireEvent.click(screen.getByRole('option', { name: /DAG dependencies/i }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Open external link' }))
-    expect(onOpenExternal).toHaveBeenCalledWith('https://docs.example.test/')
-  })
-
-  it('delegates validated internal guide links to an exact topic and moves focus while malformed links stay inert', async () => {
-    render(DocumentationView, { index, topicId: 'guide:dag' })
-    const article = screen.getByRole('article')
-    const malformed = screen.getByText('Malformed')
-    expect(malformed.closest('a')).not.toHaveAttribute('href')
-
-    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Prompt field' }))
-
-    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
-    expect(article).toHaveFocus()
-
-    await fireEvent.click(screen.getByRole('button', { name: 'DAG dependencies — guide:dag' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: Missing node' }))
-    expect(screen.getByRole('heading', { name: 'DAG dependencies' })).toBeVisible()
-  })
-
-  it('renders the exact contract field topic for the inspector Docs tab', () => {
-    const field: FormField = {
-      id: 'prompt.node.prompt',
-      label: 'Prompt',
-      description: 'Fallback description.',
-      fieldPath: 'nodes[].prompt',
-      pathTemplate: ['nodes', '$node', 'prompt'],
-      document: 'definition',
-      widget: 'code',
-      section: 'General',
-      order: 1,
-      status: 'supported',
-      examples: [],
-      schema: { type: 'string' },
-      required: true,
-      hasDefault: false,
-      constraints: {},
-    }
-    render(ContextDocs, { field, index })
-
-    expect(screen.getByLabelText('Prompt documentation')).toHaveAttribute('data-topic-id', 'field:prompt.node.prompt')
-    expect(screen.getByText('Prompt field.')).toBeVisible()
-  })
-
-  it('keeps keyboard result navigation and history addressable by topic ID', async () => {
-    render(DocumentationView, { index })
-    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
-
-    await fireEvent.input(search, { target: { value: 'Prompt' } })
-    await fireEvent.keyDown(search, { key: 'ArrowDown' })
-    expect(search).toHaveAttribute('aria-activedescendant', 'documentation-result-field:prompt.node.prompt')
-    expect(document.getElementById('documentation-result-field:prompt.node.prompt')).toHaveAttribute(
-      'aria-selected',
+    await fireEvent.click(screen.getByRole('tab', { name: 'Reference' }))
+    expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toHaveAttribute(
+      'aria-expanded',
       'true',
     )
-    await fireEvent.keyDown(search, { key: 'Enter' })
-    await fireEvent.keyDown(search, { key: 'ArrowUp' })
-    await fireEvent.keyDown(search, { key: 'Enter' })
-
-    expect(screen.getByRole('button', { name: 'Prompt — field:prompt.node.prompt' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Prompt — node:prompt' })).toBeVisible()
+    const disclosure = screen.getByRole('button', { name: 'Context, used by 7 node types' })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    await fireEvent.click(disclosure)
+    expect(screen.getByRole('button', { name: 'Context, Prompt node' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Context, Bash node' })).toBeVisible()
   })
 
-  it('opens a topic requested by contextual navigation', () => {
-    render(DocumentationView, { index, topicId: 'guide:dag' })
-    expect(screen.getByRole('heading', { name: 'DAG dependencies' })).toBeVisible()
+  it('keeps exactly one mode tab selected and moves its roving focus with Arrow, Home, and End', async () => {
+    render(DocumentationView, { index })
+    const overview = screen.getByRole('tab', { name: 'Overview' })
+    const guidesTab = screen.getByRole('tab', { name: 'Guides' })
+    const reference = screen.getByRole('tab', { name: 'Reference' })
+
+    expect(overview).toHaveAttribute('tabindex', '0')
+    expect(guidesTab).toHaveAttribute('tabindex', '-1')
+    expect(reference).toHaveAttribute('tabindex', '-1')
+    overview.focus()
+
+    await fireEvent.keyDown(overview, { key: 'ArrowRight' })
+    await waitFor(() => expect(guidesTab).toHaveFocus())
+    expect(guidesTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('tab').filter((tab) => tab.getAttribute('aria-selected') === 'true')).toHaveLength(1)
+
+    await fireEvent.keyDown(guidesTab, { key: 'End' })
+    await waitFor(() => expect(reference).toHaveFocus())
+    expect(reference).toHaveAttribute('aria-selected', 'true')
+
+    await fireEvent.keyDown(reference, { key: 'Home' })
+    await waitFor(() => expect(overview).toHaveFocus())
+    expect(overview).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('acknowledges a requested topic so later user navigation is not reset', async () => {
+  it.each(['Guides', 'Reference'] as const)(
+    'keeps %s active with an empty query when All documentation persists across a remount',
+    async (mode) => {
+      const first = render(DocumentationView, { index })
+      await fireEvent.click(screen.getByRole('tab', { name: mode }))
+      await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
+
+      expect(screen.getByRole('tab', { name: mode })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getAllByRole('tab').filter((tab) => tab.getAttribute('aria-selected') === 'true')).toHaveLength(1)
+      expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('')
+      if (mode === 'Guides') expect(screen.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+      else expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toBeVisible()
+
+      first.unmount()
+      render(DocumentationView, { index })
+      expect(screen.getByRole('tab', { name: mode })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('checkbox', { name: 'All documentation' })).toBeChecked()
+      if (mode === 'Guides') expect(screen.getByRole('heading', { name: 'Getting started' })).toBeVisible()
+      else expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toBeVisible()
+    },
+  )
+
+  it('bypasses Overview for an exact contextual request and restores the prior Back target', async () => {
     const onTopicConsumed = vi.fn()
-    const { rerender } = render(DocumentationView, { index, topicId: 'guide:dag', onTopicConsumed })
-    expect(onTopicConsumed).toHaveBeenCalledWith('guide:dag')
-    await rerender({ index, topicId: undefined, onTopicConsumed })
-    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
-    await fireEvent.input(search, { target: { value: 'Prompt' } })
-    await fireEvent.keyDown(search, { key: 'Enter' })
+    render(DocumentationView, {
+      index,
+      topicId: 'field:prompt.node.context',
+      navigationRequestId: 9,
+      onTopicConsumed,
+    })
 
-    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+    expect(screen.getByRole('article', { name: 'Context' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Context' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Reference' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Context, used by 7 node types' })).toBeVisible()
+    expect(onTopicConsumed).toHaveBeenCalledWith('field:prompt.node.context', 9)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('consumes a repeated topic request once even when that topic is already selected', async () => {
-    const onTopicConsumed = vi.fn()
-    const { rerender } = render(DocumentationView, { index, topicId: 'guide:dag', onTopicConsumed })
-    await rerender({ index, topicId: 'guide:dag', navigationRequestId: 2, onTopicConsumed })
-    expect(onTopicConsumed).toHaveBeenCalledWith('guide:dag', 2)
+  it('opens and focuses the Overview reference group entry point', async () => {
+    render(DocumentationView, { index })
 
-    await rerender({ index, topicId: undefined, navigationRequestId: undefined, onTopicConsumed })
-    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
-    await fireEvent.input(search, { target: { value: 'Prompt' } })
-    await fireEvent.keyDown(search, { key: 'Enter' })
-    expect(screen.getByRole('heading', { name: 'Prompt' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: /Common node settings/i }))
+
+    expect(screen.getByRole('tab', { name: 'Reference' })).toHaveAttribute('aria-selected', 'true')
+    const group = screen.getByRole('button', { name: 'Common node settings, reference group' })
+    expect(group).toHaveAttribute('aria-expanded', 'true')
+    expect(group).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Context, used by 7 node types' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
-  it('remaps selected topics and history by ID when the profile index changes, then clears absent IDs', async () => {
-    const { rerender } = render(DocumentationView, { index, topicId: 'field:prompt.node.prompt' })
-    const replacementTopic = {
-      ...index.byId.get('field:prompt.node.prompt')!,
-      title: 'Prompt text (legacy)',
-      body: 'Legacy field body',
-      profile: 'hermes-legacy' as const,
-    }
-    const replacement: DocumentationIndex = {
-      topics: [replacementTopic],
-      byId: new Map([[replacementTopic.id, replacementTopic]]),
-      searchText: new Map([[replacementTopic.id, 'prompt text legacy']]),
-      tokenIndex: new Map([['prompt', new Set([replacementTopic.id])]]),
+  it('restores focus to the exact task card that opened an article', async () => {
+    render(DocumentationView, { index })
+    const opener = screen.getByRole('button', { name: /Fix a validation problem/i })
+
+    await fireEvent.click(opener)
+    expect(screen.getByRole('article', { name: 'Problems and validation' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('preserves the outer navigation origin while following an internal article link', async () => {
+    render(DocumentationView, { index })
+    const opener = screen.getByRole('button', { name: /^Quick Start$/ })
+
+    await fireEvent.click(opener)
+    await fireEvent.click(screen.getByRole('button', { name: 'Open documentation topic: DAG dependencies' }))
+    expect(screen.getByRole('article', { name: 'DAG dependencies' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('restores a stable navigation origin after an activity-style unmount before Back to Results', async () => {
+    const first = render(DocumentationView, { index })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
+    const opener = screen.getByRole('button', { name: 'Workflow pairs, Guide' })
+    await fireEvent.click(opener)
+    expect(screen.getByRole('article', { name: 'Workflow pairs' })).toBeVisible()
+
+    first.unmount()
+    render(DocumentationView, { index })
+    expect(screen.getByRole('article', { name: 'Workflow pairs' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Workflow pairs, Guide' })).toHaveFocus())
+  })
+
+  it('restores focus to the exact duplicate child that opened an article', async () => {
+    render(DocumentationView, { index })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Reference' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Context, used by 7 node types' }))
+    const opener = screen.getByRole('button', { name: 'Context, Bash node' })
+
+    await fireEvent.click(opener)
+    expect(screen.getByText('Bash node', { selector: '.topic-qualifier' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('searches the selected scope with ordinary tabbable results and no partial combobox semantics', async () => {
+    render(DocumentationView, { index })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+    await fireEvent.input(search, { target: { value: 'context prompt' } })
+    expect(screen.getByRole('status')).toHaveTextContent('No guides match “context prompt”')
+
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
+    const result = screen.getByRole('button', { name: 'Context, Prompt node' })
+    expect(result).toBeVisible()
+    expect(result).toHaveProperty('tabIndex', 0)
+    expect(search).not.toHaveAttribute('aria-activedescendant')
+
+    search.focus()
+    const arrow = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    search.dispatchEvent(arrow)
+    expect(arrow.defaultPrevented).toBe(false)
+    expect(search).toHaveFocus()
+  })
+
+  it('moves focus into narrow detail and restores the opener across responsive presentation changes', async () => {
+    const presentation = useNarrowPresentation(false)
+    render(DocumentationView, { index })
+    const opener = screen.getByRole('button', { name: /Fix a validation problem/i })
+    await fireEvent.click(opener)
+
+    presentation.setMatches(true)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Back to Results' })).toHaveFocus())
+    presentation.setMatches(false)
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('reconciles selected and history topics by stable ID when the active profile changes', async () => {
+    const { rerender } = render(DocumentationView, { index, topicId: 'field:prompt.node.context' })
+    const replacement: DocumentationTopic = {
+      ...contexts[1]!,
+      title: 'Context (legacy)',
+      profile: 'hermes-legacy',
     }
 
-    await rerender({ index: replacement, topicId: undefined })
-    expect(screen.getByRole('heading', { name: 'Prompt text (legacy)' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Prompt text (legacy) — field:prompt.node.prompt' })).toBeVisible()
+    await rerender({ index: makeIndex([replacement]), topicId: undefined })
+    expect(screen.getByRole('heading', { name: 'Context (legacy)' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Context (legacy) — field:prompt.node.context' })).toBeVisible()
 
-    const absent: DocumentationIndex = {
-      topics: [],
-      byId: new Map(),
-      searchText: new Map(),
-      tokenIndex: new Map(),
-    }
-    await rerender({ index: absent, topicId: undefined })
+    await rerender({ index: makeIndex([]), topicId: undefined })
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'Documentation history' })).not.toBeInTheDocument()
   })
 
-  it('consumes an unresolved requested topic so a later profile index cannot replay it', async () => {
+  it('consumes an unresolved request so a later profile index cannot replay it', async () => {
     const onTopicConsumed = vi.fn()
-    const absent: DocumentationIndex = {
-      topics: [],
-      byId: new Map(),
-      searchText: new Map(),
-      tokenIndex: new Map(),
-    }
     const { rerender } = render(DocumentationView, {
-      index: absent,
-      topicId: 'field:prompt.node.prompt',
+      index: makeIndex([]),
+      topicId: 'field:prompt.node.context',
       navigationRequestId: 7,
       onTopicConsumed,
     })
-    expect(onTopicConsumed).toHaveBeenCalledWith('field:prompt.node.prompt', 7)
+    expect(onTopicConsumed).toHaveBeenCalledWith('field:prompt.node.context', 7)
 
     await rerender({ index, topicId: undefined, navigationRequestId: undefined, onTopicConsumed })
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
+  })
+
+  it('renders live keyboard help through the selected keyboard guide', async () => {
+    const keyboardGuide: DocumentationTopic = {
+      ...guides.find(({ id }) => id === 'guide:keyboard-shortcuts')!,
+      renderer: 'keyboard-shortcuts',
+    }
+    render(DocumentationView, {
+      index: makeIndex([...contexts, ...guides.filter(({ id }) => id !== keyboardGuide.id), keyboardGuide]),
+      commandSurface,
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /Work faster with keyboard shortcuts/i }))
+    expect(screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' })).toBeVisible()
+    expect(screen.getByText('Save Workflow Pair')).toBeVisible()
   })
 })

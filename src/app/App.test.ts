@@ -29,6 +29,7 @@ import {
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
 import { resetGitState } from '$src/stores/git'
+import { resetDocumentationSession } from '$src/stores/documentation'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
@@ -533,7 +534,193 @@ describe('App', () => {
 
     expect(await screen.findByLabelText('Offline documentation')).toBeVisible()
     expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
+
+  it('opens Documentation on the task-led Overview and uses the injected command surface for live help', async () => {
+    const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:documentation.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'documentation:definition',
+          kind: 'definition',
+          path: 'documentation.yaml',
+          text: 'name: Documentation\ndescription: Documentation host\nnodes:\n  - id: review\n    prompt: Review\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      legacy.contract_digest,
+    )
+    const registry = createCommandRegistry()
+    for (const command of listCommands()) {
+      registry.registerCommand(
+        command.id === 'document.save' ? { ...command, label: 'Injected Save Workflow Pair' } : command,
+      )
+    }
+    render(App, { props: { commandSurface: registry } } as never)
+    await waitForSetupReady()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+
+    expect(screen.getByText('Start with a task guide or search the complete offline workflow reference.')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: /^Quick Start$/ }))
+    const quickStartArticle = screen.getByRole('article', { name: 'Quick Start' })
+    expect(within(quickStartArticle).getAllByRole('heading', { name: 'Quick Start' })).toHaveLength(1)
+    expect(within(quickStartArticle).getByRole('heading', { name: 'Quick Start' }).tagName).toBe('H2')
+    expect(quickStartArticle.querySelector('h1')).toBeNull()
+    await fireEvent.click(within(quickStartArticle).getByRole('button', { name: 'Back to Results' }))
+
+    await fireEvent.click(screen.getByRole('button', { name: /Work faster with keyboard shortcuts/i }))
+    expect(screen.getByText('Injected Save Workflow Pair')).toBeVisible()
+  })
+
+  it('opens compact keyboard help with Mod+/ and restores its focused non-dialog opener', async () => {
+    render(App)
+    await waitForSetupReady()
+    const opener = screen.getByRole('button', { name: 'New Workflow' })
+    opener.focus()
+
+    await waitFor(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: '/',
+          metaKey: /mac/i.test(navigator.platform),
+          ctrlKey: !/mac/i.test(navigator.platform),
+          bubbles: true,
+        }),
+      )
+      expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeVisible()
+    })
+
+    const close = screen.getByRole('button', { name: 'Close keyboard shortcuts' })
+    await waitFor(() => expect(close).toHaveFocus())
+    await fireEvent.keyDown(close, { key: 'Escape' })
+    await waitFor(() => expect(opener).toHaveFocus())
+  })
+
+  it('restores Documentation mode, query, exact topic, history, and scroll after an Examples round trip', async () => {
+    const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:round-trip.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'round-trip:definition',
+          kind: 'definition',
+          path: 'round-trip.yaml',
+          text: 'name: Round trip\ndescription: Documentation host\nnodes:\n  - id: review\n    prompt: Review\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: null,
+        },
+        companion: null,
+      },
+      legacy.contract_digest,
+    )
+    const { container } = render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+    await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
+    const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+    await fireEvent.input(search, { target: { value: 'workflow pairs' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Workflow pairs, Guide' }))
+
+    const navigation = container.querySelector<HTMLElement>('[data-testid="documentation-navigation"]')!
+    const article = screen.getByRole('article', { name: 'Workflow pairs' })
+    navigation.scrollTop = 83
+    article.scrollTop = 147
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
+    expect(await screen.findByRole('region', { name: 'Examples' })).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+
+    expect(screen.getByRole('tab', { name: 'Guides' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('workflow pairs')
+    expect(screen.getByRole('article', { name: 'Workflow pairs' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Workflow pairs — guide:workflow-pairs' })).toBeVisible()
+    await waitFor(() => {
+      expect(container.querySelector<HTMLElement>('[data-testid="documentation-navigation"]')).toHaveProperty(
+        'scrollTop',
+        83,
+      )
+      expect(screen.getByRole('article', { name: 'Workflow pairs' })).toHaveProperty('scrollTop', 147)
+    })
+  })
+
+  it.each([
+    { mode: 'Guides', articleName: 'Quick Start' },
+    { mode: 'Reference', articleName: 'Context' },
+  ] as const)(
+    'restores the empty-query $mode mode, All scope, article, and semantic focus origin after an activity round trip',
+    async ({ mode, articleName }) => {
+      const legacy = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'hermes-legacy')!
+      openDocumentSession(
+        {
+          workflowId: `workflow:workspace:${mode.toLowerCase()}-round-trip.yaml`,
+          generation: 0,
+          savedGeneration: 0,
+          definition: {
+            id: `${mode.toLowerCase()}-round-trip:definition`,
+            kind: 'definition',
+            path: `${mode.toLowerCase()}-round-trip.yaml`,
+            text: `name: ${mode} round trip\ndescription: Documentation host\nnodes:\n  - id: review\n    prompt: Review\n`,
+            revision: 0,
+            savedRevision: 0,
+            diskHash: null,
+          },
+          companion: null,
+        },
+        legacy.contract_digest,
+      )
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+      await fireEvent.click(screen.getByRole('tab', { name: mode }))
+      await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
+
+      const search = screen.getByRole('searchbox', { name: 'Search documentation' })
+      expect(search).toHaveValue('')
+      let opener: HTMLElement
+      if (mode === 'Guides') {
+        opener = screen.getByRole('button', { name: 'Quick Start, Guide' })
+      } else {
+        await fireEvent.click(screen.getByRole('button', { name: /Context, used by \d+ node types/ }))
+        opener = screen.getByRole('button', { name: 'Context, Prompt node' })
+      }
+      opener.focus()
+      await fireEvent.click(opener)
+      expect(screen.getByRole('article', { name: articleName })).toBeVisible()
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
+      expect(await screen.findByRole('region', { name: 'Examples' })).toBeVisible()
+      await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+
+      const selectedTab = screen.getByRole('tab', { name: mode })
+      expect(selectedTab).toHaveAttribute('aria-selected', 'true')
+      expect(selectedTab).toHaveAttribute('tabindex', '0')
+      expect(screen.getByRole('checkbox', { name: 'All documentation' })).toBeChecked()
+      expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('')
+      const restoredArticle = screen.getByRole('article', { name: articleName })
+      expect(restoredArticle).toBeVisible()
+
+      await fireEvent.click(within(restoredArticle).getByRole('button', { name: 'Back to Results' }))
+      const restoredOpener =
+        mode === 'Guides'
+          ? screen.getByRole('button', { name: 'Quick Start, Guide' })
+          : screen.getByRole('button', { name: 'Context, Prompt node' })
+      await waitFor(() => expect(restoredOpener).toHaveFocus())
+    },
+  )
 
   it('opens a legacy example topic without an active document', async () => {
     showActivity('examples')
@@ -546,6 +733,7 @@ describe('App', () => {
     const documentation = await screen.findByLabelText('Offline documentation')
     expect(documentation).toHaveAttribute('data-profile', 'hermes-legacy')
     expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
   it('uses the example profile rather than an open document profile for documentation', async () => {
@@ -577,6 +765,7 @@ describe('App', () => {
     )
 
     expect(await screen.findByLabelText('Offline documentation')).toHaveAttribute('data-profile', 'hermes-legacy')
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
   beforeAll(() => {
@@ -601,6 +790,7 @@ describe('App', () => {
     closeDocumentSession()
     clearActiveLayout()
     resetGitState()
+    resetDocumentationSession()
     $documentWorkspace.set({
       conflict: null,
       recoveryOffers: [],
@@ -1105,6 +1295,8 @@ nodes:
     const problem = screen.getByRole('button', { name: /add at least one node/i })
     await fireEvent.click(problem)
     await screen.findByRole('region', { name: 'Documentation' })
+    expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
 
     await waitFor(() => expect(problem).toHaveFocus())

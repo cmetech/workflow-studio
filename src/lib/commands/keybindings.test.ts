@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCommandRegistry } from './registry'
+import { commandRegistry, createCommandRegistry } from './registry'
 import { dispatchKeybinding, normalizeKeybinding } from './keybindings'
 import type { CommandContext } from './types'
+import { $keyboardShortcutsOpen, closeKeyboardShortcuts } from '$src/stores/shell'
 
 const canvas: CommandContext = { surface: 'canvas', canMutate: true, hasSelection: true }
 
@@ -15,6 +16,39 @@ describe('keybindings', () => {
     expect(normalizeKeybinding('Mod + Shift + P', 'windows')).toBe('ctrl+shift+p')
     expect(normalizeKeybinding('Shift + Mod + P', 'linux')).toBe('ctrl+shift+p')
     expect(normalizeKeybinding('+', 'mac')).toBe('+')
+  })
+
+  it('dispatches the registry-owned Mod+/ shortcut to open keyboard help on each platform', async () => {
+    const context: CommandContext = { surface: 'global', canMutate: false, hasSelection: false }
+    try {
+      const mac = keyboard('/', { metaKey: true })
+      expect(await dispatchKeybinding(mac, { registry: commandRegistry, context, platform: 'mac' })).toEqual({
+        status: 'executed',
+        commandId: 'workbench.keyboard-shortcuts',
+      })
+      expect(mac.defaultPrevented).toBe(true)
+      expect($keyboardShortcutsOpen.get()).toBe(true)
+
+      closeKeyboardShortcuts()
+      const windows = keyboard('/', { ctrlKey: true })
+      expect(await dispatchKeybinding(windows, { registry: commandRegistry, context, platform: 'windows' })).toEqual({
+        status: 'executed',
+        commandId: 'workbench.keyboard-shortcuts',
+      })
+      expect(windows.defaultPrevented).toBe(true)
+      expect($keyboardShortcutsOpen.get()).toBe(true)
+
+      closeKeyboardShortcuts()
+      const linux = keyboard('/', { ctrlKey: true })
+      expect(await dispatchKeybinding(linux, { registry: commandRegistry, context, platform: 'linux' })).toEqual({
+        status: 'executed',
+        commandId: 'workbench.keyboard-shortcuts',
+      })
+      expect(linux.defaultPrevented).toBe(true)
+      expect($keyboardShortcutsOpen.get()).toBe(true)
+    } finally {
+      closeKeyboardShortcuts()
+    }
   })
 
   it('dispatches plus from either keyboard representation and supports both delete keys', async () => {

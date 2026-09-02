@@ -553,11 +553,18 @@ describe('Inspector', () => {
             status: 'supported',
             profile: 'archon-2026-07',
             fieldPaths: ['nodes[].when'],
+            qualifier: 'Prompt node',
+            useWhen: 'Use this when configuring a prompt condition.',
+            breadcrumb: ['Reference', 'Node-specific fields'],
+            renderer: 'markdown',
           },
         ],
       ]),
       searchText: new Map(),
       tokenIndex: new Map(),
+      guideGroups: new Map(),
+      referenceGroups: new Map(),
+      duplicateTitleGroups: new Map(),
     }
     render(Inspector, {
       fields: [
@@ -571,7 +578,7 @@ describe('Inspector', () => {
     })
     await fireEvent.click(screen.getByRole('tab', { name: 'Docs' }))
 
-    expect(screen.getByLabelText('When documentation')).toBeVisible()
+    expect(screen.getByLabelText('When documentation')).toHaveAttribute('data-topic-id', 'field:prompt.node.when')
     expect(screen.queryByLabelText('Node ID documentation')).not.toBeInTheDocument()
   })
 

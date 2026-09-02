@@ -18,7 +18,8 @@
   import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
   import { buildDocumentationIndex } from '$src/lib/docs/build-index'
-  import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
+  import { createDocumentationGuides } from '$src/lib/docs/guide-sources'
+  import type { DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
   import SettingsPage from '$src/features/settings/SettingsPage.svelte'
@@ -161,13 +162,7 @@
     import: 'default',
     query: '?raw',
   }) as Readonly<Record<string, string>>
-  const bundledGuides: readonly DocumentationGuide[] = Object.entries(bundledGuideSources)
-    .map(([path, body]) => ({
-      id: path.split('/').at(-1)?.replace(/\.md$/, '') ?? path,
-      title: body.match(/^#\s+(.+)$/m)?.[1] ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? path,
-      body,
-    }))
-    .sort((left, right) => left.id.localeCompare(right.id))
+  const bundledGuides = createDocumentationGuides(bundledGuideSources)
   const native = getNativeBridge()
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void
@@ -1796,6 +1791,14 @@
           .then(async (result) => {
             if (
               result.status === 'executed' &&
+              result.commandId === 'workbench.keyboard-shortcuts' &&
+              keyboardOpener &&
+              !keyboardOpener.closest('dialog')
+            ) {
+              keyboardShortcutsOpener = keyboardOpener
+            }
+            if (
+              result.status === 'executed' &&
               result.commandId.startsWith('view.activity.') &&
               !completePageCommand(result.commandId, keyboardOpener) &&
               workbenchPresentation.panels === 'drawers'
@@ -2147,7 +2150,12 @@
           onDocumentation={(id, opener) => {
             exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
-            documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
+            const topicId = activeDocumentDocumentationIndex?.byId.has(id)
+              ? id
+              : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
+                ? `contract:${id}`
+                : id
+            documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
             routePageNavigation('documentation', opener, true)
           }}
         />
@@ -2355,7 +2363,7 @@
       <ActivityPage
         activity="documentation"
         title="Documentation"
-        description="Browse the bundled offline workflow reference."
+        description="Start with a task guide or search the complete offline workflow reference."
         showBack
         focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
@@ -2363,6 +2371,7 @@
         {#if documentationIndex}
           <DocumentationView
             index={documentationIndex}
+            {commandSurface}
             topicId={documentationNavigationRequest?.topicId}
             navigationRequestId={documentationNavigationRequest?.id}
             onTopicConsumed={(_id, requestId) => {
@@ -2572,7 +2581,7 @@
       onCancel={closeKeyboardShortcuts}
     >
       <h2 id="keyboard-shortcuts-title" class="visually-hidden">Keyboard shortcuts</h2>
-      <KeyboardShortcuts registry={commandSurface} />
+      <KeyboardShortcuts registry={commandSurface} variant="compact" />
       {#snippet actions()}
         <button
           type="button"

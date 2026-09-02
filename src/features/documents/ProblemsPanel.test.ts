@@ -53,15 +53,18 @@ describe('ProblemsPanel', () => {
 
   it('routes a documentation ID to the documentation surface instead of only requesting editor focus', async () => {
     const onDocumentation = vi.fn()
+    const execute = vi.fn()
     render(ProblemsPanel, {
       issues: [{ ...issues[0]!, documentationId: 'field:prompt.node.prompt' }],
       paths: { definition: 'flow.yaml', companion: null },
       onDocumentation,
+      execute,
     })
 
     const opener = screen.getByRole('button', { name: /required node field/i })
     await fireEvent.click(opener)
     expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt', opener)
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('renders byte-identical diagnostics as independent focus targets in its bounded groups scroller', () => {

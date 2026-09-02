@@ -225,7 +225,9 @@ test('Examples and Documentation reveal selected detail immediately and keep the
 
   await page.setViewportSize({ width: 1024, height: 700 })
   await page.getByRole('button', { name: 'Documentation', exact: true }).click()
-  const results = page.getByRole('listbox', { name: 'Documentation results' }).getByRole('option')
+  await page.getByRole('tab', { name: 'Reference' }).click()
+  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('node')
+  const results = page.getByRole('list', { name: 'Documentation results' }).getByRole('button')
   const lastResult = results.last()
   await lastResult.scrollIntoViewIfNeeded()
   await lastResult.focus()
@@ -298,15 +300,16 @@ test('Documentation transfers selected-result focus across both responsive prese
   const search = page.getByRole('searchbox', { name: 'Search documentation' })
   await search.fill('Workflow definition')
   await search.focus()
-  const resultId = await search.getAttribute('aria-activedescendant')
+  await expect(search).not.toHaveAttribute('aria-activedescendant')
+  const result = page.getByRole('button', { name: 'Workflow definition, Language contract' })
 
-  await search.press('Enter')
+  await result.click()
 
   const back = page.getByRole('button', { name: 'Back to Results' })
   await page.setViewportSize({ width: 560, height: 700 })
   await expect(back).toBeFocused()
   await page.setViewportSize({ width: 1024, height: 700 })
-  await expect(page.locator(`[id="${resultId}"]`)).toBeFocused()
+  await expect(result).toBeFocused()
 })
 
 test('command-palette page navigation focuses its destination and returns to the exact YAML opener', async ({

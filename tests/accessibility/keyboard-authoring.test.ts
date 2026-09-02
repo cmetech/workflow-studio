@@ -2,8 +2,11 @@ import { render, screen, waitFor, within } from '@testing-library/svelte'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
+import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
+import { createCommandRegistry } from '$src/lib/commands/registry'
+import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
 
 const nativeWindow = vi.hoisted(() => ({
   onCloseRequested: vi.fn(async () => () => undefined),
@@ -127,6 +130,7 @@ import { $canvasSelection, clearCanvasState } from '$src/stores/canvas'
 import { $documentSession, closeDocumentSession } from '$src/stores/documents'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearActiveLayout } from '$src/stores/layout'
+import { resetDocumentationSession } from '$src/stores/documentation'
 import { closeCommandPalette, closeKeyboardShortcuts, closeTransientPanels, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 
@@ -338,6 +342,10 @@ describe('keyboard-only workflow authoring', () => {
     }
   })
 
+  beforeEach(() => {
+    resetDocumentationSession()
+  })
+
   afterEach(() => {
     setNativeBridgeForTest(undefined)
     clearCanvasState()
@@ -348,6 +356,7 @@ describe('keyboard-only workflow authoring', () => {
     closeKeyboardShortcuts()
     closeTransientPanels()
     showEditorMode('visual')
+    resetDocumentationSession()
     TestMediaQueryList.instances = []
     TestResizeObserver.instances = []
     historyStore.set(createHistoryState())
@@ -422,14 +431,11 @@ describe('keyboard-only workflow authoring', () => {
     await waitFor(() => expectVisibleKeyboardFocus(canvas))
     expect(explorerDrawer).toHaveAttribute('inert')
 
-    await user.keyboard('{F1}')
-    const commandSearch = await screen.findByRole('combobox', { name: 'Search commands' })
-    expectVisibleKeyboardFocus(commandSearch)
-    await user.keyboard('Keyboard Shortcuts{Enter}')
+    await user.keyboard(modifierChord('/'))
     const shortcutsDialog = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
     const closeShortcuts = within(shortcutsDialog).getByRole('button', { name: 'Close keyboard shortcuts' })
     await waitFor(() => expectVisibleKeyboardFocus(closeShortcuts))
-    await user.keyboard('{Escape}')
+    await user.keyboard('{Enter}')
     await waitFor(() => expect(shortcutsDialog).not.toBeInTheDocument())
     expectVisibleKeyboardFocus(canvas)
 
@@ -526,4 +532,107 @@ describe('keyboard-only workflow authoring', () => {
     expect(screen.getByRole('button', { name: 'Split' })).toHaveAttribute('aria-pressed', 'true')
     rendered.unmount()
   }, 20_000)
+
+  it('traverses documentation modes, repeated fields, articles, and shortcut search with keyboard events', async () => {
+    const topic = (id: string, qualifier: string, nodeKind?: 'bash' | 'prompt'): DocumentationTopic => ({
+      id,
+      kind: id.startsWith('guide:') ? 'guide' : 'field',
+      title: id === 'guide:keyboard-shortcuts' ? 'Keyboard shortcuts' : 'Context',
+      description: `${qualifier} documentation.`,
+      body: id === 'guide:keyboard-shortcuts' ? 'Use the live shortcut table.' : `${qualifier} context.`,
+      qualifier,
+      useWhen: `Use this when ${qualifier.toLowerCase()} help is needed.`,
+      breadcrumb: id.startsWith('guide:') ? ['Guides', 'Use the application'] : ['Reference', 'Common node settings'],
+      renderer: id === 'guide:keyboard-shortcuts' ? 'keyboard-shortcuts' : 'markdown',
+      examples: [],
+      status: 'supported',
+      profile: 'hermes-legacy',
+      fieldPaths: nodeKind ? ['nodes[].context'] : [],
+      ...(nodeKind ? { nodeKinds: [nodeKind], referenceGroup: 'common-node-settings' as const } : {}),
+      ...(id.startsWith('guide:') ? { guideGroup: 'use-application' as const } : {}),
+    })
+    const topics = [
+      topic('field:bash.node.context', 'Bash node', 'bash'),
+      topic('field:prompt.node.context', 'Prompt node', 'prompt'),
+      topic('guide:keyboard-shortcuts', 'Guide'),
+    ]
+    const index: DocumentationIndex = {
+      topics,
+      byId: new Map(topics.map((entry) => [entry.id, entry])),
+      searchText: new Map(
+        topics.map((entry) => [entry.id, `${entry.title} ${entry.qualifier} ${entry.description}`.toLowerCase()]),
+      ),
+      tokenIndex: new Map(),
+      guideGroups: new Map([['use-application', [topics[2]!]]]),
+      referenceGroups: new Map([['common-node-settings', topics.slice(0, 2)]]),
+      duplicateTitleGroups: new Map([['context', topics.slice(0, 2)]]),
+    }
+    for (const entry of topics) {
+      const text = index.searchText.get(entry.id)!
+      for (const token of text.split(/[^a-z0-9]+/).filter(Boolean)) {
+        const ids = index.tokenIndex.get(token) ?? new Set<string>()
+        ids.add(entry.id)
+        index.tokenIndex.set(token, ids)
+      }
+    }
+    const registry = createCommandRegistry()
+    registry.registerCommand({
+      id: 'document.save',
+      label: 'Save Workflow Pair',
+      category: 'File',
+      defaultBindings: ['Mod+S'],
+      enabled: () => true,
+      run: () => undefined,
+    })
+    const user = userEvent.setup()
+    const rendered = render(DocumentationView, { index, commandSurface: registry })
+    const overview = screen.getByRole('tab', { name: 'Overview' })
+    overview.focus()
+    expectVisibleKeyboardFocus(overview)
+
+    await user.keyboard('{ArrowRight}')
+    const guides = screen.getByRole('tab', { name: 'Guides' })
+    await waitFor(() => expectVisibleKeyboardFocus(guides))
+    expect(guides).toHaveAttribute('aria-selected', 'true')
+    expect(overview).toHaveAttribute('tabindex', '-1')
+    await user.keyboard('{End}')
+    const reference = screen.getByRole('tab', { name: 'Reference' })
+    await waitFor(() => expectVisibleKeyboardFocus(reference))
+    expect(reference).toHaveAttribute('aria-selected', 'true')
+    expect(reference).toHaveAttribute('tabindex', '0')
+
+    const referenceGroup = screen.getByRole('button', { name: 'Common node settings, reference group' })
+    await tabTo(user, referenceGroup)
+    expect(referenceGroup).toHaveAttribute('aria-expanded', 'true')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(referenceGroup).toHaveAttribute('aria-expanded', 'false'))
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(referenceGroup).toHaveAttribute('aria-expanded', 'true'))
+    const repeatedContext = screen.getByRole('button', { name: 'Context, used by 2 node types' })
+    await tabTo(user, repeatedContext)
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(repeatedContext).toHaveAttribute('aria-expanded', 'true'))
+    const promptContext = screen.getByRole('button', { name: 'Context, Prompt node' })
+    await tabTo(user, promptContext)
+    await user.keyboard('{Enter}')
+
+    const back = screen.getByRole('button', { name: 'Back to Results' })
+    await tabTo(user, back)
+    await user.keyboard('{Enter}')
+    await waitFor(() => expectVisibleKeyboardFocus(promptContext))
+
+    reference.focus()
+    await user.keyboard('{Home}')
+    await waitFor(() => expectVisibleKeyboardFocus(overview))
+    expect(overview).toHaveAttribute('aria-selected', 'true')
+    const shortcutsTask = screen.getByRole('button', { name: /Work faster with keyboard shortcuts/i })
+    await tabTo(user, shortcutsTask)
+    await user.keyboard('{Enter}')
+    const shortcutSearch = screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' })
+    await tabTo(user, shortcutSearch)
+    await user.keyboard('canvas space')
+    expect(screen.getByText('Pan canvas', { exact: true })).toBeVisible()
+    expectVisibleKeyboardFocus(shortcutSearch)
+    rendered.unmount()
+  })
 })

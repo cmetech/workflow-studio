@@ -4,7 +4,7 @@ import KeyboardShortcuts from './KeyboardShortcuts.svelte'
 import { createCommandRegistry } from '$src/lib/commands/registry'
 
 describe('KeyboardShortcuts', () => {
-  it('shows platform-correct registry bindings and filters by label', async () => {
+  it('groups live registry commands and canvas interactions with semantic platform keys', () => {
     const registry = createCommandRegistry()
     registry.registerCommand({
       id: 'document.save',
@@ -14,11 +14,49 @@ describe('KeyboardShortcuts', () => {
       enabled: () => true,
       run: () => undefined,
     })
-    render(KeyboardShortcuts, { props: { registry, platform: 'mac' } })
-    expect(screen.getByText('⌘S')).toBeVisible()
-    await fireEvent.input(screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' }), {
-      target: { value: 'save' },
+    registry.registerCommand({
+      id: 'document.find',
+      label: 'Find',
+      category: 'Edit',
+      defaultBindings: ['Mod+F'],
+      enabled: (context) => context.surface === 'yaml',
+      run: () => undefined,
     })
-    expect(screen.getByText('Save Workflow Pair')).toBeVisible()
+
+    render(KeyboardShortcuts, { props: { registry, platform: 'mac', variant: 'documentation' } })
+
+    expect(screen.getByRole('heading', { name: 'File' })).toBeVisible()
+    expect(screen.getByText('⌘S', { selector: 'kbd' })).toBeVisible()
+    expect(screen.getByText('Global')).toBeVisible()
+    expect(screen.getByText('Space + drag', { selector: 'kbd' })).toBeVisible()
+    expect(screen.getByText('N C', { selector: 'kbd' })).toBeVisible()
+    expect(screen.getByText('Run Save Workflow Pair.')).toBeVisible()
+  })
+
+  it('searches labels, categories, contexts, and displayed bindings in both variants', async () => {
+    const registry = createCommandRegistry()
+    registry.registerCommand({
+      id: 'document.find',
+      label: 'Find',
+      category: 'Edit',
+      defaultBindings: ['Mod+F'],
+      enabled: (context) => context.surface === 'yaml',
+      run: () => undefined,
+    })
+    render(KeyboardShortcuts, { props: { registry, platform: 'mac', variant: 'compact' } })
+
+    const search = screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' })
+    await fireEvent.input(search, { target: { value: 'canvas space' } })
+    expect(screen.getByText('Pan canvas')).toBeVisible()
+
+    await fireEvent.input(search, { target: { value: 'yaml find' } })
+    expect(screen.getByText('Find')).toBeVisible()
+    expect(screen.getByText('Run Find.', { selector: '.visually-hidden' })).toBeVisible()
+
+    await fireEvent.input(search, { target: { value: '⌘F' } })
+    expect(screen.getByText('Find')).toBeVisible()
+
+    await fireEvent.input(search, { target: { value: 'missing' } })
+    expect(screen.getByRole('status')).toHaveTextContent('No keyboard shortcuts match “missing”.')
   })
 })

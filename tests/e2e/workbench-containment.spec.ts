@@ -54,9 +54,11 @@ for (const geometry of EXACT_GEOMETRIES) {
     await expectLastControlReachable(page, page.getByRole('button', { name: /^Create Editable Copy:/ }).last())
 
     await page.getByRole('button', { name: 'Documentation', exact: true }).click()
+    await page.getByRole('tab', { name: 'Reference' }).click()
+    await page.getByRole('searchbox', { name: 'Search documentation' }).fill('node')
     await expectLastControlReachable(
       page,
-      page.getByRole('listbox', { name: 'Documentation results' }).getByRole('option').last(),
+      page.getByRole('list', { name: 'Documentation results' }).getByRole('button').last(),
     )
 
     await page.setViewportSize(geometry.viewport)

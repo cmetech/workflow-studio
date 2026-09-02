@@ -431,7 +431,7 @@ const initialCommands: readonly AppCommand[] = [
     id: 'workbench.keyboard-shortcuts',
     label: 'Keyboard Shortcuts',
     category: 'Help',
-    defaultBindings: [],
+    defaultBindings: ['Mod+/'],
     enabled: () => true,
     run: openKeyboardShortcuts,
   },

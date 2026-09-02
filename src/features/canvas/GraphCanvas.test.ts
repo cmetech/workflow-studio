@@ -100,6 +100,13 @@ describe('GraphCanvas', () => {
     clearCanvasState()
   })
 
+  it('keeps pointer panning enabled on the rendered flow pane', () => {
+    const { container } = renderCanvas({ projection, layout })
+    const flow = container.querySelector<HTMLElement>('.svelte-flow')
+
+    expect(flow?.querySelector('.svelte-flow__pane')).toHaveClass('draggable')
+  })
+
   it('isolates 100 drag moves to position state and persists one layout only after drag-stop debounce', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)

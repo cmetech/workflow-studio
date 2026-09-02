@@ -26,7 +26,10 @@ test('creates an editable copy from every bundled example and opens contextual o
     .click()
   const docs = page.getByRole('region', { name: 'Offline documentation' })
   await expect(docs).toBeVisible()
-  await expect(docs.getByRole('article')).toBeVisible()
+  const article = docs.getByRole('article')
+  await expect(article).toBeVisible()
+  await expect(article.getByRole('navigation', { name: 'Documentation breadcrumb' })).toBeVisible()
+  await expect(article.getByRole('button', { name: 'Back to Results' })).toBeVisible()
 })
 
 test('replaces the example catalog with the selected preview', async ({ page }) => {
