@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CommandDisabledError,
+  commandRegistry,
   createCommandRegistry,
   executeCommand,
   setCanvasCommandHandlers,
@@ -100,6 +101,8 @@ describe('command registry', () => {
     )
     expect(commands.find(({ id }) => id === 'canvas.add-node')?.defaultBindings).toEqual(['N'])
     expect(commands.find(({ id }) => id === 'canvas.add-after-selection')?.defaultBindings).toEqual(['Shift+N'])
+    expect(commands.find(({ id }) => id === 'workbench.keyboard-shortcuts')?.defaultBindings).toEqual(['Mod+/'])
+    expect(commandRegistry.listBindingConflicts()).toEqual([])
     expect(listCommands().map(({ id }) => id)).toHaveLength(new Set(commands.map(({ id }) => id)).size)
   })
 

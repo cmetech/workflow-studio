@@ -100,6 +100,15 @@ describe('GraphCanvas', () => {
     clearCanvasState()
   })
 
+  it('keeps the rendered flow configured for Space-activated pointer panning', () => {
+    const { container } = renderCanvas({ projection, layout })
+    const flow = container.querySelector<HTMLElement>('.svelte-flow')
+
+    expect(flow).toHaveAttribute('data-pan-activation-key', 'Space')
+    expect(flow).toHaveAttribute('data-pan-on-drag', 'true')
+    expect(flow?.querySelector('.svelte-flow__pane')).toHaveClass('draggable')
+  })
+
   it('isolates 100 drag moves to position state and persists one layout only after drag-stop debounce', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)

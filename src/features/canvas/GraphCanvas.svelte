@@ -41,6 +41,8 @@
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
 
+  const CANVAS_PAN_CONFIG = { activationKey: 'Space', onDrag: true } as const
+
   export interface CanvasAuthoringFeedback {
     readonly status: 'committed' | 'rejected' | 'resolution_required'
     readonly code?: string
@@ -878,6 +880,8 @@
     ondrop={dropNodeKind}
   >
     <SvelteFlow
+      data-pan-activation-key={CANVAS_PAN_CONFIG.activationKey}
+      data-pan-on-drag={String(CANVAS_PAN_CONFIG.onDrag)}
       bind:nodes={flowNodes}
       bind:edges={flowEdges}
       bind:viewport={flowViewport}
@@ -893,8 +897,8 @@
       selectionMode={SelectionMode.Partial}
       selectionKey="Shift"
       multiSelectionKey={['Meta', 'Control']}
-      panActivationKey="Space"
-      panOnDrag={true}
+      panActivationKey={CANVAS_PAN_CONFIG.activationKey}
+      panOnDrag={CANVAS_PAN_CONFIG.onDrag}
       onkeydown={ownEdgeKeyboardActivation}
       minZoom={0.1}
       maxZoom={4}

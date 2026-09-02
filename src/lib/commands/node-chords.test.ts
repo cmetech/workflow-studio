@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NodeChordController } from './node-chords'
+import { NODE_CHORD_CHOICES, NodeChordController, nodeChordForKind } from './node-chords'
 
 describe('NodeChordController', () => {
+  it('uses one ordered choice authority for dispatch and palette chord hints', () => {
+    expect(NODE_CHORD_CHOICES).toEqual([
+      { key: 'C', nodeKind: 'command', label: 'Command node' },
+      { key: 'P', nodeKind: 'prompt', label: 'Prompt node' },
+      { key: 'B', nodeKind: 'bash', label: 'Bash node' },
+      { key: 'S', nodeKind: 'script', label: 'Script node' },
+      { key: 'L', nodeKind: 'loop', label: 'Loop node' },
+      { key: 'A', nodeKind: 'approval', label: 'Approval node' },
+      { key: 'X', nodeKind: 'cancel', label: 'Cancel node' },
+    ])
+    expect(nodeChordForKind('approval')).toBe('N A')
+  })
+
   it('exposes choices after N and invokes the selected node kind', () => {
     const choose = vi.fn()
     const chords = new NodeChordController({ onChoose: choose })
