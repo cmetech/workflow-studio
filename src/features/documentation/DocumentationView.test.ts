@@ -5,6 +5,19 @@ import ContextDocs from './ContextDocs.svelte'
 import type { DocumentationIndex } from '$src/lib/docs/types'
 import type { FormField } from '$src/lib/forms/types'
 
+const nodePresentation = {
+  qualifier: 'Node type',
+  useWhen: 'Use this when you need documentation.',
+  breadcrumb: ['Reference', 'Node types'],
+  renderer: 'markdown' as const,
+}
+const fieldPresentation = {
+  ...nodePresentation,
+  qualifier: 'Prompt node',
+  breadcrumb: ['Reference', 'Node-specific fields'],
+}
+const guidePresentation = { ...nodePresentation, qualifier: 'Guide', breadcrumb: ['Guides', 'Build the graph'] }
+
 const index: DocumentationIndex = {
   topics: [
     {
@@ -17,6 +30,7 @@ const index: DocumentationIndex = {
       status: 'supported',
       profile: 'archon-2026-07',
       fieldPaths: [],
+      ...nodePresentation,
     },
     {
       id: 'field:prompt.node.prompt',
@@ -28,6 +42,7 @@ const index: DocumentationIndex = {
       status: 'supported',
       profile: 'archon-2026-07',
       fieldPaths: ['nodes[].prompt'],
+      ...fieldPresentation,
     },
     {
       id: 'guide:dag',
@@ -39,11 +54,15 @@ const index: DocumentationIndex = {
       status: 'supported',
       profile: 'archon-2026-07',
       fieldPaths: [],
+      ...guidePresentation,
     },
   ],
   byId: new Map(),
   searchText: new Map(),
   tokenIndex: new Map(),
+  guideGroups: new Map(),
+  referenceGroups: new Map(),
+  duplicateTitleGroups: new Map(),
 }
 index.byId = new Map(index.topics.map((topic) => [topic.id, topic]))
 index.searchText = new Map(
@@ -301,6 +320,9 @@ describe('DocumentationView', () => {
       byId: new Map([[replacementTopic.id, replacementTopic]]),
       searchText: new Map([[replacementTopic.id, 'prompt text legacy']]),
       tokenIndex: new Map([['prompt', new Set([replacementTopic.id])]]),
+      guideGroups: new Map(),
+      referenceGroups: new Map(),
+      duplicateTitleGroups: new Map(),
     }
 
     await rerender({ index: replacement, topicId: undefined })
@@ -312,6 +334,9 @@ describe('DocumentationView', () => {
       byId: new Map(),
       searchText: new Map(),
       tokenIndex: new Map(),
+      guideGroups: new Map(),
+      referenceGroups: new Map(),
+      duplicateTitleGroups: new Map(),
     }
     await rerender({ index: absent, topicId: undefined })
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
@@ -325,6 +350,9 @@ describe('DocumentationView', () => {
       byId: new Map(),
       searchText: new Map(),
       tokenIndex: new Map(),
+      guideGroups: new Map(),
+      referenceGroups: new Map(),
+      duplicateTitleGroups: new Map(),
     }
     const { rerender } = render(DocumentationView, {
       index: absent,

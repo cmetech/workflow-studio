@@ -1,6 +1,21 @@
 import type { ContractItemStatus, WorkflowProfile } from '$src/lib/contract/types'
 
 export type DocumentationTopicKind = 'node' | 'field' | 'guide' | 'contract'
+export type DocumentationMode = 'overview' | 'guides' | 'reference' | 'all'
+export type GuideGroupId =
+  | 'getting-started'
+  | 'build-graph'
+  | 'configure-behavior'
+  | 'review-recover'
+  | 'use-application'
+export type ReferenceGroupId =
+  | 'node-types'
+  | 'common-node-settings'
+  | 'node-specific-fields'
+  | 'workflow-fields'
+  | 'companion-policy'
+  | 'language-contract'
+export type DocumentationRenderer = 'markdown' | 'keyboard-shortcuts'
 
 export interface DocumentationTopic {
   readonly id: string
@@ -8,6 +23,10 @@ export interface DocumentationTopic {
   readonly title: string
   readonly description: string
   readonly body: string
+  readonly qualifier: string
+  readonly useWhen: string
+  readonly breadcrumb: readonly string[]
+  readonly renderer: DocumentationRenderer
   readonly examples: readonly unknown[]
   readonly status: ContractItemStatus
   readonly profile: WorkflowProfile
@@ -19,6 +38,8 @@ export interface DocumentationTopic {
   readonly relatedTopicIds?: readonly string[]
   readonly required?: boolean
   readonly defaultValue?: unknown
+  readonly guideGroup?: GuideGroupId
+  readonly referenceGroup?: ReferenceGroupId
 }
 
 export interface DocumentationGuide {
@@ -26,6 +47,14 @@ export interface DocumentationGuide {
   readonly title: string
   readonly body: string
   readonly description?: string
+  readonly group: GuideGroupId
+  readonly useWhen: string
+  readonly renderer?: DocumentationRenderer
+}
+
+export interface DocumentationSearchOptions {
+  readonly mode: Exclude<DocumentationMode, 'overview'>
+  readonly referenceGroup?: ReferenceGroupId
 }
 
 export interface DocumentationIndex {
@@ -33,4 +62,7 @@ export interface DocumentationIndex {
   byId: Map<string, DocumentationTopic>
   searchText: ReadonlyMap<string, string>
   tokenIndex: ReadonlyMap<string, ReadonlySet<string>>
+  guideGroups: ReadonlyMap<GuideGroupId, readonly DocumentationTopic[]>
+  referenceGroups: ReadonlyMap<ReferenceGroupId, readonly DocumentationTopic[]>
+  duplicateTitleGroups: ReadonlyMap<string, readonly DocumentationTopic[]>
 }

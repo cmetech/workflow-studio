@@ -44,12 +44,58 @@ const contract = {
   documentation: { topics: [], examples: [] },
 } as unknown as AuthoringContract
 
+const repeatedContextContract = {
+  ...contract,
+  definition_schema: {
+    type: 'object',
+    properties: {
+      nodes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            context: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+  node_kinds: ['bash', 'prompt'].map((id) => ({
+    id,
+    label: id === 'bash' ? 'Bash' : 'Prompt',
+    description: `${id} node.`,
+    field_path: `nodes[].${id}`,
+    applicability: { profiles: ['archon-2026-07'], documents: ['definition'], node_kinds: [id] },
+    widget: 'code',
+    section: 'General',
+    order: 1,
+    status: 'supported',
+    examples: [],
+    fields: [
+      {
+        id: `${id}.node.context`,
+        label: 'Context',
+        description: `${id} context.`,
+        field_path: 'nodes[].context',
+        applicability: { profiles: ['archon-2026-07'], documents: ['definition'], node_kinds: [id] },
+        widget: 'text',
+        section: 'General',
+        order: 2,
+        status: 'supported',
+        examples: ['fresh'],
+      },
+    ],
+  })),
+} as unknown as AuthoringContract
+
 describe('buildDocumentationIndex', () => {
   it('derives node and field topics from the active contract without native or network calls', () => {
     const fetchStub = vi.fn(() => Promise.reject(new Error('network must not be used')))
     vi.stubGlobal('fetch', fetchStub)
 
-    const index = buildDocumentationIndex(contract, [{ id: 'guide', title: 'Workflow pairs', body: 'Use definition YAML.' }])
+    const index = buildDocumentationIndex(contract, [{
+      id: 'guide', title: 'Workflow pairs', body: 'Use definition YAML.', group: 'getting-started', useWhen: 'Use this when editing workflow pairs.',
+    }])
     const field = index.byId.get('field:prompt.node.prompt')
 
     expect(index.byId.get('node:prompt')).toMatchObject({ title: 'Prompt', kind: 'node' })
@@ -65,13 +111,38 @@ describe('buildDocumentationIndex', () => {
 
   it('ranks exact labels and identifiers before body-only matches while preserving code identifiers', () => {
     const index = buildDocumentationIndex(contract, [
-      { id: 'guide', title: 'Guide', body: 'The Prompt field is useful for maxBudgetUsd.' },
+      { id: 'guide', title: 'Guide', body: 'The Prompt field is useful for maxBudgetUsd.', group: 'getting-started', useWhen: 'Use this when reviewing a guide.' },
     ])
 
-    expect(new Set(searchDocumentation(index, 'Prompt').map(({ id }) => id).slice(0, 2))).toEqual(
+    expect(new Set(searchDocumentation(index, 'Prompt', { mode: 'all' }).map(({ id }) => id).slice(0, 2))).toEqual(
       new Set(['node:prompt', 'field:prompt.node.prompt']),
     )
-    expect(searchDocumentation(index, 'maxBudgetUsd')[0]?.id).toBe('guide:guide')
+    expect(searchDocumentation(index, 'maxBudgetUsd', { mode: 'all' })[0]?.id).toBe('guide:guide')
+  })
+
+  it('keeps repeated contract fields exact while grouping their reference navigation', () => {
+    const index = buildDocumentationIndex(repeatedContextContract)
+    const contextTopics = index.duplicateTitleGroups.get('context')!
+
+    expect(contextTopics.map(({ id, qualifier }) => ({ id, qualifier }))).toEqual([
+      { id: 'field:bash.node.context', qualifier: 'Bash node' },
+      { id: 'field:prompt.node.context', qualifier: 'Prompt node' },
+    ])
+    expect(index.referenceGroups.get('common-node-settings')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ title: 'Context' })]),
+    )
+    expect(searchDocumentation(index, 'context prompt', { mode: 'reference' })[0]).toMatchObject({
+      id: 'field:prompt.node.context',
+      qualifier: 'Prompt node',
+    })
+  })
+
+  it('keeps all-mode search unrestricted when a reference filter is present', () => {
+    const index = buildDocumentationIndex(contract)
+
+    expect(searchDocumentation(index, 'Prompt', { mode: 'all', referenceGroup: 'workflow-fields' }).map(({ id }) => id)).toEqual(
+      expect.arrayContaining(['node:prompt', 'field:prompt.node.prompt']),
+    )
   })
 
   it('covers every production form field from both bundled contracts without a second inventory', async () => {
@@ -81,6 +152,8 @@ describe('buildDocumentationIndex', () => {
         expect(index.byId.get(`field:${field.id}`)).toEqual(
           expect.objectContaining({ fieldPaths: [field.fieldPath], examples: field.examples }),
         )
+        const occurrences = [...index.referenceGroups.values()].flat().filter(({ id }) => id === `field:${field.id}`)
+        expect(occurrences).toHaveLength(1)
       }
     }
   })

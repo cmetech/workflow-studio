@@ -28,7 +28,11 @@
   let narrowPresentation = $state(window.matchMedia?.('(max-width: 48rem)').matches ?? false)
   let responsiveFocusOwned = false
   let presentationQuery: MediaQueryList | undefined
-  const results = $derived(searchDocumentation(index, query, kind))
+  const results = $derived(
+    searchDocumentation(index, query, { mode: kind === 'guide' ? 'guides' : 'all' }).filter(
+      (topic) => kind === 'all' || topic.kind === kind,
+    ),
+  )
 
   function activeResultId(): string | undefined {
     const topic = results[highlighted]
