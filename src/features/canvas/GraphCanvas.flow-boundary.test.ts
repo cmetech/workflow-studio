@@ -62,13 +62,10 @@ describe('GraphCanvas Svelte Flow boundary', () => {
     )
   })
 
-  it('passes the documented Space-pan contract to the Svelte Flow component boundary', () => {
+  it('passes the browser Space key and drag setting to the Svelte Flow component boundary', () => {
     render(GraphCanvas, { commandSurface: commandRegistry, projection, layout } as never)
 
-    expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute(
-      'data-received-pan-activation-key',
-      CANVAS_PAN_INTERACTION.activationKey,
-    )
+    expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-pan-activation-key', ' ')
     expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute(
       'data-received-pan-on-drag',
       String(CANVAS_PAN_INTERACTION.panOnDrag),

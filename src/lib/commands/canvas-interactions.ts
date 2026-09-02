@@ -1,4 +1,5 @@
-const panActivationKey = 'Space' as const
+const panActivationKey = ' ' as const
+const panBindingLabel = 'Space + drag' as const
 
 export interface CanvasPanInteraction {
   readonly id: 'canvas.pan'
@@ -18,7 +19,7 @@ export const CANVAS_PAN_INTERACTION: CanvasPanInteraction = {
   label: 'Pan canvas',
   description: 'Temporarily pan the graph without changing workflow YAML.',
   category: 'Canvas',
-  bindings: [`${panActivationKey} + drag`],
+  bindings: [panBindingLabel],
   contexts: ['Canvas'],
   activationKey: panActivationKey,
   panOnDrag: true,
