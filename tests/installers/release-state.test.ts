@@ -18,7 +18,7 @@ interface Release {
 function release(overrides: Partial<Release> = {}): Release {
   return {
     id: 42,
-    tag_name: 'v1.0.6',
+    tag_name: 'v1.0.7',
     draft: true,
     prerelease: false,
     target_commitish: EXPECTED_COMMIT,
@@ -74,7 +74,7 @@ process.stdout.write(process.env.FAKE_GH_RESPONSE)
     '--repository',
     'cmetech/workflow-studio',
     '--tag',
-    options.tag ?? 'v1.0.6',
+    options.tag ?? 'v1.0.7',
     '--expected-commit',
     EXPECTED_COMMIT,
   ]
@@ -120,7 +120,7 @@ function invokeJson(
     '--input',
     options.fromFile ? inputPath : '-',
     '--tag',
-    'v1.0.6',
+    'v1.0.7',
     '--expected-commit',
     EXPECTED_COMMIT,
     '--output',
@@ -145,7 +145,7 @@ describe('authenticated release-list resolution', () => {
       expect(invocation.result.status, invocation.result.stderr).toBe(0)
       expect(JSON.parse(invocation.result.stdout)).toMatchObject({
         id: 73,
-        tag_name: 'v1.0.6',
+        tag_name: 'v1.0.7',
         draft: true,
         target_commitish: EXPECTED_COMMIT,
       })
@@ -175,7 +175,7 @@ describe('authenticated release-list resolution', () => {
     const invocation = invoke([[]])
     try {
       expect(invocation.result.status).toBe(3)
-      expect(invocation.result.stderr).toMatch(/exactly one release tagged v1\.0\.6; found 0/i)
+      expect(invocation.result.stderr).toMatch(/exactly one release tagged v1\.0\.7; found 0/i)
       expect(invocation.result.stdout).toBe('')
     } finally {
       rmSync(invocation.root, { recursive: true, force: true })
@@ -197,7 +197,7 @@ describe('authenticated release-list resolution', () => {
     [
       'duplicate exact tags',
       [[release({ id: 1 }), release({ id: 2 })]],
-      /exactly one release tagged v1\.0\.6; found 2/i,
+      /exactly one release tagged v1\.0\.7; found 2/i,
     ],
     ['wrong commit', [[release({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
     ['non-draft release', [[release({ draft: false })]], /must be a draft/i],
@@ -221,7 +221,7 @@ describe('authenticated release-list resolution', () => {
       expect(absent.result.status, absent.result.stderr).toBe(0)
       expect(absent.result.stdout).toBe('')
       expect(existing.result.status).toBe(1)
-      expect(existing.result.stderr).toMatch(/expected no release tagged v1\.0\.6; found 1/i)
+      expect(existing.result.stderr).toMatch(/expected no release tagged v1\.0\.7; found 1/i)
     } finally {
       rmSync(absent.root, { recursive: true, force: true })
       rmSync(existing.root, { recursive: true, force: true })
@@ -231,7 +231,7 @@ describe('authenticated release-list resolution', () => {
   it('treats the tag as data and never executes shell syntax', () => {
     const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-injection-'))
     const sentinel = join(root, 'executed')
-    const tag = `v1.0.6; touch ${sentinel}`
+    const tag = `v1.0.7; touch ${sentinel}`
     const invocation = invoke([[release({ tag_name: tag })]], { tag })
     try {
       expect(invocation.result.status, invocation.result.stderr).toBe(0)

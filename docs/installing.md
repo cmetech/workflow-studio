@@ -1,6 +1,6 @@
 # Installing Workflow Studio
 
-The Workflow Studio v1.0.6 release process builds native installers for the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow produces `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
+Workflow Studio v1.0.6 is the latest published release and the content-aware workbench release published on 2026-08-31. The v1.0.7 documentation-and-shortcuts release candidate is unpublished; no v1.0.7 tag or GitHub release exists as of 2026-09-02. Native installers are distributed through the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow produces `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
 
 ## Supported targets
 
@@ -10,11 +10,11 @@ The Workflow Studio v1.0.6 release process builds native installers for the publ
 | macOS | Intel | `LOOP24-Workflow-Studio_<version>_macos_x86_64.dmg` |
 | Windows | x64 | `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.exe` |
 
-Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in v1.0.6.
+Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in either the published v1.0.6 release or the v1.0.7 candidate.
 
 ## One-line verified installer launch
 
-These commands load the immutable v1.0.5 bootstrap scripts, which install the latest published release. The bootstrap tag identifies the reviewed script bytes, not the application version it downloads. A draft v1.0.6 release is not selected by the bootstrap until it is published. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
+These commands load the immutable v1.0.5 bootstrap scripts, which install the latest published release. The bootstrap tag identifies the reviewed script bytes, not the application version it downloads. They currently install published v1.0.6; the unpublished v1.0.7 candidate is not selected unless it is later published. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
 
 macOS:
 
@@ -46,7 +46,7 @@ Run the NSIS setup executable. Microsoft Defender SmartScreen may show “Window
 
 ### Linux
 
-Linux packaging is deferred. The immutable v1.0.5 bootstrap does not support Linux, and v1.0.6 does not publish a Linux fallback artifact.
+Linux packaging is deferred. The immutable v1.0.5 bootstrap does not support Linux, published v1.0.6 has no Linux fallback artifact, and the v1.0.7 candidate does not add one.
 
 ## First launch, Git, and updates
 
