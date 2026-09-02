@@ -225,7 +225,9 @@ test('Examples and Documentation reveal selected detail immediately and keep the
 
   await page.setViewportSize({ width: 1024, height: 700 })
   await page.getByRole('button', { name: 'Documentation', exact: true }).click()
-  const results = page.getByRole('listbox', { name: 'Documentation results' }).getByRole('option')
+  await page.getByRole('tab', { name: 'Reference' }).click()
+  await page.getByRole('searchbox', { name: 'Search documentation' }).fill('node')
+  const results = page.getByRole('list', { name: 'Documentation results' }).getByRole('button')
   const lastResult = results.last()
   await lastResult.scrollIntoViewIfNeeded()
   await lastResult.focus()

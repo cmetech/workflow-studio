@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/svelte'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
 import { createCommandRegistry } from '$src/lib/commands/registry'
@@ -130,6 +130,7 @@ import { $canvasSelection, clearCanvasState } from '$src/stores/canvas'
 import { $documentSession, closeDocumentSession } from '$src/stores/documents'
 import { createHistoryState, historyStore } from '$src/stores/history'
 import { clearActiveLayout } from '$src/stores/layout'
+import { resetDocumentationSession } from '$src/stores/documentation'
 import { closeCommandPalette, closeKeyboardShortcuts, closeTransientPanels, showEditorMode } from '$src/stores/shell'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 
@@ -341,6 +342,10 @@ describe('keyboard-only workflow authoring', () => {
     }
   })
 
+  beforeEach(() => {
+    resetDocumentationSession()
+  })
+
   afterEach(() => {
     setNativeBridgeForTest(undefined)
     clearCanvasState()
@@ -351,6 +356,7 @@ describe('keyboard-only workflow authoring', () => {
     closeKeyboardShortcuts()
     closeTransientPanels()
     showEditorMode('visual')
+    resetDocumentationSession()
     TestMediaQueryList.instances = []
     TestResizeObserver.instances = []
     historyStore.set(createHistoryState())
