@@ -1,4 +1,5 @@
 import { displayKeybindings, type KeybindingPlatform } from './keybindings'
+import { CANVAS_PAN_INTERACTION } from './canvas-interactions'
 import { NODE_CHORD_CHOICES } from './node-chords'
 import type { CommandSurface } from './registry'
 import type { CommandContext } from './types'
@@ -66,17 +67,7 @@ function contextsFor(enabled: (context: CommandContext) => boolean): readonly Sh
   ).map(({ label }) => label)
 }
 
-export const INTERACTION_HELP = [
-  {
-    id: 'canvas.pan',
-    kind: 'gesture',
-    label: 'Pan canvas',
-    description: 'Temporarily pan the graph without changing workflow YAML.',
-    category: 'Canvas',
-    bindings: ['Space + drag'],
-    contexts: ['Canvas'],
-  },
-] as const satisfies readonly ShortcutHelpRow[]
+export const INTERACTION_HELP: readonly ShortcutHelpRow[] = [CANVAS_PAN_INTERACTION]
 
 function nodeChordRows(): readonly ShortcutHelpRow[] {
   return NODE_CHORD_CHOICES.map(({ key, nodeKind, label }) => ({

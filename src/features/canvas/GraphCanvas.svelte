@@ -2,6 +2,7 @@
   import { onDestroy, onMount, setContext, untrack } from 'svelte'
   import { Background, BackgroundVariant, SelectionMode, SvelteFlow, type Viewport } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
+  import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand, type ResolvedCommand } from '$src/lib/commands/surface'
   import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
@@ -40,8 +41,6 @@
   import CanvasToolbar from './CanvasToolbar.svelte'
   import WorkflowEdge from './WorkflowEdge.svelte'
   import WorkflowNode from './WorkflowNode.svelte'
-
-  const CANVAS_PAN_CONFIG = { activationKey: 'Space', onDrag: true } as const
 
   export interface CanvasAuthoringFeedback {
     readonly status: 'committed' | 'rejected' | 'resolution_required'
@@ -880,8 +879,8 @@
     ondrop={dropNodeKind}
   >
     <SvelteFlow
-      data-pan-activation-key={CANVAS_PAN_CONFIG.activationKey}
-      data-pan-on-drag={String(CANVAS_PAN_CONFIG.onDrag)}
+      data-pan-activation-key={CANVAS_PAN_INTERACTION.activationKey}
+      data-pan-on-drag={String(CANVAS_PAN_INTERACTION.panOnDrag)}
       bind:nodes={flowNodes}
       bind:edges={flowEdges}
       bind:viewport={flowViewport}
@@ -897,8 +896,8 @@
       selectionMode={SelectionMode.Partial}
       selectionKey="Shift"
       multiSelectionKey={['Meta', 'Control']}
-      panActivationKey={CANVAS_PAN_CONFIG.activationKey}
-      panOnDrag={CANVAS_PAN_CONFIG.onDrag}
+      panActivationKey={CANVAS_PAN_INTERACTION.activationKey}
+      panOnDrag={CANVAS_PAN_INTERACTION.panOnDrag}
       onkeydown={ownEdgeKeyboardActivation}
       minZoom={0.1}
       maxZoom={4}

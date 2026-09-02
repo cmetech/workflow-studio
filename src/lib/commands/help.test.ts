@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CANVAS_PAN_INTERACTION } from './canvas-interactions'
 import { commandRegistry } from './registry'
 import { createShortcutHelp, searchShortcutHelp } from './help'
 
@@ -32,6 +33,11 @@ describe('shortcut help', () => {
   it('finds the canvas pan gesture by its canvas context and displayed keys', () => {
     const rows = createShortcutHelp(commandRegistry, 'mac')
 
+    expect(CANVAS_PAN_INTERACTION.bindings).toEqual(['Space + drag'])
+    expect(rows.find(({ id }) => id === CANVAS_PAN_INTERACTION.id)).toMatchObject({
+      bindings: CANVAS_PAN_INTERACTION.bindings,
+      contexts: CANVAS_PAN_INTERACTION.contexts,
+    })
     expect(searchShortcutHelp(rows, 'canvas space')).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 'canvas.pan' })]),
     )
