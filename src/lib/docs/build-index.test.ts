@@ -219,4 +219,28 @@ describe('buildDocumentationIndex', () => {
       }
     }
   })
+
+  it('validates the Quick Start definition fence as structurally valid under Archon', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    const quickStartPath = Object.keys(guideSources).find((path) => path.endsWith('/quick-start.md'))
+    expect(quickStartPath).toBeDefined()
+    const quickStart = quickStartPath ? guideSources[quickStartPath] : undefined
+    if (!quickStart) throw new Error('Quick Start guide resource is missing')
+    const fence = [...quickStart.matchAll(/```yaml\n([\s\S]*?)```/g)].find((match) => match[1]?.includes('nodes:'))
+    const definition = fence?.[1]
+    expect(definition).toBeDefined()
+    if (!definition) throw new Error('Quick Start definition fence is missing')
+
+    const analysis = await analyzeWorkflowPair(
+      {
+        type: 'analyze', requestId: 'quick-start', workflowId: 'quick-start', pairGeneration: 0, profile: contract.profile,
+        reason: 'explicit-validate', contractDigest: contract.contract_digest,
+        definition: { path: 'quick-start.yaml', text: definition!, revision: 0 },
+        companion: { path: 'quick-start.hermes.yaml', text: 'language_compatibility: archon-2026-07\n', revision: 0 },
+      },
+      contract,
+    )
+
+    expect(analysis.structurallyValid).toBe(true)
+  })
 })

@@ -7,6 +7,12 @@ import {
   START_HERE,
 } from './navigation'
 
+const guideSources = import.meta.glob('../../../docs/app-guides/*.md', {
+  eager: true,
+  import: 'default',
+  query: '?raw',
+}) as Readonly<Record<string, string>>
+
 describe('documentation navigation metadata', () => {
   it('keeps the first-use reading path and task destinations available', () => {
     expect(START_HERE.map(({ topicId }) => topicId)).toEqual([
@@ -47,5 +53,16 @@ describe('documentation navigation metadata', () => {
       'companion-policy',
       'language-contract',
     ])
+  })
+
+  it('has explicit journey metadata for every bundled guide and no missing guide resource', () => {
+    const ids = Object.keys(guideSources)
+      .map((path) => path.split('/').at(-1)!.replace(/\.md$/, ''))
+      .sort()
+
+    expect(Object.keys(GUIDE_PRESENTATION).sort()).toEqual(ids)
+    expect(ids).toContain('quick-start')
+    expect(ids).toContain('problems-and-validation')
+    expect(ids).toContain('keyboard-shortcuts')
   })
 })
