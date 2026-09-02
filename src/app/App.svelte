@@ -166,13 +166,12 @@
     .map(([path, body]) => {
       const id = path.split('/').at(-1)?.replace(/\.md$/, '') ?? path
       const presentation = GUIDE_PRESENTATION[id]
+      if (!presentation) throw new Error(`Missing documentation guide metadata: ${id}`)
       return {
         id,
-        title: body.match(/^#\s+(.+)$/m)?.[1] ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? path,
+        title: body.match(/^#\s+(.+)$/m)?.[1] ?? id,
         body,
-        group: presentation?.group ?? 'getting-started',
-        useWhen: presentation?.useWhen ?? 'Use this when you need offline workflow authoring guidance.',
-        ...(presentation?.renderer ? { renderer: presentation.renderer } : {}),
+        ...presentation,
       }
     })
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -1804,6 +1803,14 @@
           .then(async (result) => {
             if (
               result.status === 'executed' &&
+              result.commandId === 'workbench.keyboard-shortcuts' &&
+              keyboardOpener &&
+              !keyboardOpener.closest('dialog')
+            ) {
+              keyboardShortcutsOpener = keyboardOpener
+            }
+            if (
+              result.status === 'executed' &&
               result.commandId.startsWith('view.activity.') &&
               !completePageCommand(result.commandId, keyboardOpener) &&
               workbenchPresentation.panels === 'drawers'
@@ -2155,7 +2162,12 @@
           onDocumentation={(id, opener) => {
             exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
-            documentationNavigationRequest = { id: documentationNavigationSequence, topicId: id }
+            const topicId = activeDocumentDocumentationIndex?.byId.has(id)
+              ? id
+              : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
+                ? `contract:${id}`
+                : id
+            documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
             routePageNavigation('documentation', opener, true)
           }}
         />
@@ -2363,7 +2375,7 @@
       <ActivityPage
         activity="documentation"
         title="Documentation"
-        description="Browse the bundled offline workflow reference."
+        description="Start with a task guide or search the complete offline workflow reference."
         showBack
         focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
@@ -2371,6 +2383,7 @@
         {#if documentationIndex}
           <DocumentationView
             index={documentationIndex}
+            {commandSurface}
             topicId={documentationNavigationRequest?.topicId}
             navigationRequestId={documentationNavigationRequest?.id}
             onTopicConsumed={(_id, requestId) => {
@@ -2580,7 +2593,7 @@
       onCancel={closeKeyboardShortcuts}
     >
       <h2 id="keyboard-shortcuts-title" class="visually-hidden">Keyboard shortcuts</h2>
-      <KeyboardShortcuts registry={commandSurface} />
+      <KeyboardShortcuts registry={commandSurface} variant="compact" />
       {#snippet actions()}
         <button
           type="button"

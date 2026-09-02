@@ -73,6 +73,7 @@ describe('ExampleGallery', () => {
     await fireEvent.keyDown(topic, { key: 'Enter' })
     await fireEvent.click(topic)
     expect(onOpenDocumentation).toHaveBeenCalledWith(example, 'workflow-definition', topic)
+    expect(onOpenDocumentation).not.toHaveBeenCalledWith(example, 'contract:workflow-definition', topic)
   })
 
   it('renders loading independently from a resolved empty catalog', async () => {

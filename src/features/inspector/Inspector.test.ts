@@ -578,7 +578,7 @@ describe('Inspector', () => {
     })
     await fireEvent.click(screen.getByRole('tab', { name: 'Docs' }))
 
-    expect(screen.getByLabelText('When documentation')).toBeVisible()
+    expect(screen.getByLabelText('When documentation')).toHaveAttribute('data-topic-id', 'field:prompt.node.when')
     expect(screen.queryByLabelText('Node ID documentation')).not.toBeInTheDocument()
   })
 
