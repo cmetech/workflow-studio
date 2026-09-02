@@ -152,7 +152,7 @@ describe('version one release metadata', () => {
     expect(installing).not.toContain('/v1.0.4/scripts/install')
   })
 
-  it('records the published v1.0.6 state and current v1.0.7 verification evidence', () => {
+  it('records the published v1.0.6 state and verified v1.0.7 draft evidence', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
@@ -179,8 +179,21 @@ describe('version one release metadata', () => {
     expect(acceptance).toMatch(/format[^\n]*lint[^\n]*check[^\n]*contracts[^\n]*examples[^\n]*resources[^\n]*build/i)
     expect(acceptance).toMatch(/clean review/i)
     expect(acceptance).toMatch(/Cargo\/Rust[^\n]*unavailable/i)
-    expect(acceptance).toMatch(/no v1\.0\.7 tag or release exists/i)
-    expect(acceptance).toMatch(/native draft[^\n]*artifacts[^\n]*open/i)
+    expect(acceptance).toContain('0534d785d6d96df00f9da732bdf3c59c80b1d747')
+    expect(acceptance).toContain('https://github.com/cmetech/workflow-studio/actions/runs/33605902987')
+    expect(acceptance).toContain(
+      'https://github.com/cmetech/workflow-studio/releases/tag/untagged-8693db71cfbc5ab247be',
+    )
+    expect(acceptance).toMatch(/draft[^\n]*true[^\n]*prerelease[^\n]*false[^\n]*publishedAt[^\n]*null/i)
+    expect(acceptance).toMatch(/macOS aarch64[^\n]*macOS x86_64[^\n]*Windows x86_64[^\n]*passed/i)
+    expect(acceptance).toMatch(/exact 10-asset inventory/i)
+    expect(acceptance).toMatch(/all (?:nine|9) `?SHA256SUMS`? entries/i)
+    expect(acceptance).toMatch(/latest\.json[^\n]*version `?1\.0\.7`?[^\n]*exactly six/i)
+    expect(acceptance).toContain(
+      '- [x] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures were verified from downloaded draft bytes.',
+    )
+    expect(acceptance).toContain('- [x] No unresolved Critical/Important review finding remains.')
+    expect(acceptance).toContain('- [ ] Release approved for manual publication.')
     expect(acceptance).toMatch(/Windows[^\n]*installed-app[^\n]*(?:not performed|open)/i)
   })
 
