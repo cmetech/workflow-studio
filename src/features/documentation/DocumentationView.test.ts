@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import DocumentationView from './DocumentationView.svelte'
 import { resetDocumentationSession } from '$src/stores/documentation'
 import type { DocumentationIndex, DocumentationTopic, GuideGroupId } from '$src/lib/docs/types'
+import { createCommandRegistry } from '$src/lib/commands/registry'
 
 const guide = (id: string, title: string, group: GuideGroupId): DocumentationTopic => ({
   id: `guide:${id}`,
@@ -80,6 +81,16 @@ function makeIndex(topics: readonly DocumentationTopic[] = [...contexts, ...guid
 }
 
 const index = makeIndex()
+
+const commandSurface = createCommandRegistry()
+commandSurface.registerCommand({
+  id: 'document.save',
+  label: 'Save Workflow Pair',
+  category: 'File',
+  defaultBindings: ['Mod+S'],
+  enabled: () => true,
+  run: () => undefined,
+})
 
 function useNarrowPresentation(matches: boolean): { setMatches(next: boolean): void } {
   let current = matches
@@ -264,5 +275,20 @@ describe('DocumentationView', () => {
 
     await rerender({ index, topicId: undefined, navigationRequestId: undefined, onTopicConsumed })
     expect(screen.queryByRole('article')).not.toBeInTheDocument()
+  })
+
+  it('renders live keyboard help through the selected keyboard guide', async () => {
+    const keyboardGuide: DocumentationTopic = {
+      ...guides.find(({ id }) => id === 'guide:keyboard-shortcuts')!,
+      renderer: 'keyboard-shortcuts',
+    }
+    render(DocumentationView, {
+      index: makeIndex([...contexts, ...guides.filter(({ id }) => id !== keyboardGuide.id), keyboardGuide]),
+      commandSurface,
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /Work faster with keyboard shortcuts/i }))
+    expect(screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' })).toBeVisible()
+    expect(screen.getByText('Save Workflow Pair')).toBeVisible()
   })
 })

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import DocumentationArticle from './DocumentationArticle.svelte'
 import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
+import { createCommandRegistry } from '$src/lib/commands/registry'
 
 const related: DocumentationTopic = {
   id: 'guide:dag-dependencies',
@@ -56,6 +57,8 @@ const index: DocumentationIndex = {
 }
 
 describe('DocumentationArticle', () => {
+  const commandSurface = createCommandRegistry()
+
   it('renders exact topic context, breadcrumbs, contract metadata, examples, and related topics', () => {
     render(DocumentationArticle, {
       topic,
@@ -96,5 +99,52 @@ describe('DocumentationArticle', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
     expect(onBack).toHaveBeenCalledOnce()
+  })
+
+  it('adds the live shortcut reference after the keyboard guide introduction only', async () => {
+    const shortcutTopic: DocumentationTopic = {
+      ...related,
+      id: 'guide:keyboard-shortcuts',
+      title: 'Keyboard shortcuts',
+      body: '# Read the live help\n\nThe live table follows this introduction.',
+      renderer: 'keyboard-shortcuts',
+    }
+    commandSurface.registerCommand({
+      id: 'document.save',
+      label: 'Save Workflow Pair',
+      category: 'File',
+      defaultBindings: ['Mod+S'],
+      enabled: () => true,
+      run: () => undefined,
+    })
+    const shortcutIndex: DocumentationIndex = {
+      ...index,
+      topics: [shortcutTopic, topic],
+      byId: new Map([
+        [shortcutTopic.id, shortcutTopic],
+        [topic.id, topic],
+      ]),
+    }
+
+    const { rerender } = render(DocumentationArticle, {
+      topic: shortcutTopic,
+      index: shortcutIndex,
+      commandSurface,
+      onBack: vi.fn(),
+      onSelectTopic: vi.fn(),
+    })
+
+    expect(screen.getByRole('heading', { name: 'Read the live help' })).toBeVisible()
+    expect(screen.getByRole('searchbox', { name: 'Search keyboard shortcuts' })).toBeVisible()
+    expect(screen.getByText('Save Workflow Pair')).toBeVisible()
+
+    await rerender({
+      topic,
+      index: shortcutIndex,
+      commandSurface,
+      onBack: vi.fn(),
+      onSelectTopic: vi.fn(),
+    })
+    expect(screen.queryByRole('searchbox', { name: 'Search keyboard shortcuts' })).not.toBeInTheDocument()
   })
 })

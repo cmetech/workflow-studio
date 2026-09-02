@@ -4,6 +4,7 @@
   import DocumentationOverview from './DocumentationOverview.svelte'
   import DocumentationTopicList from './DocumentationTopicList.svelte'
   import { searchDocumentation } from '$src/lib/docs/build-index'
+  import { commandRegistry, type CommandSurface } from '$src/lib/commands/registry'
   import type { DocumentationIndex, DocumentationMode, DocumentationTopic, ReferenceGroupId } from '$src/lib/docs/types'
   import {
     $documentationSession as documentationSessionStore,
@@ -13,13 +14,21 @@
 
   interface Props {
     index: DocumentationIndex
+    commandSurface?: CommandSurface
     topicId?: string | undefined
     navigationRequestId?: number | undefined
     onTopicConsumed?: ((id: string, requestId?: number) => void) | undefined
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
-  let { index, topicId, navigationRequestId, onTopicConsumed, onOpenExternal }: Props = $props()
+  let {
+    index,
+    commandSurface = commandRegistry,
+    topicId,
+    navigationRequestId,
+    onTopicConsumed,
+    onOpenExternal,
+  }: Props = $props()
   let session = $state(documentationSessionStore.get())
   let consumedRequestId = $state<number | undefined>()
   let consumedTopicId = $state<string | undefined>()
@@ -367,6 +376,7 @@
       <DocumentationArticle
         topic={selected}
         {index}
+        {commandSurface}
         onBack={returnToResults}
         onSelectTopic={selectTopic}
         {onOpenExternal}

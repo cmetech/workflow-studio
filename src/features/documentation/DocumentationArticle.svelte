@@ -1,16 +1,19 @@
 <script lang="ts">
   import { renderMarkdown } from '$src/lib/docs/render-markdown'
   import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
+  import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
+  import { commandRegistry, type CommandSurface } from '$src/lib/commands/registry'
 
   interface Props {
     topic: DocumentationTopic
     index: DocumentationIndex
+    commandSurface?: CommandSurface
     onBack: () => void
     onSelectTopic: (topic: DocumentationTopic, opener: HTMLElement) => void
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
-  let { topic, index, onBack, onSelectTopic, onOpenExternal }: Props = $props()
+  let { topic, index, commandSurface = commandRegistry, onBack, onSelectTopic, onOpenExternal }: Props = $props()
 
   function displayValue(value: unknown): string {
     return typeof value === 'string' ? value : JSON.stringify(value)
@@ -108,6 +111,10 @@
   {/if}
 
   <div class="markdown" use:delegateLinks use:renderSanitized={topic.body}></div>
+
+  {#if topic.renderer === 'keyboard-shortcuts'}
+    <KeyboardShortcuts registry={commandSurface} variant="documentation" />
+  {/if}
 
   {#if topic.relatedTopicIds?.some((id) => index.byId.has(id))}
     <section aria-labelledby="related-topics-heading">
