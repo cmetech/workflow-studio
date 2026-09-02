@@ -88,6 +88,24 @@ const repeatedContextContract = {
   })),
 } as unknown as AuthoringContract
 
+const contextCollisionContract = {
+  ...repeatedContextContract,
+  documentation: {
+    topics: [
+      {
+        id: 'context-policy',
+        title: 'Context',
+        description: 'Language-level context policy.',
+        body: 'Contract context policy.',
+        field_paths: ['nodes[].context'],
+        applicability: { profiles: ['archon-2026-07'], documents: ['definition'] },
+        examples: [],
+      },
+    ],
+    examples: [],
+  },
+} as unknown as AuthoringContract
+
 describe('buildDocumentationIndex', () => {
   it('derives node and field topics from the active contract without native or network calls', () => {
     const fetchStub = vi.fn(() => Promise.reject(new Error('network must not be used')))
@@ -134,6 +152,16 @@ describe('buildDocumentationIndex', () => {
     expect(searchDocumentation(index, 'context prompt', { mode: 'reference' })[0]).toMatchObject({
       id: 'field:prompt.node.context',
       qualifier: 'Prompt node',
+    })
+  })
+
+  it('keeps matching language-contract topics out of repeated field groups', () => {
+    const index = buildDocumentationIndex(contextCollisionContract)
+
+    expect(index.byId.get('contract:context-policy')).toMatchObject({
+      kind: 'contract',
+      referenceGroup: 'language-contract',
+      breadcrumb: ['Reference', 'Language contract'],
     })
   })
 

@@ -144,6 +144,7 @@ function assignRepeatedFieldGroups(topics: readonly DocumentationTopic[]): reado
   }
   const common = new Set([...grouped].filter(([, values]) => new Set(values.flatMap(({ nodeKinds }) => nodeKinds ?? [])).size > 1).map(([key]) => key))
   return topics.map((topic) => {
+    if (topic.kind !== 'field') return topic
     const key = `${normalize(topic.title)}\0${normalize(topic.fieldPaths[0] ?? '')}`
     return common.has(key) ? { ...topic, referenceGroup: 'common-node-settings' as const, breadcrumb: ['Reference', 'Common node settings'] } : topic
   })
