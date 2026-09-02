@@ -81,10 +81,7 @@ function nodeChordRows(): readonly ShortcutHelpRow[] {
   }))
 }
 
-export function createShortcutHelp(
-  surface: CommandSurface,
-  platform: KeybindingPlatform,
-): readonly ShortcutHelpRow[] {
+export function createShortcutHelp(surface: CommandSurface, platform: KeybindingPlatform): readonly ShortcutHelpRow[] {
   const commandRows = surface
     .listCommands()
     .filter((command) => command.defaultBindings.length > 0)
