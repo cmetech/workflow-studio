@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import DocumentationTopicList from './DocumentationTopicList.svelte'
+import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+import { buildDocumentationIndex } from '$src/lib/docs/build-index'
 import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
 
 const nodeKinds = ['command', 'prompt', 'bash', 'script', 'loop', 'approval', 'cancel'] as const
@@ -85,7 +87,19 @@ describe('DocumentationTopicList', () => {
       onToggleGroup,
     })
 
-    expect(screen.getByRole('heading', { name: 'Common node settings' })).toBeVisible()
+    const referenceGroup = screen.getByRole('button', { name: 'Common node settings, reference group' })
+    expect(referenceGroup).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Context, used by 7 node types' })).not.toBeInTheDocument()
+
+    await fireEvent.click(referenceGroup)
+    expect(onToggleGroup).toHaveBeenCalledWith('reference:common-node-settings')
+    await rerender({
+      ...defaultProps,
+      mode: 'reference',
+      expandedGroupIds: ['reference:common-node-settings'],
+      onToggleGroup,
+    })
+
     const disclosure = screen.getByRole('button', { name: 'Context, used by 7 node types' })
     expect(disclosure).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByRole('button', { name: 'Context, Prompt node' })).not.toBeInTheDocument()
@@ -95,7 +109,7 @@ describe('DocumentationTopicList', () => {
     await rerender({
       ...defaultProps,
       mode: 'reference',
-      expandedGroupIds: ['duplicate:context'],
+      expandedGroupIds: ['reference:common-node-settings', 'duplicate:context'],
       onToggleGroup,
     })
 
@@ -140,5 +154,49 @@ describe('DocumentationTopicList', () => {
       highlightedTopicId: 'field:bash.node.context',
     })
     expect(screen.getByRole('button', { name: 'Context, Prompt node' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('adds YAML locations when real bundled topics collide on title and node qualifier', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    const productionIndex = buildDocumentationIndex(contract)
+    render(DocumentationTopicList, {
+      index: productionIndex,
+      mode: 'reference',
+      query: '',
+      expandedGroupIds: [
+        'reference:common-node-settings',
+        'reference:node-specific-fields',
+        'duplicate:model',
+        'duplicate:max attempts',
+      ],
+      onSelect: vi.fn(),
+      onHighlight: vi.fn(),
+      onToggleGroup: vi.fn(),
+    })
+
+    expect(screen.getByRole('button', { name: 'Model, Prompt node, nodes[].model' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Model, Prompt node, nodes[].agents.*.model' })).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Max attempts, Approval node, nodes[].retry.max_attempts' }),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('button', {
+        name: 'Max attempts, Approval node, nodes[].approval.on_reject.max_attempts',
+      }),
+    ).toBeVisible()
+  })
+
+  it('groups node-specific fields beneath their applicable node kind', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    const productionIndex = buildDocumentationIndex(contract)
+    render(DocumentationTopicList, {
+      ...defaultProps,
+      index: productionIndex,
+      mode: 'reference',
+      expandedGroupIds: ['reference:node-specific-fields'],
+    })
+
+    expect(screen.getByRole('region', { name: 'Prompt node fields' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Bash node fields' })).toBeVisible()
   })
 })

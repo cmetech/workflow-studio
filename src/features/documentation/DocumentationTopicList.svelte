@@ -23,6 +23,12 @@
         readonly topics: readonly DocumentationTopic[]
       }
 
+  interface NodeSpecificGroup {
+    readonly id: string
+    readonly label: string
+    readonly topics: readonly DocumentationTopic[]
+  }
+
   const referenceGroups: readonly { readonly id: ReferenceGroupId; readonly title: string }[] = [
     { id: 'node-types', title: 'Node types' },
     { id: 'common-node-settings', title: 'Common node settings' },
@@ -62,11 +68,81 @@
     return new Set(topics.flatMap(({ nodeKinds }) => nodeKinds ?? [])).size
   }
 
+  function topicAccessibleName(topic: DocumentationTopic): string {
+    const base = `${topic.title}, ${topic.qualifier}`
+    const collides = index.topics.some(
+      (candidate) =>
+        candidate.id !== topic.id &&
+        normalizedTitle(candidate.title) === normalizedTitle(topic.title) &&
+        normalizedTitle(candidate.qualifier) === normalizedTitle(topic.qualifier),
+    )
+    const location = topic.fieldPaths[0]
+    return collides && location ? `${base}, ${location}` : base
+  }
+
+  function nodeSpecificGroups(topics: readonly DocumentationTopic[]): readonly NodeSpecificGroup[] {
+    const groups: { id: string; label: string; topics: DocumentationTopic[] }[] = []
+    for (const topic of topics) {
+      const id = topic.nodeKinds?.[0] ?? 'other'
+      const current = groups.find((group) => group.id === id)
+      if (current) current.topics.push(topic)
+      else groups.push({ id, label: topic.qualifier, topics: [topic] })
+    }
+    return groups.sort((left, right) => left.label.localeCompare(right.label))
+  }
+
   function emptyMessage(): string {
     const scope = mode === 'guides' ? 'guides' : mode === 'reference' ? 'reference topics' : 'documentation'
     return `No ${scope} match “${query}”.${mode === 'all' ? '' : ' Try All documentation.'}`
   }
 </script>
+
+{#snippet topicEntries(topics: readonly DocumentationTopic[])}
+  {#each entriesFor(topics) as entry (entry.kind === 'topic' ? entry.topic.id : entry.id)}
+    {#if entry.kind === 'duplicate'}
+      {@const count = nodeTypeCount(entry.topics)}
+      <div class="duplicate-group">
+        <button
+          type="button"
+          class="disclosure"
+          aria-label={`${entry.title}, used by ${count} node ${count === 1 ? 'type' : 'types'}`}
+          aria-expanded={expandedGroupIds.includes(entry.id)}
+          onclick={() => onToggleGroup(entry.id)}
+        >
+          <strong>{entry.title}</strong>
+          <span>Used by {count} node {count === 1 ? 'type' : 'types'}</span>
+        </button>
+        {#if expandedGroupIds.includes(entry.id)}
+          <div class="duplicate-children">
+            {#each entry.topics as topic (topic.id)}
+              <button
+                type="button"
+                aria-label={topicAccessibleName(topic)}
+                onclick={(event) => onSelect(topic, event.currentTarget)}
+              >
+                <strong>{topic.title}</strong><span>{topic.qualifier}</span>
+                {#if topicAccessibleName(topic) !== `${topic.title}, ${topic.qualifier}`}
+                  <code>{topic.fieldPaths[0]}</code>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <button
+        type="button"
+        aria-label={topicAccessibleName(entry.topic)}
+        onclick={(event) => onSelect(entry.topic, event.currentTarget)}
+      >
+        <strong>{entry.topic.title}</strong><span>{entry.topic.qualifier}</span>
+        {#if topicAccessibleName(entry.topic) !== `${entry.topic.title}, ${entry.topic.qualifier}`}
+          <code>{entry.topic.fieldPaths[0]}</code>
+        {/if}
+      </button>
+    {/if}
+  {/each}
+{/snippet}
 
 {#if query.trim()}
   {#if results.length > 0}
@@ -76,7 +152,7 @@
           <button
             type="button"
             id={`documentation-result-${topic.id}`}
-            aria-label={`${topic.title}, ${topic.qualifier}`}
+            aria-label={topicAccessibleName(topic)}
             aria-current={topic.id === highlightedTopicId ? 'true' : undefined}
             class:highlighted={topic.id === highlightedTopicId}
             onfocus={() => onHighlight(topic.id)}
@@ -126,48 +202,33 @@
     {#each referenceGroups as group (group.id)}
       {@const topics = index.referenceGroups.get(group.id) ?? []}
       {#if topics.length > 0}
-        <section class="topic-group" aria-labelledby={`documentation-group-${group.id}`} aria-label={group.title}>
-          <h2 id={`documentation-group-${group.id}`} tabindex="-1">{group.title}</h2>
-          <div class="topic-rows">
-            {#each entriesFor(topics) as entry (entry.kind === 'topic' ? entry.topic.id : entry.id)}
-              {#if entry.kind === 'duplicate'}
-                {@const count = nodeTypeCount(entry.topics)}
-                <div class="duplicate-group">
-                  <button
-                    type="button"
-                    class="disclosure"
-                    aria-label={`${entry.title}, used by ${count} node ${count === 1 ? 'type' : 'types'}`}
-                    aria-expanded={expandedGroupIds.includes(entry.id)}
-                    onclick={() => onToggleGroup(entry.id)}
-                  >
-                    <strong>{entry.title}</strong>
-                    <span>Used by {count} node {count === 1 ? 'type' : 'types'}</span>
-                  </button>
-                  {#if expandedGroupIds.includes(entry.id)}
-                    <div class="duplicate-children">
-                      {#each entry.topics as topic (topic.id)}
-                        <button
-                          type="button"
-                          aria-label={`${topic.title}, ${topic.qualifier}`}
-                          onclick={(event) => onSelect(topic, event.currentTarget)}
-                        >
-                          <strong>{topic.title}</strong><span>{topic.qualifier}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {:else}
-                <button
-                  type="button"
-                  aria-label={`${entry.topic.title}, ${entry.topic.qualifier}`}
-                  onclick={(event) => onSelect(entry.topic, event.currentTarget)}
-                >
-                  <strong>{entry.topic.title}</strong><span>{entry.topic.qualifier}</span>
-                </button>
-              {/if}
-            {/each}
-          </div>
+        <section class="topic-group" aria-labelledby={`documentation-group-heading-${group.id}`}>
+          <h2 id={`documentation-group-heading-${group.id}`}>
+            <button
+              type="button"
+              id={`documentation-group-${group.id}`}
+              class="reference-group-disclosure"
+              aria-label={`${group.title}, reference group`}
+              aria-expanded={expandedGroupIds.includes(`reference:${group.id}`)}
+              onclick={() => onToggleGroup(`reference:${group.id}`)}
+            >
+              <span>{group.title}</span><span aria-hidden="true">⌄</span>
+            </button>
+          </h2>
+          {#if expandedGroupIds.includes(`reference:${group.id}`)}
+            {#if group.id === 'node-specific-fields'}
+              <div class="node-specific-groups">
+                {#each nodeSpecificGroups(topics) as nodeGroup (nodeGroup.id)}
+                  <section class="node-specific-group" aria-label={`${nodeGroup.label} fields`}>
+                    <h3>{nodeGroup.label}</h3>
+                    <div class="topic-rows">{@render topicEntries(nodeGroup.topics)}</div>
+                  </section>
+                {/each}
+              </div>
+            {:else}
+              <div class="topic-rows">{@render topicEntries(topics)}</div>
+            {/if}
+          {/if}
         </section>
       {/if}
     {/each}
@@ -180,6 +241,8 @@
   .topic-rows,
   .duplicate-group,
   .duplicate-children,
+  .node-specific-groups,
+  .node-specific-group,
   .result-list {
     display: grid;
     gap: var(--space-2);
@@ -191,6 +254,10 @@
   h2 {
     margin: 0;
     font-size: 1rem;
+  }
+  h3 {
+    margin: 0;
+    font-size: 0.85rem;
   }
   button {
     display: grid;
@@ -216,6 +283,16 @@
   .disclosure {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
+  }
+  .reference-group-disclosure {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    font: inherit;
+  }
+  .reference-group-disclosure span:first-child {
+    color: var(--color-text);
+    font-size: inherit;
   }
   .duplicate-children {
     padding-inline-start: var(--space-3);

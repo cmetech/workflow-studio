@@ -137,6 +137,10 @@ describe('DocumentationView', () => {
     expect(screen.getByRole('heading', { name: 'Build the graph' })).toBeVisible()
 
     await fireEvent.click(screen.getByRole('tab', { name: 'Reference' }))
+    expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
     const disclosure = screen.getByRole('button', { name: 'Context, used by 7 node types' })
     expect(disclosure).toHaveAttribute('aria-expanded', 'false')
     await fireEvent.click(disclosure)
@@ -144,7 +148,7 @@ describe('DocumentationView', () => {
     expect(screen.getByRole('button', { name: 'Context, Bash node' })).toBeVisible()
   })
 
-  it('bypasses Overview for an exact contextual request and acknowledges it once', () => {
+  it('bypasses Overview for an exact contextual request and restores the prior Back target', async () => {
     const onTopicConsumed = vi.fn()
     render(DocumentationView, {
       index,
@@ -156,7 +160,30 @@ describe('DocumentationView', () => {
     expect(screen.getByRole('article', { name: 'Context' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Context' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Reference' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Common node settings, reference group' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Context, used by 7 node types' })).toBeVisible()
     expect(onTopicConsumed).toHaveBeenCalledWith('field:prompt.node.context', 9)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('opens and focuses the Overview reference group entry point', async () => {
+    render(DocumentationView, { index })
+
+    await fireEvent.click(screen.getByRole('button', { name: /Common node settings/i }))
+
+    expect(screen.getByRole('tab', { name: 'Reference' })).toHaveAttribute('aria-selected', 'true')
+    const group = screen.getByRole('button', { name: 'Common node settings, reference group' })
+    expect(group).toHaveAttribute('aria-expanded', 'true')
+    expect(group).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Context, used by 7 node types' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
   it('restores focus to the exact task card that opened an article', async () => {

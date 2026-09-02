@@ -27,6 +27,7 @@
   let layout = $state<HTMLElement>()
   let navigation = $state<HTMLElement>()
   let searchInput = $state<HTMLInputElement>()
+  let transientNavigationMode = $state<'guides' | 'reference' | undefined>()
   let selectionOpener: HTMLElement | undefined
   let modeBeforeAll: Exclude<DocumentationMode, 'all'> = 'overview'
   let narrowPresentation = $state(window.matchMedia?.('(max-width: 48rem)').matches ?? false)
@@ -36,7 +37,8 @@
 
   const selected = $derived(session.selectedTopicId ? (index.byId.get(session.selectedTopicId) ?? null) : null)
   const presentationMode = $derived(modeForPresentation(session.mode, selected))
-  const searchMode = $derived<'guides' | 'reference' | 'all'>(session.mode === 'overview' ? 'all' : session.mode)
+  const navigationMode = $derived<DocumentationMode>(transientNavigationMode ?? session.mode)
+  const searchMode = $derived<'guides' | 'reference' | 'all'>(navigationMode === 'overview' ? 'all' : navigationMode)
   const searchResults = $derived(
     session.query.trim() ? searchDocumentation(index, session.query, { mode: searchMode }) : [],
   )
@@ -92,6 +94,7 @@
     const opener = selectionOpener
     const selectedId = session.selectedTopicId
     responsiveFocusOwned = false
+    transientNavigationMode = undefined
     updateDocumentationSession({
       selectedTopicId: undefined,
       articleScrollTop: article?.scrollTop ?? session.articleScrollTop,
@@ -112,7 +115,17 @@
   function setMode(mode: Exclude<DocumentationMode, 'all'>): void {
     modeBeforeAll = mode
     selectionOpener = undefined
-    updateDocumentationSession({ mode, selectedTopicId: undefined, highlightedTopicId: undefined })
+    transientNavigationMode = undefined
+    const expandedGroupIds =
+      mode === 'reference'
+        ? [...session.expandedGroupIds.filter((id) => !id.startsWith('reference:')), 'reference:common-node-settings']
+        : session.expandedGroupIds
+    updateDocumentationSession({
+      mode,
+      selectedTopicId: undefined,
+      highlightedTopicId: undefined,
+      expandedGroupIds,
+    })
   }
 
   function setAllDocumentation(checked: boolean): void {
@@ -143,14 +156,13 @@
 
   function browseReference(group: ReferenceGroupId, opener: HTMLElement): void {
     selectionOpener = opener
+    transientNavigationMode = undefined
     modeBeforeAll = 'reference'
     const groupId = `reference:${group}`
     updateDocumentationSession({
       mode: 'reference',
       selectedTopicId: undefined,
-      expandedGroupIds: session.expandedGroupIds.includes(groupId)
-        ? session.expandedGroupIds
-        : [...session.expandedGroupIds, groupId],
+      expandedGroupIds: [...session.expandedGroupIds.filter((id) => !id.startsWith('reference:')), groupId],
     })
     void tick().then(() => document.getElementById(`documentation-group-${group}`)?.focus())
   }
@@ -208,6 +220,17 @@
     responsiveFocusOwned = false
   }
 
+  function selectContextualTopic(topic: DocumentationTopic): void {
+    transientNavigationMode = topic.kind === 'guide' ? 'guides' : 'reference'
+    const referenceGroupId = topic.referenceGroup ? `reference:${topic.referenceGroup}` : undefined
+    if (referenceGroupId) {
+      updateDocumentationSession({
+        expandedGroupIds: [...session.expandedGroupIds.filter((id) => !id.startsWith('reference:')), referenceGroupId],
+      })
+    }
+    selectTopic(topic)
+  }
+
   onMount(() => {
     unsubscribeSession = documentationSessionStore.subscribe((value) => {
       session = value
@@ -245,11 +268,11 @@
   $effect(() => {
     const topic = topicId ? index.byId.get(topicId) : undefined
     if (topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
-      selectTopic(topic)
+      selectContextualTopic(topic)
       consumedRequestId = navigationRequestId
       onTopicConsumed?.(topic.id, navigationRequestId)
     } else if (topic && navigationRequestId === undefined && consumedTopicId !== topic.id) {
-      selectTopic(topic)
+      selectContextualTopic(topic)
       consumedTopicId = topic.id
       onTopicConsumed?.(topic.id)
     } else if (topicId && !topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
@@ -304,7 +327,7 @@
       </div>
 
       <div id="documentation-results" class="navigation-content">
-        {#if session.mode === 'overview' && !session.query.trim()}
+        {#if navigationMode === 'overview' && !session.query.trim()}
           <DocumentationOverview
             onSelectTopic={(id, opener) => {
               const topic = index.byId.get(id)
