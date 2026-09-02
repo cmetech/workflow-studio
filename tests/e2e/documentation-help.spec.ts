@@ -20,13 +20,18 @@ async function openSeededPairFromCompactWorkbench(page: Page): Promise<void> {
   await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
 }
 
-async function assertReachable(locator: Locator, viewportHeight: number): Promise<void> {
+async function assertReachable(
+  locator: Locator,
+  viewport: { readonly width: number; readonly height: number },
+): Promise<void> {
   await locator.scrollIntoViewIfNeeded()
   await expect(locator).toBeVisible()
   const bounds = await locator.boundingBox()
   expect(bounds).not.toBeNull()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width)
   expect(bounds!.y).toBeGreaterThanOrEqual(0)
-  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewportHeight)
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height)
 }
 
 test('documentation, repeated reference fields, shortcut help, and session state remain available offline', async ({
@@ -37,6 +42,11 @@ test('documentation, repeated reference fields, shortcut help, and session state
 
   await expect(documentation.getByRole('heading', { name: 'Start here' })).toBeVisible()
   await expect(documentation.getByText('Context', { exact: true })).toHaveCount(0)
+  await page.route('**/*', (route) => {
+    const url = new URL(route.request().url())
+    if (url.origin === new URL(page.url()).origin) void route.continue()
+    else void route.abort('blockedbyclient')
+  })
 
   const quickStart = documentation.getByRole('button', { name: 'Quick Start', exact: true })
   await quickStart.click()
@@ -91,11 +101,6 @@ test('documentation, repeated reference fields, shortcut help, and session state
   await page.getByRole('button', { name: 'Documentation', exact: true }).click()
   await expect(shortcutArticle).toBeVisible()
 
-  await page.route('**/*', (route) => {
-    const url = new URL(route.request().url())
-    if (url.origin === new URL(page.url()).origin) void route.continue()
-    else void route.abort('blockedbyclient')
-  })
   await shortcutArticle.getByRole('button', { name: 'Back to Results' }).click()
   await documentation.getByRole('button', { name: 'Quick Start', exact: true }).click()
   await expect(documentation.getByRole('article', { name: 'Quick Start' })).toBeVisible()
@@ -114,12 +119,12 @@ for (const viewport of [
     const documentation = await openDocumentation(page)
 
     for (const name of ['Overview', 'Guides', 'Reference'])
-      await assertReachable(documentation.getByRole('tab', { name }), viewport.height)
+      await assertReachable(documentation.getByRole('tab', { name }), viewport)
     await expectExactWorkbenchGeometry(page)
 
     await documentation.getByRole('button', { name: 'Quick Start', exact: true }).click()
     const back = documentation.getByRole('button', { name: 'Back to Results' })
-    await assertReachable(back, viewport.height)
+    await assertReachable(back, viewport)
     const containedScroller = await page.locator('[data-workbench-page="documentation"]').evaluate((activity) => {
       const candidates = [
         activity.querySelector<HTMLElement>('[data-page-scroll]'),
@@ -136,7 +141,7 @@ for (const viewport of [
 
     await back.click()
     for (const name of ['Overview', 'Guides', 'Reference'])
-      await assertReachable(documentation.getByRole('tab', { name }), viewport.height)
+      await assertReachable(documentation.getByRole('tab', { name }), viewport)
     await expectExactWorkbenchGeometry(page)
   })
 }
