@@ -1,8 +1,15 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte'
-  import { renderMarkdown } from '$src/lib/docs/render-markdown'
+  import DocumentationArticle from './DocumentationArticle.svelte'
+  import DocumentationOverview from './DocumentationOverview.svelte'
+  import DocumentationTopicList from './DocumentationTopicList.svelte'
   import { searchDocumentation } from '$src/lib/docs/build-index'
-  import type { DocumentationIndex, DocumentationTopic, DocumentationTopicKind } from '$src/lib/docs/types'
+  import type { DocumentationIndex, DocumentationMode, DocumentationTopic, ReferenceGroupId } from '$src/lib/docs/types'
+  import {
+    $documentationSession as documentationSessionStore,
+    reconcileDocumentationSession,
+    updateDocumentationSession,
+  } from '$src/stores/documentation'
 
   interface Props {
     index: DocumentationIndex
@@ -13,66 +20,167 @@
   }
 
   let { index, topicId, navigationRequestId, onTopicConsumed, onOpenExternal }: Props = $props()
-  let query = $state('')
-  let kind = $state<DocumentationTopicKind | 'all'>('all')
-  let highlighted = $state(0)
-  let selected = $state<DocumentationTopic | null>(null)
-  let history = $state<readonly string[]>([])
+  let session = $state(documentationSessionStore.get())
   let consumedRequestId = $state<number | undefined>()
   let consumedTopicId = $state<string | undefined>()
   let reconciledIndex: DocumentationIndex | undefined
-  let article = $state<HTMLElement>()
+  let layout = $state<HTMLElement>()
   let navigation = $state<HTMLElement>()
   let searchInput = $state<HTMLInputElement>()
-  let backToResults = $state<HTMLButtonElement>()
+  let selectionOpener: HTMLElement | undefined
+  let modeBeforeAll: Exclude<DocumentationMode, 'all'> = 'overview'
   let narrowPresentation = $state(window.matchMedia?.('(max-width: 48rem)').matches ?? false)
   let responsiveFocusOwned = false
   let presentationQuery: MediaQueryList | undefined
-  const results = $derived(
-    searchDocumentation(index, query, { mode: kind === 'guide' ? 'guides' : 'all' }).filter(
-      (topic) => kind === 'all' || topic.kind === kind,
-    ),
+  let unsubscribeSession: (() => void) | undefined
+
+  const selected = $derived(session.selectedTopicId ? (index.byId.get(session.selectedTopicId) ?? null) : null)
+  const presentationMode = $derived(modeForPresentation(session.mode, selected))
+  const searchMode = $derived<'guides' | 'reference' | 'all'>(session.mode === 'overview' ? 'all' : session.mode)
+  const searchResults = $derived(
+    session.query.trim() ? searchDocumentation(index, session.query, { mode: searchMode }) : [],
+  )
+  const activeResultId = $derived(
+    searchResults.some(({ id }) => id === session.highlightedTopicId)
+      ? `documentation-result-${session.highlightedTopicId}`
+      : undefined,
   )
 
-  function activeResultId(): string | undefined {
-    const topic = results[highlighted]
-    return topic ? `documentation-result-${topic.id}` : undefined
+  function modeForPresentation(mode: DocumentationMode, topic: DocumentationTopic | null): DocumentationMode {
+    if (!topic || mode === 'all') return mode
+    const topicMode: DocumentationMode = topic.kind === 'guide' ? 'guides' : 'reference'
+    return mode === topicMode ? mode : topicMode
   }
 
-  function select(topic: DocumentationTopic): void {
+  function articleElement(): HTMLElement | undefined {
+    return layout?.querySelector<HTMLElement>(':scope > article') ?? undefined
+  }
+
+  function backButton(): HTMLButtonElement | undefined {
+    return articleElement()?.querySelector<HTMLButtonElement>('.back-to-results') ?? undefined
+  }
+
+  function selectTopic(topic: DocumentationTopic, opener?: HTMLElement): void {
     const focused = document.activeElement
-    responsiveFocusOwned = focused instanceof Node && navigation?.contains(focused) === true
-    selected = topic
-    history = [topic.id, ...history.filter((id) => id !== topic.id)].slice(0, 5)
-    void revealSelectedTopic(topic.id)
+    selectionOpener = opener
+    responsiveFocusOwned = narrowPresentation || (focused instanceof Node && navigation?.contains(focused) === true)
+    updateDocumentationSession({
+      selectedTopicId: topic.id,
+      history: [topic.id, ...session.history.filter((id) => id !== topic.id)].slice(0, 5),
+      articleScrollTop: 0,
+    })
+    void revealSelectedTopic(topic.id, Boolean(opener && articleElement()?.contains(opener)))
   }
 
-  async function revealSelectedTopic(topicId: string): Promise<void> {
+  async function revealSelectedTopic(selectedId: string, fromArticle = false): Promise<void> {
     await tick()
-    if (selected?.id !== topicId) return
+    if (session.selectedTopicId !== selectedId) return
+    const article = articleElement()
     if (article) article.scrollTop = 0
-    if (!narrowPresentation) return
-    const pageScroll = article?.closest<HTMLElement>('[data-page-scroll]')
-    if (pageScroll) pageScroll.scrollTop = 0
-    responsiveFocusOwned = true
-    backToResults?.focus({ preventScroll: true })
+    if (narrowPresentation) {
+      const pageScroll = article?.closest<HTMLElement>('[data-page-scroll]')
+      if (pageScroll) pageScroll.scrollTop = 0
+      responsiveFocusOwned = true
+      backButton()?.focus({ preventScroll: true })
+    } else if (fromArticle) {
+      article?.focus({ preventScroll: true })
+    }
   }
 
   function returnToResults(): void {
+    const article = articleElement()
+    const opener = selectionOpener
+    const selectedId = session.selectedTopicId
     responsiveFocusOwned = false
-    const selectedId = selected?.id
-    selected = null
+    updateDocumentationSession({
+      selectedTopicId: undefined,
+      articleScrollTop: article?.scrollTop ?? session.articleScrollTop,
+    })
     void tick().then(() => {
-      if (!selectedId) return
-      const selectedResult = document.getElementById(`documentation-result-${selectedId}`)
-      const target = selectedResult ?? searchInput
-      target?.focus()
+      const exactResult = selectedId ? document.getElementById(`documentation-result-${selectedId}`) : undefined
+      const target = opener?.isConnected ? opener : (exactResult ?? searchInput ?? selectedTab())
+      target?.focus({ preventScroll: true })
+      if (navigation) navigation.scrollTop = session.navigationScrollTop
     })
   }
 
-  function selectedResultTarget(): HTMLElement | undefined {
-    const selectedId = selected?.id
-    return selectedId ? (document.getElementById(`documentation-result-${selectedId}`) ?? searchInput) : searchInput
+  function selectedTab(): HTMLElement | undefined {
+    const selectedTab = layout?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+    return selectedTab ?? undefined
+  }
+
+  function setMode(mode: Exclude<DocumentationMode, 'all'>): void {
+    modeBeforeAll = mode
+    selectionOpener = undefined
+    updateDocumentationSession({ mode, selectedTopicId: undefined, highlightedTopicId: undefined })
+  }
+
+  function setAllDocumentation(checked: boolean): void {
+    if (checked) {
+      if (session.mode !== 'all') modeBeforeAll = session.mode
+      const highlightedTopicId = searchDocumentation(index, session.query, { mode: 'all' })[0]?.id
+      updateDocumentationSession({ mode: 'all', highlightedTopicId })
+    } else {
+      const mode = modeBeforeAll
+      const scope = mode === 'overview' ? 'all' : mode
+      const highlightedTopicId = searchDocumentation(index, session.query, { mode: scope })[0]?.id
+      updateDocumentationSession({ mode, highlightedTopicId })
+    }
+  }
+
+  function setQuery(query: string): void {
+    let mode = session.mode
+    if (query && mode === 'overview') {
+      modeBeforeAll = 'overview'
+      mode = 'all'
+    } else if (!query && mode === 'all') {
+      mode = modeBeforeAll
+    }
+    const scope = mode === 'overview' ? 'all' : mode
+    const highlightedTopicId = query ? searchDocumentation(index, query, { mode: scope })[0]?.id : undefined
+    updateDocumentationSession({ query, mode, highlightedTopicId })
+  }
+
+  function browseReference(group: ReferenceGroupId, opener: HTMLElement): void {
+    selectionOpener = opener
+    modeBeforeAll = 'reference'
+    const groupId = `reference:${group}`
+    updateDocumentationSession({
+      mode: 'reference',
+      selectedTopicId: undefined,
+      expandedGroupIds: session.expandedGroupIds.includes(groupId)
+        ? session.expandedGroupIds
+        : [...session.expandedGroupIds, groupId],
+    })
+    void tick().then(() => document.getElementById(`documentation-group-${group}`)?.focus())
+  }
+
+  function toggleGroup(groupId: string): void {
+    const expandedGroupIds = session.expandedGroupIds.includes(groupId)
+      ? session.expandedGroupIds.filter((id) => id !== groupId)
+      : [...session.expandedGroupIds, groupId]
+    updateDocumentationSession({ expandedGroupIds })
+  }
+
+  function searchKeydown(event: KeyboardEvent): void {
+    if (!session.query.trim() || searchResults.length === 0) return
+    const currentIndex = searchResults.findIndex(({ id }) => id === session.highlightedTopicId)
+    if (event.key === 'ArrowDown') {
+      const nextIndex = Math.min(currentIndex + 1, searchResults.length - 1)
+      updateDocumentationSession({ highlightedTopicId: searchResults[Math.max(0, nextIndex)]?.id })
+      event.preventDefault()
+    } else if (event.key === 'ArrowUp') {
+      const nextIndex = Math.max(currentIndex <= 0 ? 0 : currentIndex - 1, 0)
+      updateDocumentationSession({ highlightedTopicId: searchResults[nextIndex]?.id })
+      event.preventDefault()
+    } else if (event.key === 'Enter') {
+      const topic = searchResults.find(({ id }) => id === session.highlightedTopicId)
+      if (topic) {
+        const opener = document.getElementById(`documentation-result-${topic.id}`) ?? searchInput
+        selectTopic(topic, opener)
+        event.preventDefault()
+      }
+    }
   }
 
   function presentationChanged(event: MediaQueryListEvent): void {
@@ -83,29 +191,47 @@
     if (narrowPresentation && ((focused instanceof Node && navigation?.contains(focused)) || responsiveFocusOwned)) {
       void tick().then(() => {
         responsiveFocusOwned = true
-        backToResults?.focus({ preventScroll: true })
+        backButton()?.focus({ preventScroll: true })
       })
-    } else if (!narrowPresentation && (focused === backToResults || responsiveFocusOwned)) {
+    } else if (!narrowPresentation && (focused === backButton() || responsiveFocusOwned)) {
       responsiveFocusOwned = false
-      void tick().then(() => selectedResultTarget()?.focus({ preventScroll: true }))
+      void tick().then(() => {
+        const target = selectionOpener?.isConnected ? selectionOpener : selectedTab()
+        target?.focus({ preventScroll: true })
+      })
     }
   }
 
   function focusChanged(event: FocusEvent): void {
-    if (!responsiveFocusOwned || event.target === backToResults) return
+    if (!responsiveFocusOwned || event.target === backButton()) return
     if (event.target instanceof Node && navigation?.contains(event.target)) return
     responsiveFocusOwned = false
   }
 
   onMount(() => {
+    unsubscribeSession = documentationSessionStore.subscribe((value) => {
+      session = value
+    })
     presentationQuery = window.matchMedia?.('(max-width: 48rem)')
-    if (!presentationQuery) return
-    narrowPresentation = presentationQuery.matches
-    presentationQuery.addEventListener?.('change', presentationChanged)
+    if (presentationQuery) {
+      narrowPresentation = presentationQuery.matches
+      presentationQuery.addEventListener?.('change', presentationChanged)
+    }
     document.addEventListener('focusin', focusChanged)
+    void tick().then(() => {
+      if (navigation) navigation.scrollTop = session.navigationScrollTop
+      const article = articleElement()
+      if (article) article.scrollTop = session.articleScrollTop
+    })
   })
 
   onDestroy(() => {
+    const article = articleElement()
+    updateDocumentationSession({
+      navigationScrollTop: navigation?.scrollTop ?? session.navigationScrollTop,
+      articleScrollTop: article?.scrollTop ?? session.articleScrollTop,
+    })
+    unsubscribeSession?.()
     presentationQuery?.removeEventListener?.('change', presentationChanged)
     document.removeEventListener('focusin', focusChanged)
   })
@@ -113,19 +239,17 @@
   $effect(() => {
     if (index === reconciledIndex) return
     reconciledIndex = index
-    selected = selected ? (index.byId.get(selected.id) ?? null) : null
-    history = history.filter((id) => index.byId.has(id))
-    highlighted = Math.min(highlighted, Math.max(0, results.length - 1))
+    reconcileDocumentationSession(index)
   })
 
   $effect(() => {
     const topic = topicId ? index.byId.get(topicId) : undefined
     if (topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
-      if (selected?.id !== topic.id) select(topic)
+      selectTopic(topic)
       consumedRequestId = navigationRequestId
       onTopicConsumed?.(topic.id, navigationRequestId)
     } else if (topic && navigationRequestId === undefined && consumedTopicId !== topic.id) {
-      if (selected?.id !== topic.id) select(topic)
+      selectTopic(topic)
       consumedTopicId = topic.id
       onTopicConsumed?.(topic.id)
     } else if (topicId && !topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
@@ -133,125 +257,97 @@
       onTopicConsumed?.(topicId, navigationRequestId)
     }
   })
-
-  function searchKeydown(event: KeyboardEvent): void {
-    if (event.key === 'ArrowDown') {
-      highlighted = Math.min(highlighted + 1, Math.max(0, results.length - 1))
-      event.preventDefault()
-    } else if (event.key === 'ArrowUp') {
-      highlighted = Math.max(highlighted - 1, 0)
-      event.preventDefault()
-    } else if (event.key === 'Enter') {
-      const topic = results[highlighted]
-      if (topic) {
-        select(topic)
-        event.preventDefault()
-      }
-    }
-  }
-
-  function delegateLinks(node: HTMLElement): { destroy(): void } {
-    const followLink = (event: MouseEvent): void => {
-      const internal =
-        event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-topic-id]') : null
-      const topic = internal?.dataset.topicId ? index.byId.get(internal.dataset.topicId) : undefined
-      if (topic) {
-        select(topic)
-        void tick().then(() => article?.focus())
-        return
-      }
-      const target =
-        event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-external-url]') : null
-      const url = target?.dataset.externalUrl
-      if (url) onOpenExternal?.(url)
-    }
-    node.addEventListener('click', followLink)
-    return { destroy: () => node.removeEventListener('click', followLink) }
-  }
-
-  function renderSanitized(node: HTMLElement, markdown: string): { update(next: string): void } {
-    const update = (next: string): void => {
-      node.innerHTML = renderMarkdown(next)
-    }
-    update(markdown)
-    return { update }
-  }
 </script>
 
 <section class="documentation" aria-label="Offline documentation" data-profile={index.topics[0]?.profile}>
-  <div class="documentation-layout" class:detail-active={selected !== null}>
+  <div bind:this={layout} class="documentation-layout" class:detail-active={selected !== null}>
     <section
       bind:this={navigation}
       class="documentation-navigation"
       data-testid="documentation-navigation"
       aria-label="Documentation navigation"
+      onscroll={() => updateDocumentationSession({ navigationScrollTop: navigation?.scrollTop ?? 0 })}
     >
-      <label>
-        Search documentation
-        <input
-          bind:this={searchInput}
-          type="search"
-          bind:value={query}
-          aria-controls="documentation-results"
-          aria-activedescendant={activeResultId()}
-          oninput={() => (highlighted = 0)}
-          onkeydown={searchKeydown}
-        />
-      </label>
-      <label>
-        Topic type
-        <select aria-label="Topic type" bind:value={kind} onchange={() => (highlighted = 0)}>
-          <option value="all">All topics</option>
-          <option value="node">Nodes</option>
-          <option value="field">Fields</option>
-          <option value="guide">Guides</option>
-          <option value="contract">Contract</option>
-        </select>
-      </label>
-      <div id="documentation-results" role="listbox" aria-label="Documentation results">
-        {#each results as topic, index (topic.id)}
+      <div class="mode-tabs" role="tablist" aria-label="Documentation mode">
+        {#each ['overview', 'guides', 'reference'] as mode (mode)}
           <button
-            role="option"
-            id={`documentation-result-${topic.id}`}
-            aria-selected={index === highlighted}
-            class:highlighted={index === highlighted}
-            onclick={() => {
-              highlighted = index
-              select(topic)
-            }}
+            type="button"
+            role="tab"
+            aria-selected={presentationMode === mode}
+            onclick={() => setMode(mode as 'overview' | 'guides' | 'reference')}
+            >{mode[0]?.toUpperCase()}{mode.slice(1)}</button
           >
-            <strong>{topic.title}</strong><span>{topic.kind}</span>
-          </button>
         {/each}
       </div>
-      {#if results.length === 0}<p class="empty-results" role="status">No documentation matches</p>{/if}
-      {#if history.length > 0}
+
+      <div class="search-controls">
+        <label>
+          Search documentation
+          <input
+            bind:this={searchInput}
+            type="search"
+            value={session.query}
+            aria-controls="documentation-results"
+            aria-activedescendant={activeResultId}
+            oninput={(event) => setQuery(event.currentTarget.value)}
+            onkeydown={searchKeydown}
+          />
+        </label>
+        <label class="all-documentation">
+          <input
+            type="checkbox"
+            checked={session.mode === 'all'}
+            onchange={(event) => setAllDocumentation(event.currentTarget.checked)}
+          />
+          All documentation
+        </label>
+      </div>
+
+      <div id="documentation-results" class="navigation-content">
+        {#if session.mode === 'overview' && !session.query.trim()}
+          <DocumentationOverview
+            onSelectTopic={(id, opener) => {
+              const topic = index.byId.get(id)
+              if (topic) selectTopic(topic, opener)
+            }}
+            onBrowseReference={browseReference}
+          />
+        {:else}
+          <DocumentationTopicList
+            {...session.highlightedTopicId ? { highlightedTopicId: session.highlightedTopicId } : {}}
+            {index}
+            mode={searchMode}
+            query={session.query}
+            expandedGroupIds={session.expandedGroupIds}
+            onSelect={selectTopic}
+            onHighlight={(highlightedTopicId) => updateDocumentationSession({ highlightedTopicId })}
+            onToggleGroup={toggleGroup}
+          />
+        {/if}
+      </div>
+
+      {#if session.history.length > 0}
         <nav aria-label="Documentation history">
-          {#each history as id (id)}
+          {#each session.history as id (id)}
             {@const topic = index.byId.get(id)}
-            {#if topic}<button type="button" onclick={() => select(topic)}>{topic.title} — {topic.id}</button>{/if}
+            {#if topic}
+              <button type="button" onclick={(event) => selectTopic(topic, event.currentTarget)}>
+                {topic.title} — {topic.id}
+              </button>
+            {/if}
           {/each}
         </nav>
       {/if}
     </section>
+
     {#if selected}
-      <article aria-label={selected.title} bind:this={article} tabindex="-1" use:delegateLinks>
-        <button
-          bind:this={backToResults}
-          class="back-to-results"
-          type="button"
-          data-variant="ghost"
-          onclick={returnToResults}>Back to Results</button
-        >
-        <h2>{selected.title}</h2>
-        {#if selected.examples.length > 0}
-          <section aria-label="Examples">
-            <h3>Examples</h3>
-            <pre>{JSON.stringify(selected.examples[0], null, 2)}</pre>
-          </section>
-        {/if}
-        <div class="markdown" use:renderSanitized={selected.body}></div>
-      </article>
+      <DocumentationArticle
+        topic={selected}
+        {index}
+        onBack={returnToResults}
+        onSelectTopic={selectTopic}
+        {onOpenExternal}
+      />
     {/if}
   </div>
 </section>
@@ -265,13 +361,16 @@
   }
   .documentation-layout {
     display: grid;
-    grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+    grid-template-columns: minmax(18rem, 25rem) minmax(0, 1fr);
     gap: var(--space-3);
     height: 100%;
     min-width: 0;
     min-height: 0;
     padding: var(--space-3);
     overflow: hidden;
+  }
+  .documentation-layout:not(.detail-active) {
+    grid-template-columns: minmax(0, 1fr);
   }
   .documentation-navigation {
     display: grid;
@@ -281,99 +380,91 @@
     min-height: 0;
     overflow: auto;
   }
+  .mode-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.25rem;
+  }
+  [role='tab'] {
+    min-height: 2.25rem;
+    color: var(--color-text);
+    background: transparent;
+    border: 1px solid var(--color-border);
+  }
+  [role='tab'][aria-selected='true'] {
+    color: var(--color-on-accent);
+    background: var(--color-accent);
+  }
+  .search-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: var(--space-2);
+  }
   label {
     display: grid;
     gap: 0.25rem;
     color: var(--color-text-muted);
     font-size: 0.75rem;
   }
-  input,
-  select {
+  input[type='search'] {
+    min-width: 0;
     min-height: 2rem;
     color: var(--color-text);
     background: var(--color-surface);
     border: 1px solid var(--color-border);
   }
-  [role='listbox'] {
-    display: grid;
-    gap: 0.25rem;
+  .all-documentation {
+    display: flex;
+    align-items: center;
+    min-height: 2rem;
+    white-space: nowrap;
+  }
+  .navigation-content {
     min-width: 0;
   }
-  [role='option'] {
+  nav[aria-label='Documentation history'] {
     display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    text-align: left;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+  nav[aria-label='Documentation history'] button {
+    min-width: 0;
     color: var(--color-text);
     background: transparent;
     border: 1px solid var(--color-border);
-    min-width: 0;
+    overflow-wrap: anywhere;
   }
-  [role='option'].highlighted,
-  [role='option']:focus-visible {
+  button:focus-visible,
+  input:focus-visible {
     outline: 3px solid var(--color-focus);
-    outline-offset: 1px;
+    outline-offset: 2px;
   }
-  [role='option'] span {
-    min-width: 0;
-    color: var(--color-text-muted);
-    font-size: 0.7rem;
-    overflow-wrap: anywhere;
-  }
-  [role='option'] strong {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  article {
-    min-width: 0;
-    min-height: 0;
-    padding: var(--space-1) var(--space-3) var(--space-4);
-    overflow: auto;
-    overflow-wrap: anywhere;
-  }
-  article h2 {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  article pre {
-    max-width: 100%;
-    overflow-x: auto;
-  }
-  .back-to-results {
-    display: none;
-  }
-  .empty-results {
-    margin: 0;
-    color: var(--color-text-muted);
-  }
-  .markdown :global(pre),
-  .markdown :global(code) {
-    white-space: pre-wrap;
-  }
-
   @media (max-width: 48rem) {
     .documentation {
       height: auto;
     }
-
     .documentation-layout {
       display: block;
       height: auto;
       overflow: visible;
     }
-
     .documentation-navigation,
-    article {
+    .documentation-layout :global(article) {
       overflow: visible;
     }
-
     .documentation-layout.detail-active .documentation-navigation {
       display: none;
     }
-
-    .back-to-results {
-      display: inline-flex;
+    .search-controls {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (forced-colors: active) {
+    [role='tab'][aria-selected='true'] {
+      color: HighlightText;
+      background: Highlight;
+      border-color: Highlight;
     }
   }
 </style>

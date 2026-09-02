@@ -18,7 +18,7 @@ export function renderMarkdown(markdown: string): string {
   for (const link of template.content.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const rawHref = link.getAttribute('href') ?? ''
     if (rawHref.startsWith('#')) {
-      if (/^#(?:field|node|contract):[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawHref)) {
+      if (/^#(?:field|node|contract|guide):[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawHref)) {
         const button = document.createElement('button')
         button.type = 'button'
         button.dataset.topicId = rawHref.slice(1)

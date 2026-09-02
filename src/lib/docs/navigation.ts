@@ -27,8 +27,11 @@ export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
 }
 
 export const START_HERE = [
-  { topicId: 'guide:quick-start' }, { topicId: 'guide:workflow-pairs' }, { topicId: 'guide:dag-dependencies' },
-  { topicId: 'guide:problems-and-validation' }, { topicId: 'guide:keyboard-shortcuts' },
+  { topicId: 'guide:quick-start', title: 'Quick Start' },
+  { topicId: 'guide:workflow-pairs', title: 'Workflow pairs' },
+  { topicId: 'guide:dag-dependencies', title: 'DAG dependencies' },
+  { topicId: 'guide:problems-and-validation', title: 'Problems and validation' },
+  { topicId: 'guide:keyboard-shortcuts', title: 'Keyboard shortcuts' },
 ] as const
 
 export const DOCUMENTATION_TASKS: readonly DocumentationTask[] = [

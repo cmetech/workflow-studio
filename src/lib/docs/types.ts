@@ -57,6 +57,17 @@ export interface DocumentationSearchOptions {
   readonly referenceGroup?: ReferenceGroupId
 }
 
+export interface DocumentationSessionState {
+  readonly mode: DocumentationMode
+  readonly query: string
+  readonly selectedTopicId?: string
+  readonly history: readonly string[]
+  readonly highlightedTopicId?: string
+  readonly expandedGroupIds: readonly string[]
+  readonly navigationScrollTop: number
+  readonly articleScrollTop: number
+}
+
 export interface DocumentationIndex {
   readonly topics: readonly DocumentationTopic[]
   byId: Map<string, DocumentationTopic>
