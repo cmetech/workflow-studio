@@ -29,7 +29,7 @@ v1.0.1 remains unpublished as a failed draft after its final metadata-normalizat
 
 ## v1.0.7 candidate evidence
 
-The current local record has format, lint, check, contracts, examples, resources, and build passing, along with 1,162 non-Cargo unit tests and 302/302 Playwright E2E tests across Chromium and WebKit after the final fixes. The Space-pan correction has 38 focused tests passing and a clean review. Cargo/Rust was unavailable in the local environment, so local Rust tests and native packaging were not run. The protected native draft, signed updater artifacts, exact release inventory, and macOS/Windows clean-machine evidence remain open.
+The current local record has format, lint, check, contracts, examples, resources, and build passing. The exact command `npx vitest run --exclude tests/installers/install-script.test.ts --exclude '.worktrees/**'` passed 1,163 tests across 130 files; it excludes the entire Cargo-dependent installer test file. A separate focused run passed 49/49 Cargo-independent installer checks while the 38-test Cargo-backed release-verifier block remained skipped. The full Playwright suite passed 302/302 across Chromium and WebKit after the final fixes. The Space-pan correction has 38 focused tests passing and a clean review. Cargo/Rust was unavailable in the local environment, so local Rust tests and native packaging were not run. The protected native draft, signed updater artifacts, exact release inventory, and macOS/Windows clean-machine evidence remain open.
 
 ## Updater-key custody
 

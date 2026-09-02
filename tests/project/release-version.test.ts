@@ -168,7 +168,11 @@ describe('version one release metadata', () => {
     expect(acceptance).toContain('0ecb5bd46a49cebe4037825856411d8ead5db17f')
     expect(acceptance).toContain('Recorded: 2026-09-02')
     expect(acceptance).toContain('published on 2026-08-31')
-    expect(acceptance).toContain('1,162 non-Cargo unit tests')
+    expect(acceptance).toContain(
+      "npx vitest run --exclude tests/installers/install-script.test.ts --exclude '.worktrees/**'",
+    )
+    expect(acceptance).toContain('1,163 tests across 130 files')
+    expect(acceptance).toContain('49/49 Cargo-independent installer checks')
     expect(acceptance).toContain('302/302')
     expect(acceptance).toMatch(/Chromium[^\n]*WebKit/i)
     expect(acceptance).toContain('38 Space-pan focused tests')
