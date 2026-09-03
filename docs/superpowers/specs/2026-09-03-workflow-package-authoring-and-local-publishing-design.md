@@ -1,6 +1,6 @@
 # Workflow Package Authoring and Local Publishing Design
 
-**Status:** Approved in design discussion; pending written-spec review
+**Status:** Approved
 
 **Date:** 2026-09-03
 
