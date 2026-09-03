@@ -1,8 +1,11 @@
 # Workflow Package Authoring and Local Publishing Design
 
-**Status:** Approved in design discussion; pending written-spec review  
-**Date:** 2026-09-03  
-**Audience:** Engineers implementing, reviewing, testing, documenting, or maintaining Workflow Studio package authoring  
+**Status:** Approved in design discussion; pending written-spec review
+
+**Date:** 2026-09-03
+
+**Audience:** Engineers implementing, reviewing, testing, documenting, or maintaining Workflow Studio package authoring
+
 **Related specification:** `docs/superpowers/specs/2026-07-25-workflow-studio-design.md`
 
 ## 1. Product decision
