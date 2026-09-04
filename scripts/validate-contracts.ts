@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { sha256Hex } from '../src/lib/contract/canonical-json'
@@ -8,6 +8,8 @@ import type { WorkflowProfile } from '../src/lib/contract/types'
 import { compareCodePoints, deterministicJson } from './sync-contracts'
 
 const profiles = ['archon-2026-07', 'hermes-legacy'] as const
+const maxContractBytes = 1024 * 1024
+const maxCorpusBytes = 512 * 1024
 
 export async function validateContractResources(directory = resolve('contracts')): Promise<readonly string[]> {
   const errors: string[] = []
@@ -72,6 +74,10 @@ async function validatePair(
     return
   }
   try {
+    if ((await stat(join(directory, entry.file))).size > maxContractBytes) {
+      errors.push(`${entry.file}: exceeds ${maxContractBytes} byte contract resource bound.`)
+      return
+    }
     const contractBytes = await readFile(join(directory, entry.file))
     const text = new TextDecoder('utf-8', { fatal: true }).decode(contractBytes)
     const parsed = JSON.parse(text)
@@ -95,6 +101,10 @@ async function validatePair(
       Object.keys(entry).length !== Object.keys(expected).length
     )
       errors.push(`manifest.json: ${profile} metadata drift.`)
+    if ((await stat(join(directory, entry.corpus_file))).size > maxCorpusBytes) {
+      errors.push(`${entry.corpus_file}: exceeds ${maxCorpusBytes} byte corpus resource bound.`)
+      return
+    }
     const corpusBytes = await readFile(join(directory, entry.corpus_file))
     const corpusText = new TextDecoder('utf-8', { fatal: true }).decode(corpusBytes)
     const corpusParsed = JSON.parse(corpusText)

@@ -1,4 +1,5 @@
 import type { AuthoringContract } from '$src/lib/contract/types'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue, WorkflowPairText } from './types'
 import { editDocumentText } from './revisions'
@@ -96,7 +97,11 @@ export async function applyWorkflowMutation(
     await yieldBeforeStructuralValidation()
     const analysis = await analyze(proposedPair, contract)
     structuralAnalysis = analysis
-    if (!analysis.structurallyValid && !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract))) {
+    if (
+      !analysis.structurallyValid &&
+      !(analysis.visuallyAuthorable && progressiveDraftMutation(mutation, contract)) &&
+      !isBundledV6RootDraft(mutation, analysis, contract)
+    ) {
       return {
         ok: false,
         code: 'mutation_invalid_workflow',
@@ -123,6 +128,53 @@ export async function applyWorkflowMutation(
       selection: selectionHint(mutation),
     },
   }
+}
+
+const bundledArchonV6Digest = 'sha256:fb25d0cd4749774f2db5b38e376071159a011f326eeca9cbc88847ddbfdd0fa0'
+
+function isBundledV6RootDraft(
+  mutation: WorkflowMutation,
+  analysis: DocumentAnalysis,
+  contract: AuthoringContract,
+): boolean {
+  if (mutation.type !== 'add-node' || contract.contract_digest !== bundledArchonV6Digest) return false
+  try {
+    readScopedDagCapabilities(contract)
+  } catch {
+    return false
+  }
+  const descriptorRoots = contract.node_kinds
+    .filter(
+      (descriptor) =>
+        descriptor.status === 'supported' &&
+        descriptor.applicability.documents.includes('definition') &&
+        descriptor.field_path.startsWith('nodes[].') &&
+        !descriptor.field_path.slice('nodes[].'.length).includes('.'),
+    )
+    .map((descriptor) => descriptor.field_path.slice('nodes[].'.length))
+  const present = descriptorRoots.filter((key) => Object.hasOwn(mutation.node, key))
+  if (
+    !Object.hasOwn(mutation.node, 'id') ||
+    present.length !== 1 ||
+    !Object.keys(mutation.node).every((key) => key === 'id' || key === present[0])
+  )
+    return false
+  const blocking = analysis.issues.filter((issue) => issue.blocking)
+  const nodeIndexes = new Set(
+    blocking
+      .map((issue) => issue.path?.split('/')[2])
+      .filter((segment): segment is string => /^\d+$/.test(segment ?? '')),
+  )
+  return (
+    blocking.length > 0 &&
+    nodeIndexes.size === 1 &&
+    blocking.every(
+      (issue) =>
+        issue.layer === 'contract' &&
+        issue.document === 'definition' &&
+        ['schema_required', 'schema_additional_properties', 'schema_one_of', 'schema_min_length'].includes(issue.code),
+    )
+  )
 }
 
 function analyzeMutationLocally(pair: WorkflowPairText, contract: AuthoringContract): Promise<DocumentAnalysis> {

@@ -37,13 +37,22 @@ export function loadConformanceCorpus(bytes: Uint8Array, contract: AuthoringCont
   const identity = isRecord(parsed.contract) ? parsed.contract : null
   if (
     !identity ||
+    identity.schema_version !== contract.schema_version ||
     identity.contract_digest !== contract.contract_digest ||
-    identity.contract_reader_version !== contract.contract_reader_version
+    identity.contract_reader_version !== contract.contract_reader_version ||
+    identity.normalizer !== 'plugins.workflow.language.normalize_workflow' ||
+    identity.validator !== 'plugins.workflow.schema._compile_workflow_source_document'
   )
     throw new Error('The Hermes conformance corpus contract identity does not match its paired contract.')
   if (!Array.isArray(parsed.cases) || parsed.cases.length === 0)
     throw new Error('The Hermes conformance corpus has no cases.')
   const cases = parsed.cases.map(parseCase)
+  if (
+    cases.some(
+      (fixture) => fixture.profile !== contract.profile || fixture.normalizerVersion !== contract.normalizer_version,
+    )
+  )
+    throw new Error('The Hermes conformance corpus case identity does not match its paired contract.')
   if (new Set(cases.map((fixture) => fixture.id)).size !== cases.length)
     throw new Error('The Hermes conformance corpus case IDs must be unique.')
   return Object.freeze({

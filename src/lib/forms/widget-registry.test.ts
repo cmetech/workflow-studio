@@ -167,6 +167,53 @@ describe('schema-driven widget registry', () => {
     )
   })
 
+  it('fails coverage for a generated schema field without a widget, documentation, or non-visual status', () => {
+    const incomplete = contract({
+      definition_schema: {
+        ...contract().definition_schema,
+        properties: {
+          ...(contract().definition_schema.properties as Record<string, unknown>),
+          future_field: { type: 'string', 'x-hermes-status': 'supported' },
+        },
+      },
+    })
+
+    expect(
+      validateContractFormCoverage(incomplete) as readonly { readonly code: string; readonly fieldPath: string }[],
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'field_visual_coverage_missing', fieldPath: 'future_field' }),
+      ]),
+    )
+  })
+
+  it('fails coverage for a widget field outside every generated documentation topic', () => {
+    const incomplete = contract({
+      definition_schema: {
+        ...contract().definition_schema,
+        properties: {
+          ...(contract().definition_schema.properties as Record<string, unknown>),
+          future_widget: {
+            type: 'string',
+            title: 'Future widget',
+            description: 'Published but undocumented field.',
+            examples: ['value'],
+            'x-hermes-widget': 'text',
+            'x-hermes-section': 'General',
+            'x-hermes-order': 9,
+            'x-hermes-status': 'supported',
+          },
+        },
+      },
+    })
+
+    expect(validateContractFormCoverage(incomplete)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'field_documentation_missing', fieldPath: 'future_widget' }),
+      ]),
+    )
+  })
+
   it.each(['text', 'textarea', 'code', 'number', 'boolean', 'enum', 'array', 'map', 'object', 'json-schema'])(
     'resolves the supported %s widget without a raw fallback',
     (widget) => {

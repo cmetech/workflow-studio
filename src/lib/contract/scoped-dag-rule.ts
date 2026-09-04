@@ -1,4 +1,5 @@
 import type { AuthoringContract, SemanticRuleDescriptor } from './types'
+import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 
 export interface ScopedDagCapabilities {
   readonly groupKind: 'loop_group'
@@ -19,6 +20,12 @@ export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDa
   const topology = requireRule(rules.get('scoped-dag-topology-v1'), 'scoped DAG topology capability')
   const references = requireRule(rules.get('scoped-output-reference-v1'), 'scoped output reference capability')
   const workProduct = requireRule(rules.get('loop-group-work-product-v1'), 'loop-group work-product capability')
+  if (
+    !sameGeneratedRule(topology, 'scoped-dag-topology-v1') ||
+    !sameGeneratedRule(references, 'scoped-output-reference-v1') ||
+    !sameGeneratedRule(workProduct, 'loop-group-work-product-v1')
+  )
+    throw new Error('The scoped DAG semantic capability is unsupported by this Studio reader.')
   const parameters = topology.parameters
   if (
     parameters.kind !== 'scoped-dag-topology-v1' ||
@@ -49,6 +56,28 @@ export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDa
     references: references.parameters,
     workProduct: workProduct.parameters,
   })
+}
+
+const generatedScopedRules = new Map(
+  (JSON.parse(archonContractText) as { semantic_rules: readonly Record<string, unknown>[] }).semantic_rules
+    .filter((rule) => typeof rule.id === 'string')
+    .map((rule) => [
+      rule.id as string,
+      stableJson(Object.fromEntries(Object.entries(rule).filter(([key]) => key !== 'id'))),
+    ]),
+)
+
+function sameGeneratedRule(rule: SemanticRuleDescriptor, id: string): boolean {
+  return generatedScopedRules.get(id) === stableJson(rule.parameters)
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (!value || typeof value !== 'object') return JSON.stringify(value)
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(',')}}`
 }
 
 function requireRule(rule: SemanticRuleDescriptor | undefined, name: string): SemanticRuleDescriptor {

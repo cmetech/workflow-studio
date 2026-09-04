@@ -106,7 +106,8 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
   const advisories: ContractCacheAdvisory[] = []
   const coverage = options.widgetCoverage ?? validateContractFormCoverage
 
-  for (const contract of options.bundled) activeByProfile.set(contract.profile, contract.contract_digest)
+  for (const contract of options.bundled)
+    if (activationReadiness(contract) === null) activeByProfile.set(contract.profile, contract.contract_digest)
 
   function activationReadiness(
     contract: AuthoringContract,
@@ -126,7 +127,12 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     const entries: ContractCacheEntry[] = []
     for (const contract of bundled.values())
       entries.push(
-        publicEntry(contract, 'bundled', activeByProfile.get(contract.profile) === contract.contract_digest, true),
+        publicEntry(
+          contract,
+          'bundled',
+          activeByProfile.get(contract.profile) === contract.contract_digest,
+          activationReadiness(contract) === null,
+        ),
       )
     for (const value of cached.values()) {
       entries.push({
@@ -220,7 +226,7 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
         existingBundled,
         'bundled',
         activeByProfile.get(existingBundled.profile) === existingBundled.contract_digest,
-        true,
+        activationReadiness(existingBundled) === null,
       )
     }
     const value = await acceptStored(stored, importOptions.cacheUnsupported === true)

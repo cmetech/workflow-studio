@@ -34,8 +34,8 @@ async function corpus(profile: 'hermes-legacy' | 'archon-2026-07'): Promise<Reco
     contract: {
       schema_version: 1,
       contract_reader_version: 1,
-      normalizer: 'fixture',
-      validator: 'fixture',
+      normalizer: 'plugins.workflow.language.normalize_workflow',
+      validator: 'plugins.workflow.schema._compile_workflow_source_document',
       contract_digest: contract.contract_digest,
     },
     cases: [
@@ -238,6 +238,33 @@ describe('contract resource synchronization', () => {
         expect.stringMatching(/exactly one.*archon-2026-07/i),
         expect.stringMatching(/unexpected\.json/i),
       ]),
+    )
+  })
+
+  it('rejects a contract resource that exceeds the contract-gate byte bound', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-size-'))
+    const legacyPath = join(directory, 'legacy-input.json')
+    const archonPath = join(directory, 'archon-input.json')
+    const legacyCorpusPath = join(directory, 'legacy.corpus.json')
+    const archonCorpusPath = join(directory, 'archon.corpus.json')
+    const outputDirectory = join(directory, 'output')
+    await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
+    await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await writeFile(legacyCorpusPath, JSON.stringify(await corpus('hermes-legacy')))
+    await writeFile(archonCorpusPath, JSON.stringify(await corpus('archon-2026-07')))
+    await syncContracts({
+      source: {
+        kind: 'files',
+        contracts: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath },
+        corpora: { 'hermes-legacy': legacyCorpusPath, 'archon-2026-07': archonCorpusPath },
+      },
+      generatedAt: '2026-07-29T00:00:00.000Z',
+      outputDirectory,
+    })
+    await writeFile(join(outputDirectory, 'archon-2026-07-v1.json'), Buffer.alloc(1024 * 1024 + 1))
+
+    await expect(validateContractResources(outputDirectory)).resolves.toEqual(
+      expect.arrayContaining([expect.stringMatching(/exceeds.*byte contract resource bound/i)]),
     )
   })
 })

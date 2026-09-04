@@ -113,6 +113,13 @@ export function validateContractFormCoverage(contract: AuthoringContract): reado
   const issues: FormCoverageIssue[] = []
   const fields = collectContractFields(contract)
 
+  for (const uncovered of undocumentedSchemaFields(contract))
+    issues.push({
+      code: 'field_visual_coverage_missing',
+      fieldPath: uncovered,
+      message: `${uncovered} has neither a usable visual widget nor generated documentation/non-visual status.`,
+    })
+
   for (const field of fields) {
     const resolution = resolveWidget(field)
     if (!resolution.ok) {
@@ -124,7 +131,7 @@ export function validateContractFormCoverage(contract: AuthoringContract): reado
         message: `${field.widget} is incompatible with ${field.fieldPath}.`,
       })
     }
-    if (!field.description.trim() || field.examples.length === 0) {
+    if (!field.description.trim() || field.examples.length === 0 || !hasDocumentationTopic(contract, field.fieldPath)) {
       issues.push({
         code: 'field_documentation_missing',
         fieldPath: field.fieldPath,
@@ -176,6 +183,37 @@ export function validateContractFormCoverage(contract: AuthoringContract): reado
     }
   }
   return issues
+}
+
+function hasDocumentationTopic(contract: AuthoringContract, fieldPath: string): boolean {
+  return contract.documentation.topics.some((topic) =>
+    topic.field_paths.some(
+      (topicPath) =>
+        topicPath === fieldPath || fieldPath.startsWith(`${topicPath}.`) || fieldPath.startsWith(`${topicPath}[]`),
+    ),
+  )
+}
+
+function undocumentedSchemaFields(contract: AuthoringContract): readonly string[] {
+  const documented = new Set(contract.documentation.topics.flatMap((topic) => topic.field_paths))
+  const missing: string[] = []
+  const visit = (schema: unknown, path: string): void => {
+    const value = record(schema)
+    if (!value) return
+    if (
+      path &&
+      value['x-hermes-status'] === 'supported' &&
+      typeof value['x-hermes-widget'] !== 'string' &&
+      !documented.has(path)
+    )
+      missing.push(path)
+    const properties = record(value.properties)
+    for (const [name, child] of Object.entries(properties ?? {})) visit(child, path ? `${path}.${name}` : name)
+    if (value.items !== undefined) visit(value.items, `${path}[]`)
+  }
+  visit(contract.definition_schema, '')
+  visit(contract.sidecar_schema, 'sidecar')
+  return missing
 }
 
 function collectDocumentFields(

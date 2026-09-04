@@ -76,6 +76,7 @@ export interface FormCoverageIssue {
     | 'field_path_duplicate'
     | 'field_order_duplicate'
     | 'field_schema_missing'
+    | 'field_visual_coverage_missing'
   readonly fieldPath: string
   readonly message: string
 }

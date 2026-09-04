@@ -32,4 +32,13 @@ describe('scoped DAG capability reader', () => {
 
     expect(() => readScopedDagCapabilities(withoutReferences)).toThrow(/scoped output reference capability/i)
   })
+
+  it('refuses activation when any published scoped semantic parameter changes', async () => {
+    const contract = await archonContract()
+    const semantic_rules = contract.semantic_rules.map((rule) =>
+      rule.id === 'scoped-dag-topology-v1' ? { ...rule, parameters: { ...rule.parameters, max_nodes: 513 } } : rule,
+    )
+
+    expect(() => readScopedDagCapabilities({ ...contract, semantic_rules })).toThrow(/unsupported/i)
+  })
 })

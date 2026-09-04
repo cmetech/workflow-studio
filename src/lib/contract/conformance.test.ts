@@ -33,4 +33,23 @@ describe('Hermes conformance corpus reader', () => {
       /normalizer/i,
     )
   })
+
+  it('rejects mismatched corpus generator identity and per-case contract identity', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const generatorMismatch = JSON.parse(archonCorpusText) as Record<string, unknown>
+    ;(generatorMismatch.contract as Record<string, unknown>).schema_version = 999
+    expect(() =>
+      loadConformanceCorpus(new TextEncoder().encode(JSON.stringify(generatorMismatch)), loaded.contract),
+    ).toThrow(/identity/i)
+
+    const caseMismatch = JSON.parse(archonCorpusText) as Record<string, unknown>
+    ;(caseMismatch.cases as Record<string, unknown>[])[0]!.profile = 'hermes-legacy'
+    expect(() =>
+      loadConformanceCorpus(new TextEncoder().encode(JSON.stringify(caseMismatch)), loaded.contract),
+    ).toThrow(/case identity/i)
+  })
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import archonFixtureText from '../../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
 import legacyFixtureText from '../../../tests/fixtures/contracts/minimal-legacy-v1.json?raw'
+import { loadBundledAuthoringContracts } from './bundled-contracts'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { createContractCache } from './contract-cache'
 import { loadAuthoringContract } from './contract-loader'
@@ -272,6 +273,31 @@ describe('contract cache activation', () => {
       code: 'contract_semantic_capability_unsupported',
     })
     expect(cache.activeContract('archon-2026-07')?.contract_digest).not.toBe(imported.digest)
+  })
+
+  it('does not advertise a bundled scoped contract with changed semantics as active or activatable', async () => {
+    const contracts = await loadBundledAuthoringContracts()
+    const archon = contracts.find((contract) => contract.profile === 'archon-2026-07')!
+    const changed = {
+      ...archon,
+      semantic_rules: archon.semantic_rules.map((rule) =>
+        rule.id === 'scoped-dag-topology-v1' ? { ...rule, parameters: { ...rule.parameters, max_nodes: 513 } } : rule,
+      ),
+    }
+    const cache = createContractCache({
+      bundled: [changed, ...contracts.filter((contract) => contract.profile !== 'archon-2026-07')],
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
+
+    expect(cache.listCachedContracts().find((entry) => entry.profile === 'archon-2026-07')).toMatchObject({
+      active: false,
+      canActivate: false,
+    })
+    await expect(cache.activateContract(changed.contract_digest, changed.profile)).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_semantic_capability_unsupported',
+    })
   })
 
   it('reverts an active cached contract to its bundled profile before removing it', async () => {

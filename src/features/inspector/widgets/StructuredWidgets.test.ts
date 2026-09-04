@@ -31,6 +31,20 @@ function field(overrides: Partial<FormField>): FormField {
 }
 
 describe('recursive structured inspector controls', () => {
+  it('validates generic JSON widget values against the published schema before committing', async () => {
+    const onCommit = vi.fn()
+    const jsonField = field({
+      label: 'Matcher',
+      widget: 'text',
+      schema: { oneOf: [{ type: 'string', maxLength: 3 }, { type: 'null' }] },
+    })
+    render(JsonSchemaField, { field: jsonField, value: 'toolong', present: true, onCommit })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply Matcher' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/must contain at most 3 characters/i)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
   it('edits array items with typed controls and enforces nested numeric constraints locally', async () => {
     const onCommit = vi.fn()
     const arrayField = field({
