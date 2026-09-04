@@ -117,13 +117,14 @@ function validateBodyGraph(graph: ProjectedGraph, context: ValidationContext, is
   const dag = validateDag(graph, context.contract.semantic_rules, { references: false })
   for (const issue of dag.issues) {
     const missingDependency = issue.code === 'missing_dependency'
+    const path = issue.code === 'dependency_cycle' ? pointerPath(graph.sourcePath) : issue.path
     issues.push(
       scopedIssue(context, graph, {
         code: missingDependency
           ? context.capabilities.topology.validation_codes.visibility
           : context.capabilities.topology.validation_codes.topology,
         message: issue.message,
-        path: issue.path ?? pointerPath(graph.sourcePath),
+        path: path ?? pointerPath(graph.sourcePath),
         nodeId: issue.nodeId ?? groupId,
         field: issue.field ?? context.capabilities.dependsOnField,
       }),
@@ -225,9 +226,10 @@ function validateBodyReferences(
       if (!startsWithPath(occurrence.path, groupNodePath)) continue
       const consumer = bodyConsumer(graph, occurrence.path)
       const nodeId = consumer?.id ?? graph.scope.groupId ?? ''
-      const field = fieldIdentity(occurrence.path, consumer?.source.path)
+      const field = fieldIdentity(occurrence.path, consumer?.source.path ?? pointerPath(groupNodePath))
+      const previousReferences = collectReferences(occurrence.value, grammar.previous)
       if (previousApplies) {
-        for (const reference of collectReferences(occurrence.value, grammar.previous)) {
+        for (const reference of previousReferences) {
           const producer = bodyById.get(reference.producer)
           if (!producer) {
             issues.push(
@@ -236,6 +238,12 @@ function validateBodyReferences(
           } else {
             validateStructuredReference(context, graph, occurrence.path, nodeId, field, producer, reference, issues)
           }
+        }
+      } else {
+        for (const reference of previousReferences) {
+          issues.push(
+            referenceIssue(context, graph, occurrence.path, nodeId, field, 'unknownProducer', reference.producer),
+          )
         }
       }
       for (const reference of collectReferences(
@@ -333,7 +341,11 @@ function validateCompanionReferences(context: ValidationContext, issues: Validat
     for (const occurrence of expandFieldPath(context.projection.companion, fieldPath)) {
       if (typeof occurrence.value !== 'string') continue
       const match = matcher.exec(occurrence.value)
-      if (!match) continue
+      if (!match) {
+        if (uniqueNodes(context.root.nodes).has(occurrence.value)) continue
+        issues.push(companionReferenceIssue(context, occurrence, occurrence.value))
+        continue
+      }
       const groupId = match.groups?.group
       const childId = match.groups?.child
       if (!groupId || !childId) continue
@@ -341,24 +353,35 @@ function validateCompanionReferences(context: ValidationContext, issues: Validat
         (candidate) => candidate.scope.kind === 'loop-group' && candidate.scope.groupId === groupId,
       )
       if (graph?.nodes.some(({ id }) => id === childId)) continue
-      const targetGraph = graph ?? syntheticGraph(context.root, groupId)
-      issues.push(
-        scopedIssue(
-          context,
-          targetGraph,
-          {
-            code: context.capabilities.referenceSemantics.diagnosticCodes.unknownCompanionNode,
-            message: `Companion reference "${occurrence.value}" does not name a known group child.`,
-            path: pointerPath(occurrence.path),
-            nodeId: childId,
-            field: fieldIdentity(occurrence.path),
-          },
-          'companion',
-          groupId,
-        ),
-      )
+      issues.push(companionReferenceIssue(context, occurrence, occurrence.value, groupId, childId))
     }
   }
+}
+
+function companionReferenceIssue(
+  context: ValidationContext,
+  occurrence: FieldOccurrence,
+  reference: string,
+  parsedGroupId = reference.split('/')[0],
+  parsedChildId = reference.split('/')[1],
+): ValidationIssue {
+  const graph = context.projection.graphs.find(
+    (candidate) => candidate.scope.kind === 'loop-group' && candidate.scope.groupId === parsedGroupId,
+  )
+  const groupId = graph?.scope.groupId
+  return scopedIssue(
+    context,
+    graph ?? context.root,
+    {
+      code: context.capabilities.referenceSemantics.diagnosticCodes.unknownCompanionNode,
+      message: `Companion reference "${reference}" does not name a known group child.`,
+      path: pointerPath(occurrence.path),
+      nodeId: parsedChildId ?? parsedGroupId ?? reference,
+      field: fieldIdentity(occurrence.path),
+    },
+    'companion',
+    groupId,
+  )
 }
 
 interface ParsedReference {
@@ -725,13 +748,6 @@ function nodeIdAtPath(graph: ProjectedGraph, path: string): string | undefined {
   if (!startsWithPath(tokens, graph.sourcePath)) return undefined
   const index = tokens[graph.sourcePath.length]
   return typeof index === 'number' ? graph.nodes[index]?.id : undefined
-}
-
-function syntheticGraph(root: ProjectedGraph, groupId: string): ProjectedGraph {
-  return {
-    ...root,
-    scope: { ...root.scope, key: `loop-group:${groupId}`, kind: 'loop-group', groupId },
-  }
 }
 
 function formattedPathMatcher(format: string): RegExp | null {

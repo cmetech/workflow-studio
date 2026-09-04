@@ -254,6 +254,20 @@ describe('DocumentClient', () => {
     client.dispose()
   })
 
+  it('rejects an otherwise-current response whose profile identity is independently mismatched', () => {
+    const worker = new FakeWorker()
+    const accepted: DocumentAnalysis[] = []
+    const client = new DocumentClient(worker, { onAnalysis: (analysis) => accepted.push(analysis) })
+
+    client.schedule(pair(), contract, 'open')
+    const request = analyzeRequests(worker)[0]
+    if (!request) throw new Error('missing request')
+    worker.emit({ ...successFor(request), profile: 'hermes-legacy' })
+
+    expect(accepted).toEqual([])
+    client.dispose()
+  })
+
   it('rejects a response for old paths after an identity-preserving rename', () => {
     const worker = new FakeWorker()
     const accepted: DocumentAnalysis[] = []

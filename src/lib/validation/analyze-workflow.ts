@@ -233,9 +233,13 @@ function explicitEmptyScopedDraft(
   const blockers = issues.filter(({ blocking }) => blocking)
   if (blockers.length === 0 || blockers.some(({ code }) => code !== capabilities.topology.validation_codes.nesting))
     return false
-  const groups = projection.graphs.filter(({ scope }) => scope.kind === 'loop-group')
-  if (groups.length === 0) return false
-  return groups.every((graph) => {
+  const draftGroupIds = new Set(blockers.map(({ groupId }) => groupId).filter(isString))
+  if (draftGroupIds.size === 0 || blockers.some(({ groupId }) => !groupId)) return false
+  const draftGraphs = projection.graphs.filter(
+    ({ scope }) => scope.kind === 'loop-group' && scope.groupId && draftGroupIds.has(scope.groupId),
+  )
+  if (draftGraphs.length !== draftGroupIds.size) return false
+  return draftGraphs.every((graph) => {
     const body = valueAtOwnPath(definition, graph.sourcePath)
     const groupNode = valueAtOwnPath(definition, graph.sourcePath.slice(0, -capabilities.bodyPath.length))
     const payload = isRecord(groupNode) ? valueAtOwnPath(groupNode, [capabilities.groupKind]) : undefined
@@ -307,9 +311,7 @@ function selectWorkflowProfile(companionValue: unknown): WorkflowProfileSelectio
 }
 
 function hasBlockingIssue(issues: readonly ValidationIssue[]): boolean {
-  return issues.some(
-    (issue) => issue.blocking && (issue.layer === 'syntax' || issue.layer === 'contract' || issue.layer === 'semantic'),
-  )
+  return issues.some((issue) => issue.blocking)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

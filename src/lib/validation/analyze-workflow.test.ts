@@ -260,7 +260,7 @@ describe('workflow pair analysis', () => {
         .map(({ code }) => code)
         .sort()
       if (
-        !analysis.issues.some(({ blocking }) => blocking) !== testCase.valid ||
+        analysis.structurallyValid !== testCase.valid ||
         JSON.stringify(actualCodes) !== JSON.stringify(expectedCodes)
       ) {
         mismatches.push({ id: testCase.id, expectedValid: testCase.valid, expectedCodes, actualCodes })
@@ -666,6 +666,79 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues.map(({ code }) => code)).toEqual(['loop_group_shape_invalid'])
   })
 
+  it('keeps a valid populated group authorable beside one explicit empty group draft', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Mixed groups',
+      'description: Repair only the empty group visually.',
+      'nodes:',
+      '  - id: populated',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: work',
+      '          prompt: Work.',
+      '  - id: empty',
+      '    loop_group:',
+      '      nodes: []',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect((analysis.projection as WorkflowProjection | undefined)?.graphs).toHaveLength(3)
+    expect(analysis.issues).toEqual([expect.objectContaining({ code: 'loop_group_shape_invalid', groupId: 'empty' })])
+  })
+
+  it('does not let an empty group draft mask a separate invalid nonempty group', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Invalid mixed groups',
+      'description: Keep the nonempty invalid group blocking.',
+      'nodes:',
+      '  - id: empty',
+      '    loop_group: {}',
+      '  - id: invalid',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: nested',
+      '          loop_group:',
+      '            until: done',
+      '            max_iterations: 1',
+      '            nodes:',
+      '              - id: work',
+      '                prompt: Work.',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues).toContainEqual(
+      expect.objectContaining({ code: 'loop_group_shape_invalid', groupId: 'invalid' }),
+    )
+  })
+
   it('does not make an arbitrary invalid loop-group shape visually authorable', async () => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
       kind: 'bundled',
@@ -688,6 +761,36 @@ describe('workflow pair analysis', () => {
     )
 
     expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it.each([0, 101])('rejects loop-group max_iterations at the out-of-contract boundary %i', async (iterations) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Invalid iterations',
+      'description: Reject the numeric boundary.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      `      max_iterations: ${iterations}`,
+      '      nodes:',
+      '        - id: work',
+      '          prompt: Work.',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.structurallyValid).toBe(false)
     expect(analysis.visuallyAuthorable).not.toBe(true)
     expect(analysis.projection).toBeUndefined()
   })

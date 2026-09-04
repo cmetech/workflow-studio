@@ -96,6 +96,26 @@ describe('scoped DAG validation', () => {
     )
   })
 
+  it('locates a body cycle at the scoped graph source rather than the root nodes path', () => {
+    const result = validate([
+      loopGroup([
+        { id: 'first', prompt: 'First.', depends_on: ['second'] },
+        { id: 'second', prompt: 'Second.', depends_on: ['first'] },
+      ]),
+    ])
+
+    const issue = result.issues.find(({ code }) => code === 'loop_group_topology_invalid')
+    expect(issue).toMatchObject({
+      path: '/nodes/0/loop_group/nodes',
+      scopeKey: 'loop-group:group',
+      groupId: 'group',
+      nodeId: 'group',
+      field: 'depends_on',
+    })
+    expect(issue?.line).toBeGreaterThan(0)
+    expect(issue?.column).toBeGreaterThan(0)
+  })
+
   it('requires current-body output producers to be direct dependencies', () => {
     fc.assert(
       fc.property(fc.boolean(), (direct) => {
@@ -143,6 +163,21 @@ describe('scoped DAG validation', () => {
     )
   })
 
+  it('rejects previous-iteration references on contract surfaces that do not allow them', () => {
+    const result = validate([
+      loopGroup([{ id: 'producer', prompt: 'Produce.' }], {
+        gate_message: 'Review $LOOP_PREV.producer.output',
+      }),
+    ])
+
+    expect(codes(result)).toEqual(['scoped-reference-unknown-producer'])
+    expect(result.issues[0]).toMatchObject({
+      path: '/nodes/0/loop_group/gate_message',
+      field: 'loop_group.gate_message',
+      groupId: 'group',
+    })
+  })
+
   it('validates structured body and promoted group output paths conservatively', () => {
     fc.assert(
       fc.property(fc.constantFrom('status', 'missing'), (field) => {
@@ -185,6 +220,34 @@ describe('scoped DAG validation', () => {
 
     expect(codes(result)).toEqual(['scoped-companion-reference-unknown-node'])
     expect(result.issues[0]).toMatchObject({ document: 'companion', scopeKey: 'loop-group:group', groupId: 'group' })
+  })
+
+  it.each(['group/child/extra', 'missing-root'])(
+    'rejects scoped companion reference %s when it is not an exact group/child path',
+    (reference) => {
+      const result = validate([{ id: 'root', prompt: 'Root.' }, loopGroup([{ id: 'child', prompt: 'Act.' }])], {
+        language_compatibility: 'archon-2026-07',
+        outward_action_nodes: [reference],
+        outward_action_policy: 'approval_required',
+      })
+
+      expect(codes(result)).toEqual(['scoped-companion-reference-unknown-node'])
+      expect(result.issues[0]).toMatchObject({
+        document: 'companion',
+        path: '/outward_action_nodes/0',
+        field: 'outward_action_nodes',
+      })
+    },
+  )
+
+  it('preserves an exact ordinary root companion reference beside scoped group/child entries', () => {
+    const result = validate([{ id: 'root', prompt: 'Root.' }, loopGroup([{ id: 'child', prompt: 'Act.' }])], {
+      language_compatibility: 'archon-2026-07',
+      outward_action_nodes: ['root', 'group/child'],
+      outward_action_policy: 'approval_required',
+    })
+
+    expect(codes(result)).toEqual([])
   })
 
   it('attaches complete navigation metadata to scoped diagnostics', () => {
@@ -286,6 +349,31 @@ describe('scoped DAG validation', () => {
 
     expect(codes(validate([loopGroup(body)])).includes('loop_group_product_limit')).toBe(exceeded)
   })
+
+  it.each([
+    [500, 4, false],
+    [501, 5, true],
+  ] as const)(
+    'switches a %i-edge body to advisory-only YAML capacity at the declared visual boundary',
+    (_edgeCount, lastDependencyCount, yamlOnly) => {
+      const body = Array.from({ length: 33 }, (_, index) => ({
+        id: `node-${index}`,
+        bash: 'true',
+        ...(index === 0
+          ? {}
+          : {
+              depends_on:
+                index < 32
+                  ? Array.from({ length: index }, (_, dependency) => `node-${dependency}`)
+                  : Array.from({ length: lastDependencyCount }, (_, dependency) => `node-${dependency}`),
+            }),
+      }))
+      const result = validate([loopGroup(body)])
+
+      expect(result.issues.some(({ code }) => code === 'visual_capacity_exceeded')).toBe(yamlOnly)
+      expect(codes(result)).toEqual([])
+    },
+  )
 
   it('reports root visual capacity independently from loop-group language bounds', () => {
     const nodes = Array.from({ length: 251 }, (_, index) => ({ id: `root-${index}`, bash: 'true' }))
