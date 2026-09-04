@@ -1,10 +1,15 @@
+import { isMap, isSeq } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue } from '$src/lib/documents/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
+import type { WorkflowProjection } from '$src/lib/projection/types'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
+import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import { validateDag } from './dag-validator'
+import { validateScopedDag } from './scoped-dag-validator'
 import { isContractSchemaSelfConsistent, resolveContractSchema, validateContractDocument } from './schema-validator'
 
 export async function analyzeWorkflowPair(
@@ -71,33 +76,8 @@ export async function analyzeWorkflowPair(
     })
   }
 
-  if (hasBlockingIssue(issues)) {
-    if (!profileSelection.recognized || profileSelection.profile !== contract.profile) {
-      return { ...identity, issues, structurallyValid: false }
-    }
-    const definition = definitionResult.parsed.document.toJS({ maxAliasCount: 1_000 })
-    if (!draftIssuesAreVisuallyAuthorable(issues, definition, contract)) {
-      return { ...identity, issues, structurallyValid: false }
-    }
-
-    const draftProjection = projectWorkflow(
-      definitionResult.parsed,
-      companionResult?.parsed ?? null,
-      profileSelection.profile,
-      contract,
-    )
-    const draftIssues = [...draftProjection.issues]
-    if (!hasBlockingIssue(draftIssues)) {
-      draftIssues.push(...validateDag(draftProjection.projection.graphs[0]!, contract.semantic_rules).issues)
-    }
-    if (hasBlockingIssue(draftIssues)) return { ...identity, issues, structurallyValid: false }
-    return {
-      ...identity,
-      issues: [...issues, ...draftIssues.filter((issue) => !issues.some((existing) => sameIssue(existing, issue)))],
-      structurallyValid: false,
-      visuallyAuthorable: true,
-      projection: draftProjection.projection,
-    }
+  if (!profileSelection.recognized || profileSelection.profile !== contract.profile) {
+    return { ...identity, issues, structurallyValid: false }
   }
 
   const projected = projectWorkflow(
@@ -106,18 +86,206 @@ export async function analyzeWorkflowPair(
     profileSelection.profile,
     contract,
   )
-  issues.push(...projected.issues)
-  if (!hasBlockingIssue(issues)) {
-    issues.push(...validateDag(projected.projection.graphs[0]!, contract.semantic_rules).issues)
-  }
+  const definition = definitionResult.parsed.document.toJS({ maxAliasCount: 1_000 })
+  const publishedCompatibility = publishedBlockingCompatibilityIssues(definition, definitionResult.parsed, contract)
+  let combined = reconcilePublishedCompatibility([...issues, ...projected.issues], publishedCompatibility, contract)
+  const rootGraph = projected.projection.graphs.find(({ scope }) => scope.key === 'root')
+  if (rootGraph) combined.push(...validateDag(rootGraph, contract.semantic_rules).issues)
+  const scoped = validateScopedDag(
+    projected.projection,
+    definitionResult.parsed,
+    companionResult?.parsed ?? null,
+    contract,
+  )
+  combined = reconcileScopedIssues(combined, scoped.issues, projected.projection, contract)
+  combined = deduplicateAnalysisIssues(combined)
 
-  const structurallyValid = !hasBlockingIssue(issues)
+  const structurallyValid = !hasBlockingIssue(combined)
+  const visuallyAuthorable =
+    !structurallyValid &&
+    (draftIssuesAreVisuallyAuthorable(combined, definition, contract) ||
+      explicitEmptyScopedDraft(combined, projected.projection, definition, contract))
+  const validatedProjection = projectionWithScopedIssues(projected.projection, scoped.issues)
   return {
     ...identity,
-    issues,
+    issues: combined,
     structurallyValid,
-    ...(structurallyValid ? { projection: projected.projection } : {}),
+    ...(visuallyAuthorable ? { visuallyAuthorable: true } : {}),
+    ...(structurallyValid || visuallyAuthorable ? { projection: validatedProjection } : {}),
   }
+}
+
+function publishedBlockingCompatibilityIssues(
+  definition: unknown,
+  parsed: ParsedYamlDocument,
+  contract: AuthoringContract,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  for (const [code, typedDescriptor] of Object.entries(contract.compatibility_codes)) {
+    const descriptor = isRecord(typedDescriptor) ? typedDescriptor : null
+    if (!descriptor || descriptor.blocking !== true || descriptor.severity !== 'error') continue
+    if (!Array.isArray(descriptor.fields) || !descriptor.fields.every(isString)) continue
+    for (const fieldPath of descriptor.fields) {
+      for (const occurrence of expandPublishedPath(definition, fieldPath)) {
+        const path = pointerPath(occurrence.path)
+        const location = sourceLocation(parsed, path)
+        issues.push({
+          code,
+          layer: 'compatibility',
+          severity: 'error',
+          blocking: true,
+          message: typedDescriptor.description,
+          document: 'definition',
+          path,
+          ...(location ?? {}),
+          field: String(occurrence.path.at(-1) ?? ''),
+        })
+      }
+    }
+  }
+  return issues
+}
+
+function reconcilePublishedCompatibility(
+  issues: readonly ValidationIssue[],
+  published: readonly ValidationIssue[],
+  contract: AuthoringContract,
+): ValidationIssue[] {
+  const wildcardCode = Object.entries(contract.compatibility_codes).find(([, typedDescriptor]) => {
+    const descriptor = isRecord(typedDescriptor) ? typedDescriptor : null
+    return descriptor?.blocking === false && Array.isArray(descriptor.fields) && descriptor.fields.includes('*')
+  })?.[0]
+  const result = issues
+    .filter(
+      (issue) =>
+        !published.some(
+          (stable) =>
+            (issue.layer === 'contract' ||
+              issue.code === 'missing_node_kind' ||
+              issue.code === 'multiple_node_kinds') &&
+            issue.blocking &&
+            issue.path !== undefined &&
+            stable.path !== undefined &&
+            sameRootNodePath(issue.path, stable.path),
+        ),
+    )
+    .map((issue) =>
+      wildcardCode && issue.code === 'legacy_unknown_field' && pointerTokens(issue.path ?? '/').length === 1
+        ? {
+            ...issue,
+            code: wildcardCode,
+            message: contract.compatibility_codes[wildcardCode]?.description ?? issue.message,
+          }
+        : issue,
+    )
+  result.push(...published)
+  return result
+}
+
+function reconcileScopedIssues(
+  issues: readonly ValidationIssue[],
+  scoped: readonly ValidationIssue[],
+  projection: WorkflowProjection,
+  contract: AuthoringContract,
+): ValidationIssue[] {
+  let managedCodes = new Set<string>()
+  try {
+    const capabilities = readScopedDagCapabilities(contract)
+    managedCodes = new Set([
+      capabilities.topology.validation_codes.nesting,
+      capabilities.topology.validation_codes.capacity,
+    ])
+  } catch {
+    return [...issues, ...scoped]
+  }
+  const managedPrefixes = scoped.flatMap((issue) => {
+    if (!managedCodes.has(issue.code) || !issue.groupId) return []
+    const root = projection.graphs
+      .find(({ scope }) => scope.key === 'root')
+      ?.nodes.find(({ id }) => id === issue.groupId)?.source.path
+    return root ? [root] : []
+  })
+  return [
+    ...issues.filter((issue) => {
+      const path = issue.path
+      return !(
+        issue.blocking &&
+        path &&
+        managedPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
+      )
+    }),
+    ...scoped,
+  ]
+}
+
+function explicitEmptyScopedDraft(
+  issues: readonly ValidationIssue[],
+  projection: WorkflowProjection,
+  definition: unknown,
+  contract: AuthoringContract,
+): boolean {
+  let capabilities
+  try {
+    capabilities = readScopedDagCapabilities(contract)
+  } catch {
+    return false
+  }
+  const blockers = issues.filter(({ blocking }) => blocking)
+  if (blockers.length === 0 || blockers.some(({ code }) => code !== capabilities.topology.validation_codes.nesting))
+    return false
+  const groups = projection.graphs.filter(({ scope }) => scope.kind === 'loop-group')
+  if (groups.length === 0) return false
+  return groups.every((graph) => {
+    const body = valueAtOwnPath(definition, graph.sourcePath)
+    const groupNode = valueAtOwnPath(definition, graph.sourcePath.slice(0, -capabilities.bodyPath.length))
+    const payload = isRecord(groupNode) ? valueAtOwnPath(groupNode, [capabilities.groupKind]) : undefined
+    const bodyField = capabilities.bodyPath.at(-1)
+    const payloadKeys = isRecord(payload) ? Object.keys(payload) : null
+    const explicitBody =
+      Array.isArray(body) &&
+      body.length === 0 &&
+      payloadKeys?.length === 1 &&
+      typeof bodyField === 'string' &&
+      isRecord(payload) &&
+      Object.hasOwn(payload, bodyField)
+    return (
+      isRecord(groupNode) &&
+      Object.keys(groupNode).every((key) => key === capabilities.nodeIdField || key === capabilities.groupKind) &&
+      isRecord(payload) &&
+      (payloadKeys?.length === 0 || explicitBody)
+    )
+  })
+}
+
+function projectionWithScopedIssues(
+  projection: WorkflowProjection,
+  scoped: readonly ValidationIssue[],
+): WorkflowProjection {
+  return deepFreeze({
+    ...projection,
+    graphs: projection.graphs.map((graph) => ({
+      ...graph,
+      issues: [...graph.issues, ...scoped.filter(({ scopeKey }) => scopeKey === graph.scope.key)],
+    })),
+  })
+}
+
+function deduplicateAnalysisIssues(issues: readonly ValidationIssue[]): ValidationIssue[] {
+  const seen = new Set<string>()
+  return issues.filter((issue) => {
+    const key = JSON.stringify([
+      issue.code,
+      issue.document,
+      issue.path,
+      issue.scopeKey,
+      issue.groupId,
+      issue.nodeId,
+      issue.field,
+    ])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 interface WorkflowProfileSelection {
@@ -315,8 +483,77 @@ function samePath(left: readonly (string | number)[], right: readonly (string | 
   return left.length === right.length && startsWithPath(left, right)
 }
 
-function isString(value: string | undefined): value is string {
+function isString(value: unknown): value is string {
   return typeof value === 'string'
+}
+
+interface PublishedPathOccurrence {
+  readonly path: readonly (string | number)[]
+}
+
+function expandPublishedPath(value: unknown, fieldPath: string): readonly PublishedPathOccurrence[] {
+  const tokens = fieldPath
+    .split('.')
+    .filter(Boolean)
+    .map((token) => ({ key: token.replace(/\[\]$/, ''), sequence: token.endsWith('[]') }))
+  const results: PublishedPathOccurrence[] = []
+  const visit = (current: unknown, index: number, path: readonly (string | number)[]): void => {
+    if (index === tokens.length) {
+      results.push({ path })
+      return
+    }
+    const token = tokens[index]
+    if (!token || !isRecord(current) || !Object.hasOwn(current, token.key)) return
+    const child = current[token.key]
+    if (!token.sequence) {
+      visit(child, index + 1, [...path, token.key])
+      return
+    }
+    if (!Array.isArray(child)) return
+    child.forEach((item, itemIndex) => visit(item, index + 1, [...path, token.key, itemIndex]))
+  }
+  visit(value, 0, [])
+  return results
+}
+
+function sameRootNodePath(left: string, right: string): boolean {
+  const leftTokens = pointerTokens(left)
+  const rightTokens = pointerTokens(right)
+  const leftIndex = leftTokens.findIndex((token) => typeof token === 'number')
+  const rightIndex = rightTokens.findIndex((token) => typeof token === 'number')
+  if (leftIndex < 0 || rightIndex < 0 || leftIndex !== rightIndex) return left === right
+  return samePath(leftTokens.slice(0, leftIndex + 1), rightTokens.slice(0, rightIndex + 1))
+}
+
+function sourceLocation(parsed: ParsedYamlDocument, path: string): { line: number; column: number } | null {
+  let current: unknown = parsed.document.contents
+  let located: unknown = current
+  for (const token of pointerTokens(path)) {
+    if (isMap(current)) current = current.get(token, true) ?? null
+    else if (isSeq(current) && typeof token === 'number') current = current.get(token, true) ?? null
+    else break
+    if (current !== null) located = current
+  }
+  const offset = isRecord(located) && Array.isArray(located.range) ? located.range[0] : null
+  if (typeof offset !== 'number') return null
+  let lineIndex = 0
+  for (let index = 0; index < parsed.lineStarts.length; index += 1) {
+    if ((parsed.lineStarts[index] ?? Number.MAX_SAFE_INTEGER) > offset) break
+    lineIndex = index
+  }
+  return { line: lineIndex + 1, column: offset - (parsed.lineStarts[lineIndex] ?? 0) + 1 }
+}
+
+function pointerPath(path: readonly (string | number)[]): string {
+  return `/${path.map((token) => String(token).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const child of Object.values(value)) deepFreeze(child)
+  }
+  return value
 }
 
 function schemaAtPath(
@@ -386,14 +623,4 @@ function valueAtOwnPath(value: unknown, path: readonly (string | number)[]): unk
     }
   }
   return current
-}
-
-function sameIssue(left: ValidationIssue, right: ValidationIssue): boolean {
-  return (
-    left.code === right.code &&
-    left.document === right.document &&
-    left.path === right.path &&
-    left.nodeId === right.nodeId &&
-    left.field === right.field
-  )
 }

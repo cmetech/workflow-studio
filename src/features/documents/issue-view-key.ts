@@ -8,6 +8,8 @@ export function issueViewKey(issue: ValidationIssue, occurrence: number): string
     issue.path ?? '',
     issue.line ?? null,
     issue.column ?? null,
+    issue.scopeKey ?? '',
+    issue.groupId ?? '',
     issue.nodeId ?? '',
     issue.field ?? '',
     occurrence,

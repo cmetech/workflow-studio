@@ -22,6 +22,21 @@ describe('scoped DAG capability reader', () => {
     expect(capabilities.primarySink).toBe('first-terminal-in-definition-order')
     expect(capabilities.allowedNodeKinds).toEqual(['command', 'prompt', 'bash', 'script', 'loop', 'approval', 'cancel'])
     expect(capabilities.previousIteration.prefix).toBe('$LOOP_PREV.')
+    expect(capabilities.referenceSemantics).toMatchObject({
+      syntaxRule: 'strict-output-reference',
+      companionNodePaths: { format: 'group/child' },
+      diagnosticCodes: {
+        missingDependency: 'scoped-reference-missing-dependency',
+        unknownProducer: 'scoped-reference-unknown-producer',
+        unknownCompanionNode: 'scoped-companion-reference-unknown-node',
+        producerSchemaRequired: 'scoped-reference-producer-schema-required',
+        structuredPathImpossible: 'scoped-reference-structured-path-impossible',
+      },
+    })
+    expect(capabilities.workProductSemantics).toMatchObject({
+      expressionFormat: 'prefix-v1',
+      retryPrecedence: ['approval', 'retry', 'command|prompt', 'default'],
+    })
   })
 
   it('refuses visual authoring when a required scoped output capability is absent', async () => {
@@ -41,6 +56,21 @@ describe('scoped DAG capability reader', () => {
     )
 
     expect(() => readScopedDagCapabilities({ ...contract, semantic_rules })).toThrow(/unsupported/i)
+  })
+
+  it('refuses activation when generated nested scoped semantics change', async () => {
+    const contract = await archonContract()
+    const node_kinds = contract.node_kinds.map((nodeKind) => {
+      if (nodeKind.id !== 'loop_group') return nodeKind
+      const definitions = structuredClone(nodeKind.extensions?.semantic_definitions) as Record<
+        string,
+        { companion_node_paths: { format: string } }
+      >
+      definitions['scoped-output-reference-v1']!.companion_node_paths.format = 'child@group'
+      return { ...nodeKind, extensions: { ...nodeKind.extensions, semantic_definitions: definitions } }
+    })
+
+    expect(() => readScopedDagCapabilities({ ...contract, node_kinds })).toThrow(/unsupported/i)
   })
 
   it.each([

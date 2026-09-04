@@ -159,6 +159,26 @@ describe('DAG semantic validation', () => {
     ])
   })
 
+  it('requires the direct dependency published by the reference rule', () => {
+    const result = validateDag(
+      projection([node('prepare'), node('middle', ['prepare']), node('consume', ['middle'], 'Use $prepare.output')]),
+      [{ ...outputReferenceRule, parameters: { ...outputReferenceRule.parameters, require_direct_dependency: true } }],
+    )
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({ code: 'non_upstream_reference', nodeId: 'consume', field: 'prompt' }),
+    ])
+  })
+
+  it('keeps transitive upstream references valid when direct dependencies are not required', () => {
+    const result = validateDag(
+      projection([node('prepare'), node('middle', ['prepare']), node('consume', ['middle'], 'Use $prepare.output')]),
+      [{ ...outputReferenceRule, parameters: { ...outputReferenceRule.parameters, require_direct_dependency: false } }],
+    )
+
+    expect(result.issues).toEqual([])
+  })
+
   it('derives the node-relative reference field from the contract path rather than a node field inventory', () => {
     const alternatePathRule = { ...outputReferenceRule, field_paths: ['steps[].prompt'] }
 

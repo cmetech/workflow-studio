@@ -1,3 +1,5 @@
+import type { GraphScopeKey } from '$src/lib/projection/types'
+
 export type DocumentKind = 'definition' | 'companion'
 
 export type IssueLayer = 'syntax' | 'contract' | 'semantic' | 'compatibility' | 'operational'
@@ -15,6 +17,8 @@ export interface ValidationIssue {
   line?: number
   column?: number
   nodeId?: string
+  scopeKey?: GraphScopeKey
+  groupId?: string
   field?: string
   documentationId?: string
   quickFixId?: string

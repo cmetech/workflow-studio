@@ -21,4 +21,12 @@ describe('issueViewKey', () => {
     expect(issueViewKey(duplicate, 0)).not.toBe(issueViewKey(duplicate, 1))
     expect(issueViewKey(duplicate, 0)).toBe(issueViewKey({ ...duplicate }, 0))
   })
+
+  it('distinguishes the same local diagnostic in separate graph scopes', () => {
+    const first = issue({ scopeKey: 'loop-group:first', groupId: 'first', nodeId: 'work' })
+    const second = issue({ scopeKey: 'loop-group:second', groupId: 'second', nodeId: 'work' })
+
+    expect(issueViewKey(first, 0)).not.toBe(issueViewKey(second, 0))
+    expect(issueViewKey({ ...first }, 0)).toBe(issueViewKey(first, 0))
+  })
 })

@@ -7,7 +7,15 @@ export interface DagValidationResult {
   topologicalOrder: readonly string[]
 }
 
-export function validateDag(projection: ProjectedGraph, rules: readonly SemanticRuleDescriptor[]): DagValidationResult {
+export interface DagValidationOptions {
+  readonly references?: boolean
+}
+
+export function validateDag(
+  projection: ProjectedGraph,
+  rules: readonly SemanticRuleDescriptor[],
+  options: DagValidationOptions = {},
+): DagValidationResult {
   const issues: ValidationIssue[] = []
   const dependencyField = contractDependencyField(rules, projection.scope.workflow.profile)
   const nodesPath = contractNodesPath(rules, projection.scope.workflow.profile)
@@ -75,7 +83,9 @@ export function validateDag(projection: ProjectedGraph, rules: readonly Semantic
   }
 
   issues.push(...validateConditions(projection, rules))
-  issues.push(...validateReferences(projection, rules, nodesById, dependencies, topologicalOrder))
+  if (options.references !== false) {
+    issues.push(...validateReferences(projection, rules, nodesById, dependencies, topologicalOrder))
+  }
   return { issues, topologicalOrder }
 }
 
@@ -209,9 +219,13 @@ function validateReferences(
         for (const reference of collectReferences(fieldValue, parser)) {
           const code = !nodesById.has(reference)
             ? 'missing_reference'
-            : rule.parameters.require_upstream === false || ancestors.get(node.id)?.has(reference)
-              ? null
-              : 'non_upstream_reference'
+            : rule.parameters.require_direct_dependency === true
+              ? dependencies.get(node.id)?.includes(reference)
+                ? null
+                : 'non_upstream_reference'
+              : rule.parameters.require_upstream === false || ancestors.get(node.id)?.has(reference)
+                ? null
+                : 'non_upstream_reference'
           if (!code) continue
 
           const field = relativePath.join('.')

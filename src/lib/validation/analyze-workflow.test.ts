@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
+import archonCorpusText from '../../../contracts/archon-2026-07-v6.corpus.json?raw'
+import legacyContractText from '../../../contracts/hermes-legacy-v2.json?raw'
+import legacyCorpusText from '../../../contracts/hermes-legacy-v2.corpus.json?raw'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import { loadConformanceCorpus } from '$src/lib/contract/conformance'
 import type {
   AuthoringContract,
   FieldDescriptor,
@@ -229,6 +235,41 @@ function request(
 }
 
 describe('workflow pair analysis', () => {
+  it.each([
+    ['archon-2026-07-v6.json', archonContractText, archonCorpusText],
+    ['hermes-legacy-v2.json', legacyContractText, legacyCorpusText],
+  ])('matches every literal Hermes conformance case in %s', async (identifier, contractText, corpusText) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(contractText), {
+      kind: 'bundled',
+      identifier,
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const corpus = loadConformanceCorpus(new TextEncoder().encode(corpusText), loaded.contract)
+    const mismatches: { id: string; expectedValid: boolean; expectedCodes: string[]; actualCodes: string[] }[] = []
+
+    for (const testCase of corpus.cases) {
+      const analysis = await analyzeWorkflowPair(
+        request(loaded.contract, testCase.definitionYaml, testCase.companionYaml ?? null),
+        loaded.contract,
+      )
+
+      const expectedCodes = [...testCase.codes].sort()
+      const expectedCodeSet = new Set(expectedCodes)
+      const actualCodes = analysis.issues
+        .filter((issue) => issue.blocking || expectedCodeSet.has(issue.code))
+        .map(({ code }) => code)
+        .sort()
+      if (
+        !analysis.issues.some(({ blocking }) => blocking) !== testCase.valid ||
+        JSON.stringify(actualCodes) !== JSON.stringify(expectedCodes)
+      ) {
+        mismatches.push({ id: testCase.id, expectedValid: testCase.valid, expectedCodes, actualCodes })
+      }
+    }
+
+    expect(mismatches).toEqual([])
+  })
+
   it.each([
     ['a scalar kind draft', '  - id: command\n    command: ""\n', 'command'],
     ['an object kind draft', '  - id: loop\n    loop: {}\n', 'loop'],
@@ -596,6 +637,58 @@ describe('workflow pair analysis', () => {
 
     expect(analysis.issues[0]).toEqual(expect.objectContaining({ layer: 'syntax', blocking: true }))
     expect(analysis.structurallyValid).toBe(false)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it('returns only the explicit empty loop-group draft as a repairable scoped projection', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Empty group',
+      'description: Repair this group visually.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      nodes: []',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect((analysis.projection as WorkflowProjection | undefined)?.graphs).toHaveLength(2)
+    expect(analysis.issues.map(({ code }) => code)).toEqual(['loop_group_shape_invalid'])
+  })
+
+  it('does not make an arbitrary invalid loop-group shape visually authorable', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Invalid group',
+      'description: This is not the explicit empty draft.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      nodes: not-a-list',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
     expect(analysis.projection).toBeUndefined()
   })
 })
