@@ -1,6 +1,6 @@
 import { isSeq } from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor, WorkflowProfile } from '$src/lib/contract/types'
-import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import { readScopedDagCapabilities, requiresScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import {
@@ -79,7 +79,13 @@ function projectGraphScopes(
   try {
     scoped = readScopedDagCapabilities(contract)
   } catch {
+    if (requiresScopedDagCapabilities(contract)) return scopedCapabilityIssue(root)
     return freezeDiscovery(graphs)
+  }
+  const rootIdCounts = new Map<string, number>()
+  for (const node of root.nodes) {
+    if (node.id.length === 0) continue
+    rootIdCounts.set(node.id, (rootIdCounts.get(node.id) ?? 0) + 1)
   }
   for (const [rootIndex, node] of root.nodes.entries()) {
     if (node.kind !== scoped.groupKind || node.id.length === 0 || scoped.bodyPath[0] !== scoped.groupKind) continue
@@ -90,7 +96,7 @@ function projectGraphScopes(
         sourcePath,
         scope: deepFreeze({ key: `loop-group:${node.id}`, kind: 'loop-group', groupId: node.id, workflow: identity }),
         editorNodePrefix: `${node.id}/`,
-        outerInputs: node.dependsOn,
+        outerInputs: validOuterInputs(node.dependsOn, node.id, rootIdCounts),
         idPath: [scoped.nodeIdField],
         dependenciesPath: [scoped.dependsOnField],
         kindPaths: rootKindPaths.filter(({ descriptor }) => scoped.allowedNodeKinds.includes(descriptor.id)),
@@ -99,6 +105,18 @@ function projectGraphScopes(
     )
   }
   return freezeDiscovery(graphs)
+}
+
+function validOuterInputs(
+  dependencies: readonly string[],
+  groupId: string,
+  rootIdCounts: ReadonlyMap<string, number>,
+): readonly string[] {
+  const inputs = new Set<string>()
+  for (const dependency of dependencies) {
+    if (dependency !== groupId && rootIdCounts.get(dependency) === 1) inputs.add(dependency)
+  }
+  return [...inputs]
 }
 
 interface ProjectGraphInput {
@@ -243,6 +261,19 @@ function ruleIssue(identity: WorkflowIdentity, code: string, message: string): G
       capacity: { status: 'visual', nodeCount: 0, edgeCount: 0 } as const,
     }),
   ])
+}
+
+function scopedCapabilityIssue(root: ProjectedGraph): GraphScopeDiscovery {
+  const issue: ValidationIssue = {
+    code: 'scoped_dag_capability_unsupported',
+    layer: 'semantic',
+    severity: 'error',
+    blocking: true,
+    message: 'The active authoring contract publishes scoped graph semantics unsupported by this Studio reader.',
+    document: 'definition',
+    path: '/nodes',
+  }
+  return freezeDiscovery([{ ...root, issues: [...root.issues, issue] }])
 }
 
 function findGraphRule(

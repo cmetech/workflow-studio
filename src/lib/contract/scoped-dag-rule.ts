@@ -15,6 +15,10 @@ export interface ScopedDagCapabilities {
   readonly workProduct: Readonly<Record<string, unknown>>
 }
 
+export function requiresScopedDagCapabilities(contract: AuthoringContract): boolean {
+  return contract.node_kinds.some((nodeKind) => nodeKind.id === 'loop_group')
+}
+
 export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDagCapabilities {
   const rules = new Map(contract.semantic_rules.map((rule) => [rule.id, rule]))
   const topology = requireRule(rules.get('scoped-dag-topology-v1'), 'scoped DAG topology capability')

@@ -95,6 +95,35 @@ describe('projectCanvas', () => {
     expect(dagre).toHaveBeenCalledTimes(1)
     expect(arranged.positions).not.toEqual(savedLayout.nodePositions)
   })
+
+  it('returns every node and edge unchanged when a graph is YAML-only', () => {
+    const nodes = Array.from({ length: 251 }, (_, index) => ({
+      id: `node-${index}`,
+      kind: 'command',
+      value: `work ${index}`,
+      dependsOn: [],
+      options: {},
+      source: { path: `/nodes/${index}`, start: index * 10, end: index * 10 + 9 },
+    }))
+    const edges = Array.from({ length: 501 }, (_, index) => ({
+      id: `dependency:node-0->edge-${index}`,
+      source: 'node-0',
+      target: `edge-${index}`,
+    }))
+    const yamlOnly: ProjectedGraph = {
+      ...projection,
+      nodes,
+      edges,
+      definitionOrder: nodes.map(({ id }) => id),
+      capacity: { status: 'yaml-only', nodeCount: nodes.length, edgeCount: edges.length },
+    }
+
+    const canvas = projectCanvas(yamlOnly, savedLayout)
+
+    expect(canvas.capacity).toEqual({ status: 'yaml-only', nodeCount: 251, edgeCount: 501 })
+    expect(canvas.nodes.map(({ id }) => id)).toEqual(nodes.map(({ id }) => id))
+    expect(canvas.edges.map(({ id }) => id)).toEqual(edges.map(({ id }) => id))
+  })
 })
 
 function deepFreeze<T>(value: T): T {

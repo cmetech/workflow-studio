@@ -1,7 +1,7 @@
 import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { loadAuthoringContract } from './contract-loader'
-import { readScopedDagCapabilities } from './scoped-dag-rule'
+import { readScopedDagCapabilities, requiresScopedDagCapabilities } from './scoped-dag-rule'
 import type { AuthoringContract, ContractSource, WorkflowProfile } from './types'
 
 export type ContractCacheSource = 'bundled' | 'cached'
@@ -113,7 +113,7 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     contract: AuthoringContract,
   ): 'contract_widget_unsupported' | 'contract_semantic_capability_unsupported' | null {
     if (coverage(contract).length > 0) return 'contract_widget_unsupported'
-    if (contract.node_kinds.some((nodeKind) => nodeKind.id === 'loop_group')) {
+    if (requiresScopedDagCapabilities(contract)) {
       try {
         readScopedDagCapabilities(contract)
       } catch {

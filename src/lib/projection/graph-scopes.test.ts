@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
+import legacyContractText from '../../../contracts/hermes-legacy-v2.json?raw'
 import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { discoverGraphScopes } from './graph-scopes'
@@ -8,6 +9,15 @@ async function archonContract() {
   const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
     kind: 'bundled',
     identifier: 'archon-2026-07-v6.json',
+  })
+  if (!loaded.ok) throw new Error(loaded.message)
+  return loaded.contract
+}
+
+async function legacyContract() {
+  const loaded = await loadAuthoringContract(new TextEncoder().encode(legacyContractText), {
+    kind: 'bundled',
+    identifier: 'hermes-legacy-v2.json',
   })
   if (!loaded.ok) throw new Error(loaded.message)
   return loaded.contract
@@ -69,5 +79,82 @@ describe('discoverGraphScopes', () => {
     expect(bodyScope?.nodes).toHaveLength(251)
     expect(structuredClone(scopes)).toEqual(scopes)
     expect(Object.isFrozen(scopes)).toBe(true)
+  })
+
+  it('keeps scope keys stable after reparsing the same YAML', async () => {
+    const source = `name: Stable\ndescription: Keys\nnodes:\n  - id: repeat\n    loop_group:\n      nodes:\n        - id: child\n          command: work\n      until: done\n      max_iterations: 1\n`
+    const contract = await archonContract()
+
+    expect(
+      discoverGraphScopes(parsedDefinition(source), contract, 'archon-2026-07').map(({ scope }) => scope.key),
+    ).toEqual(discoverGraphScopes(parsedDefinition(source), contract, 'archon-2026-07').map(({ scope }) => scope.key))
+  })
+
+  it('filters invalid group outer inputs without changing the authored root dependencies', async () => {
+    const source = `name: Inputs\ndescription: Filtered\nnodes:\n  - id: prepare\n    command: collect\n  - id: repeat\n    depends_on: [prepare, missing, repeat]\n    loop_group:\n      nodes:\n        - id: child\n          command: work\n      until: done\n      max_iterations: 1\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), await archonContract(), 'archon-2026-07')
+
+    expect(scopes[0]?.nodes.find(({ id }) => id === 'repeat')?.dependsOn).toEqual(['prepare', 'missing', 'repeat'])
+    expect(scopes[1]?.outerInputs).toEqual(['prepare'])
+  })
+
+  it.each([
+    [
+      'is absent',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => ({
+        ...contract,
+        semantic_rules: contract.semantic_rules.filter(({ id }) => id !== 'scoped-output-reference-v1'),
+      }),
+    ],
+    [
+      'changes',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => ({
+        ...contract,
+        semantic_rules: contract.semantic_rules.map((rule) =>
+          rule.id === 'scoped-dag-topology-v1' ? { ...rule, parameters: { ...rule.parameters, max_nodes: 513 } } : rule,
+        ),
+      }),
+    ],
+  ])('fails closed when an applicable scoped capability %s', async (_, change) => {
+    const source = `name: Unsupported\ndescription: Scoped\nnodes:\n  - id: repeat\n    loop_group:\n      nodes:\n        - id: child\n          command: work\n      until: done\n      max_iterations: 1\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), change(await archonContract()), 'archon-2026-07')
+
+    expect(scopes).toHaveLength(1)
+    expect(scopes[0]?.issues).toContainEqual(
+      expect.objectContaining({ code: 'scoped_dag_capability_unsupported', blocking: true }),
+    )
+  })
+
+  it('permits the generated legacy root-only contract without scoped findings', async () => {
+    const source = `name: Legacy\ndescription: Root only\nnodes:\n  - id: prepare\n    command: collect\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), await legacyContract(), 'hermes-legacy')
+
+    expect(scopes).toHaveLength(1)
+    expect(scopes[0]?.issues).toEqual([])
+  })
+
+  it('classifies root and body capacity independently at the 500-edge boundary', async () => {
+    const bodyDependencies = Array.from({ length: 33 }, () => [] as string[])
+    let edges = 0
+    for (let target = 1; target < bodyDependencies.length && edges < 500; target += 1) {
+      for (let source = 0; source < target && edges < 500; source += 1) {
+        bodyDependencies[target]!.push(`body-${source}`)
+        edges += 1
+      }
+    }
+    const body = bodyDependencies
+      .map(
+        (dependsOn, index) =>
+          `        - id: body-${index}\n          command: work ${index}${dependsOn.length ? `\n          depends_on: [${dependsOn.join(', ')}]` : ''}`,
+      )
+      .join('\n')
+    const root = Array.from({ length: 250 }, (_, index) => `  - id: root-${index}\n    command: root ${index}`).join(
+      '\n',
+    )
+    const source = `name: Independent\ndescription: Capacity\nnodes:\n${root}\n  - id: repeat\n    loop_group:\n      nodes:\n${body}\n      until: done\n      max_iterations: 1\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), await archonContract(), 'archon-2026-07')
+
+    expect(scopes[0]?.capacity).toEqual({ status: 'yaml-only', nodeCount: 251, edgeCount: 0 })
+    expect(scopes[1]?.capacity).toEqual({ status: 'visual', nodeCount: 33, edgeCount: 500 })
   })
 })
