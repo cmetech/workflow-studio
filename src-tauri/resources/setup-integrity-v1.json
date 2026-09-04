@@ -38,17 +38,17 @@
     },
     {
       "path": "contracts/hermes-legacy-v2.corpus.json",
-      "sha256": "501a32074e67651ee291ee9aa0a418b82675524f42a9557f56330ad8a33f649c",
+      "sha256": "1c48b9f28fde6bcaa6761b23b57b03ec6309b9ea5404bf26c6075c6d1a115ee9",
       "maxBytes": 2097152
     },
     {
       "path": "contracts/hermes-legacy-v2.json",
-      "sha256": "fbe14f3d18b07c2e86ae6975a062abca27746c0c4fa2c79cb20adde3c8819238",
+      "sha256": "437703ed8a23ee4d8fb6bfc05c2bd0b3450dfa67e8d3044c8077e8842d58bc41",
       "maxBytes": 2097152
     },
     {
       "path": "contracts/manifest.json",
-      "sha256": "098ea772b28df15306e61bd9352ffe5cce7a0ca5d39a0fd4794572199fcc1431",
+      "sha256": "0871e4f55fd6d2dd76b0fabfa348572fc467ad65b9e755f031bb58dc9a6e9b6e",
       "maxBytes": 2097152
     },
     {
