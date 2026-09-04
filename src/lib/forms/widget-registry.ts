@@ -196,9 +196,21 @@ function hasDocumentationTopic(contract: AuthoringContract, fieldPath: string): 
 
 function undocumentedSchemaFields(contract: AuthoringContract): readonly string[] {
   const documented = new Set(contract.documentation.topics.flatMap((topic) => topic.field_paths))
-  const missing: string[] = []
-  const visit = (schema: unknown, path: string): void => {
-    const value = record(schema)
+  const missing = new Set<string>()
+  const visit = (
+    schema: unknown,
+    path: string,
+    root: Record<string, unknown>,
+    activeReferences = new Set<string>(),
+  ): void => {
+    const unresolved = record(schema)
+    if (!unresolved) return
+    const reference =
+      typeof unresolved.$ref === 'string' && unresolved.$ref.startsWith('#/') ? unresolved.$ref : undefined
+    const target = reference && !activeReferences.has(reference) ? resolveSchema(unresolved, root) : null
+    const value = target
+      ? { ...target, ...Object.fromEntries(Object.entries(unresolved).filter(([key]) => key !== '$ref')) }
+      : unresolved
     if (!value) return
     if (
       path &&
@@ -206,14 +218,25 @@ function undocumentedSchemaFields(contract: AuthoringContract): readonly string[
       typeof value['x-hermes-widget'] !== 'string' &&
       !documented.has(path)
     )
-      missing.push(path)
+      missing.add(path)
+    const nextReferences = reference ? new Set([...activeReferences, reference]) : activeReferences
     const properties = record(value.properties)
-    for (const [name, child] of Object.entries(properties ?? {})) visit(child, path ? `${path}.${name}` : name)
-    if (value.items !== undefined) visit(value.items, `${path}[]`)
+    for (const [name, child] of Object.entries(properties ?? {}))
+      visit(child, path ? `${path}.${name}` : name, root, nextReferences)
+    if (value.items !== undefined) visit(value.items, `${path}[]`, root, nextReferences)
+    if (value.additionalProperties !== undefined) visit(value.additionalProperties, `${path}.*`, root, nextReferences)
+    for (const child of Object.values(record(value.patternProperties) ?? {}))
+      visit(child, `${path}.*`, root, nextReferences)
+    for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
+      const branches = value[keyword]
+      if (Array.isArray(branches)) for (const branch of branches) visit(branch, path, root, nextReferences)
+    }
+    for (const keyword of ['if', 'then', 'else'] as const)
+      if (value[keyword] !== undefined) visit(value[keyword], path, root, nextReferences)
   }
-  visit(contract.definition_schema, '')
-  visit(contract.sidecar_schema, 'sidecar')
-  return missing
+  visit(contract.definition_schema, '', contract.definition_schema)
+  visit(contract.sidecar_schema, 'sidecar', contract.sidecar_schema)
+  return [...missing].sort(compareCodePoints)
 }
 
 function collectDocumentFields(

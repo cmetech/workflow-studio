@@ -214,6 +214,110 @@ describe('schema-driven widget registry', () => {
     )
   })
 
+  it.each([
+    [
+      'oneOf',
+      { oneOf: [{ properties: { one_of_missing: { type: 'string', 'x-hermes-status': 'supported' } } }] },
+      'one_of_missing',
+    ],
+    [
+      'anyOf',
+      { anyOf: [{ properties: { any_of_missing: { type: 'string', 'x-hermes-status': 'supported' } } }] },
+      'any_of_missing',
+    ],
+    [
+      'allOf',
+      { allOf: [{ properties: { all_of_missing: { type: 'string', 'x-hermes-status': 'supported' } } }] },
+      'all_of_missing',
+    ],
+    ['if', { if: { properties: { if_missing: { type: 'string', 'x-hermes-status': 'supported' } } } }, 'if_missing'],
+    [
+      'then',
+      { then: { properties: { then_missing: { type: 'string', 'x-hermes-status': 'supported' } } } },
+      'then_missing',
+    ],
+    [
+      'else',
+      { else: { properties: { else_missing: { type: 'string', 'x-hermes-status': 'supported' } } } },
+      'else_missing',
+    ],
+  ])('fails closed for a supported field nested in a %s schema branch', (_kind, branch, fieldPath) => {
+    const incomplete = contract({ definition_schema: { ...contract().definition_schema, ...branch } })
+
+    expect(validateContractFormCoverage(incomplete)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'field_visual_coverage_missing', fieldPath })]),
+    )
+  })
+
+  it('accepts documented widgets and explicit non-visual fields nested in composed schemas', () => {
+    const complete = contract({
+      definition_schema: {
+        ...contract().definition_schema,
+        allOf: [
+          {
+            properties: {
+              composed_widget: {
+                type: 'string',
+                title: 'Composed widget',
+                description: 'Generated documented field.',
+                examples: ['value'],
+                'x-hermes-widget': 'text',
+                'x-hermes-section': 'General',
+                'x-hermes-order': 10,
+                'x-hermes-status': 'supported',
+              },
+              generated_non_visual: { type: 'string', 'x-hermes-status': 'deferred' },
+            },
+          },
+        ],
+      },
+      documentation: {
+        topics: [
+          {
+            id: 'composed',
+            title: 'Composed',
+            description: 'Composed fields.',
+            body: 'Generated composed field documentation.',
+            field_paths: ['composed_widget'],
+            applicability: { profiles: ['archon-2026-07'], documents: ['definition'] },
+            examples: ['value'],
+          },
+        ],
+        examples: [],
+      },
+    })
+
+    expect(validateContractFormCoverage(complete)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ fieldPath: 'composed_widget' })]),
+    )
+    expect(validateContractFormCoverage(complete)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ fieldPath: 'generated_non_visual' })]),
+    )
+  })
+
+  it('follows local references through a composed branch without recursing forever', () => {
+    const incomplete = contract({
+      definition_schema: {
+        ...contract().definition_schema,
+        $defs: {
+          cyclic: {
+            allOf: [
+              { $ref: '#/$defs/cyclic' },
+              { properties: { referenced_missing: { type: 'string', 'x-hermes-status': 'supported' } } },
+            ],
+          },
+        },
+        allOf: [{ $ref: '#/$defs/cyclic' }],
+      },
+    })
+
+    expect(validateContractFormCoverage(incomplete)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'field_visual_coverage_missing', fieldPath: 'referenced_missing' }),
+      ]),
+    )
+  })
+
   it.each(['text', 'textarea', 'code', 'number', 'boolean', 'enum', 'array', 'map', 'object', 'json-schema'])(
     'resolves the supported %s widget without a raw fallback',
     (widget) => {
