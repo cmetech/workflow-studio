@@ -329,7 +329,7 @@ describe('recursive structured inspector controls', () => {
     }
   })
 
-  it('enforces the production loop conditional requirement and selected gate-message branch constraints locally', async () => {
+  it('enforces the production loop conditional requirement and generated gate-message type locally', async () => {
     const onCommit = vi.fn()
     const productionContract = (await loadBundledAuthoringContracts()).find(
       ({ profile }) => profile === 'archon-2026-07',
@@ -354,7 +354,7 @@ describe('recursive structured inspector controls', () => {
       onCommit,
     })
     await fireEvent.click(second.getByRole('button', { name: 'Apply Loop' }))
-    expect(second.getByRole('alert')).toHaveTextContent(/gate message uses a disallowed value/i)
+    expect(second.getByRole('alert')).toHaveTextContent(/gate message must be text/i)
     expect(onCommit).not.toHaveBeenCalled()
     second.unmount()
   })

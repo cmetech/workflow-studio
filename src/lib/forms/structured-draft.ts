@@ -157,12 +157,13 @@ export function canEditStructuredSchema(schema: Readonly<Record<string, unknown>
   }
 
   const type = schemaType(schema, undefined)
+  if (schema.not !== undefined && type === undefined && !structuredUnionBranches(schema)) return false
   if (type === 'object') {
     if (schema.properties !== undefined && !schemaRecord(schema.properties)) return false
     const properties = schemaRecord(schema.properties) ?? {}
     if (
       !Object.values(properties).every(
-        (child) => Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!),
+        (child) => child === true || (Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!)),
       )
     )
       return false
@@ -173,7 +174,7 @@ export function canEditStructuredSchema(schema: Readonly<Record<string, unknown>
     const propertyNames = schemaRecord(schema.propertyNames)
     if (schema.propertyNames !== undefined && (!propertyNames || !canEditStructuredSchema(propertyNames))) return false
     return Object.values(schemaRecord(schema.patternProperties) ?? {}).every(
-      (child) => Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!),
+      (child) => child === true || (Boolean(schemaRecord(child)) && canEditStructuredSchema(schemaRecord(child)!)),
     )
   }
   if (type === 'array') {
@@ -208,6 +209,11 @@ export function validateSchemaValue(
       errors.push(`${label} must have at least ${schema.minItems} items.`)
     if (typeof schema.maxItems === 'number' && value.length > schema.maxItems)
       errors.push(`${label} must have at most ${schema.maxItems} items.`)
+    if (
+      schema.uniqueItems === true &&
+      value.some((item, index) => value.slice(0, index).some((other) => deepEqual(item, other)))
+    )
+      errors.push(`${label} must not contain duplicate items.`)
     const items = schemaRecord(schema.items)
     if (items)
       value.forEach((item, index) => errors.push(...validateSchemaValue(item, items, `${label} item ${index + 1}`)))
@@ -354,6 +360,7 @@ function schemaType(schema: Readonly<Record<string, unknown>>, value: unknown): 
   if (Object.hasOwn(schema, 'const')) return valueType(schema.const)
   if (Array.isArray(schema.enum) && schema.enum.length > 0) return valueType(schema.enum[0])
   if (schema.properties || schema.additionalProperties || schema.patternProperties) return 'object'
+  if (Array.isArray(schema.required) || schema.propertyNames) return 'object'
   if (schema.items) return 'array'
   if (schema.minProperties !== undefined || schema.maxProperties !== undefined) return 'object'
   if (schema.minItems !== undefined || schema.maxItems !== undefined) return 'array'
@@ -509,6 +516,7 @@ const supportedSchemaKeywords = new Set([
   'then',
   'title',
   'type',
+  'uniqueItems',
   'writeOnly',
 ])
 

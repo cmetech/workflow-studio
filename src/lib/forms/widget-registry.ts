@@ -53,6 +53,8 @@ export function resolveWidget(field: FieldDescriptor | FormField): WidgetResolut
     }
   }
   if ('schema' in field && !definition.accepts(field)) {
+    const generic = widgetRegistry.get('json-schema')
+    if (generic?.accepts(field)) return { ok: true, definition: generic }
     return {
       ok: false,
       code: 'contract_reader_unsupported_widget',
@@ -196,7 +198,7 @@ function collectDocumentFields(
     const fieldPath = pathPrefix ? `${pathPrefix}.${name}` : name
     const template = [...pathTemplate, name]
     if (typeof schema['x-hermes-widget'] === 'string') {
-      fields.push(formFieldFromSchema(contract, schema, document, fieldPath, template, required.has(name)))
+      fields.push(formFieldFromSchema(contract, schema, root, document, fieldPath, template, required.has(name)))
     }
     collectDocumentChildren(contract, schema, root, document, fieldPath, template, fields)
   }
@@ -227,7 +229,7 @@ function collectDocumentChildren(
     const childPath = `${nextPath}.${name}`
     const childTemplate = [...nextTemplate, name]
     if (typeof child['x-hermes-widget'] === 'string') {
-      fields.push(formFieldFromSchema(contract, child, document, childPath, childTemplate, required.has(name)))
+      fields.push(formFieldFromSchema(contract, child, root, document, childPath, childTemplate, required.has(name)))
     }
     collectDocumentChildren(contract, child, root, document, childPath, childTemplate, fields)
   }
@@ -239,6 +241,7 @@ function formFieldFromDescriptor(
   schema: Record<string, unknown>,
   nodeKind: string,
 ): FormField {
+  const resolvedSchema = materializeLocalReferences(schema, contract.definition_schema)
   const required = schemaRequiredAtFieldPath(contract.definition_schema, descriptor.field_path, nodeKind)
   return {
     id: descriptor.id,
@@ -253,53 +256,108 @@ function formFieldFromDescriptor(
     order: descriptor.order,
     status: descriptor.status,
     examples: descriptor.examples,
-    schema,
+    schema: resolvedSchema,
     required,
-    hasDefault: Object.hasOwn(schema, 'default'),
-    ...(Object.hasOwn(schema, 'default') ? { defaultValue: structuredClone(schema.default) } : {}),
-    ...(typeof schema['x-hermes-unit'] === 'string' ? { unit: schema['x-hermes-unit'] } : {}),
-    ...(typeof schema['x-hermes-compatibility-code'] === 'string'
-      ? { compatibilityCode: schema['x-hermes-compatibility-code'] }
+    hasDefault: Object.hasOwn(resolvedSchema, 'default'),
+    ...(Object.hasOwn(resolvedSchema, 'default') ? { defaultValue: structuredClone(resolvedSchema.default) } : {}),
+    ...(typeof resolvedSchema['x-hermes-unit'] === 'string' ? { unit: resolvedSchema['x-hermes-unit'] } : {}),
+    ...(typeof resolvedSchema['x-hermes-compatibility-code'] === 'string'
+      ? { compatibilityCode: resolvedSchema['x-hermes-compatibility-code'] }
       : {}),
-    constraints: schemaConstraints(schema),
+    constraints: schemaConstraints(resolvedSchema),
   }
 }
 
 function formFieldFromSchema(
   contract: AuthoringContract,
   schema: Record<string, unknown>,
+  root: Record<string, unknown>,
   document: FormField['document'],
   fieldPath: string,
   pathTemplate: readonly (string | number)[],
   required: boolean,
 ): FormField {
+  const resolvedSchema = materializeLocalReferences(schema, root)
   const compatibilityCode =
-    typeof schema['x-hermes-compatibility-code'] === 'string' ? schema['x-hermes-compatibility-code'] : undefined
+    typeof resolvedSchema['x-hermes-compatibility-code'] === 'string'
+      ? resolvedSchema['x-hermes-compatibility-code']
+      : undefined
   const catalogStatus = compatibilityCode ? contract.compatibility_codes[compatibilityCode]?.status : undefined
-  const annotationStatus = schema['x-hermes-status']
+  const annotationStatus = resolvedSchema['x-hermes-status']
   const status: ContractItemStatus =
     catalogStatus ??
     (annotationStatus === 'deferred' || annotationStatus === 'deprecated' ? annotationStatus : 'supported')
   return {
     id: `${document}.${fieldPath}`,
-    label: typeof schema.title === 'string' ? schema.title : humanize(fieldPath.split('.').at(-1) ?? fieldPath),
-    description: typeof schema.description === 'string' ? schema.description : '',
+    label:
+      typeof resolvedSchema.title === 'string'
+        ? resolvedSchema.title
+        : humanize(fieldPath.split('.').at(-1) ?? fieldPath),
+    description: typeof resolvedSchema.description === 'string' ? resolvedSchema.description : '',
     fieldPath,
     pathTemplate,
     document,
-    widget: String(schema['x-hermes-widget']),
-    section: normalizeSection(String(schema['x-hermes-section'] ?? 'Advanced')),
-    order: Number(schema['x-hermes-order']),
+    widget: String(resolvedSchema['x-hermes-widget']),
+    section: normalizeSection(String(resolvedSchema['x-hermes-section'] ?? 'Advanced')),
+    order: Number(resolvedSchema['x-hermes-order']),
     status,
-    examples: Array.isArray(schema.examples) ? schema.examples : [],
-    schema,
+    examples: Array.isArray(resolvedSchema.examples) ? resolvedSchema.examples : [],
+    schema: resolvedSchema,
     required,
-    hasDefault: Object.hasOwn(schema, 'default'),
-    ...(Object.hasOwn(schema, 'default') ? { defaultValue: structuredClone(schema.default) } : {}),
-    ...(typeof schema['x-hermes-unit'] === 'string' ? { unit: schema['x-hermes-unit'] } : {}),
+    hasDefault: Object.hasOwn(resolvedSchema, 'default'),
+    ...(Object.hasOwn(resolvedSchema, 'default') ? { defaultValue: structuredClone(resolvedSchema.default) } : {}),
+    ...(typeof resolvedSchema['x-hermes-unit'] === 'string' ? { unit: resolvedSchema['x-hermes-unit'] } : {}),
     ...(compatibilityCode ? { compatibilityCode } : {}),
-    constraints: schemaConstraints(schema),
+    constraints: schemaConstraints(resolvedSchema),
   }
+}
+
+function materializeLocalReferences(
+  value: unknown,
+  root: Record<string, unknown>,
+  resolving = new Set<string>(),
+): Record<string, unknown> {
+  const schema = record(value)
+  if (!schema) return {}
+  const reference = typeof schema.$ref === 'string' ? schema.$ref : undefined
+  if (reference?.startsWith('#/') && !resolving.has(reference)) {
+    const target = resolveSchema(schema, root)
+    if (target && target !== schema) {
+      const siblings = Object.fromEntries(Object.entries(schema).filter(([key]) => key !== '$ref'))
+      const next = new Set(resolving)
+      next.add(reference)
+      return materializeSchema({ ...target, ...siblings }, root, next)
+    }
+  }
+  return materializeSchema(schema, root, resolving)
+}
+
+function materializeSchema(
+  schema: Record<string, unknown>,
+  root: Record<string, unknown>,
+  resolving: ReadonlySet<string>,
+): Record<string, unknown> {
+  const materialized = Object.fromEntries(
+    Object.entries(schema).map(([key, child]) => [
+      key,
+      Array.isArray(child)
+        ? child.map((item) => materializeSchemaChild(item, root, resolving))
+        : materializeSchemaChild(child, root, resolving),
+    ]),
+  )
+  const types = materialized.type
+  if (!Array.isArray(types) || !types.every((type) => typeof type === 'string') || types.length === 0)
+    return materialized
+  const { type: _type, ...base } = materialized
+  return { ...base, oneOf: types.map((type) => ({ type })) }
+}
+
+function materializeSchemaChild(
+  value: unknown,
+  root: Record<string, unknown>,
+  resolving: ReadonlySet<string>,
+): unknown {
+  return record(value) ? materializeLocalReferences(value, root, new Set(resolving)) : value
 }
 
 function schemaAtFieldPath(root: Record<string, unknown>, path: string): Record<string, unknown> | null {
@@ -441,6 +499,8 @@ function schemaType(schema: Readonly<Record<string, unknown>>): unknown {
 }
 
 function stringSchema(field: FormField): boolean {
+  const branches = unionBranches(field.schema)
+  if (branches) return branches.every((branch) => schemaType(branch) === 'string')
   return schemaType(field.schema) === undefined || schemaType(field.schema) === 'string'
 }
 
@@ -450,11 +510,7 @@ function numberSchema(field: FormField): boolean {
 }
 
 function objectSchema(field: FormField): boolean {
-  const union = Array.isArray(field.schema.oneOf)
-    ? field.schema.oneOf
-    : Array.isArray(field.schema.anyOf)
-      ? field.schema.anyOf
-      : null
+  const union = unionBranches(field.schema)
   if (union && union.some((branch) => schemaType(record(branch) ?? {}) === undefined)) return false
   const objectLike =
     schemaType(field.schema) === 'object' ||
@@ -463,6 +519,13 @@ function objectSchema(field: FormField): boolean {
     Array.isArray(field.schema.oneOf) ||
     Array.isArray(field.schema.anyOf)
   return objectLike && canEditStructuredSchema(field.schema)
+}
+
+function unionBranches(schema: Readonly<Record<string, unknown>>): readonly Record<string, unknown>[] | null {
+  const branches = Array.isArray(schema.oneOf) ? schema.oneOf : Array.isArray(schema.anyOf) ? schema.anyOf : null
+  if (!branches) return null
+  const normalized = branches.map(record)
+  return normalized.every(Boolean) ? (normalized as Record<string, unknown>[]) : null
 }
 
 function jsonValueSchema(field: FormField): boolean {

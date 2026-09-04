@@ -182,14 +182,24 @@ describe('schema-driven widget registry', () => {
     })
   })
 
-  it('fails closed when a known widget is incompatible with the published schema shape', () => {
+  it('uses the generic structured editor when a nominal widget cannot represent the published schema shape', () => {
     const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
 
-    expect(resolveWidget({ ...field, schema: { type: 'array', items: { type: 'string' } } })).toEqual({
-      ok: false,
-      code: 'contract_reader_unsupported_widget',
-      message: 'Workflow Studio cannot safely render the contract widget "text" for name.',
-    })
+    expect(resolveWidget({ ...field, schema: { type: 'array', items: { type: 'string' } } })).toEqual(
+      expect.objectContaining({ ok: true, definition: expect.objectContaining({ id: 'json-schema' }) }),
+    )
+  })
+
+  it('uses the generic structured editor when a published widget has a safely editable union shape', () => {
+    const field = collectContractFields(contract()).find(({ fieldPath }) => fieldPath === 'name')!
+
+    expect(
+      resolveWidget({
+        ...field,
+        widget: 'text',
+        schema: { oneOf: [{ type: 'string' }, { type: 'integer' }] },
+      }),
+    ).toEqual(expect.objectContaining({ ok: true, definition: expect.objectContaining({ id: 'json-schema' }) }))
   })
 
   it('fails closed for object unions that the recursive editor cannot safely represent', () => {
