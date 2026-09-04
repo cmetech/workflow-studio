@@ -185,12 +185,10 @@ describe('DocumentationTopicList', () => {
 
     expect(screen.getByRole('button', { name: 'Model, Prompt node, nodes[].model' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Model, Prompt node, nodes[].agents.*.model' })).toBeVisible()
-    expect(
-      screen.getByRole('button', { name: 'Max attempts, Approval node, nodes[].retry.max_attempts' }),
-    ).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Max attempts, Prompt node' })).toBeVisible()
     expect(
       screen.getByRole('button', {
-        name: 'Max attempts, Approval node, nodes[].approval.on_reject.max_attempts',
+        name: 'Max attempts, Approval node',
       }),
     ).toBeVisible()
   })

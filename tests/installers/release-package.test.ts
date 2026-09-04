@@ -92,10 +92,10 @@ function verifyPackagedResourcesWithPe(root: string, manifestPath: string, execu
 }
 
 describe('packaged resource verification', () => {
-  it('accepts the exact 32-file packaged resource tree', async () => {
+  it('accepts the exact 34-file packaged resource tree', async () => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
-      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 32 })
+      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 34 })
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }
@@ -225,7 +225,7 @@ describe('packaged resource verification', () => {
         { encoding: 'utf8' },
       )
       expect(verification.status, verification.stderr).toBe(0)
-      expect(verification.stdout).toContain('Verified 32 packaged resource files')
+      expect(verification.stdout).toContain('Verified 34 packaged resource files')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -241,7 +241,7 @@ describe('Windows packaged executable verification', () => {
 
       const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toContain('Verified 32 packaged resource files')
+      expect(result.stdout).toContain('Verified 34 packaged resource files')
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }

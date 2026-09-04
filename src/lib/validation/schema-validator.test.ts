@@ -204,6 +204,20 @@ describe('contract schema validation', () => {
     }
   })
 
+  it('accepts Hermes semantic annotations as non-validating schema metadata', () => {
+    const annotated = contract('archon-2026-07', {
+      type: 'object',
+      properties: {
+        loop_group: {
+          type: 'object',
+          'x-hermes-semantics': { capability: 'scoped-dag-topology-v1' },
+        },
+      },
+    })
+
+    expect(() => compileContractValidators(annotated)).not.toThrow()
+  })
+
   it('compiles and caches Draft 2020-12 validators by contract digest', () => {
     const activeContract = contract('archon-2026-07', {
       $schema: 'https://json-schema.org/draft/2020-12/schema',

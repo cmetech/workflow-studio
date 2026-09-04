@@ -165,6 +165,15 @@ describe('authoring contract loader', () => {
     )
   })
 
+  it('normalizes the published Unicode condition pattern into a JavaScript-compatible reader value', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    const rule = contract.semantic_rules.find(({ id }) => id === 'condition-expression')!
+
+    expect(
+      () => new RegExp(String(rule.parameters.expression_pattern), String(rule.parameters.expression_flags)),
+    ).not.toThrow()
+  })
+
   it('normalizes uppercase digest hex after comparison', async () => {
     const envelope = JSON.parse(new TextDecoder().decode(await signedBytes())) as Record<string, unknown>
     envelope.contract_digest = String(envelope.contract_digest).toUpperCase().replace('SHA256:', 'sha256:')

@@ -24,6 +24,7 @@ const CONTRACT_ANNOTATION_KEYWORDS = [
   'x-hermes-migration',
   'x-hermes-value-role',
   'x-hermes-enforcement-phase',
+  'x-hermes-semantics',
 ] as const
 const SUPPORTED_STRING_FORMATS: Readonly<Record<string, RegExp>> = {
   uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -33,7 +34,7 @@ export function compileContractValidators(contract: AuthoringContract): Compiled
   const cached = validatorCache.get(contract.contract_digest)
   if (cached) return cached
 
-  const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: true })
+  const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, validateFormats: true })
   for (const keyword of CONTRACT_ANNOTATION_KEYWORDS) ajv.addKeyword({ keyword, valid: true })
   for (const format of collectDeclaredFormats(contract.definition_schema, contract.sidecar_schema)) {
     const validator = SUPPORTED_STRING_FORMATS[format]

@@ -133,18 +133,11 @@ function contract(overrides: Partial<AuthoringContract> = {}): AuthoringContract
 }
 
 describe('schema-driven widget registry', () => {
-  it('keeps unsupported generated v6 structured fields explicit so visual activation can fail closed', async () => {
+  it('provides exactly one compatible documented widget for every production contract field', async () => {
     const contracts = await loadBundledAuthoringContracts()
     expect(contracts.map(({ profile }) => profile)).toEqual(['archon-2026-07', 'hermes-legacy'])
     for (const productionContract of contracts) {
-      const issues = validateContractFormCoverage(productionContract)
-      if (productionContract.profile === 'archon-2026-07') {
-        expect(issues).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ code: 'field_widget_unsupported', fieldPath: 'nodes[].loop_group' }),
-          ]),
-        )
-      } else expect(issues).toEqual([])
+      expect(validateContractFormCoverage(productionContract), productionContract.profile).toEqual([])
     }
   })
 

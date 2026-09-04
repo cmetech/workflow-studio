@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import legacyContractText from '../../contracts/hermes-legacy-v1.json?raw'
+import legacyContractText from '../../contracts/hermes-legacy-v2.json?raw'
 import { canonicalizeContractPayload, sha256Hex } from '$src/lib/contract/canonical-json'
 import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'

@@ -244,7 +244,10 @@ function normalizeRules(
       isRecord(value.parameters) &&
       Array.isArray(value.examples)
     ) {
-      normalized.push(value as unknown as SemanticRuleDescriptor)
+      normalized.push({
+        ...(value as unknown as SemanticRuleDescriptor),
+        parameters: normalizeSemanticParameters(value.id, value.parameters),
+      })
       continue
     }
     const { id, ...parameters } = value
@@ -260,6 +263,16 @@ function normalizeRules(
     })
   }
   return normalized
+}
+
+function normalizeSemanticParameters(id: unknown, value: unknown): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) return {}
+  if (id !== 'condition-expression' || typeof value.expression_pattern !== 'string') return value
+
+  // Hermes emits escaped quote literals for a Unicode regex. JavaScript's `u`
+  // mode rejects that redundant escape, so expose the equivalent executable
+  // reader value while leaving the signed generated artifact untouched.
+  return { ...value, expression_pattern: value.expression_pattern.replaceAll('\\"', '"') }
 }
 
 function normalizeDocumentation(value: ContractDocumentation): ContractDocumentation {
