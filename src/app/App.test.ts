@@ -40,6 +40,31 @@ import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/wo
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
 
+function rootGraph(
+  name: string,
+  nodes: readonly {
+    readonly id: string
+    readonly kind: string
+    readonly value: unknown
+    readonly dependsOn: readonly string[]
+    readonly options: Readonly<Record<string, unknown>>
+    readonly source: { readonly path: string; readonly start: number; readonly end: number }
+  }[],
+) {
+  return {
+    scope: { key: 'root' as const, kind: 'root' as const, workflow: { name, profile: 'hermes-legacy' as const } },
+    editorNodePrefix: '',
+    sourcePath: ['nodes'],
+    sourceRange: { start: 0, end: 0 },
+    nodes,
+    edges: [],
+    definitionOrder: nodes.map(({ id }) => id),
+    outerInputs: [],
+    issues: [],
+    capacity: { status: 'visual' as const, nodeCount: nodes.length, edgeCount: 0 },
+  }
+}
+
 class TestResizeObserver {
   static instances: TestResizeObserver[] = []
   readonly targets = new Set<Element>()
@@ -1425,19 +1450,19 @@ nodes:
         name: 'Flow',
         description: 'Test',
         profile: 'hermes-legacy',
-        nodes: [
-          {
-            id: 'collect',
-            kind: 'command',
-            value: 'Gather',
-            dependsOn: [],
-            options: {},
-            source: { path: '/nodes/0', start: 36, end: 72 },
-          },
+        graphs: [
+          rootGraph('Flow', [
+            {
+              id: 'collect',
+              kind: 'command',
+              value: 'Gather',
+              dependsOn: [],
+              options: {},
+              source: { path: '/nodes/0', start: 36, end: 72 },
+            },
+          ]),
         ],
-        edges: [],
         definition: { name: 'Flow' },
-        companion: null,
       },
     })
     setActiveLayout({
@@ -1538,19 +1563,19 @@ nodes:
         name: 'Flow',
         description: '',
         profile: 'hermes-legacy',
-        nodes: [
-          {
-            id: 'collect',
-            kind: 'command',
-            value: 'Gather',
-            dependsOn: [],
-            options: {},
-            source: { path: '/nodes/0', start: 20, end: 56 },
-          },
+        graphs: [
+          rootGraph('Flow', [
+            {
+              id: 'collect',
+              kind: 'command',
+              value: 'Gather',
+              dependsOn: [],
+              options: {},
+              source: { path: '/nodes/0', start: 20, end: 56 },
+            },
+          ]),
         ],
-        edges: [],
         definition: { name: 'Flow' },
-        companion: null,
       },
     })
     setActiveLayout({

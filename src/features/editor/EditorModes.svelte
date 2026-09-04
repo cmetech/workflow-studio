@@ -169,7 +169,7 @@
       text={pair.definition.text}
       {revision}
       {analysis}
-      nodes={projection?.nodes ?? []}
+      nodes={projection?.graphs[0]?.nodes ?? []}
       {readOnly}
       active={$activeYamlDocument === 'definition' && mode !== 'visual'}
       focusOnSelection={mode !== 'visual'}

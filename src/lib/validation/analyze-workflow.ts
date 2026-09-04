@@ -88,7 +88,7 @@ export async function analyzeWorkflowPair(
     )
     const draftIssues = [...draftProjection.issues]
     if (!hasBlockingIssue(draftIssues)) {
-      draftIssues.push(...validateDag(draftProjection.projection, contract.semantic_rules).issues)
+      draftIssues.push(...validateDag(draftProjection.projection.graphs[0]!, contract.semantic_rules).issues)
     }
     if (hasBlockingIssue(draftIssues)) return { ...identity, issues, structurallyValid: false }
     return {
@@ -108,7 +108,7 @@ export async function analyzeWorkflowPair(
   )
   issues.push(...projected.issues)
   if (!hasBlockingIssue(issues)) {
-    issues.push(...validateDag(projected.projection, contract.semantic_rules).issues)
+    issues.push(...validateDag(projected.projection.graphs[0]!, contract.semantic_rules).issues)
   }
 
   const structurallyValid = !hasBlockingIssue(issues)

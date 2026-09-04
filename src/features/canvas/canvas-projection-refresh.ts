@@ -1,9 +1,9 @@
 import type { ValidationIssue } from '$src/lib/documents/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import type { CanvasPosition } from './types'
 
 export interface CanvasProjectionRefreshSnapshot {
-  readonly projection: WorkflowProjection
+  readonly projection: ProjectedGraph
   readonly issues: readonly ValidationIssue[]
   readonly workflowIdentity: string
   readonly stale: boolean

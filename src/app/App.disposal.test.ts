@@ -91,19 +91,30 @@ describe('App disposal fallback', () => {
         name: 'Hello',
         description: '',
         profile: 'hermes-legacy',
-        nodes: [
+        graphs: [
           {
-            id: 'collect',
-            kind: 'command',
-            value: 'Gather',
-            dependsOn: [],
-            options: {},
-            source: { path: '/nodes/0', start: 0, end: 1 },
+            scope: { key: 'root', kind: 'root', workflow: { name: 'Flow', profile: 'hermes-legacy' } },
+            editorNodePrefix: '',
+            sourcePath: ['nodes'],
+            sourceRange: { start: 0, end: 10 },
+            nodes: [
+              {
+                id: 'collect',
+                kind: 'command',
+                value: 'Gather',
+                dependsOn: [],
+                options: {},
+                source: { path: '/nodes/0', start: 0, end: 1 },
+              },
+            ],
+            edges: [],
+            definitionOrder: ['collect'],
+            outerInputs: [],
+            issues: [],
+            capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
           },
         ],
-        edges: [],
         definition: { name: 'Hello' },
-        companion: null,
       },
     })
     await tick()

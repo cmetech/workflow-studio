@@ -241,7 +241,7 @@ describe('workflow pair analysis', () => {
     )
 
     expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
-    expect((analysis.projection as WorkflowProjection | undefined)?.nodes).toContainEqual(
+    expect((analysis.projection as WorkflowProjection | undefined)?.graphs[0]?.nodes).toContainEqual(
       expect.objectContaining({ id: kind, kind }),
     )
   })
@@ -459,24 +459,25 @@ describe('workflow pair analysis', () => {
       name: 'Minimal workflow',
       description: 'A deliberately small valid DAG fixture.',
       profile: 'hermes-legacy',
-      companion: null,
-      nodes: [
-        { id: 'prepare', kind: 'command', value: 'Prepare input', dependsOn: [], options: {} },
-        {
-          id: 'finish',
-          kind: 'prompt',
-          value: 'Summarize $prepare.output',
-          dependsOn: ['prepare'],
-          options: {},
-        },
-      ],
-      edges: [{ id: 'dependency:prepare->finish', source: 'prepare', target: 'finish' }],
     })
-    expect(projection?.nodes[0]?.source.path).toBe('/nodes/0')
-    expect(projection?.nodes[0]?.source.start).toBe(validMinimal.indexOf('id: prepare'))
+    expect(projection?.graphs[0]?.nodes).toEqual([
+      expect.objectContaining({ id: 'prepare', kind: 'command', value: 'Prepare input', dependsOn: [], options: {} }),
+      expect.objectContaining({
+        id: 'finish',
+        kind: 'prompt',
+        value: 'Summarize $prepare.output',
+        dependsOn: ['prepare'],
+        options: {},
+      }),
+    ])
+    expect(projection?.graphs[0]?.edges).toEqual([
+      expect.objectContaining({ id: 'dependency:prepare->finish', source: 'prepare', target: 'finish' }),
+    ])
+    expect(projection?.graphs[0]?.nodes[0]?.source.path).toBe('/nodes/0')
+    expect(projection?.graphs[0]?.nodes[0]?.source.start).toBe(validMinimal.indexOf('id: prepare'))
     expect(projection?.definition).not.toBe(activeContract.definition_schema)
-    expect(Object.isFrozen(projection?.nodes[0])).toBe(true)
-    expect(Object.isFrozen(projection?.edges[0])).toBe(true)
+    expect(Object.isFrozen(projection?.graphs[0]?.nodes[0])).toBe(true)
+    expect(Object.isFrozen(projection?.graphs[0]?.edges[0])).toBe(true)
   })
 
   it('rejects an Archon contract when the missing companion selects legacy', async () => {

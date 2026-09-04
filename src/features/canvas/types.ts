@@ -23,6 +23,7 @@ export interface CanvasProjection {
   readonly nodes: CanvasNode[]
   readonly edges: CanvasEdge[]
   readonly positions: Readonly<Record<string, CanvasPosition>>
+  readonly capacity: { readonly status: 'visual' | 'yaml-only'; readonly nodeCount: number; readonly edgeCount: number }
   readonly stale: boolean
   readonly readOnly: boolean
 }

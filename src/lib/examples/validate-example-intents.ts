@@ -28,9 +28,14 @@ export function validateExampleIntents(projections: ReadonlyMap<string, Workflow
 }
 
 function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowProjection, errors: string[]): void {
-  const node = (nodeId: string): ProjectedNode | undefined => projection.nodes.find(({ id }) => id === nodeId)
+  const graph = projection.graphs[0]
+  if (!graph) {
+    errors.push(`${id}: expected a root graph.`)
+    return
+  }
+  const node = (nodeId: string): ProjectedNode | undefined => graph.nodes.find(({ id }) => id === nodeId)
   const exactNodeKinds = (expected: readonly string[]) => {
-    const actual = projection.nodes.map(({ kind }) => kind).sort()
+    const actual = graph.nodes.map(({ kind }) => kind).sort()
     if (actual.join('\0') !== [...expected].sort().join('\0'))
       errors.push(`${id}: expected node kinds ${expected.join(', ')}.`)
   }
@@ -42,18 +47,18 @@ function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowP
 
   switch (id) {
     case 'minimal':
-      if (projection.nodes.length !== 1 || node('prompt')?.kind !== 'prompt')
+      if (graph.nodes.length !== 1 || node('prompt')?.kind !== 'prompt')
         errors.push('minimal: expected one prompt node.')
       break
     case 'sequential':
-      if (projection.nodes.length !== 3) errors.push('sequential: expected three nodes.')
+      if (graph.nodes.length !== 3) errors.push('sequential: expected three nodes.')
       exactNodeKinds(['command', 'prompt', 'command'])
       dependsOn('prepare', [])
       dependsOn('review', ['prepare'])
       dependsOn('finish', ['review'])
       break
     case 'parallel-fan-in':
-      if (projection.nodes.length !== 4) errors.push('parallel-fan-in: expected four nodes.')
+      if (graph.nodes.length !== 4) errors.push('parallel-fan-in: expected four nodes.')
       exactNodeKinds(['command', 'prompt', 'prompt', 'prompt'])
       dependsOn('root', [])
       dependsOn('left', ['root'])
@@ -132,7 +137,8 @@ function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowP
       if (!companion || requiredCompanion.some((key) => !Object.hasOwn(companion, key))) {
         errors.push('advanced-reference: companion major structures are incomplete.')
       }
-      if (!Array.isArray(projection.definition.tags) || projection.definition.tags.length === 0) {
+      const definition = projection.definition as Record<string, unknown>
+      if (!Array.isArray(definition.tags) || definition.tags.length === 0) {
         errors.push('advanced-reference: expected common definition structures.')
       }
       break

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } from './canvas-projection-refresh'
 
-const projection = {} as WorkflowProjection
+const projection = {} as ProjectedGraph
 const issues: readonly ValidationIssue[] = []
 const positions: LayoutRecordV1['nodePositions'] = {
   collect: { x: 100, y: 200 },
@@ -35,7 +35,7 @@ describe('shouldRefreshCanvasProjection', () => {
   })
 
   it.each([
-    ['projection', snapshot({ projection: {} as WorkflowProjection })],
+    ['projection', snapshot({ projection: {} as ProjectedGraph })],
     ['diagnostics', snapshot({ issues: [{} as ValidationIssue] })],
     ['stale state', snapshot({ stale: true })],
     ['read-only state', snapshot({ readOnly: true })],

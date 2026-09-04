@@ -563,16 +563,15 @@
         candidate.profile === canvasProjection?.profile,
     ),
   )
-  const canvasCapacity = $derived(canvasProjection ? canvasCapacityForProjection(canvasProjection) : null)
+  const canvasGraph = $derived(canvasProjection?.graphs[0] ?? null)
+  const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
   const nodesPaletteDisabled = $derived(nodesPaletteDisabledReason())
-  const inspectorNodes = $derived(
-    (canvasProjection?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)),
-  )
+  const inspectorNodes = $derived((canvasGraph?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)))
   const inspectorFields = $derived.by(() => {
     const node = inspectorNodes[0]
     const projection = canvasProjection
     if (!inspectorContract || !projection || inspectorNodes.length > 1) return []
-    const index = node ? projection.nodes.findIndex(({ id }) => id === node.id) : -1
+    const index = node ? (canvasGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
     if (!node) {
       const fields = collectContractFields(inspectorContract).filter(
         (field) => !field.nodeKinds && (field.document !== 'companion' || projection.companion),
@@ -580,19 +579,25 @@
       return fields.flatMap((field) =>
         materializeFormFields(
           [field],
-          field.document === 'companion' ? (projection.companion ?? {}) : projection.definition,
+          (field.document === 'companion' ? (projection.companion ?? {}) : projection.definition) as Readonly<
+            Record<string, unknown>
+          >,
           index,
         ),
       )
     }
-    return materializeFormFields(fieldsForNode(inspectorContract, node.kind), projection.definition, index)
+    return materializeFormFields(
+      fieldsForNode(inspectorContract, node.kind),
+      projection.definition as Readonly<Record<string, unknown>>,
+      index,
+    )
   })
   const inspectorValues = $derived.by(() => {
     if (!canvasProjection) return {}
     const values: Record<string, unknown> = {}
     for (const field of inspectorFields) {
       const root = field.document === 'companion' ? canvasProjection.companion : canvasProjection.definition
-      const value = root ? formFieldValue(root, field) : undefined
+      const value = root ? formFieldValue(root as Readonly<Record<string, unknown>>, field) : undefined
       if (value !== undefined) values[field.id] = value
     }
     return values
@@ -971,7 +976,7 @@
     const expectedIdentity = inspectorBindingIdentity
     if (!contract || !session.pair || !projection || inspectorDisabledReason) return
     const bindingSubject = node?.id ?? 'workflow'
-    const nodeIndex = node ? projection.nodes.findIndex(({ id }) => id === node.id) : -1
+    const nodeIndex = node ? (canvasGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
     const path = concreteFormPath(commit.field, nodeIndex)
     if (!path) {
       workspaceError = 'This contract field cannot be mutated safely by the current reader.'
@@ -2072,12 +2077,12 @@
             {#if canvasCapacity?.advisory}
               <p class="canvas-capacity-advisory" role="status">{canvasCapacity.advisory}</p>
             {/if}
-            {#if canvasProjection && $activeLayoutStore && canvasCapacity?.visual !== false}
+            {#if canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false}
               <div class="canvas-pane">
                 <GraphCanvas
                   bind:this={graphCanvas}
                   {commandSurface}
-                  projection={canvasProjection}
+                  projection={canvasGraph}
                   layout={$activeLayoutStore}
                   workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
                   transitionLocked={canvasTransitionLocked}

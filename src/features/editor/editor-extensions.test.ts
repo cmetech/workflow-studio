@@ -193,19 +193,30 @@ function workflowProjection(id: string): WorkflowProjection {
     name: 'Flow',
     description: '',
     profile: 'hermes-legacy',
-    nodes: [
+    graphs: [
       {
-        id,
-        kind: 'command',
-        value: 'run',
-        dependsOn: [],
-        options: {},
-        source: { path: '/nodes/0', start: 0, end: 10 },
+        scope: { key: 'root', kind: 'root', workflow: { name: 'Flow', profile: 'hermes-legacy' } },
+        editorNodePrefix: '',
+        sourcePath: ['nodes'],
+        sourceRange: { start: 0, end: 10 },
+        nodes: [
+          {
+            id,
+            kind: 'command',
+            value: 'run',
+            dependsOn: [],
+            options: {},
+            source: { path: '/nodes/0', start: 0, end: 10 },
+          },
+        ],
+        edges: [],
+        definitionOrder: [id],
+        outerInputs: [],
+        issues: [],
+        capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
       },
     ],
-    edges: [],
     definition: {},
-    companion: null,
   }
 }
 

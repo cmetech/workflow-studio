@@ -2,13 +2,18 @@ import { MarkerType, Position } from '@xyflow/svelte'
 import { reconcileLayout } from '$src/lib/layout/place-new-nodes'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import {
+  VISUAL_EDGE_CAPACITY,
+  VISUAL_NODE_CAPACITY,
+  type ProjectedGraph,
+  type WorkflowProjection,
+} from '$src/lib/projection/types'
 import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH, layoutGraph, type LayoutGraphAdapter } from './layout-graph'
 import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition } from './types'
 
 const SUMMARY_LIMIT = 72
-export const MAX_VISUAL_NODES = 250
-export const MAX_VISUAL_EDGES = 500
+export const MAX_VISUAL_NODES = VISUAL_NODE_CAPACITY
+export const MAX_VISUAL_EDGES = VISUAL_EDGE_CAPACITY
 
 export interface ProjectCanvasOptions {
   readonly stale?: boolean
@@ -27,13 +32,13 @@ export interface CanvasCapacity {
 }
 
 export type ProjectCanvasAdapter = (
-  projection: WorkflowProjection,
+  projection: ProjectedGraph,
   savedLayout: LayoutRecordV1,
   options?: ProjectCanvasOptions,
 ) => CanvasProjection
 
 export function createMemoizedCanvasProjector(): ProjectCanvasAdapter {
-  let previousProjection: WorkflowProjection | undefined
+  let previousProjection: ProjectedGraph | undefined
   let previousLayout: LayoutRecordV1 | undefined
   let previousOptions: ProjectCanvasOptions | undefined
   let previousResult: CanvasProjection | undefined
@@ -132,7 +137,7 @@ function samePositions(
   )
 }
 
-export function canvasCapacityForProjection(projection: WorkflowProjection): CanvasCapacity {
+export function canvasCapacityForProjection(projection: ProjectedGraph): CanvasCapacity {
   const nodeCount = projection.nodes.length
   const edgeCount = projection.edges.length
   const visual = nodeCount <= MAX_VISUAL_NODES && edgeCount <= MAX_VISUAL_EDGES
@@ -150,7 +155,7 @@ export function canvasCapacityForProjection(projection: WorkflowProjection): Can
 }
 
 export function projectCanvas(
-  projection: WorkflowProjection,
+  projection: ProjectedGraph,
   savedLayout: LayoutRecordV1,
   options: ProjectCanvasOptions = {},
 ): CanvasProjection {
@@ -209,7 +214,7 @@ export function projectCanvas(
     data: { stale, readOnly },
   }))
 
-  return { nodes, edges, positions, stale, readOnly }
+  return { nodes, edges, positions, capacity: projection.capacity, stale, readOnly }
 }
 
 function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOptions | undefined): boolean {
@@ -223,20 +228,33 @@ function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOpti
   )
 }
 
+export function isProjectedGraph(value: unknown): value is ProjectedGraph {
+  if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || !isRecord(value.scope))
+    return false
+  return (
+    value.scope.key !== undefined &&
+    value.nodes.every(
+      (node) =>
+        isRecord(node) &&
+        typeof node.id === 'string' &&
+        typeof node.kind === 'string' &&
+        Array.isArray(node.dependsOn) &&
+        node.dependsOn.every((dependency) => typeof dependency === 'string'),
+    )
+  )
+}
+
 export function isWorkflowProjection(value: unknown): value is WorkflowProjection {
-  if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) return false
-  return value.nodes.every(
-    (node) =>
-      isRecord(node) &&
-      typeof node.id === 'string' &&
-      typeof node.kind === 'string' &&
-      Array.isArray(node.dependsOn) &&
-      node.dependsOn.every((dependency) => typeof dependency === 'string'),
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    typeof value.profile === 'string' &&
+    Array.isArray(value.graphs)
   )
 }
 
 function resolvePositions(
-  projection: WorkflowProjection,
+  projection: ProjectedGraph,
   savedLayout: LayoutRecordV1,
   options: ProjectCanvasOptions,
 ): Readonly<Record<string, CanvasPosition>> {

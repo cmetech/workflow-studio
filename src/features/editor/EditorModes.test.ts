@@ -299,19 +299,30 @@ function editorAnalysis(): DocumentAnalysis {
       name: 'Flow',
       description: '',
       profile: 'hermes-legacy',
-      nodes: [
+      graphs: [
         {
-          id: 'collect',
-          kind: 'command',
-          value: 'run',
-          dependsOn: [],
-          options: {},
-          source: { path: '/nodes/0', start: 0, end: 10 },
+          scope: { key: 'root', kind: 'root', workflow: { name: 'Flow', profile: 'hermes-legacy' } },
+          editorNodePrefix: '',
+          sourcePath: ['nodes'],
+          sourceRange: { start: 0, end: 10 },
+          nodes: [
+            {
+              id: 'collect',
+              kind: 'command',
+              value: 'run',
+              dependsOn: [],
+              options: {},
+              source: { path: '/nodes/0', start: 0, end: 10 },
+            },
+          ],
+          edges: [],
+          definitionOrder: ['collect'],
+          outerInputs: [],
+          issues: [],
+          capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
         },
       ],
-      edges: [],
       definition: {},
-      companion: null,
     },
   }
 }

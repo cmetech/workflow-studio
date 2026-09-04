@@ -1,19 +1,16 @@
 import type { SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
-import type { ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph, ProjectedNode } from '$src/lib/projection/types'
 
 export interface DagValidationResult {
   issues: readonly ValidationIssue[]
   topologicalOrder: readonly string[]
 }
 
-export function validateDag(
-  projection: WorkflowProjection,
-  rules: readonly SemanticRuleDescriptor[],
-): DagValidationResult {
+export function validateDag(projection: ProjectedGraph, rules: readonly SemanticRuleDescriptor[]): DagValidationResult {
   const issues: ValidationIssue[] = []
-  const dependencyField = contractDependencyField(rules, projection.profile)
-  const nodesPath = contractNodesPath(rules, projection.profile)
+  const dependencyField = contractDependencyField(rules, projection.scope.workflow.profile)
+  const nodesPath = contractNodesPath(rules, projection.scope.workflow.profile)
   const nodesById = new Map<string, ProjectedNode>()
   const nodeOrder = new Map<string, number>()
 
@@ -82,13 +79,10 @@ export function validateDag(
   return { issues, topologicalOrder }
 }
 
-function validateConditions(
-  projection: WorkflowProjection,
-  rules: readonly SemanticRuleDescriptor[],
-): ValidationIssue[] {
+function validateConditions(projection: ProjectedGraph, rules: readonly SemanticRuleDescriptor[]): ValidationIssue[] {
   const issues: ValidationIssue[] = []
   for (const rule of rules) {
-    if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.profile)) continue
+    if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.scope.workflow.profile)) continue
     if (!Object.hasOwn(rule.parameters, 'expression_pattern')) continue
     if (typeof rule.parameters.expression_pattern !== 'string') {
       issues.push(conditionRuleIssue(rule, `Condition rule "${rule.id}" must declare a string expression pattern.`))
@@ -183,7 +177,7 @@ function kahnOrder(
 }
 
 function validateReferences(
-  projection: WorkflowProjection,
+  projection: ProjectedGraph,
   rules: readonly SemanticRuleDescriptor[],
   nodesById: ReadonlyMap<string, ProjectedNode>,
   dependencies: ReadonlyMap<string, readonly string[]>,
@@ -194,7 +188,7 @@ function validateReferences(
   const seen = new Set<string>()
 
   for (const rule of rules) {
-    if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.profile)) continue
+    if (rule.status === 'deferred' || !ruleAppliesToDefinition(rule, projection.scope.workflow.profile)) continue
     const parserResult = referenceParser(rule)
     if (parserResult.kind === 'not-reference') continue
     if (parserResult.kind === 'invalid') {
@@ -383,7 +377,7 @@ function nodeRelativePath(fieldPath: string): string[] | null {
 
 function contractDependencyField(
   rules: readonly SemanticRuleDescriptor[],
-  profile: WorkflowProjection['profile'],
+  profile: ProjectedGraph['scope']['workflow']['profile'],
 ): string | undefined {
   for (const rule of rules) {
     if (!ruleAppliesToDefinition(rule, profile)) continue
@@ -394,7 +388,10 @@ function contractDependencyField(
   return undefined
 }
 
-function contractNodesPath(rules: readonly SemanticRuleDescriptor[], profile: WorkflowProjection['profile']): string {
+function contractNodesPath(
+  rules: readonly SemanticRuleDescriptor[],
+  profile: ProjectedGraph['scope']['workflow']['profile'],
+): string {
   for (const rule of rules) {
     if (!ruleAppliesToDefinition(rule, profile)) continue
     const value = rule.parameters.nodes_path
@@ -410,7 +407,10 @@ function contractNodesPath(rules: readonly SemanticRuleDescriptor[], profile: Wo
   return '/'
 }
 
-function ruleAppliesToDefinition(rule: SemanticRuleDescriptor, profile: WorkflowProjection['profile']): boolean {
+function ruleAppliesToDefinition(
+  rule: SemanticRuleDescriptor,
+  profile: ProjectedGraph['scope']['workflow']['profile'],
+): boolean {
   return rule.applicability.profiles.includes(profile) && rule.applicability.documents.includes('definition')
 }
 

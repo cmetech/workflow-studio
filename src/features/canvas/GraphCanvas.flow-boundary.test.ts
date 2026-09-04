@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { commandRegistry } from '$src/lib/commands/registry'
 import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 
 vi.mock('@xyflow/svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xyflow/svelte')>()
@@ -16,14 +16,21 @@ vi.mock('@xyflow/svelte', async (importOriginal) => {
 
 import GraphCanvas from './GraphCanvas.svelte'
 
-const projection: WorkflowProjection = Object.freeze({
-  name: 'Boundary',
-  description: 'Svelte Flow boundary contract.',
-  profile: 'hermes-legacy',
+const projection: ProjectedGraph = Object.freeze({
+  scope: Object.freeze({
+    key: 'root',
+    kind: 'root',
+    workflow: Object.freeze({ name: 'Boundary', profile: 'hermes-legacy' }),
+  }),
+  editorNodePrefix: '',
+  sourcePath: Object.freeze(['nodes']),
+  sourceRange: Object.freeze({ start: 0, end: 0 }),
   nodes: Object.freeze([]),
   edges: Object.freeze([]),
-  definition: Object.freeze({ name: 'Boundary' }),
-  companion: null,
+  definitionOrder: Object.freeze([]),
+  outerInputs: Object.freeze([]),
+  issues: Object.freeze([]),
+  capacity: Object.freeze({ status: 'visual', nodeCount: 0, edgeCount: 0 }),
 })
 
 const layout: LayoutRecordV1 = {

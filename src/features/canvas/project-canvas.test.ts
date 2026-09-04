@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import { layoutGraph } from './layout-graph'
 import { projectCanvas } from './project-canvas'
 
-const projection: WorkflowProjection = deepFreeze({
-  name: 'Release',
-  description: 'Release workflow',
-  profile: 'hermes-legacy',
+const projection: ProjectedGraph = deepFreeze({
+  scope: { key: 'root', kind: 'root', workflow: { name: 'Release', profile: 'hermes-legacy' } },
+  editorNodePrefix: '',
+  sourcePath: ['nodes'],
+  sourceRange: { start: 0, end: 50 },
   nodes: [
     {
       id: 'collect',
@@ -27,8 +28,10 @@ const projection: WorkflowProjection = deepFreeze({
     },
   ],
   edges: [{ id: 'dependency:collect->review', source: 'collect', target: 'review' }],
-  definition: { name: 'Release' },
-  companion: null,
+  definitionOrder: ['collect', 'review'],
+  outerInputs: [],
+  issues: [],
+  capacity: { status: 'visual', nodeCount: 2, edgeCount: 1 },
 })
 
 const savedLayout: LayoutRecordV1 = {
@@ -69,6 +72,7 @@ describe('projectCanvas', () => {
     expect(canvas.nodes[0]!.data.summary.length).toBeLessThanOrEqual(72)
     expect(canvas.nodes[0]!.data).not.toHaveProperty('value')
     expect(canvas.nodes[1]!.data.requiredIssueCount).toBe(1)
+    expect(canvas.capacity).toEqual({ status: 'visual', nodeCount: 2, edgeCount: 1 })
     expect(projection).toEqual(before)
   })
 

@@ -110,7 +110,7 @@ const contract: AuthoringContract = {
     },
   ],
   compatibility_codes: {},
-  documentation: { topics: [], examples: [] },
+  documentation: { topics: [{ field_paths: ['name', 'description', 'nodes'] } as never], examples: [] },
   limits: { max_document_bytes: 2 * 1024 * 1024 },
   extensions: {},
 }
@@ -266,16 +266,31 @@ function projection(text: string) {
     name: definition.name,
     description: definition.description,
     profile: 'hermes-legacy' as const,
-    nodes,
-    edges: nodes.flatMap((node) =>
-      node.dependsOn.map((dependency) => ({
-        id: `dependency:${dependency}->${node.id}`,
-        source: dependency,
-        target: node.id,
-      })),
-    ),
+    graphs: [
+      {
+        scope: { key: 'root', kind: 'root', workflow: { name: definition.name, profile: 'hermes-legacy' as const } },
+        editorNodePrefix: '',
+        sourcePath: ['nodes'],
+        sourceRange: { start: 0, end: text.length },
+        nodes,
+        edges: nodes.flatMap((node) =>
+          node.dependsOn.map((dependency) => ({
+            id: `dependency:${dependency}->${node.id}`,
+            source: dependency,
+            target: node.id,
+          })),
+        ),
+        definitionOrder: nodes.map(({ id }) => id),
+        outerInputs: [],
+        issues: [],
+        capacity: {
+          status: 'visual' as const,
+          nodeCount: nodes.length,
+          edgeCount: nodes.flatMap((node) => node.dependsOn).length,
+        },
+      },
+    ],
     definition,
-    companion: null,
   }
 }
 
@@ -441,7 +456,9 @@ describe('keyboard-only workflow authoring', () => {
 
     let picker = await openAddNodeWithKeyboard(user)
     await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
-    await waitFor(() => expect(projection($documentSession.get().pair!.definition.text).nodes).toHaveLength(2))
+    await waitFor(() =>
+      expect(projection($documentSession.get().pair!.definition.text).graphs[0]?.nodes).toHaveLength(2),
+    )
     await waitFor(() => expect(picker).not.toBeInTheDocument())
     await waitFor(() => expectVisibleKeyboardFocus(canvas))
 
@@ -463,7 +480,7 @@ describe('keyboard-only workflow authoring', () => {
     expectVisibleKeyboardFocus(canvas)
     await user.keyboard('{Enter}')
     await waitFor(() => {
-      const nodes = projection($documentSession.get().pair!.definition.text).nodes
+      const nodes = projection($documentSession.get().pair!.definition.text).graphs[0]?.nodes ?? []
       expect(nodes.find(({ id }) => id === 'command')?.dependsOn).toEqual(['seed'])
     })
     await waitForCurrentAnalysis()
@@ -474,7 +491,7 @@ describe('keyboard-only workflow authoring', () => {
     await waitFor(() => expectVisibleKeyboardFocus(picker))
     await user.keyboard('{Enter}')
     await waitFor(() => {
-      const nodes = projection($documentSession.get().pair!.definition.text).nodes
+      const nodes = projection($documentSession.get().pair!.definition.text).graphs[0]?.nodes ?? []
       expect(nodes.find(({ id }) => id === 'command-2')?.dependsOn).toEqual(['command'])
     })
     await waitFor(() => expect(picker).not.toBeInTheDocument())

@@ -29,6 +29,10 @@ export interface CanvasActionContext {
   readonly announce: (message: string) => void
 }
 
+function rootGraph(projection: WorkflowProjection) {
+  return projection.graphs[0]!
+}
+
 type MutationRejectionCode = Exclude<ApplyWorkflowMutationResult, { ok: true }>['code']
 
 export type CanvasRejectionCode =
@@ -104,8 +108,8 @@ export async function connectNodes(
   sourceId: string,
   targetId: string,
 ): Promise<CanvasActionResult> {
-  const source = context.projection.nodes.find(({ id }) => id === sourceId)
-  const target = context.projection.nodes.find(({ id }) => id === targetId)
+  const source = rootGraph(context.projection).nodes.find(({ id }) => id === sourceId)
+  const target = rootGraph(context.projection).nodes.find(({ id }) => id === targetId)
   if (!source || !target) return reject(context, 'missing_endpoint', 'Both connection endpoints must exist.')
   if (sourceId === targetId) return reject(context, 'self_edge', 'A node cannot depend on itself.')
   if (target.dependsOn.includes(sourceId)) {
@@ -126,8 +130,8 @@ export async function disconnectNodes(
   sourceId: string,
   targetId: string,
 ): Promise<CanvasActionResult> {
-  const target = context.projection.nodes.find(({ id }) => id === targetId)
-  if (!target || !context.projection.nodes.some(({ id }) => id === sourceId)) {
+  const target = rootGraph(context.projection).nodes.find(({ id }) => id === targetId)
+  if (!target || !rootGraph(context.projection).nodes.some(({ id }) => id === sourceId)) {
     return reject(context, 'missing_endpoint', 'Both connection endpoints must exist.')
   }
   if (!target.dependsOn.includes(sourceId)) {
@@ -154,10 +158,12 @@ export async function addNode(
   }
   const fields = graphContractFields(context.contract)
   if (!fields) return reject(context, 'descriptor_unavailable', 'The contract does not publish graph fields.')
-  const after = options.afterNodeId ? context.projection.nodes.find(({ id }) => id === options.afterNodeId) : undefined
+  const after = options.afterNodeId
+    ? rootGraph(context.projection).nodes.find(({ id }) => id === options.afterNodeId)
+    : undefined
   if (options.afterNodeId && !after) return reject(context, 'node_missing', 'The selected node no longer exists.')
 
-  const nodeId = collisionFreeId(descriptor.id, new Set(context.projection.nodes.map(({ id }) => id)))
+  const nodeId = collisionFreeId(descriptor.id, new Set(rootGraph(context.projection).nodes.map(({ id }) => id)))
   const node: Record<string, unknown> = {}
   setPath(node, fields.idPath, nodeId)
   const kindPath = relativeDescriptorPath(descriptor.field_path, fields.nodesPath)
@@ -219,7 +225,7 @@ export function previewDeleteNodes(
   for (const [nodeIndex, rawNode] of nodes.entries()) {
     const nodeId = String(valueAtPath(rawNode, fields?.idPath ?? ['id']))
     if (selected.has(nodeId)) continue
-    const projectedNode = projection.nodes.find((candidate) => candidate.id === nodeId)
+    const projectedNode = rootGraph(projection).nodes.find((candidate) => candidate.id === nodeId)
     if (!projectedNode) continue
     for (const rule of referenceRules(contract, projectedNode)) {
       for (const path of rule.field_paths) {
@@ -258,7 +264,7 @@ export async function deleteNodes(
 ): Promise<CanvasActionResult> {
   const selected = [...new Set(nodeIds)]
   if (selected.length === 0) return reject(context, 'selection_empty', 'Select at least one node to delete.')
-  if (selected.some((id) => !context.projection.nodes.some((node) => node.id === id))) {
+  if (selected.some((id) => !rootGraph(context.projection).nodes.some((node) => node.id === id))) {
     return reject(context, 'node_missing', 'A selected node no longer exists.')
   }
   const impact = previewDeleteNodes(context.projection, selected, context.contract)
@@ -283,10 +289,10 @@ export async function deleteNodes(
 }
 
 export async function renameNode(context: CanvasActionContext, from: string, to: string): Promise<CanvasActionResult> {
-  if (!context.projection.nodes.some(({ id }) => id === from)) {
+  if (!rootGraph(context.projection).nodes.some(({ id }) => id === from)) {
     return reject(context, 'node_missing', `Node ${from} no longer exists.`)
   }
-  if (context.projection.nodes.some(({ id }) => id === to)) {
+  if (rootGraph(context.projection).nodes.some(({ id }) => id === to)) {
     return reject(context, 'node_id_duplicate', `Node ${to} already exists.`)
   }
   const result = await commitMutation(context, { type: 'rename-node', from, to })
@@ -482,7 +488,7 @@ function reject(context: CanvasActionContext, code: CanvasRejectionCode, message
 }
 
 function hasDependencyPath(projection: WorkflowProjection, from: string, to: string): boolean {
-  const nodes = new Map(projection.nodes.map((node) => [node.id, node]))
+  const nodes = new Map(rootGraph(projection).nodes.map((node) => [node.id, node]))
   const seen = new Set<string>()
   const pending = [from]
   while (pending.length > 0) {

@@ -169,16 +169,31 @@ function projection(text: string, profile: AuthoringContract['profile']): Workfl
     name: String(definition.name),
     description: String(definition.description),
     profile,
-    nodes,
-    edges: nodes.flatMap((target) =>
-      target.dependsOn.map((dependency) => ({
-        id: `dependency:${dependency}->${target.id}`,
-        source: dependency,
-        target: target.id,
-      })),
-    ),
+    graphs: [
+      {
+        scope: { key: 'root', kind: 'root', workflow: { name: String(definition.name), profile } },
+        editorNodePrefix: '',
+        sourcePath: ['nodes'],
+        sourceRange: { start: 0, end: text.length },
+        nodes,
+        edges: nodes.flatMap((target) =>
+          target.dependsOn.map((dependency) => ({
+            id: `dependency:${dependency}->${target.id}`,
+            source: dependency,
+            target: target.id,
+          })),
+        ),
+        definitionOrder: nodes.map(({ id }) => id),
+        outerInputs: [],
+        issues: [],
+        capacity: {
+          status: 'visual',
+          nodeCount: nodes.length,
+          edgeCount: nodes.flatMap((node) => node.dependsOn).length,
+        },
+      },
+    ],
     definition,
-    companion: null,
   }
 }
 

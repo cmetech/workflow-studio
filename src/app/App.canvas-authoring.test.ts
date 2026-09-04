@@ -200,7 +200,7 @@ const contract: AuthoringContract = {
     },
   ],
   compatibility_codes: {},
-  documentation: { topics: [], examples: [] },
+  documentation: { topics: [{ field_paths: ['name', 'description', 'nodes'] } as never], examples: [] },
   limits: { max_document_bytes: 2 * 1024 * 1024 },
   extensions: {},
 }
@@ -298,16 +298,31 @@ function projection(text = source) {
     name: definition.name,
     description: definition.description,
     profile: 'hermes-legacy' as const,
-    nodes,
-    edges: nodes.flatMap((node) =>
-      node.dependsOn.map((dependency) => ({
-        id: `dependency:${dependency}->${node.id}`,
-        source: dependency,
-        target: node.id,
-      })),
-    ),
+    graphs: [
+      {
+        scope: { key: 'root', kind: 'root', workflow: { name: definition.name, profile: 'hermes-legacy' as const } },
+        editorNodePrefix: '',
+        sourcePath: ['nodes'],
+        sourceRange: { start: 0, end: text.length },
+        nodes,
+        edges: nodes.flatMap((node) =>
+          node.dependsOn.map((dependency) => ({
+            id: `dependency:${dependency}->${node.id}`,
+            source: dependency,
+            target: node.id,
+          })),
+        ),
+        definitionOrder: nodes.map(({ id }) => id),
+        outerInputs: [],
+        issues: [],
+        capacity: {
+          status: 'visual' as const,
+          nodeCount: nodes.length,
+          edgeCount: nodes.flatMap((node) => node.dependsOn).length,
+        },
+      },
+    ],
     definition,
-    companion: null,
   }
 }
 
@@ -370,7 +385,9 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
     schemaVersion: 1,
     workspaceId: 'workspace',
     workflowPath: 'flow.yaml',
-    nodePositions: Object.fromEntries(currentProjection.nodes.map(({ id }, index) => [id, { x: index * 320, y: 0 }])),
+    nodePositions: Object.fromEntries(
+      currentProjection.graphs[0]!.nodes.map(({ id }, index) => [id, { x: index * 320, y: 0 }]),
+    ),
     viewport: { x: 0, y: 0, zoom: 1 },
     panels: { left: 280, right: 320, problems: 180 },
     editorMode: 'visual',
@@ -843,12 +860,19 @@ describe('App canvas authoring composition', () => {
       issues: [],
       projection: {
         ...crowded,
-        nodes: Array.from({ length: 251 }, (_, index) => ({
-          ...crowded.nodes[0]!,
-          id: `node-${index}`,
-          source: { path: `/nodes/${index}`, start: index, end: index + 1 },
-        })),
-        edges: [],
+        graphs: [
+          {
+            ...crowded.graphs[0]!,
+            nodes: Array.from({ length: 251 }, (_, index) => ({
+              ...crowded.graphs[0]!.nodes[0]!,
+              id: `node-${index}`,
+              source: { path: `/nodes/${index}`, start: index, end: index + 1 },
+            })),
+            edges: [],
+            definitionOrder: Array.from({ length: 251 }, (_, index) => `node-${index}`),
+            capacity: { status: 'yaml-only', nodeCount: 251, edgeCount: 0 },
+          },
+        ],
       },
     })
     await waitFor(() => expect(palette.getByText(/at most 250 nodes/)).toBeVisible())
@@ -1234,7 +1258,9 @@ describe('App canvas authoring composition', () => {
       ],
       projection: {
         ...refreshedProjection,
-        nodes: refreshedProjection.nodes.map((node) => ({ ...node })),
+        graphs: refreshedProjection.graphs.map((graph, index) =>
+          index === 0 ? { ...graph, nodes: graph.nodes.map((node) => ({ ...node })) } : graph,
+        ),
       },
     })
     await tick()

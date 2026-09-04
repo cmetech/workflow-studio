@@ -3,7 +3,7 @@ import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import {
   CommandDisabledError,
   commandRegistry,
@@ -24,10 +24,15 @@ function renderCanvas(props: Record<string, unknown>) {
   return render(GraphCanvas, { commandSurface: commandRegistry, ...props } as never)
 }
 
-const projection: WorkflowProjection = Object.freeze({
-  name: 'Release',
-  description: 'Release workflow',
-  profile: 'hermes-legacy',
+const projection: ProjectedGraph = Object.freeze({
+  scope: Object.freeze({
+    key: 'root',
+    kind: 'root',
+    workflow: Object.freeze({ name: 'Release', profile: 'hermes-legacy' }),
+  }),
+  editorNodePrefix: '',
+  sourcePath: Object.freeze(['nodes']),
+  sourceRange: Object.freeze({ start: 0, end: 50 }),
   nodes: Object.freeze([
     Object.freeze({
       id: 'collect',
@@ -47,8 +52,10 @@ const projection: WorkflowProjection = Object.freeze({
     }),
   ]),
   edges: Object.freeze([Object.freeze({ id: 'dependency:collect->review', source: 'collect', target: 'review' })]),
-  definition: Object.freeze({ name: 'Release' }),
-  companion: null,
+  definitionOrder: Object.freeze(['collect', 'review']),
+  outerInputs: Object.freeze([]),
+  issues: Object.freeze([]),
+  capacity: Object.freeze({ status: 'visual', nodeCount: 2, edgeCount: 1 }),
 })
 
 const layout: LayoutRecordV1 = {
@@ -526,7 +533,7 @@ describe('GraphCanvas', () => {
     const publishedSelections: string[][] = []
     const unsubscribe = $canvasSelection.subscribe((ids) => publishedSelections.push([...ids]))
 
-    const refreshedProjection: WorkflowProjection = {
+    const refreshedProjection: ProjectedGraph = {
       ...projection,
       nodes: projection.nodes.map((node) => ({ ...node })),
     }
@@ -588,7 +595,7 @@ describe('GraphCanvas', () => {
       surfaceActive: false,
       onOpenInspector,
     })
-    const projectionWithoutReview: WorkflowProjection = {
+    const projectionWithoutReview: ProjectedGraph = {
       ...projection,
       nodes: projection.nodes.filter(({ id }) => id !== 'review'),
       edges: [],

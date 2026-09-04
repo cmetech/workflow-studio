@@ -713,9 +713,9 @@ export async function installRuntimeBootstrap(): Promise<void> {
         analysisCurrent: Boolean(
           session.revision && session.analysis && isAnalysisCurrent(session.revision, session.analysis),
         ),
-        nodeCount: workflow?.nodes.length ?? 0,
-        edgeCount: workflow?.edges.length ?? 0,
-        commandApplied: workflow?.nodes.find(({ id }) => id === nodeId)?.value === '/capacity-edited',
+        nodeCount: workflow?.graphs[0]?.nodes.length ?? 0,
+        edgeCount: workflow?.graphs[0]?.edges.length ?? 0,
+        commandApplied: workflow?.graphs[0]?.nodes.find(({ id }) => id === nodeId)?.value === '/capacity-edited',
         layoutPosition: position ? { x: position.x, y: position.y } : null,
       }
     },
@@ -785,8 +785,12 @@ export async function installRuntimeBootstrap(): Promise<void> {
         companionText,
         workspacePaths,
         layout,
-        projectionNodeCount: isWorkflowProjection(activeProjection) ? activeProjection.nodes.length : 0,
-        projectionEdgeCount: isWorkflowProjection(activeProjection) ? activeProjection.edges.length : 0,
+        projectionNodeCount: isWorkflowProjection(activeProjection)
+          ? (activeProjection.graphs[0]?.nodes.length ?? 0)
+          : 0,
+        projectionEdgeCount: isWorkflowProjection(activeProjection)
+          ? (activeProjection.graphs[0]?.edges.length ?? 0)
+          : 0,
       }
     },
   }

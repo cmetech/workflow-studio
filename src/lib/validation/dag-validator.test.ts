@@ -2,7 +2,7 @@ import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
-import type { ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph, ProjectedNode } from '$src/lib/projection/types'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { validateDag } from './dag-validator'
 
@@ -17,17 +17,20 @@ function node(id: string, dependsOn: readonly string[] = [], value: unknown = `r
   }
 }
 
-function projection(nodes: readonly ProjectedNode[]): WorkflowProjection {
+function projection(nodes: readonly ProjectedNode[]): ProjectedGraph {
   return {
-    name: 'Fixture',
-    description: 'DAG validator fixture',
-    profile: 'archon-2026-07',
+    scope: { key: 'root', kind: 'root', workflow: { name: 'Fixture', profile: 'archon-2026-07' } },
+    editorNodePrefix: '',
+    sourcePath: ['nodes'],
+    sourceRange: { start: 0, end: 0 },
     nodes,
     edges: nodes.flatMap((target) =>
       target.dependsOn.map((source) => ({ id: `dependency:${source}->${target.id}`, source, target: target.id })),
     ),
-    definition: {},
-    companion: null,
+    definitionOrder: nodes.map(({ id }) => id),
+    outerInputs: [],
+    issues: [],
+    capacity: { status: 'visual', nodeCount: nodes.length, edgeCount: nodes.flatMap((node) => node.dependsOn).length },
   }
 }
 
@@ -281,7 +284,7 @@ describe('DAG semantic validation', () => {
         if (!parseResult.parsed) return
 
         const projected = projectWorkflow(parseResult.parsed, null, 'archon-2026-07', projectionContract)
-        const graph = projected.projection
+        const graph = projected.projection.graphs[0]!
         const result = validateDag(graph, projectionContract.semantic_rules)
         const ids = new Set(graph.nodes.map(({ id }) => id))
 

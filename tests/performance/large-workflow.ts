@@ -1,12 +1,12 @@
 import type { LayoutRecordV1 } from '$src/lib/layout/types'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 
 export const LARGE_WORKFLOW_NODE_COUNT = 250
 export const LARGE_WORKFLOW_EDGE_COUNT = 500
 export const LARGE_WORKFLOW_SEED = 0x24c0ffee
 
 export interface LargeWorkflowFixture {
-  readonly projection: WorkflowProjection
+  readonly projection: ProjectedGraph
   readonly layout: LayoutRecordV1
   readonly yaml: string
 }
@@ -63,14 +63,21 @@ export function createLargeWorkflowFixture(seed = LARGE_WORKFLOW_SEED): LargeWor
     description: 'Deterministic Task 9 canvas reference fixture.',
     nodes: Object.freeze(rawNodes.map((node) => Object.freeze({ ...node }))),
   })
-  const projection: WorkflowProjection = Object.freeze({
-    name: definition.name,
-    description: definition.description,
-    profile: 'hermes-legacy',
+  const projection: ProjectedGraph = Object.freeze({
+    scope: Object.freeze({
+      key: 'root',
+      kind: 'root',
+      workflow: Object.freeze({ name: definition.name, profile: 'hermes-legacy' }),
+    }),
+    editorNodePrefix: '',
+    sourcePath: Object.freeze(['nodes']),
+    sourceRange: Object.freeze({ start: 0, end: 0 }),
     nodes: Object.freeze(nodes),
     edges: Object.freeze(edges),
-    definition,
-    companion: null,
+    definitionOrder: Object.freeze(nodes.map(({ id }) => id)),
+    outerInputs: Object.freeze([]),
+    issues: Object.freeze([]),
+    capacity: Object.freeze({ status: 'visual', nodeCount: nodes.length, edgeCount: edges.length }),
   })
   const layout: LayoutRecordV1 = {
     schemaVersion: 1,

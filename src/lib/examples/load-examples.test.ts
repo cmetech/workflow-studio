@@ -53,7 +53,9 @@ describe('bundled workflow examples', () => {
         `${example.id}: ${analysis.issues.map(({ message }) => message).join('; ')}`,
       ).toBe(true)
       const projection = analysis.projection as WorkflowProjection | undefined
-      expect(example.highlightedNodeIds.every((id) => projection?.nodes.some((node) => node.id === id))).toBe(true)
+      expect(
+        example.highlightedNodeIds.every((id) => projection?.graphs[0]?.nodes.some((node) => node.id === id)),
+      ).toBe(true)
       expect(
         example.highlightedFieldIds.every((id) =>
           contract!.node_kinds.some((kind) => kind.fields.some((field) => field.id === id)),
@@ -95,10 +97,17 @@ describe('bundled workflow examples', () => {
     const rejectedContinuation = new Map(projections)
     rejectedContinuation.set('approval', {
       ...approval,
-      nodes: approval.nodes.map((node) =>
-        node.id === 'continue'
-          ? { ...node, options: { ...node.options, when: '$approve.output.accepted == 0' } }
-          : node,
+      graphs: approval.graphs.map((graph, index) =>
+        index === 0
+          ? {
+              ...graph,
+              nodes: graph.nodes.map((node) =>
+                node.id === 'continue'
+                  ? { ...node, options: { ...node.options, when: '$approve.output.accepted == 0' } }
+                  : node,
+              ),
+            }
+          : graph,
       ),
     })
     expect(validateExampleIntents(rejectedContinuation)).toContain(

@@ -42,17 +42,28 @@ function projection() {
     name: definition.name,
     description: definition.description,
     profile: 'hermes-legacy' as const,
-    nodes: definition.nodes.map((node, index) => ({
-      id: String(node.id),
-      kind: 'command',
-      value: node.command,
-      dependsOn: [],
-      options: {},
-      source: { path: `/nodes/${index}`, start: index * 10, end: index * 10 + 9 },
-    })),
-    edges: [],
+    graphs: [
+      {
+        scope: { key: 'root', kind: 'root', workflow: { name: definition.name, profile: 'hermes-legacy' as const } },
+        editorNodePrefix: '',
+        sourcePath: ['nodes'],
+        sourceRange: { start: 0, end: source.length },
+        nodes: definition.nodes.map((node, index) => ({
+          id: String(node.id),
+          kind: 'command',
+          value: node.command,
+          dependsOn: [],
+          options: {},
+          source: { path: `/nodes/${index}`, start: index * 10, end: index * 10 + 9 },
+        })),
+        edges: [],
+        definitionOrder: definition.nodes.map((node) => String(node.id)),
+        outerInputs: [],
+        issues: [],
+        capacity: { status: 'visual' as const, nodeCount: definition.nodes.length, edgeCount: 0 },
+      },
+    ],
     definition,
-    companion: null,
   }
 }
 

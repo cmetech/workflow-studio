@@ -76,7 +76,7 @@ export async function pasteSelection(
   }
 
   const destinationNodes = rawNodes(context.projection, context.contract)
-  const occupied = new Set(context.projection.nodes.map(({ id }) => id))
+  const occupied = new Set(context.projection.graphs[0]?.nodes.map(({ id }) => id) ?? [])
   const copiedIds = clipboard.nodes.map((node) => String(valueAtPath(node, fields.idPath)))
   const idMap = new Map<string, string>()
   for (const sourceId of copiedIds) {

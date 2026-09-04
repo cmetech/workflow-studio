@@ -9,7 +9,7 @@
   import type { LayoutRecordV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
-  import type { WorkflowProjection } from '$src/lib/projection/types'
+  import type { ProjectedGraph } from '$src/lib/projection/types'
   import {
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
@@ -50,7 +50,7 @@
 
   interface Props {
     commandSurface: CommandSurface
-    projection: WorkflowProjection
+    projection: ProjectedGraph
     layout: LayoutRecordV1
     workflowIdentity?: string
     transitionLocked?: boolean

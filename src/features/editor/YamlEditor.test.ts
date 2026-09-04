@@ -28,10 +28,21 @@ function currentAnalysis(overrides: Partial<DocumentAnalysis> = {}): DocumentAna
       name: 'Flow',
       description: '',
       profile: 'hermes-legacy',
-      nodes: nodes.map((node) => ({ ...node, kind: 'command', value: 'run', dependsOn: [], options: {} })),
-      edges: [],
+      graphs: [
+        {
+          scope: { key: 'root', kind: 'root', workflow: { name: 'Flow', profile: 'hermes-legacy' } },
+          editorNodePrefix: '',
+          sourcePath: ['nodes'],
+          sourceRange: { start: 0, end: 0 },
+          nodes: nodes.map((node) => ({ ...node, kind: 'command', value: 'run', dependsOn: [], options: {} })),
+          edges: [],
+          definitionOrder: nodes.map(({ id }) => id),
+          outerInputs: [],
+          issues: [],
+          capacity: { status: 'visual', nodeCount: nodes.length, edgeCount: 0 },
+        },
+      ],
       definition: {},
-      companion: null,
     },
     ...overrides,
   }
@@ -231,14 +242,21 @@ describe('YamlEditor', () => {
         ...insertedRevision,
         projection: {
           ...(currentAnalysis().projection as WorkflowProjection),
-          nodes: [
+          graphs: [
             {
-              id: 'collect',
-              kind: 'command',
-              value: 'run',
-              dependsOn: [],
-              options: {},
-              source: { path: '/nodes/0', start: 43, end: 76 },
+              ...(currentAnalysis().projection as WorkflowProjection).graphs[0]!,
+              nodes: [
+                {
+                  id: 'collect',
+                  kind: 'command',
+                  value: 'run',
+                  dependsOn: [],
+                  options: {},
+                  source: { path: '/nodes/0', start: 43, end: 76 },
+                },
+              ],
+              definitionOrder: ['collect'],
+              capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
             },
           ],
         },

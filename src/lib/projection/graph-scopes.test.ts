@@ -1,0 +1,73 @@
+import { describe, expect, it } from 'vitest'
+import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
+import { discoverGraphScopes } from './graph-scopes'
+
+async function archonContract() {
+  const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+    kind: 'bundled',
+    identifier: 'archon-2026-07-v6.json',
+  })
+  if (!loaded.ok) throw new Error(loaded.message)
+  return loaded.contract
+}
+
+function parsedDefinition(source: string) {
+  const result = parseWorkflowYaml(source, { document: 'definition', maxBytes: 2 * 1024 * 1024 })
+  if (!result.parsed) throw new Error('Expected valid YAML fixture.')
+  return result.parsed
+}
+
+describe('discoverGraphScopes', () => {
+  it('discovers stable root and sibling loop-body scopes from the contract body path', async () => {
+    const source = `name: Triage\ndescription: Scoped workflow\nnodes:\n  - id: prepare\n    command: collect\n  - id: process-tickets\n    depends_on: [prepare]\n    loop_group:\n      nodes:\n        - id: select\n          command: select ticket\n        - id: resolve\n          depends_on: [select]\n          prompt: resolve ticket\n      until: done\n      max_iterations: 3\n      unknown_group_field: keep\n  - id: process-alerts\n    loop_group:\n      nodes:\n        - id: select\n          command: select alert\n      until: done\n      max_iterations: 2\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), await archonContract(), 'archon-2026-07')
+
+    expect(
+      scopes.map(({ scope, sourcePath, editorNodePrefix }) => ({ key: scope.key, sourcePath, editorNodePrefix })),
+    ).toEqual([
+      { key: 'root', sourcePath: ['nodes'], editorNodePrefix: '' },
+      {
+        key: 'loop-group:process-tickets',
+        sourcePath: ['nodes', 1, 'loop_group', 'nodes'],
+        editorNodePrefix: 'process-tickets/',
+      },
+      {
+        key: 'loop-group:process-alerts',
+        sourcePath: ['nodes', 2, 'loop_group', 'nodes'],
+        editorNodePrefix: 'process-alerts/',
+      },
+    ])
+    expect(scopes[1]?.outerInputs).toEqual(['prepare'])
+    expect(scopes[1]?.sourceRange).toEqual({
+      start: source.indexOf('- id: select', source.indexOf('loop_group')),
+      end: source.indexOf('      until: done'),
+    })
+    expect(scopes[1]?.nodes.map((node) => `${scopes[1]!.editorNodePrefix}${node.id}`)).toEqual([
+      'process-tickets/select',
+      'process-tickets/resolve',
+    ])
+    expect(scopes[2]?.nodes.map((node) => `${scopes[2]!.editorNodePrefix}${node.id}`)).toEqual([
+      'process-alerts/select',
+    ])
+    expect(scopes[1]?.definitionOrder).toEqual(['select', 'resolve'])
+    expect(scopes[1]?.primarySinkId).toBe('resolve')
+    expect(scopes[1]?.nodes[0]?.options).toEqual({})
+  })
+
+  it('keeps a body above Studio visual capacity intact and clone-safe', async () => {
+    const body = Array.from(
+      { length: 251 },
+      (_, index) => `        - id: child-${index}\n          command: work ${index}`,
+    ).join('\n')
+    const source = `name: Large\ndescription: Large body\nnodes:\n  - id: repeat\n    loop_group:\n      nodes:\n${body}\n      until: done\n      max_iterations: 1\n  - id: finish\n    command: finish\n`
+    const scopes = discoverGraphScopes(parsedDefinition(source), await archonContract(), 'archon-2026-07')
+    const bodyScope = scopes[1]
+
+    expect(bodyScope?.capacity).toEqual({ status: 'yaml-only', nodeCount: 251, edgeCount: 0 })
+    expect(bodyScope?.nodes).toHaveLength(251)
+    expect(structuredClone(scopes)).toEqual(scopes)
+    expect(Object.isFrozen(scopes)).toBe(true)
+  })
+})
