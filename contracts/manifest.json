@@ -10,8 +10,8 @@
       "schema_version": 1
     },
     {
-      "contract_digest": "sha256:692c22a06fa61aa1949d25fa4ce12b3345cac3fadd7f562558c3f5394d35617f",
-      "corpus_digest": "sha256:f5fdb6fb9424b673357d5df10dc7c6af55b685d15707dc34ddc5746d902f7ee0",
+      "contract_digest": "sha256:65a4574abc9dadfaea7c1ef9df7a00e3782c07de0b7581c98719894b7aee152d",
+      "corpus_digest": "sha256:c193258148699fbcbc42c909dee10001632377272e57a0ff3b79f3493f158a3b",
       "corpus_file": "hermes-legacy-v2.corpus.json",
       "file": "hermes-legacy-v2.json",
       "normalizer_version": 2,
