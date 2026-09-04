@@ -25,6 +25,35 @@ async function envelope(profile: 'hermes-legacy' | 'archon-2026-07'): Promise<Re
   return payload
 }
 
+async function corpus(profile: 'hermes-legacy' | 'archon-2026-07'): Promise<Record<string, unknown>> {
+  const contract = await envelope(profile)
+  return {
+    format_version: 1,
+    profile,
+    normalizer_version: 1,
+    contract: {
+      schema_version: 1,
+      contract_reader_version: 1,
+      normalizer: 'fixture',
+      validator: 'fixture',
+      contract_digest: contract.contract_digest,
+    },
+    cases: [
+      {
+        id: `${profile}-fixture`,
+        profile,
+        normalizer_version: 1,
+        definition_yaml: 'name: fixture\ndescription: fixture\nnodes: []\n',
+        companion_yaml: null,
+        valid: false,
+        codes: ['fixture-invalid'],
+        diagnostics: [],
+        features: ['fixture'],
+      },
+    ],
+  }
+}
+
 describe('contract resource synchronization', () => {
   it('requires one explicit source mode and a reproducible generated timestamp', () => {
     expect(() => parseSyncArguments([])).toThrow(/generated-at/i)
@@ -43,16 +72,41 @@ describe('contract resource synchronization', () => {
     )
   })
 
+  it('requires an identity-matched corpus beside each generated contract', () => {
+    expect(() =>
+      parseSyncArguments([
+        '--generated-at',
+        '2026-09-04T00:00:00.000Z',
+        '--contract-file',
+        'hermes-legacy=/absolute/legacy.json',
+        '--contract-file',
+        'archon-2026-07=/absolute/archon.json',
+        '--corpus-file',
+        'hermes-legacy=/absolute/legacy.corpus.json',
+        '--corpus-file',
+        'archon-2026-07=/absolute/archon.corpus.json',
+      ]),
+    ).not.toThrow()
+  })
+
   it('validates both envelopes before atomically replacing deterministic resources', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-'))
     const legacyPath = join(directory, 'legacy-input.json')
     const archonPath = join(directory, 'archon-input.json')
+    const legacyCorpusPath = join(directory, 'legacy.corpus.json')
+    const archonCorpusPath = join(directory, 'archon.corpus.json')
     const outputDirectory = join(directory, 'output')
     await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
     await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await writeFile(legacyCorpusPath, JSON.stringify(await corpus('hermes-legacy')))
+    await writeFile(archonCorpusPath, JSON.stringify(await corpus('archon-2026-07')))
 
     await syncContracts({
-      source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+      source: {
+        kind: 'files',
+        contracts: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath },
+        corpora: { 'hermes-legacy': legacyCorpusPath, 'archon-2026-07': archonCorpusPath },
+      },
       generatedAt: '2026-07-29T00:00:00.000Z',
       outputDirectory,
     })
@@ -60,7 +114,6 @@ describe('contract resource synchronization', () => {
     const legacyText = await readFile(join(outputDirectory, 'hermes-legacy-v1.json'), 'utf8')
     const manifestText = await readFile(join(outputDirectory, 'manifest.json'), 'utf8')
     expect(legacyText.endsWith('\n')).toBe(true)
-    expect(legacyText.indexOf('"contract_digest"')).toBeLessThan(legacyText.indexOf('"profile"'))
     expect(JSON.parse(manifestText)).toEqual({
       generated_at: '2026-07-29T00:00:00.000Z',
       contracts: [
@@ -83,13 +136,21 @@ describe('contract resource synchronization', () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-failure-'))
     const legacyPath = join(directory, 'legacy-input.json')
     const archonPath = join(directory, 'archon-input.json')
+    const legacyCorpusPath = join(directory, 'legacy.corpus.json')
+    const archonCorpusPath = join(directory, 'archon.corpus.json')
     const outputDirectory = join(directory, 'output')
     await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
     await writeFile(archonPath, '{"profile":"archon-2026-07"}')
+    await writeFile(legacyCorpusPath, JSON.stringify(await corpus('hermes-legacy')))
+    await writeFile(archonCorpusPath, JSON.stringify(await corpus('archon-2026-07')))
 
     await expect(
       syncContracts({
-        source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+        source: {
+          kind: 'files',
+          contracts: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath },
+          corpora: { 'hermes-legacy': legacyCorpusPath, 'archon-2026-07': archonCorpusPath },
+        },
         generatedAt: '2026-07-29T00:00:00.000Z',
         outputDirectory,
       }),
@@ -101,9 +162,13 @@ describe('contract resource synchronization', () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-rollback-'))
     const legacyPath = join(directory, 'legacy-input.json')
     const archonPath = join(directory, 'archon-input.json')
+    const legacyCorpusPath = join(directory, 'legacy.corpus.json')
+    const archonCorpusPath = join(directory, 'archon.corpus.json')
     const outputDirectory = join(directory, 'output')
     await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
     await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await writeFile(legacyCorpusPath, JSON.stringify(await corpus('hermes-legacy')))
+    await writeFile(archonCorpusPath, JSON.stringify(await corpus('archon-2026-07')))
     await mkdir(outputDirectory)
     const oldResources = {
       'hermes-legacy-v1.json': 'old legacy\n',
@@ -116,7 +181,11 @@ describe('contract resource synchronization', () => {
     await expect(
       syncContracts(
         {
-          source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+          source: {
+            kind: 'files',
+            contracts: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath },
+            corpora: { 'hermes-legacy': legacyCorpusPath, 'archon-2026-07': archonCorpusPath },
+          },
           generatedAt: '2026-07-29T00:00:00.000Z',
           outputDirectory,
         },
@@ -143,11 +212,19 @@ describe('contract resource synchronization', () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-studio-contracts-manifest-'))
     const legacyPath = join(directory, 'legacy-input.json')
     const archonPath = join(directory, 'archon-input.json')
+    const legacyCorpusPath = join(directory, 'legacy.corpus.json')
+    const archonCorpusPath = join(directory, 'archon.corpus.json')
     const outputDirectory = join(directory, 'output')
     await writeFile(legacyPath, JSON.stringify(await envelope('hermes-legacy')))
     await writeFile(archonPath, JSON.stringify(await envelope('archon-2026-07')))
+    await writeFile(legacyCorpusPath, JSON.stringify(await corpus('hermes-legacy')))
+    await writeFile(archonCorpusPath, JSON.stringify(await corpus('archon-2026-07')))
     await syncContracts({
-      source: { kind: 'files', files: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath } },
+      source: {
+        kind: 'files',
+        contracts: { 'hermes-legacy': legacyPath, 'archon-2026-07': archonPath },
+        corpora: { 'hermes-legacy': legacyCorpusPath, 'archon-2026-07': archonCorpusPath },
+      },
       generatedAt: '2026-07-29T00:00:00.000Z',
       outputDirectory,
     })

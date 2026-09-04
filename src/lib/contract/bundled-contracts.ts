@@ -25,5 +25,5 @@ async function loadSources(sources: Readonly<Record<string, string>>): Promise<r
 }
 
 export function isBundledContractResource(identifier: string): boolean {
-  return /\/(?:hermes-legacy|archon-2026-07)-v1\.json$/.test(identifier)
+  return /\/(?:hermes-legacy-v2|archon-2026-07-v6)\.json$/.test(identifier)
 }

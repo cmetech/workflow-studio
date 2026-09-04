@@ -51,7 +51,8 @@ async function signedBytes(overrides: Record<string, unknown> = {}): Promise<Uin
 describe('authoring contract loader', () => {
   it('loads both production resources and excludes the manifest from the contract source set', async () => {
     expect(isBundledContractResource('/contracts/manifest.json')).toBe(false)
-    expect(isBundledContractResource('/contracts/hermes-legacy-v1.json')).toBe(true)
+    expect(isBundledContractResource('/contracts/hermes-legacy-v2.json')).toBe(true)
+    expect(isBundledContractResource('/contracts/archon-2026-07-v6.json')).toBe(true)
     await expect(loadBundledAuthoringContracts()).resolves.toEqual([
       expect.objectContaining({ profile: 'archon-2026-07' }),
       expect.objectContaining({ profile: 'hermes-legacy' }),
@@ -98,7 +99,7 @@ describe('authoring contract loader', () => {
 
   it.each([
     ['schema_version', 2],
-    ['contract_reader_version', 2],
+    ['contract_reader_version', 3],
   ])('rejects unsupported %s', async (field, value) => {
     const result = await loadAuthoringContract(await signedBytes({ [field]: value }), source)
 
@@ -154,6 +155,14 @@ describe('authoring contract loader', () => {
       })
       expect(result.contract).not.toHaveProperty('x-workflow-studio-fixture')
     }
+  })
+
+  it('retains unknown generated node descriptor extensions for future readers', async () => {
+    const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+
+    expect(contract.node_kinds.find(({ id }) => id === 'loop_group')?.extensions).toEqual(
+      expect.objectContaining({ semantic_definitions: expect.anything() }),
+    )
   })
 
   it('normalizes uppercase digest hex after comparison', async () => {

@@ -1,19 +1,23 @@
 {
   "contracts": [
     {
-      "contract_digest": "sha256:a1e8b0b0c60da92116eeed39d1c2f72107f79cdfaa98c876f96f93268178d9e3",
-      "file": "archon-2026-07-v1.json",
-      "normalizer_version": 1,
+      "contract_digest": "sha256:fb25d0cd4749774f2db5b38e376071159a011f326eeca9cbc88847ddbfdd0fa0",
+      "corpus_digest": "sha256:882fa27166c022918bc9c1c9462725b50578d7f861f2296b5d03d309e50a8718",
+      "corpus_file": "archon-2026-07-v6.corpus.json",
+      "file": "archon-2026-07-v6.json",
+      "normalizer_version": 6,
       "profile": "archon-2026-07",
       "schema_version": 1
     },
     {
-      "contract_digest": "sha256:c40ee0ec0b6c3c4507ebd811d2ed5740f5e576eb3ae24eeec965d0a8f571d5f8",
-      "file": "hermes-legacy-v1.json",
-      "normalizer_version": 1,
+      "contract_digest": "sha256:692c22a06fa61aa1949d25fa4ce12b3345cac3fadd7f562558c3f5394d35617f",
+      "corpus_digest": "sha256:f5fdb6fb9424b673357d5df10dc7c6af55b685d15707dc34ddc5746d902f7ee0",
+      "corpus_file": "hermes-legacy-v2.corpus.json",
+      "file": "hermes-legacy-v2.json",
+      "normalizer_version": 2,
       "profile": "hermes-legacy",
       "schema_version": 1
     }
   ],
-  "generated_at": "2026-07-29T00:00:00.000Z"
+  "generated_at": "2026-09-04T00:00:00.000Z"
 }

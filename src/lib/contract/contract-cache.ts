@@ -1,6 +1,7 @@
 import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { loadAuthoringContract } from './contract-loader'
+import { readScopedDagCapabilities } from './scoped-dag-rule'
 import type { AuthoringContract, ContractSource, WorkflowProfile } from './types'
 
 export type ContractCacheSource = 'bundled' | 'cached'
@@ -62,6 +63,8 @@ export type ContractActivationResult =
         | 'contract_not_found'
         | 'contract_profile_mismatch'
         | 'contract_reader_unsupported'
+        | 'contract_widget_unsupported'
+        | 'contract_semantic_capability_unsupported'
         | 'contract_activation_failed'
     }
 
@@ -104,6 +107,20 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
   const coverage = options.widgetCoverage ?? validateContractFormCoverage
 
   for (const contract of options.bundled) activeByProfile.set(contract.profile, contract.contract_digest)
+
+  function activationReadiness(
+    contract: AuthoringContract,
+  ): 'contract_widget_unsupported' | 'contract_semantic_capability_unsupported' | null {
+    if (coverage(contract).length > 0) return 'contract_widget_unsupported'
+    if (contract.node_kinds.some((nodeKind) => nodeKind.id === 'loop_group')) {
+      try {
+        readScopedDagCapabilities(contract)
+      } catch {
+        return 'contract_semantic_capability_unsupported'
+      }
+    }
+    return null
+  }
 
   function listCachedContracts(): readonly ContractCacheEntry[] {
     const entries: ContractCacheEntry[] = []
@@ -221,11 +238,12 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     profile: WorkflowProfile,
   ): Promise<ContractActivationResult> {
     const cachedCandidate = cached.get(digest)
-    if (cachedCandidate && !cachedCandidate.canActivate) return { ok: false, code: 'contract_reader_unsupported' }
+    if (cachedCandidate && !cachedCandidate.contract) return { ok: false, code: 'contract_reader_unsupported' }
     const candidate = bundled.get(digest) ?? cachedCandidate?.contract
     if (!candidate) return { ok: false, code: 'contract_not_found' }
     if (candidate.profile !== profile) return { ok: false, code: 'contract_profile_mismatch' }
-    if (coverage(candidate).length > 0) return { ok: false, code: 'contract_reader_unsupported' }
+    const readiness = activationReadiness(candidate)
+    if (readiness) return { ok: false, code: readiness }
     try {
       if (!(await options.activate(candidate))) return { ok: false, code: 'contract_activation_failed' }
     } catch {
@@ -274,7 +292,11 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
       ) {
         throw new ContractCacheError('contract_shape_invalid', 'The cached contract identity does not match its index.')
       }
-      const value = { entry: stored, contract: loaded.contract, canActivate: coverage(loaded.contract).length === 0 }
+      const value = {
+        entry: stored,
+        contract: loaded.contract,
+        canActivate: activationReadiness(loaded.contract) === null,
+      }
       cached.set(stored.digest, value)
       return value
     }

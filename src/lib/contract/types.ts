@@ -20,6 +20,16 @@ export interface FieldDescriptor {
   order: number
   status: ContractItemStatus
   examples: readonly unknown[]
+  extensions?: Readonly<Record<string, unknown>>
+}
+
+export interface FieldDefinition {
+  label: string
+  description: string
+  widget: string
+  section: string
+  examples: readonly unknown[]
+  unit?: string
 }
 
 export interface NodeKindDescriptor {
@@ -34,6 +44,7 @@ export interface NodeKindDescriptor {
   status: ContractItemStatus
   examples: readonly unknown[]
   fields: readonly FieldDescriptor[]
+  extensions?: Readonly<Record<string, unknown>>
 }
 
 export interface SemanticRuleDescriptor {
@@ -89,6 +100,7 @@ export interface AuthoringContract {
   compatibility_codes: Readonly<Record<string, CompatibilityDescriptor>>
   documentation: ContractDocumentation
   limits: { max_document_bytes: number }
+  field_definitions?: Readonly<Record<string, FieldDefinition>>
   extensions: Readonly<Record<string, unknown>>
 }
 

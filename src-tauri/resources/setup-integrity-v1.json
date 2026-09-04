@@ -23,22 +23,32 @@
     },
     {
       "path": "contracts/README.md",
-      "sha256": "dfc77fc9220c7e73c80c31107fed235c2d5936617004fb597c8dd26c70c7b4f6",
+      "sha256": "70f3a2e0d4155c73a0f2dbc16e3cc7004e01f962a8b93c9a118e6741a5e11cee",
       "maxBytes": 2097152
     },
     {
-      "path": "contracts/archon-2026-07-v1.json",
-      "sha256": "a60fd3562bd74994661d29066ab958294192d3c951c4dce0dfecad28362aee09",
+      "path": "contracts/archon-2026-07-v6.corpus.json",
+      "sha256": "b973f67587a8b7acdd509e1cb861f6adc248d621e1da14570da0a1e2f0aaa4c8",
       "maxBytes": 2097152
     },
     {
-      "path": "contracts/hermes-legacy-v1.json",
-      "sha256": "d41e235640001689e5943292c83b457e29179f1849aedb94bc88e0f708476ad4",
+      "path": "contracts/archon-2026-07-v6.json",
+      "sha256": "40fd20c0d77d908f4df874e00bb793bbe292c457a48a21289bd2afbf3a399331",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/hermes-legacy-v2.corpus.json",
+      "sha256": "501a32074e67651ee291ee9aa0a418b82675524f42a9557f56330ad8a33f649c",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/hermes-legacy-v2.json",
+      "sha256": "fbe14f3d18b07c2e86ae6975a062abca27746c0c4fa2c79cb20adde3c8819238",
       "maxBytes": 2097152
     },
     {
       "path": "contracts/manifest.json",
-      "sha256": "bc32005b63743ac9dcd4831ec288d5f10ef4811684be15ea8e8607cf5c0e3f12",
+      "sha256": "098ea772b28df15306e61bd9352ffe5cce7a0ca5d39a0fd4794572199fcc1431",
       "maxBytes": 2097152
     },
     {

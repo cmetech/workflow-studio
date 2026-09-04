@@ -133,11 +133,18 @@ function contract(overrides: Partial<AuthoringContract> = {}): AuthoringContract
 }
 
 describe('schema-driven widget registry', () => {
-  it('provides exactly one compatible documented widget for every production contract field', async () => {
+  it('keeps unsupported generated v6 structured fields explicit so visual activation can fail closed', async () => {
     const contracts = await loadBundledAuthoringContracts()
     expect(contracts.map(({ profile }) => profile)).toEqual(['archon-2026-07', 'hermes-legacy'])
     for (const productionContract of contracts) {
-      expect(validateContractFormCoverage(productionContract), productionContract.profile).toEqual([])
+      const issues = validateContractFormCoverage(productionContract)
+      if (productionContract.profile === 'archon-2026-07') {
+        expect(issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'field_widget_unsupported', fieldPath: 'nodes[].loop_group' }),
+          ]),
+        )
+      } else expect(issues).toEqual([])
     }
   })
 
@@ -352,19 +359,29 @@ describe('schema-driven widget registry', () => {
       for (const nodeKind of productionContract.node_kinds) {
         const fields = fieldsForNode(productionContract, nodeKind.id)
         for (const field of fields) {
+          if (!resolveWidget(field).ok) continue
           const wildcardIndex = field.pathTemplate.indexOf('*')
           if (wildcardIndex < 0) continue
           const ancestorPath = field.pathTemplate.slice(0, wildcardIndex)
-          expect(
-            fields.some(
-              (candidate) =>
-                structuredWidgets.has(candidate.widget) &&
-                resolveWidget(candidate).ok &&
-                candidate.pathTemplate.length === ancestorPath.length &&
-                candidate.pathTemplate.every((token, index) => token === ancestorPath[index]),
-            ),
-            `${productionContract.profile}:${nodeKind.id}:${field.fieldPath}`,
-          ).toBe(true)
+          const reachableAncestor = fields.some(
+            (candidate) =>
+              structuredWidgets.has(candidate.widget) &&
+              resolveWidget(candidate).ok &&
+              candidate.pathTemplate.length === ancestorPath.length &&
+              candidate.pathTemplate.every((token, index) => token === ancestorPath[index]),
+          )
+          if (!reachableAncestor) {
+            expect(validateContractFormCoverage(productionContract)).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  code: 'field_widget_unsupported',
+                  fieldPath: expect.stringMatching(/^nodes\[\]\.hooks/),
+                }),
+              ]),
+            )
+            continue
+          }
+          expect(reachableAncestor, `${productionContract.profile}:${nodeKind.id}:${field.fieldPath}`).toBe(true)
         }
       }
     }

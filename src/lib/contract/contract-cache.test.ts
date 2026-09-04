@@ -182,7 +182,7 @@ describe('contract cache activation', () => {
       native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
       activate: async () => true,
     })
-    const bytes = await signedFixture({ contract_reader_version: 2 })
+    const bytes = await signedFixture({ contract_reader_version: 3 })
 
     const imported = await cache.importBytes(
       bytes,
@@ -190,7 +190,7 @@ describe('contract cache activation', () => {
       { cacheUnsupported: true },
     )
 
-    expect(imported).toMatchObject({ status: 'cached', canActivate: false, readerVersion: 2 })
+    expect(imported).toMatchObject({ status: 'cached', canActivate: false, readerVersion: 3 })
     await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({
       ok: false,
       code: 'contract_reader_unsupported',
@@ -237,6 +237,41 @@ describe('contract cache activation', () => {
       code: 'contract_profile_mismatch',
     })
     await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({ ok: true })
+  })
+
+  it('keeps the current contract active and reports a scoped-capability reason for an incomplete loop-group reader', async () => {
+    const cache = createContractCache({
+      bundled: await bundled(),
+      native: { contractCacheLoad: async () => [], contractCacheWrite: async () => undefined },
+      activate: async () => true,
+    })
+    const imported = await cache.importBytes(
+      await signedFixture({
+        normalizer_version: 6,
+        node_kinds: [
+          {
+            id: 'loop_group',
+            label: 'Loop group',
+            description: 'A scoped loop group.',
+            field_path: 'nodes[].loop_group',
+            applicability: { profiles: ['archon-2026-07'], documents: ['definition'], node_kinds: ['loop_group'] },
+            widget: 'object',
+            section: 'General',
+            order: 1,
+            status: 'supported',
+            examples: [],
+            fields: [],
+          },
+        ],
+      }),
+      { kind: 'user', identifier: '/incomplete-loop-group.json' },
+    )
+
+    await expect(cache.activateContract(imported.digest, 'archon-2026-07')).resolves.toMatchObject({
+      ok: false,
+      code: 'contract_semantic_capability_unsupported',
+    })
+    expect(cache.activeContract('archon-2026-07')?.contract_digest).not.toBe(imported.digest)
   })
 
   it('reverts an active cached contract to its bundled profile before removing it', async () => {
