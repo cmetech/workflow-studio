@@ -113,7 +113,7 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     contract: AuthoringContract,
   ): 'contract_widget_unsupported' | 'contract_semantic_capability_unsupported' | null {
     if (coverage(contract).length > 0) return 'contract_widget_unsupported'
-    if (requiresScopedDagCapabilities(contract)) {
+    if (requiresScopedDagCapabilities(contract, contract.profile, 'definition')) {
       try {
         readScopedDagCapabilities(contract)
       } catch {

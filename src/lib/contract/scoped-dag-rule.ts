@@ -1,4 +1,4 @@
-import type { AuthoringContract, SemanticRuleDescriptor } from './types'
+import type { AuthoringContract, ContractDocumentKind, SemanticRuleDescriptor, WorkflowProfile } from './types'
 import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 
 export interface ScopedDagCapabilities {
@@ -15,8 +15,18 @@ export interface ScopedDagCapabilities {
   readonly workProduct: Readonly<Record<string, unknown>>
 }
 
-export function requiresScopedDagCapabilities(contract: AuthoringContract): boolean {
-  return contract.node_kinds.some((nodeKind) => nodeKind.id === 'loop_group')
+export function requiresScopedDagCapabilities(
+  contract: AuthoringContract,
+  profile: WorkflowProfile,
+  document: ContractDocumentKind,
+): boolean {
+  return contract.node_kinds.some(
+    (nodeKind) =>
+      nodeKind.id === 'loop_group' &&
+      nodeKind.status === 'supported' &&
+      nodeKind.applicability.profiles.includes(profile) &&
+      nodeKind.applicability.documents.includes(document),
+  )
 }
 
 export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDagCapabilities {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 import { loadAuthoringContract } from './contract-loader'
-import { readScopedDagCapabilities } from './scoped-dag-rule'
+import { readScopedDagCapabilities, requiresScopedDagCapabilities } from './scoped-dag-rule'
+import type { ContractDocumentKind, WorkflowProfile } from './types'
 
 async function archonContract() {
   const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
@@ -40,5 +41,61 @@ describe('scoped DAG capability reader', () => {
     )
 
     expect(() => readScopedDagCapabilities({ ...contract, semantic_rules })).toThrow(/unsupported/i)
+  })
+
+  it.each([
+    [
+      'applies only to a different profile',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => ({
+        ...contract,
+        node_kinds: contract.node_kinds.map((nodeKind) =>
+          nodeKind.id === 'loop_group'
+            ? { ...nodeKind, applicability: { ...nodeKind.applicability, profiles: ['hermes-legacy'] as const } }
+            : nodeKind,
+        ),
+      }),
+      'archon-2026-07',
+      'definition',
+    ],
+    [
+      'is evaluated for the sidecar document',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => contract,
+      'archon-2026-07',
+      'sidecar',
+    ],
+    [
+      'is deferred',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => ({
+        ...contract,
+        node_kinds: contract.node_kinds.map((nodeKind) =>
+          nodeKind.id === 'loop_group' ? { ...nodeKind, status: 'deferred' as const } : nodeKind,
+        ),
+      }),
+      'archon-2026-07',
+      'definition',
+    ],
+    [
+      'is deprecated',
+      (contract: Awaited<ReturnType<typeof archonContract>>) => ({
+        ...contract,
+        node_kinds: contract.node_kinds.map((nodeKind) =>
+          nodeKind.id === 'loop_group' ? { ...nodeKind, status: 'deprecated' as const } : nodeKind,
+        ),
+      }),
+      'archon-2026-07',
+      'definition',
+    ],
+  ])('does not require scoped capabilities when the loop-group descriptor %s', async (_, change, profile, document) => {
+    expect(
+      requiresScopedDagCapabilities(
+        change(await archonContract()),
+        profile as WorkflowProfile,
+        document as ContractDocumentKind,
+      ),
+    ).toBe(false)
+  })
+
+  it('requires scoped capabilities for an applicable supported loop-group descriptor', async () => {
+    expect(requiresScopedDagCapabilities(await archonContract(), 'archon-2026-07', 'definition')).toBe(true)
   })
 })

@@ -79,7 +79,7 @@ function projectGraphScopes(
   try {
     scoped = readScopedDagCapabilities(contract)
   } catch {
-    if (requiresScopedDagCapabilities(contract)) return scopedCapabilityIssue(root)
+    if (requiresScopedDagCapabilities(contract, profile, 'definition')) return scopedCapabilityIssue(root)
     return freezeDiscovery(graphs)
   }
   const rootIdCounts = new Map<string, number>()
