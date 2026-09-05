@@ -202,17 +202,25 @@ export class DocumentWorkspaceController {
   }
 
   layoutChanged(layout: LayoutRecordV2 | null): void {
+    if (!layout || isNavigationLayoutPublication(layout) || this.publicationSuppressed()) return
+    this.enqueueLayoutSnapshot(layout)
+  }
+
+  private enqueueLayoutSnapshot(layout: LayoutRecordV2): void {
     if (
-      !layout ||
       layout === this.scheduledLayout ||
-      isNavigationLayoutPublication(layout) ||
-      this.publicationSuppressed() ||
       layout.workspaceId !== this.activeWorkspaceId ||
       layout.workflowPath !== $documentSession.get().pair?.definition.path
     )
       return
     this.scheduledLayout = layout
     this.layoutPersistence?.viewportOrPanelsChanged?.(layout)
+  }
+
+  private captureNavigationForLayoutFlush(): void {
+    const latest = $activeLayout.get()
+    // Ordinary edits are already enqueued. Navigation waits for an explicit flush.
+    if (latest && isNavigationLayoutPublication(latest)) this.enqueueLayoutSnapshot(latest)
   }
 
   async persistLayoutChanges(layout: LayoutRecordV2): Promise<boolean> {
@@ -222,7 +230,7 @@ export class DocumentWorkspaceController {
       layout.workflowPath !== $documentSession.get().pair?.definition.path
     )
       return false
-    this.layoutChanged(layout)
+    this.enqueueLayoutSnapshot(layout)
     await this.layoutPersistence.flush()
     return true
   }
@@ -1026,6 +1034,7 @@ export class DocumentWorkspaceController {
   }
 
   private async flushActiveLayout(): Promise<void> {
+    this.captureNavigationForLayoutFlush()
     const persistence = this.layoutPersistence
     await persistence?.close()
     if (this.layoutPersistence === persistence) this.layoutPersistence = null
@@ -1036,6 +1045,7 @@ export class DocumentWorkspaceController {
   }
 
   private flushLayoutForClose(): Promise<void> {
+    this.captureNavigationForLayoutFlush()
     const persistence = this.layoutPersistence
     return persistence?.flush?.() ?? persistence?.close() ?? Promise.resolve()
   }

@@ -1164,6 +1164,41 @@ describe('DocumentWorkspaceController', () => {
     )
   })
 
+  it.each(['explicit', 'close', 'dispose'] as const)(
+    'persists the latest navigation state exactly once on %s flush',
+    async (flush) => {
+      vi.useFakeTimers()
+      const persist = vi.fn<(record: unknown) => Promise<void>>(async () => undefined)
+      const { deps } = dependencies({
+        createLayoutPersistence: () => new LayoutPersistenceController(persist),
+      })
+      const controller = new DocumentWorkspaceController(deps)
+      const pair = await controller.activate('workspace', entry('flow.yaml'), contract)
+      const stop = $activeLayout.listen((record) => controller.layoutChanged(record))
+      try {
+        publishCanvasProjection(pair!.workflowId, modernProjection(['first']))
+        await controller.persistLayoutChanges($activeLayout.get()!)
+        persist.mockClear()
+        expect(enterLoopGroup('first')).toBe(true)
+        const latest = $activeLayout.get()!
+        await vi.advanceTimersByTimeAsync(550)
+        expect(persist).not.toHaveBeenCalled()
+        if (flush === 'explicit') expect(await controller.persistLayoutChanges(latest)).toBe(true)
+        else if (flush === 'close') await controller.close(pair!.workflowId)
+        else await controller.dispose()
+        expect(persist).toHaveBeenCalledTimes(1)
+        expect(persist.mock.calls[0]![0]).toEqual(latest)
+        expect(latest.activeScopeKey).toBe('loop-group:first')
+        await controller.dispose()
+        expect(persist).toHaveBeenCalledTimes(1)
+      } finally {
+        stop()
+        await controller.dispose()
+        vi.useRealTimers()
+      }
+    },
+  )
+
   it('does not schedule persistence for navigation publications, including captured positions', async () => {
     vi.useFakeTimers()
     const persist = vi.fn<(record: unknown) => Promise<void>>(async () => undefined)
