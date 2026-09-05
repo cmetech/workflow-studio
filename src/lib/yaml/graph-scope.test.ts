@@ -55,3 +55,17 @@ it.each([
   })
   expect(document.toString()).toBe(before)
 })
+
+it.each(['', '\nmetadata: *all'])(
+  'rejects a body beneath an anchored root sequence with or without an alias consumer: %s',
+  (suffix) => {
+    const source = `nodes: &all [{id: repeat, loop_group: {nodes: [{id: child, bash: echo}]}}]${suffix}\n`
+    const document = parseDocument(source)
+    const before = document.toString()
+    expect(resolveGraphScope(document, 'loop-group:repeat', contract)).toMatchObject({
+      ok: false,
+      code: 'mutation_ambiguous_alias',
+    })
+    expect(document.toString()).toBe(before)
+  },
+)

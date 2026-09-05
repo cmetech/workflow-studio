@@ -67,6 +67,10 @@ export function resolveGraphScope(
     code: 'mutation_ambiguous_alias',
     message: 'This graph scope contains alias-derived or shared graph structure.',
   })
+  for (let length = 0; length <= fields.nodesPath.length; length++) {
+    const ancestor = length === 0 ? document.contents : document.getIn(fields.nodesPath.slice(0, length), true)
+    if (isAlias(ancestor) || ((isMap(ancestor) || isSeq(ancestor)) && ancestor.anchor)) return alias()
+  }
   const root = document.getIn(fields.nodesPath, true)
   if (isAlias(root)) return alias()
   if (!isSeq(root)) return stale()

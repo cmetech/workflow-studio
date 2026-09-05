@@ -118,8 +118,8 @@ export function patchWorkflowDocument(
     const parentPath = mutation.path.slice(0, -1)
     const parent = document.getIn(parentPath, true)
     if (isMap(parent) && parent.flow) {
-      const edit = flowMappingDeletion(source, parent, mutation.path.at(-1))
-      return edit ? verifiedPatch(applySourceEdits(source, [edit]), contract, documentKind) : ambiguousAlias()
+      const edits = flowMappingDeletion(parent, mutation.path.at(-1))
+      return edits ? verifiedPatch(applySourceEdits(source, edits), contract, documentKind) : ambiguousAlias()
     }
     if (isSeq(parent)) {
       const working = document.clone() as Document.Parsed
@@ -288,8 +288,9 @@ export function patchWorkflowDocument(
     }
     const dependencyEdits = clonedPathEdits(source, document, working, dependencyPaths, contract, 'definition')
     if (!dependencyEdits) return ambiguousAlias()
-    const nodeEdit = nodes.flow ? flowItemDeletion(source, nodes, index) : sequenceItemDeletion(source, nodes, index)
-    return verifiedPatch(applySourceEdits(source, [...dependencyEdits, nodeEdit]), contract, 'definition')
+    const nodeEdits = nodes.flow ? flowItemDeletion(nodes, index) : [sequenceItemDeletion(source, nodes, index)]
+    if (!nodeEdits) return ambiguousAlias()
+    return verifiedPatch(applySourceEdits(source, [...dependencyEdits, ...nodeEdits]), contract, 'definition')
   }
 
   const index = nodeIndex(nodes, fields.idPath, mutation.nodeId)
@@ -566,19 +567,12 @@ function flowMappingInsertion(map: YAMLMap, key: string, value: unknown): Source
   return { start, end: start, text: previous ? `, ${text}` : text }
 }
 
-function flowMappingDeletion(source: string, map: YAMLMap, key: unknown): SourceEdit | null {
+function flowMappingDeletion(map: YAMLMap, key: unknown): SourceEdit[] | null {
   const index = map.items.findIndex((pair) => isScalar(pair.key) && pair.key.value === key)
   const pair = map.items[index]
   const start = nodeRange(pair?.key)
   const end = nodeRange(pair?.value) ?? start
-  if (!start || !end) return null
-  const previous = nodeRange(map.items[index - 1]?.value) ?? nodeRange(map.items[index - 1]?.key)
-  const next = nodeRange(map.items[index + 1]?.key)
-  return {
-    start: previous ? source.indexOf(',', previous[1]) : start[0],
-    end: previous || !next ? end[1] : next[0],
-    text: '',
-  }
+  return start && end ? flowEntryDeletion(map, index, start[0], end[1]) : null
 }
 
 function flowItemInsertion(sequence: YAMLSeq, afterIndex: number, value: unknown): SourceEdit {
@@ -590,12 +584,43 @@ function flowItemInsertion(sequence: YAMLSeq, afterIndex: number, value: unknown
   return { start, end: start, text: previous ? `, ${text}` : text }
 }
 
-function flowItemDeletion(source: string, sequence: YAMLSeq, index: number): SourceEdit {
-  const range = nodeRange(sequence.items[index])!
-  const previous = nodeRange(sequence.items[index - 1])
-  const next = nodeRange(sequence.items[index + 1])
-  if (previous) return { start: source.indexOf(',', previous[1]), end: range[1], text: '' }
-  return { start: range[0], end: next ? next[0] : range[1], text: '' }
+function flowItemDeletion(sequence: YAMLSeq, index: number): SourceEdit[] | null {
+  const range = nodeRange(sequence.items[index])
+  return range ? flowEntryDeletion(sequence, index, range[0], range[1]) : null
+}
+
+/** Commas are CST tokens, not characters that may occur inside surviving comments. */
+function flowEntryDeletion(
+  collection: YAMLMap | YAMLSeq,
+  index: number,
+  start: number,
+  end: number,
+): SourceEdit[] | null {
+  const token = collection.srcToken
+  if (token?.type !== 'flow-collection' || !token.items[index]) return null
+  const separator = token.items[index > 0 ? index : 1]
+  const comma = separator?.start.find((item) => item.type === 'comma')
+  if (!comma) return collection.items.length === 1 ? [{ start, end, text: '' }] : null
+  const previous = token.items[index > 0 ? index - 1 : index]
+  const previousValue = previous?.value ?? previous?.key
+  const trailing = previousValue && 'end' in previousValue ? (previousValue.end ?? []) : []
+  const preserveTrivia = [...trailing, ...(separator?.start ?? [])].some(
+    (item) => item.type === 'comment' || item.type === 'newline',
+  )
+  if (preserveTrivia) {
+    return [
+      { start, end, text: '' },
+      { start: comma.offset, end: comma.offset + comma.source.length, text: '' },
+    ]
+  }
+  const nextStart = separator?.key?.offset ?? separator?.value?.offset
+  return [
+    {
+      start: index > 0 ? comma.offset : start,
+      end: index > 0 ? end : (nextStart ?? comma.offset + comma.source.length),
+      text: '',
+    },
+  ]
 }
 
 function sequenceItemInsertion(source: string, sequence: YAMLSeq, afterIndex: number, value: unknown): SourceEdit {

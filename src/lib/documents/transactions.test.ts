@@ -764,3 +764,23 @@ it('returns a configured group with outer dependencies and optional settings to 
     expect(result.pair.definition.text).toContain('      fresh_context: true\n')
   }
 })
+
+it.each(['', 'metadata: *all\n'])(
+  'rejects scoped transactions beneath an anchored root sequence: %s',
+  async (suffix) => {
+    const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+    const current = pair(
+      `name: Anchored\ndescription: Shared root\nnodes: &all [{id: repeat, loop_group: {until: done, max_iterations: 2, nodes: [{id: child, bash: echo}]}}]\n${suffix}`,
+    )
+    current.companion!.text = 'language_compatibility: archon-2026-07\n'
+    const before = structuredClone(current)
+    expect(
+      await applyWorkflowMutation(
+        current,
+        { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'added', bash: 'echo' } },
+        contract,
+      ),
+    ).toMatchObject({ ok: false, code: 'mutation_ambiguous_alias' })
+    expect(current).toEqual(before)
+  },
+)

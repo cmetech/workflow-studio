@@ -650,3 +650,82 @@ it('refuses a generic graph field edit through an anchored body shared by an ali
     ),
   ).toMatchObject({ ok: false, code: 'mutation_ambiguous_alias' })
 })
+
+describe('flow deletion retains surviving CST trivia', () => {
+  it.each(['# important a comment', '# important, a comment', '# preceding comment, before the delimiter'])(
+    'keeps a surviving sequence item comment: %s',
+    async (comment) => {
+      const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+      const contract = (await loadBundledAuthoringContracts()).find(
+        (contract) => contract.profile === 'archon-2026-07',
+      )!
+      const beforeDelimiter = comment.includes('before the delimiter')
+      const gap = beforeDelimiter ? ` ${comment}\n , ` : `, ${comment}\n `
+      const source = `nodes: [{id: repeat, loop_group: {nodes: [{id: a, bash: echo}${gap}{id: b, bash: echo}]}}]\n`
+      const result = patchWorkflowDocument(
+        source,
+        { type: 'delete-node', scopeKey: 'loop-group:repeat', nodeId: 'b' },
+        contract,
+      )
+      const trivia = beforeDelimiter ? ` ${comment}\n  ` : ` ${comment}\n `
+      expect(result).toEqual({
+        ok: true,
+        text: `nodes: [{id: repeat, loop_group: {nodes: [{id: a, bash: echo}${trivia}]}}]\n`,
+      })
+    },
+  )
+  it.each(['# important nodes comment', '# important, nodes comment', '# preceding comment, before the delimiter'])(
+    'keeps a surviving mapping field comment: %s',
+    (comment) => {
+      const beforeDelimiter = comment.includes('before the delimiter')
+      const gap = beforeDelimiter ? ` ${comment}\n , ` : `, ${comment}\n `
+      const source = `group: {nodes: []${gap}until: done}\n`
+      const trivia = beforeDelimiter ? ` ${comment}\n  ` : ` ${comment}\n `
+      expect(
+        patchWorkflowDocument(
+          source,
+          { type: 'delete-field', document: 'definition', path: ['group', 'until'] },
+          mutationContract,
+        ),
+      ).toEqual({ ok: true, text: `group: {nodes: []${trivia}}\n` })
+    },
+  )
+})
+
+it.each(['', '\nmetadata: *all'])(
+  'refuses low-level body patches beneath an anchored root sequence: %s',
+  async (suffix) => {
+    const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+    const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+    const source = `nodes: &all [{id: repeat, loop_group: {nodes: [{id: child, bash: echo}]}}]${suffix}\n`
+    expect(
+      patchWorkflowDocument(
+        source,
+        { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'added', bash: 'echo' } },
+        contract,
+      ),
+    ).toMatchObject({ ok: false, code: 'mutation_ambiguous_alias' })
+  },
+)
+
+it('retains following field trivia when deleting the first flow mapping entry', () => {
+  const source = 'group: {until: done, # guidance, for the next field\n nodes: []}\n'
+  expect(
+    patchWorkflowDocument(
+      source,
+      { type: 'delete-field', document: 'definition', path: ['group', 'until'] },
+      mutationContract,
+    ),
+  ).toEqual({ ok: true, text: 'group: { # guidance, for the next field\n nodes: []}\n' })
+})
+
+it('removes an actual trailing comma with the final flow mapping entry and retains its comment', () => {
+  const source = 'group: {until: done, # final, comment\n }\n'
+  expect(
+    patchWorkflowDocument(
+      source,
+      { type: 'delete-field', document: 'definition', path: ['group', 'until'] },
+      mutationContract,
+    ),
+  ).toEqual({ ok: true, text: 'group: { # final, comment\n }\n' })
+})
