@@ -254,6 +254,29 @@ export async function disconnectNodes(
   })
 }
 
+export async function addLoopGroupDependency(
+  context: CanvasActionContext,
+  groupId: string,
+  producerId: string,
+): Promise<CanvasActionResult> {
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  const root = rootGraph(context.projection)
+  const group = root.nodes.find(({ id, kind }) => id === groupId && kind === 'loop_group')
+  const producer = root.nodes.find(({ id }) => id === producerId)
+  if (!group || !producer) return reject(context, 'missing_endpoint', 'The group or outer producer no longer exists.')
+  if (group.dependsOn.includes(producerId))
+    return reject(context, 'duplicate_edge', `${groupId} already depends on ${producerId}.`)
+  if (hasDependencyPath(root, producerId, groupId))
+    return reject(context, 'cycle', `Adding ${producerId} to ${groupId} would create a cycle.`)
+  return commitMutation(context, {
+    type: 'set-dependencies',
+    scopeKey: 'root',
+    nodeId: groupId,
+    dependsOn: [...group.dependsOn, producerId],
+  })
+}
+
 export async function addNode(
   context: CanvasActionContext,
   descriptor: NodeKindDescriptor,
@@ -285,7 +308,17 @@ export async function addNode(
   if (kindPath.length === 0) {
     return reject(context, 'descriptor_unavailable', 'The node descriptor has no usable kind field path.')
   }
-  setPath(node, kindPath, descriptorInitialValue(context.contract, descriptor))
+  const initialValue = descriptorInitialValue(context.contract, descriptor)
+  if (
+    context.scopeKey === 'root' &&
+    descriptor.id === 'loop_group' &&
+    descriptor.id === readScopedDagCapabilities(context.contract).groupKind
+  ) {
+    const bodyPath = readScopedDagCapabilities(context.contract).bodyPath
+    const groupPath = kindPath
+    setPath(node, groupPath, initialValue)
+    setPath(node, bodyPath, [])
+  } else setPath(node, kindPath, initialValue)
   if (after) setPath(node, fields.dependenciesPath, [after.id])
 
   const result = await commitMutation(context, {

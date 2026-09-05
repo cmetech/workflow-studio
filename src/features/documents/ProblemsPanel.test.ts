@@ -51,7 +51,7 @@ describe('ProblemsPanel', () => {
     })
   })
 
-  it('routes a documentation ID to the documentation surface instead of only requesting editor focus', async () => {
+  it('focuses the main row even with documentation and exposes Docs as a separate action', async () => {
     const onDocumentation = vi.fn()
     const execute = vi.fn()
     render(ProblemsPanel, {
@@ -61,10 +61,41 @@ describe('ProblemsPanel', () => {
       execute,
     })
 
-    const opener = screen.getByRole('button', { name: /required node field/i })
+    const opener = screen.getByRole('button', { name: /^node build:.*required node field/i })
     await fireEvent.click(opener)
-    expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt', opener)
-    expect(execute).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledWith('problems.focus', expect.anything())
+    expect(onDocumentation).not.toHaveBeenCalled()
+    const docs = screen.getByRole('button', { name: /open documentation for a required node field/i })
+    await fireEvent.click(docs)
+    expect(onDocumentation).toHaveBeenCalledWith('field:prompt.node.prompt', docs)
+  })
+
+  it('qualifies repeated child IDs by workflow and group and keeps duplicate ordinals stable within each fingerprint', async () => {
+    const scoped = {
+      ...issues[0]!,
+      code: 'scoped',
+      message: 'Child output is unavailable.',
+      nodeId: 'child',
+      path: '/nodes/0/loop_group/nodes/0/prompt',
+      field: 'prompt',
+      scopeKey: 'loop-group:first' as const,
+      groupId: 'first',
+    }
+    const { container, rerender } = render(ProblemsPanel, {
+      issues: [scoped, { ...scoped, scopeKey: 'loop-group:second', groupId: 'second' }],
+      paths: { definition: 'flow.yaml', companion: null },
+      workflowName: 'Scoped',
+    })
+    expect(screen.getByRole('button', { name: /workflow scoped.*first.*child.*prompt/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: /workflow scoped.*second.*child.*prompt/i })).toBeVisible()
+    const before = [...container.querySelectorAll('li')].map((item) => item.getAttribute('data-issue-key'))
+    await rerender({
+      issues: [{ ...issues[0]!, code: 'other', message: 'Earlier unrelated issue.' }, scoped, { ...scoped }],
+      paths: { definition: 'flow.yaml', companion: null },
+      workflowName: 'Scoped',
+    })
+    const after = [...container.querySelectorAll('li')].map((item) => item.getAttribute('data-issue-key'))
+    expect(after.slice(-2)).toEqual([before[0], `${before[0]!.replace(/,0\]$/, ',1]')}`])
   })
 
   it('renders byte-identical diagnostics as independent focus targets in its bounded groups scroller', () => {

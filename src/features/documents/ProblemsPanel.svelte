@@ -8,6 +8,7 @@
   interface Props {
     issues: readonly ValidationIssue[]
     paths: Readonly<Record<DocumentKind, string | null>>
+    workflowName?: string | undefined
     execute?: CommandSurface['executeCommand']
     onDocumentation?: ((id: string, opener: HTMLButtonElement) => void) | undefined
   }
@@ -18,7 +19,7 @@
     readonly layers: readonly { readonly layer: IssueLayer; readonly issues: readonly ValidationIssue[] }[]
   }
 
-  let { issues, paths, execute = executeCommand, onDocumentation }: Props = $props()
+  let { issues, paths, workflowName, execute = executeCommand, onDocumentation }: Props = $props()
   const groups = $derived(groupIssues(issues, paths))
   const blockingCount = $derived(issues.filter((issue) => issue.blocking).length)
   const focusContext: CommandContext = { surface: 'global', canMutate: false, hasSelection: true }
@@ -49,13 +50,25 @@
     return layer[0]?.toUpperCase() + layer.slice(1)
   }
 
-  function focusIssue(issue: ValidationIssue, opener: HTMLButtonElement): void {
-    if (issue.documentationId) {
-      onDocumentation?.(issue.documentationId, opener)
-      return
-    }
+  function focusIssue(issue: ValidationIssue): void {
     selectProblem(issue)
     void execute('problems.focus', focusContext)
+  }
+
+  function issueContext(issue: ValidationIssue): string {
+    return [
+      workflowName ? `workflow ${workflowName}` : '',
+      issue.groupId ? `group ${issue.groupId}` : '',
+      issue.nodeId ? `node ${issue.nodeId}` : '',
+      issue.field ?? '',
+    ]
+      .filter(Boolean)
+      .join(', ')
+  }
+
+  function duplicateOrdinal(values: readonly ValidationIssue[], index: number): number {
+    const fingerprint = issueViewKey(values[index]!, 0)
+    return values.slice(0, index).filter((issue) => issueViewKey(issue, 0) === fingerprint).length
   }
 </script>
 
@@ -79,12 +92,13 @@
             <section class="layer-group" aria-labelledby={`problems-${group.document}-${layer.layer}`}>
               <h4 id={`problems-${group.document}-${layer.layer}`}>{layerName(layer.layer)}</h4>
               <ul>
-                {#each layer.issues as issue, occurrence (issueViewKey(issue, occurrence))}
-                  <li>
+                {#each layer.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(layer.issues, occurrence)))}
+                  {@const ordinal = duplicateOrdinal(layer.issues, occurrence)}
+                  <li data-issue-key={issueViewKey(issue, ordinal)}>
                     <button
                       type="button"
-                      aria-label={`${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
-                      onclick={(event) => focusIssue(issue, event.currentTarget)}
+                      aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
+                      onclick={() => focusIssue(issue)}
                     >
                       <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
                       <span class="issue-copy">
@@ -92,6 +106,14 @@
                         <span>{issue.blocking ? 'Blocks save and export' : 'Advisory'}</span>
                       </span>
                     </button>
+                    {#if issue.documentationId}
+                      <button
+                        type="button"
+                        class="docs-action"
+                        aria-label={`Open documentation for ${issue.message}`}
+                        onclick={(event) => onDocumentation?.(issue.documentationId!, event.currentTarget)}>Docs</button
+                      >
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -180,6 +202,18 @@
     color: var(--color-text);
     background: transparent;
     text-align: left;
+  }
+
+  li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .docs-action {
+    width: auto;
+    color: var(--color-text-muted);
+    font-size: 0.7rem;
   }
 
   button:hover {

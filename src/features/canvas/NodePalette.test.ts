@@ -2,6 +2,9 @@ import { fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NodeKindDescriptor, WorkflowProfile } from '$src/lib/contract/types'
 import NodePalette, { NODE_KIND_DRAG_TYPE } from './NodePalette.svelte'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import archonContractJson from '../../../contracts/archon-2026-07-v6.json'
+import { nodeKindDescriptorsForScope } from './node-kind-options'
 
 function descriptor(
   id: string,
@@ -32,6 +35,27 @@ const allDescriptors = ['command', 'prompt', 'bash', 'script', 'loop', 'approval
 
 describe('NodePalette', () => {
   afterEach(() => document.querySelectorAll('[data-node-drag-ghost]').forEach((node) => node.remove()))
+
+  it('uses the prepared contract capability as the single body palette authority', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const body = nodeKindDescriptorsForScope(loaded.contract, {
+      key: 'loop-group:repeat',
+      kind: 'loop-group',
+      groupId: 'repeat',
+      workflow: { name: 'Scoped', profile: loaded.contract.profile },
+    })
+    expect(body.map(({ id }) => id)).toEqual(['command', 'prompt', 'bash', 'script', 'loop', 'approval', 'cancel'])
+    expect(body.map(({ id }) => id)).not.toEqual(expect.arrayContaining(['include', 'workflow', 'loop_group']))
+
+    render(NodePalette, { descriptors: body, profile: loaded.contract.profile })
+    expect(screen.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(
+      body.map((descriptor) => `Add ${descriptor.label} node`),
+    )
+  })
 
   it('renders contract order, availability, descriptions, and discoverable keyboard chords', () => {
     render(NodePalette, { descriptors: [bash, prompt, command], profile: 'hermes-legacy' })

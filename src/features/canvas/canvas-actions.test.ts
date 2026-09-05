@@ -9,6 +9,7 @@ import { createDocumentRevision, editDocumentText } from '$src/lib/documents/rev
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import {
   addNode,
+  addLoopGroupDependency,
   commitMutation,
   connectNodes,
   deleteNodes,
@@ -563,7 +564,7 @@ describe('canvas YAML actions', () => {
       loop: {},
       approval: {},
       cancel: '',
-      loop_group: {},
+      loop_group: { nodes: [] },
     }
     for (const descriptor of productionContract.node_kinds) {
       const fixture = actionContext()
@@ -960,6 +961,23 @@ async function scopedContext(
 }
 
 describe('scoped indexed canvas actions', () => {
+  it('adds one explicit acyclic outer dependency to the owning group without inserting text', async () => {
+    const fixture = await scopedContext()
+    const result = await addLoopGroupDependency(fixture.context, 'repeat', 'child')
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'committed' })
+    expect(parsedNodes(fixture.current().definition.text).find(({ id }) => id === 'repeat')?.depends_on).toEqual([
+      'child',
+    ])
+    expect(fixture.context.commit).toHaveBeenCalledOnce()
+  })
+  it('rejects a group dependency that would close a root cycle before mutation', async () => {
+    const fixture = await scopedContext()
+    expect(await addLoopGroupDependency(fixture.context, 'repeat', 'finish')).toMatchObject({
+      status: 'rejected',
+      code: 'cycle',
+    })
+    expect(fixture.context.commit).not.toHaveBeenCalled()
+  })
   it('publishes identity changes only after a successful scoped mutation commit', async () => {
     const fixture = await scopedContext()
     const changed = vi.fn()

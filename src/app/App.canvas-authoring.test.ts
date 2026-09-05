@@ -230,6 +230,8 @@ import {
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
+  requestProblemFocus,
+  selectProblem,
   updateDocumentSession,
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
@@ -505,6 +507,35 @@ describe('App canvas authoring composition', () => {
     })
   })
 
+  it('adds the exact empty loop-group draft from the root palette and opens its body in one history step', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Add group\nnodes:\n  - id: prepare\n    command: prepare\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    showActivity('nodes')
+    await fireEvent.click(await screen.findByRole('button', { name: /add loop group node/i }))
+    await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:loop_group'))
+    expect(parse($documentSession.get().pair!.definition.text)).toEqual({
+      name: 'Scoped',
+      description: 'Add group',
+      nodes: [
+        { id: 'prepare', command: 'prepare' },
+        { id: 'loop_group', loop_group: { nodes: [] } },
+      ],
+    })
+    expect(historyStore.get().undo).toHaveLength(1)
+    const heading = await screen.findByRole('heading', { name: /loop_group loop body/i })
+    await waitFor(() => expect(heading).toHaveFocus())
+    rendered.unmount()
+  })
+
   it('restores a body canvas through root navigation and a Settings page without heavy scope-switch work', async () => {
     const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
       kind: 'bundled',
@@ -594,6 +625,65 @@ describe('App canvas authoring composition', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
     await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveFocus())
     expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('routes scoped Problems to the exact repeated child and owning group field', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Problem routing\nnodes:\n  - id: first\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          prompt: first\n  - id: second\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          prompt: second\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    selectProblem({
+      code: 'scoped',
+      layer: 'semantic',
+      severity: 'error',
+      blocking: true,
+      message: 'Second child.',
+      document: 'definition',
+      scopeKey: 'loop-group:second',
+      groupId: 'second',
+      nodeId: 'child',
+      field: 'prompt',
+      path: '/nodes/1/loop_group/nodes/0/prompt',
+    })
+    requestProblemFocus()
+    await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:second'))
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['child']))
+    // The coordinator opens the exact scoped Inspector before applying field focus.
+    expect(screen.getByText('child', { selector: '.inspector strong' })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('textbox', { name: /prompt/i })).toHaveFocus())
+    expect(rendered.container.querySelector('.svelte-flow__node[data-id="child"]')).toHaveAccessibleName(
+      /in loop group second/i,
+    )
+
+    setCanvasSelection(['child'])
+    selectProblem({
+      code: 'group',
+      layer: 'semantic',
+      severity: 'error',
+      blocking: true,
+      message: 'Until invalid.',
+      document: 'definition',
+      scopeKey: 'loop-group:second',
+      groupId: 'second',
+      nodeId: 'second',
+      field: 'until',
+      path: '/nodes/1/loop_group/until',
+    })
+    requestProblemFocus()
+    await waitFor(() =>
+      expect(
+        rendered.container.querySelector<HTMLElement>('[data-field-pointer="/nodes/1/loop_group/until"] textarea'),
+      ).toHaveFocus(),
+    )
+    expect($canvasSelection.get()).toEqual(['child'])
     rendered.unmount()
   })
 
@@ -818,6 +908,12 @@ describe('App canvas authoring composition', () => {
     expect($documentSession.get().analysis?.structurallyValid).toBe(false)
     await fireEvent.click(screen.getByRole('button', { name: 'Add First Node' }))
     expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(
+      ['Command', 'Prompt', 'Bash', 'Script', 'Loop', 'Approval', 'Cancel'].map((label) =>
+        expect.stringContaining(label),
+      ),
+    )
+    expect(screen.queryByRole('option', { name: /loop group/i })).not.toBeInTheDocument()
     expect($documentSession.get().pair?.definition.text).toBe(authored)
     rendered.unmount()
   })

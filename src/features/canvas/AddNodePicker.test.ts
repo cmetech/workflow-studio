@@ -3,6 +3,9 @@ import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { NodeKindDescriptor } from '$src/lib/contract/types'
 import AddNodePicker from './AddNodePicker.svelte'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import archonContractJson from '../../../contracts/archon-2026-07-v6.json'
+import { nodeKindDescriptorsForScope } from './node-kind-options'
 
 function descriptor(
   id: string,
@@ -33,6 +36,25 @@ const descriptors = [
 ]
 
 describe('AddNodePicker', () => {
+  it('searches only kinds admitted by the active loop body capability', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const body = nodeKindDescriptorsForScope(loaded.contract, {
+      key: 'loop-group:repeat',
+      kind: 'loop-group',
+      groupId: 'repeat',
+      workflow: { name: 'Scoped', profile: loaded.contract.profile },
+    })
+    render(AddNodePicker, { descriptors: body, profile: loaded.contract.profile })
+    await tick()
+    expect(screen.getAllByRole('option').map(({ textContent }) => textContent)).toEqual(
+      body.map((descriptor) => expect.stringContaining(descriptor.label)),
+    )
+    expect(screen.queryByRole('option', { name: /loop group/i })).not.toBeInTheDocument()
+  })
   it('searches contract descriptors and exposes descriptions and active-profile status', async () => {
     render(AddNodePicker, { descriptors, profile: 'hermes-legacy' })
     const search = screen.getByRole('combobox', { name: 'Search node kinds' })

@@ -67,6 +67,14 @@ interface SurfacePolicy {
   readonly discriminatorId?: string
 }
 
+export interface ReferenceSurface {
+  readonly canonicalFieldPath: string
+  readonly scope: ReferenceSurfaceScope
+  readonly mode: ReferenceScanMode
+  readonly previousOutputs: boolean
+  readonly callerPolicy: string
+}
+
 interface TraversalGroup {
   readonly relativePath: string
   readonly orderedLeafPaths: readonly string[]
@@ -139,6 +147,30 @@ export function prepareReferenceContract(contract: AuthoringContract): PreparedR
   })
   preparedContracts.set(contract, prepared)
   return prepared
+}
+
+export function referenceSurfaceForField(
+  prepared: PreparedReferenceContract,
+  scope: ReferenceSurfaceScope,
+  canonicalFieldPath: string,
+): ReferenceSurface | null {
+  const relativePath = canonicalRelativePath(scope, canonicalFieldPath)
+  const policy = prepared.policies.get(policyKey(scope, relativePath))
+  if (!policy || policy.authoredValue === 'literal-resource-name') return null
+  return Object.freeze({
+    canonicalFieldPath,
+    scope,
+    mode: policy.mode,
+    previousOutputs: policy.previousOutputs,
+    callerPolicy: policy.callerPolicy,
+  })
+}
+
+function canonicalRelativePath(scope: ReferenceSurfaceScope, canonicalFieldPath: string): string {
+  const normalized = canonicalFieldPath.replaceAll('[*]', '[]')
+  if (scope === 'body') return normalized.replace(/^nodes\[\]\.loop_group\.nodes\[\]\./, '').replace(/^nodes\[\]\./, '')
+  if (scope === 'group-control') return normalized.replace(/^nodes\[\]\.loop_group\./, '')
+  return normalized.replace(/^nodes\[\]\./, '')
 }
 
 export function buildReferenceIndex(

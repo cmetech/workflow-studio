@@ -10,6 +10,7 @@ import {
   buildReferenceIndex,
   prepareReferenceContract,
   preparedReferenceContractBuildCountForTest,
+  referenceSurfaceForField,
 } from './reference-index'
 
 let contract: AuthoringContract
@@ -79,6 +80,20 @@ describe('indexed reference discovery', () => {
     expect(first).toBe(second)
     expect(Object.isFrozen(first)).toBe(true)
     expect(preparedReferenceContractBuildCountForTest() - before).toBe(1)
+  })
+
+  it('queries absent compatible fields from the prepared public surface without scanning a document', () => {
+    const prepared = prepareReferenceContract(contract)
+    if (!prepared) throw new Error('Expected reader-3 reference capabilities.')
+
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].prompt')).toEqual({
+      canonicalFieldPath: 'nodes[].prompt',
+      scope: 'body',
+      mode: 'text',
+      previousOutputs: true,
+      callerPolicy: 'body-text-references',
+    })
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].command')).toBeNull()
   })
 
   it('traverses the published root, body, and group-control inventory once in native order', () => {

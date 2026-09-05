@@ -259,7 +259,7 @@ describe('EditorModes', () => {
     expect(component.getView('definition').contentDOM).not.toHaveFocus()
   })
 
-  it('ignores and clears a problem focus request for a different workflow identity', async () => {
+  it('leaves global problem ownership to the coordinator and exposes imperative YAML focus', async () => {
     $problemFocus.set({
       issue: {
         code: 'wrong_workflow',
@@ -284,9 +284,20 @@ describe('EditorModes', () => {
       onTextChange: () => undefined,
     })
     await tick()
-
-    expect(component.getView('definition').state.selection.main.head).toBe(0)
-    expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false })
+    expect($problemFocus.get()).toMatchObject({ issue: { code: 'wrong_workflow' }, requested: true })
+    expect(
+      await component.focusProblem({
+        code: 'syntax',
+        layer: 'syntax',
+        severity: 'error',
+        blocking: true,
+        message: 'Syntax.',
+        document: 'definition',
+        line: 1,
+        column: 2,
+      }),
+    ).toBe(true)
+    expect(component.getView('definition').hasFocus).toBe(true)
   })
 })
 

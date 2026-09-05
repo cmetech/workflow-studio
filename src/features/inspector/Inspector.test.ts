@@ -90,6 +90,68 @@ const codeField: FormField = {
 }
 
 describe('Inspector', () => {
+  it('refreshes the remembered text target after pointer and keyboard selection changes', async () => {
+    const selections: number[] = []
+    render(Inspector, {
+      fields,
+      values: { 'prompt.node.id': 'review' },
+      selectionLabel: 'review',
+      onTextTarget: (_field, control) => selections.push(control.selectionStart ?? -1),
+    })
+    const input = screen.getByRole('textbox', { name: /node id.*required/i }) as HTMLInputElement
+    await fireEvent.focusIn(input)
+    input.setSelectionRange(2, 2)
+    await fireEvent.pointerUp(input)
+    input.setSelectionRange(4, 4)
+    await fireEvent.keyUp(input, { key: 'ArrowRight' })
+    await Promise.resolve()
+    expect(selections.at(-2)).toBe(2)
+    expect(selections.at(-1)).toBe(4)
+  })
+
+  it('qualifies field diagnostics by scope and focuses the exact full concrete path', async () => {
+    const field = { ...fields[0]!, concretePath: ['nodes', 2, 'loop_group', 'nodes', 1, 'id'] }
+    const { container } = render(Inspector, {
+      fields: [field],
+      values: { [field.id]: 'child' },
+      selectionLabel: 'child in repeat',
+      selectionNodeId: 'child',
+      selectionScopeKey: 'loop-group:repeat',
+      focusField: field.concretePath,
+      issues: [
+        {
+          code: 'other-body',
+          layer: 'semantic',
+          severity: 'error',
+          blocking: true,
+          message: 'Wrong body.',
+          document: 'definition',
+          nodeId: 'child',
+          field: 'id',
+          scopeKey: 'loop-group:other',
+        },
+        {
+          code: 'this-body',
+          layer: 'semantic',
+          severity: 'error',
+          blocking: true,
+          message: 'This body.',
+          document: 'definition',
+          nodeId: 'child',
+          field: 'id',
+          scopeKey: 'loop-group:repeat',
+        },
+      ],
+    })
+    await Promise.resolve()
+    expect(screen.getByText('This body.')).toBeVisible()
+    expect(screen.queryByText('Wrong body.')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: /node id/i })).toHaveFocus()
+    expect(container.querySelector('[data-field-id]')).toHaveAttribute(
+      'data-field-pointer',
+      '/nodes/2/loop_group/nodes/1/id',
+    )
+  })
   it('restores and publishes the controlled scope tab and panel scroll', async () => {
     const onTabChange = vi.fn()
     const onScroll = vi.fn()

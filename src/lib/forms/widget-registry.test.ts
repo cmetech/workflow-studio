@@ -3,11 +3,16 @@ import type { AuthoringContract, FieldDescriptor } from '$src/lib/contract/types
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import {
   collectContractFields,
+  fieldsForLoopGroupOwner,
   fieldsForNode,
+  fieldsForScopedNode,
   materializeFormFields,
   resolveWidget,
   validateContractFormCoverage,
 } from './widget-registry'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import archonContractJson from '../../../contracts/archon-2026-07-v6.json'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 
 const baseField: FieldDescriptor = {
   id: 'prompt.node.prompt',
@@ -133,6 +138,56 @@ function contract(overrides: Partial<AuthoringContract> = {}): AuthoringContract
 }
 
 describe('schema-driven widget registry', () => {
+  it('rebases body fields and derives the seven editable group controls from generated descriptors', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const graph: ProjectedGraph = {
+      scope: {
+        key: 'loop-group:repeat',
+        kind: 'loop-group',
+        groupId: 'repeat',
+        workflow: { name: 'Scoped', profile: loaded.contract.profile },
+      },
+      editorNodePrefix: 'repeat/',
+      sourcePath: ['nodes', 2, 'loop_group', 'nodes'],
+      sourceRange: { start: 0, end: 1 },
+      nodes: [],
+      edges: [],
+      definitionOrder: [],
+      outerInputs: [],
+      issues: [],
+      capacity: { status: 'visual', nodeCount: 0, edgeCount: 0 },
+    }
+    const definition = { nodes: [{}, {}, { loop_group: { nodes: [{}, { id: 'child', prompt: 'work' }] } }] }
+    const child = fieldsForScopedNode(loaded.contract, 'prompt', graph, 1, definition)
+    expect(child.find(({ fieldPath }) => fieldPath === 'nodes[].prompt')?.concretePath).toEqual([
+      'nodes',
+      2,
+      'loop_group',
+      'nodes',
+      1,
+      'prompt',
+    ])
+    const group = fieldsForLoopGroupOwner(loaded.contract, 2, definition)
+    expect(
+      group
+        .filter(({ fieldPath }) => fieldPath.startsWith('nodes[].loop_group.'))
+        .map(({ fieldPath }) => fieldPath.split('.').at(-1)),
+    ).toEqual([
+      'until',
+      'max_iterations',
+      'fresh_context',
+      'until_bash',
+      'interactive',
+      'signal_completes',
+      'gate_message',
+    ])
+    expect(group.some(({ fieldPath }) => fieldPath === 'nodes[].loop_group')).toBe(false)
+    expect(group.some(({ fieldPath }) => fieldPath === 'nodes[].loop_group.nodes')).toBe(false)
+  })
   it('provides exactly one compatible documented widget for every production contract field', async () => {
     const contracts = await loadBundledAuthoringContracts()
     expect(contracts.map(({ profile }) => profile)).toEqual(['archon-2026-07', 'hermes-legacy'])

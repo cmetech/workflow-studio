@@ -9,6 +9,8 @@ import NumberField from '$src/features/inspector/widgets/NumberField.svelte'
 import ObjectField from '$src/features/inspector/widgets/ObjectField.svelte'
 import TextAreaField from '$src/features/inspector/widgets/TextAreaField.svelte'
 import TextField from '$src/features/inspector/widgets/TextField.svelte'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import { canEditStructuredSchema } from './structured-draft'
 import type { FormConstraints, FormCoverageIssue, FormField, WidgetDefinition, WidgetResolution } from './types'
 
@@ -92,6 +94,39 @@ export function fieldsForNode(contract: AuthoringContract, nodeKind: string): re
   return collectContractFields(contract).filter(
     (field) => field.document === 'definition' && field.nodeKinds?.includes(nodeKind),
   )
+}
+
+export function fieldsForScopedNode(
+  contract: AuthoringContract,
+  nodeKind: string,
+  graph: ProjectedGraph,
+  nodeIndex: number,
+  definition: Readonly<Record<string, unknown>>,
+): readonly FormField[] {
+  const scoped = fieldsForNode(contract, nodeKind).map((field) => {
+    const [, nodeToken, ...tail] = field.pathTemplate
+    if (field.pathTemplate[0] !== 'nodes' || nodeToken !== '$node') return field
+    return { ...field, pathTemplate: [...graph.sourcePath, '$node', ...tail] }
+  })
+  return materializeFormFields(scoped, definition, nodeIndex)
+}
+
+export function fieldsForLoopGroupOwner(
+  contract: AuthoringContract,
+  groupIndex: number,
+  definition: Readonly<Record<string, unknown>>,
+): readonly FormField[] {
+  const capabilities = readScopedDagCapabilities(contract)
+  const editableControls = new Set(capabilities.topology.group_fields)
+  const groupPrefix = `nodes[].${capabilities.groupKind}.`
+  const bodyField = capabilities.bodyPath.join('.')
+  const fields = fieldsForNode(contract, 'loop_group').filter((field) => {
+    if (field.fieldPath === `nodes[].${capabilities.groupKind}` || field.fieldPath === `nodes[].${bodyField}`)
+      return false
+    if (!field.fieldPath.startsWith(groupPrefix)) return true
+    return editableControls.has(field.fieldPath.slice(groupPrefix.length))
+  })
+  return materializeFormFields(fields, definition, groupIndex)
 }
 
 export function materializeFormFields(
@@ -409,7 +444,8 @@ function materializeSchema(
   const types = materialized.type
   if (!Array.isArray(types) || !types.every((type) => typeof type === 'string') || types.length === 0)
     return materialized
-  const { type: _type, ...base } = materialized
+  const base = { ...materialized }
+  delete base.type
   return { ...base, oneOf: types.map((type) => ({ type })) }
 }
 

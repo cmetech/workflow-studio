@@ -4,12 +4,14 @@
   import type { DocumentationIndex } from '$src/lib/docs/types'
   import { resolveWidget } from '$src/lib/forms/widget-registry'
   import ContextDocs from '$src/features/documentation/ContextDocs.svelte'
+  import type { GraphScopeKey } from '$src/lib/projection/types'
 
   interface Props {
     fields: readonly FormField[]
     values: Readonly<Record<string, unknown>>
     selectionLabel?: string | undefined
     selectionNodeId?: string | undefined
+    selectionScopeKey?: GraphScopeKey | undefined
     selectionCount?: number | undefined
     bindingIdentity?: string | undefined
     issues?: readonly ValidationIssue[] | undefined
@@ -22,6 +24,8 @@
     scrollTop?: number | undefined
     onTabChange?: ((tab: InspectorTab) => void) | undefined
     onScroll?: ((scrollTop: number) => void) | undefined
+    focusField?: readonly (string | number)[] | undefined
+    onTextTarget?: ((field: FormField, control: HTMLInputElement | HTMLTextAreaElement) => void) | undefined
   }
 
   const tabs = ['General', 'Execution', 'Advanced', 'Docs'] as const
@@ -32,6 +36,7 @@
     values,
     selectionLabel = 'No selection',
     selectionNodeId,
+    selectionScopeKey,
     selectionCount = 1,
     bindingIdentity = selectionLabel,
     issues = [],
@@ -44,6 +49,8 @@
     scrollTop = 0,
     onTabChange,
     onScroll,
+    focusField,
+    onTextTarget,
   }: Props = $props()
 
   let tabButtons = $state<HTMLButtonElement[]>([])
@@ -72,6 +79,42 @@
     if (panel && panel.scrollTop !== scrollTop) panel.scrollTop = scrollTop
   })
 
+  $effect(() => {
+    if (!panel || !focusField) return
+    const pointer = pathPointer(focusField)
+    queueMicrotask(() =>
+      panel
+        ?.querySelector<HTMLElement>(
+          `[data-field-pointer="${CSS.escape(pointer)}"] input, [data-field-pointer="${CSS.escape(pointer)}"] textarea, [data-field-pointer="${CSS.escape(pointer)}"] select`,
+        )
+        ?.focus(),
+    )
+  })
+
+  $effect(() => {
+    const host = panel
+    if (!host) return
+    const refreshTarget = (event: Event): void => {
+      const target = event.target
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
+      const fieldId = target.closest<HTMLElement>('[data-field-id]')?.dataset.fieldId
+      const field = fields.find(({ id }) => id === fieldId)
+      if (field) rememberTextTarget(field, event)
+    }
+    host.addEventListener('pointerup', refreshTarget)
+    host.addEventListener('keyup', refreshTarget)
+    host.addEventListener('select', refreshTarget, true)
+    return () => {
+      host.removeEventListener('pointerup', refreshTarget)
+      host.removeEventListener('keyup', refreshTarget)
+      host.removeEventListener('select', refreshTarget, true)
+    }
+  })
+
+  function pathPointer(path: readonly (string | number)[]): string {
+    return `/${path.map((token) => String(token).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`
+  }
+
   function onTabKeydown(event: KeyboardEvent, index: number): void {
     if (event.key === 'ArrowRight') activateTab(index + 1)
     else if (event.key === 'ArrowLeft') activateTab(index - 1)
@@ -83,12 +126,11 @@
 
   function fieldIssues(field: FormField): readonly ValidationIssue[] {
     if (!field.concretePath) return []
-    const pointer = `/${field.concretePath
-      .map((token) => String(token).replaceAll('~', '~0').replaceAll('/', '~1'))
-      .join('/')}`
+    const pointer = pathPointer(field.concretePath)
     const leaf = String(field.concretePath.at(-1) ?? '')
     return issues.filter((issue) => {
       if (issue.document !== field.document) return false
+      if (issue.scopeKey && issue.scopeKey !== selectionScopeKey) return false
       if (issue.path) return issue.path === pointer
       return Boolean(selectionNodeId && issue.nodeId === selectionNodeId && issue.field === leaf)
     })
@@ -100,6 +142,12 @@
 
   function selectDocumentationField(field: FormField): void {
     onDocumentationTopic?.(`field:${field.id.split('@/')[0]}`)
+  }
+
+  function rememberTextTarget(field: FormField, event: Event): void {
+    const target = event.target
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return
+    if (target.isConnected) onTextTarget?.(field, target)
   }
 
   function sameValue(left: unknown, right: unknown): boolean {
@@ -170,7 +218,12 @@
           <div
             class="field"
             class:deferred={field.status !== 'supported'}
-            onfocusin={() => selectDocumentationField(field)}
+            data-field-id={field.id}
+            data-field-pointer={field.concretePath ? pathPointer(field.concretePath) : undefined}
+            onfocusin={(event) => {
+              selectDocumentationField(field)
+              rememberTextTarget(field, event)
+            }}
           >
             <div class="field-meta">
               {#if field.status !== 'supported'}<span class="badge">{field.status}</span>{/if}

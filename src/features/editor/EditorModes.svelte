@@ -3,15 +3,16 @@
   import type { EditorView } from '@codemirror/view'
   import { openSearchPanel } from '@codemirror/search'
   import type { EditorMode } from '$src/lib/commands/types'
-  import { isAnalysisCurrent } from '$src/lib/documents/revisions'
-  import type { DocumentAnalysis, DocumentKind, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
+  import type {
+    DocumentAnalysis,
+    DocumentKind,
+    DocumentRevision,
+    ValidationIssue,
+    WorkflowPairText,
+  } from '$src/lib/documents/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
-  import {
-    $problemFocus as problemFocusStore,
-    acknowledgeProblemFocus,
-    type DocumentSyncOrigin,
-  } from '$src/stores/documents'
-  import { activeYamlDocument, showEditorMode, showYamlDocument } from '$src/stores/shell'
+  import type { DocumentSyncOrigin } from '$src/stores/documents'
+  import { activeYamlDocument, showYamlDocument } from '$src/stores/shell'
   import YamlEditor from './YamlEditor.svelte'
 
   interface Props {
@@ -39,7 +40,6 @@
   let companionEditor = $state<ReturnType<typeof YamlEditor>>()
   let definitionTab = $state<HTMLButtonElement>()
   let companionTab = $state<HTMLButtonElement>()
-  let handledProblemRequest = 0
   const tabPrefix = $derived(`yaml-${encodeURIComponent(pair.workflowId)}`)
   const definitionTabId = $derived(`${tabPrefix}-definition-tab`)
   const companionTabId = $derived(`${tabPrefix}-companion-tab`)
@@ -50,34 +50,13 @@
     if (!pair.companion && $activeYamlDocument === 'companion') showYamlDocument('definition')
   })
 
-  $effect(() => {
-    const request = $problemFocusStore
-    if (!request.requested || request.requestRevision === handledProblemRequest) return
-    handledProblemRequest = request.requestRevision
-    void consumeProblemFocus(request.requestRevision)
-  })
-
-  async function consumeProblemFocus(requestRevision: number): Promise<void> {
-    const request = problemFocusStore.get()
-    const issue = request.issue
-    const target = request.targetRevision
-    if (
-      !request.requested ||
-      request.requestRevision !== requestRevision ||
-      !issue ||
-      !target ||
-      !isAnalysisCurrent(revision, target) ||
-      (issue.document === 'companion' && !pair.companion)
-    ) {
-      acknowledgeProblemFocus(requestRevision)
-      return
-    }
+  export async function focusProblem(issue: ValidationIssue): Promise<boolean> {
+    if (issue.document === 'companion' && !pair.companion) return false
     showYamlDocument(issue.document)
-    if (mode === 'visual') showEditorMode('yaml')
     await tick()
     const editor = issue.document === 'definition' ? definitionEditor : companionEditor
     editor?.focusProblem(issue)
-    acknowledgeProblemFocus(requestRevision)
+    return Boolean(editor)
   }
 
   function activateTab(document: DocumentKind, focus: boolean): void {
