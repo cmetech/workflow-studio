@@ -28,12 +28,12 @@
     },
     {
       "path": "contracts/archon-2026-07-v6.corpus.json",
-      "sha256": "b973f67587a8b7acdd509e1cb861f6adc248d621e1da14570da0a1e2f0aaa4c8",
+      "sha256": "e05802457acfc4d3e05ec7601e2ab821a47c689bd0eac1fb04da6fb9e4452ecb",
       "maxBytes": 2097152
     },
     {
       "path": "contracts/archon-2026-07-v6.json",
-      "sha256": "40fd20c0d77d908f4df874e00bb793bbe292c457a48a21289bd2afbf3a399331",
+      "sha256": "2f04e90bc70fc8d3e6100d1badbe655ea63d59ba06f350f083c9734bc8a2b770",
       "maxBytes": 2097152
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "path": "contracts/manifest.json",
-      "sha256": "0871e4f55fd6d2dd76b0fabfa348572fc467ad65b9e755f031bb58dc9a6e9b6e",
+      "sha256": "3cd392306c45e66b26df2671853e9e02ff73c59be0c68087a002bea0dcdfaf8b",
       "maxBytes": 2097152
     },
     {

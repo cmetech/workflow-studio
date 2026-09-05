@@ -1,3 +1,5 @@
+import { canonicalizeJsonValue } from './canonical-json'
+import { sha256Sync } from './sha256-sync'
 import { describe, expect, it } from 'vitest'
 import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 import archonCorpusText from '../../../contracts/archon-2026-07-v6.corpus.json?raw'
@@ -48,6 +50,7 @@ describe('Hermes conformance corpus reader', () => {
 
     const caseMismatch = JSON.parse(archonCorpusText) as Record<string, unknown>
     ;(caseMismatch.cases as Record<string, unknown>[])[0]!.profile = 'hermes-legacy'
+    caseMismatch.corpus_digest = `sha256:${sha256Sync(canonicalizeJsonValue(Object.fromEntries(Object.entries(caseMismatch).filter(([key]) => key !== 'corpus_digest'))))}`
     expect(() =>
       loadConformanceCorpus(new TextEncoder().encode(JSON.stringify(caseMismatch)), loaded.contract),
     ).toThrow(/case identity/i)

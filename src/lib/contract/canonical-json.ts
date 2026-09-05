@@ -1,4 +1,4 @@
-function canonicalizeJsonValue(value: unknown): string {
+export function canonicalizeJsonValue(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return JSON.stringify(value)
   }

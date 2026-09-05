@@ -1,3 +1,4 @@
+import { requireScannerCapability } from './scanner-capability'
 import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import { loadAuthoringContract } from './contract-loader'
@@ -113,6 +114,13 @@ export function createContractCache(options: ContractCacheOptions): ContractCach
     contract: AuthoringContract,
   ): 'contract_widget_unsupported' | 'contract_semantic_capability_unsupported' | null {
     if (coverage(contract).length > 0) return 'contract_widget_unsupported'
+    if (contract.contract_reader_version === 3) {
+      try {
+        requireScannerCapability(contract)
+      } catch {
+        return 'contract_semantic_capability_unsupported'
+      }
+    }
     if (requiresScopedDagCapabilities(contract, contract.profile, 'definition')) {
       try {
         readScopedDagCapabilities(contract)

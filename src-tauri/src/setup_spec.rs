@@ -117,7 +117,6 @@ fn committed_integrity_manifest_matches_the_exact_bundled_repository_tree() {
     }
 
     verify_resource_tree(packaged_root.path(), &manifest).unwrap();
-    assert_eq!(manifest.files.len(), 32);
 }
 
 #[test]

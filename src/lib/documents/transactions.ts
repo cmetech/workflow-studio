@@ -130,7 +130,7 @@ export async function applyWorkflowMutation(
   }
 }
 
-const bundledArchonV6Digest = 'sha256:fb25d0cd4749774f2db5b38e376071159a011f326eeca9cbc88847ddbfdd0fa0'
+const bundledArchonV6Digest = 'sha256:f435a385f26c971d37f3c691ed6f42d2aa76e7b0c24b199455f4002b0ab1976f'
 
 function isBundledV6RootDraft(
   mutation: WorkflowMutation,

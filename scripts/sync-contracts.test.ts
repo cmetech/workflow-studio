@@ -268,3 +268,42 @@ describe('contract resource synchronization', () => {
     )
   })
 })
+
+it('synchronizes the reader-3/corpus-2 pair exactly and rejects a forged outer corpus checksum', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'workflow-scanner-pair-'))
+  const sourceRoot = join(process.cwd(), 'contracts')
+  await syncContracts({
+    source: {
+      kind: 'files',
+      contracts: {
+        'hermes-legacy': join(sourceRoot, 'hermes-legacy-v2.json'),
+        'archon-2026-07': join(sourceRoot, 'archon-2026-07-v6.json'),
+      },
+      corpora: {
+        'hermes-legacy': join(sourceRoot, 'hermes-legacy-v2.corpus.json'),
+        'archon-2026-07': join(sourceRoot, 'archon-2026-07-v6.corpus.json'),
+      },
+    },
+    generatedAt: '2026-09-05T00:00:00.000Z',
+    outputDirectory: directory,
+  })
+  for (const file of [
+    'hermes-legacy-v2.json',
+    'hermes-legacy-v2.corpus.json',
+    'archon-2026-07-v6.json',
+    'archon-2026-07-v6.corpus.json',
+    'manifest.json',
+  ])
+    expect(await readFile(join(directory, file), 'utf8')).toBe(await readFile(join(sourceRoot, file), 'utf8'))
+  expect(await validateContractResources(directory)).toEqual([])
+  const payload = JSON.parse(await readFile(join(directory, 'archon-2026-07-v6.corpus.json'), 'utf8'))
+  payload.scanner_cases[0].expected.tokens[0].end++
+  const { canonicalizeJsonValue } = await import('../src/lib/contract/canonical-json')
+  const forged = canonicalizeJsonValue(payload)
+  await writeFile(join(directory, 'archon-2026-07-v6.corpus.json'), forged + '\n')
+  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
+  manifest.contracts.find((entry: { profile: string }) => entry.profile === 'archon-2026-07').corpus_digest =
+    `sha256:${await sha256Hex(forged)}`
+  await writeFile(join(directory, 'manifest.json'), deterministicJson(manifest))
+  expect(await validateContractResources(directory)).toEqual([expect.stringMatching(/corpus digest does not match/)])
+})

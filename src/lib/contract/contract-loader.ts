@@ -1,6 +1,6 @@
+import { supportsScannerPublication } from './scanner-capability'
 import { canonicalizeContractPayload, sha256Hex } from './canonical-json'
 import type {
-  AuthoringContract,
   CompatibilityDescriptor,
   ContractApplicability,
   ContractDocumentation,
@@ -18,7 +18,7 @@ import type {
 } from './types'
 
 const SUPPORTED_SCHEMA_VERSION = 1
-const SUPPORTED_CONTRACT_READER_VERSIONS = new Set([1, 2])
+const SUPPORTED_CONTRACT_READER_VERSIONS = new Set([1, 2, 3])
 const ENVELOPE_KEYS = new Set([
   'schema_version',
   'contract_reader_version',
@@ -358,6 +358,11 @@ export async function loadAuthoringContract(bytes: Uint8Array, source: ContractS
   }
   if (declaredDigest !== actualDigest)
     return failure('contract_digest_mismatch', 'The authoring contract digest does not match its canonical payload.')
+  if (
+    (parsed.contract_reader_version === 3 || parsed.reference_scanner_v1 !== undefined) &&
+    !supportsScannerPublication(parsed)
+  )
+    return failure('contract_reader_unsupported', 'The reference scanner semantic capability is unsupported.')
   return {
     ok: true,
     source,

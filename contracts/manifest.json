@@ -1,8 +1,8 @@
 {
   "contracts": [
     {
-      "contract_digest": "sha256:fb25d0cd4749774f2db5b38e376071159a011f326eeca9cbc88847ddbfdd0fa0",
-      "corpus_digest": "sha256:882fa27166c022918bc9c1c9462725b50578d7f861f2296b5d03d309e50a8718",
+      "contract_digest": "sha256:f435a385f26c971d37f3c691ed6f42d2aa76e7b0c24b199455f4002b0ab1976f",
+      "corpus_digest": "sha256:cd501f8f080e751aeac22bde3605aeaed92f370a97f496baca2ba9304d4c83e5",
       "corpus_file": "archon-2026-07-v6.corpus.json",
       "file": "archon-2026-07-v6.json",
       "normalizer_version": 6,
@@ -19,5 +19,5 @@
       "schema_version": 1
     }
   ],
-  "generated_at": "2026-09-04T00:00:00.000Z"
+  "generated_at": "2026-09-05T00:00:00.000Z"
 }

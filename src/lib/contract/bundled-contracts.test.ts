@@ -11,9 +11,11 @@ describe('bundled Hermes authoring resources', () => {
       ['archon-2026-07', 6],
       ['hermes-legacy', 2],
     ])
-    expect(corpora.map((corpus) => [corpus.profile, corpus.normalizerVersion, corpus.cases.length])).toEqual([
-      ['archon-2026-07', 6, 48],
-      ['hermes-legacy', 2, 11],
+    expect(corpora.map((corpus) => [corpus.profile, corpus.normalizerVersion, corpus.formatVersion])).toEqual([
+      ['archon-2026-07', 6, 2],
+      ['hermes-legacy', 2, 1],
     ])
+    expect(corpora[0]?.scannerCases.some((fixture) => fixture.id === 'text.whole-output')).toBe(true)
+    expect(corpora[0]?.cases.some((fixture) => fixture.id === 'loop-group-minimal-valid')).toBe(true)
   })
 })

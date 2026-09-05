@@ -1,5 +1,6 @@
 import type { AuthoringContract, ContractDocumentKind, SemanticRuleDescriptor, WorkflowProfile } from './types'
-import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
+import archonContract from '../../../contracts/archon-2026-07-v6.json'
+import { requireScannerCapability } from './scanner-capability'
 
 export interface ScopedDagCapabilities {
   readonly groupKind: 'loop_group'
@@ -94,6 +95,7 @@ export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDa
   const topology = requireRule(rules.get('scoped-dag-topology-v1'), 'scoped DAG topology capability')
   const references = requireRule(rules.get('scoped-output-reference-v1'), 'scoped output reference capability')
   const workProduct = requireRule(rules.get('loop-group-work-product-v1'), 'loop-group work-product capability')
+  if (contract.contract_reader_version === 3) requireScannerCapability(contract)
   if (
     !sameGeneratedRule(topology, 'scoped-dag-topology-v1') ||
     !sameGeneratedRule(references, 'scoped-output-reference-v1') ||
@@ -286,7 +288,7 @@ function scopedSemanticDefinitions(
 }
 
 const generatedScopedRules = new Map(
-  (JSON.parse(archonContractText) as { semantic_rules: readonly Record<string, unknown>[] }).semantic_rules
+  (archonContract as { semantic_rules: readonly Record<string, unknown>[] }).semantic_rules
     .filter((rule) => typeof rule.id === 'string')
     .map((rule) => [
       rule.id as string,
@@ -295,7 +297,7 @@ const generatedScopedRules = new Map(
 )
 
 const generatedScopedDefinitions = (() => {
-  const raw = JSON.parse(archonContractText) as { node_kinds: readonly Record<string, unknown>[] }
+  const raw = archonContract as { node_kinds: readonly Record<string, unknown>[] }
   const descriptor = raw.node_kinds.find((candidate) => candidate.id === 'loop_group')
   const definitions = record(descriptor?.semantic_definitions)
   return new Map(Object.entries(definitions ?? {}).map(([id, value]) => [id, stableJson(value)]))
