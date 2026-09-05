@@ -167,6 +167,13 @@ export function patchWorkflowDocument(
     if (mutation.afterNodeId !== undefined && afterIndex === -1) {
       return { ok: false, code: 'mutation_node_missing', message: 'The requested insertion node does not exist.' }
     }
+    if (mutation.copiedSource) {
+      const insideFlow = fields.nodesPath.some((_, index) => {
+        const ancestor = document.getIn(fields.nodesPath.slice(0, index), true)
+        return (isMap(ancestor) || isSeq(ancestor)) && ancestor.flow
+      })
+      return insertCopiedNode(source, nodes, afterIndex, mutation, contract, insideFlow)
+    }
     if (nodes.flow) {
       return verifiedPatch(
         applySourceEdits(source, [flowItemInsertion(nodes, afterIndex, mutation.node)]),
@@ -573,6 +580,182 @@ function flowMappingDeletion(map: YAMLMap, key: unknown): SourceEdit[] | null {
   const start = nodeRange(pair?.key)
   const end = nodeRange(pair?.value) ?? start
   return start && end ? flowEntryDeletion(map, index, start[0], end[1]) : null
+}
+
+/** Reparse a captured source and edit its existing scalars before transplanting one node. */
+function insertCopiedNode(
+  destination: string,
+  nodes: YAMLSeq,
+  afterIndex: number,
+  mutation: Extract<WorkflowMutation, { type: 'add-node' }>,
+  contract: AuthoringContract,
+  insideFlow: boolean,
+): PatchWorkflowDocumentResult {
+  const captured = mutation.copiedSource!
+  const parsed = parseWorkflowYaml(captured.text, {
+    document: 'definition',
+    maxBytes: captured.contract.limits.max_document_bytes,
+  })
+  if (!parsed.parsed)
+    return { ok: false, code: 'mutation_invalid_yaml', message: 'The captured clipboard YAML is invalid.' }
+  const scope = resolveGraphScope(parsed.parsed.document, captured.scopeKey, captured.contract)
+  if (!scope.ok) return scope
+  const index = nodeIndex(scope.nodes, scope.fields.idPath, captured.nodeId)
+  const original = scope.nodes.items[index]
+  if (!isMap(original) || containsSharedNode(original)) return ambiguousAlias()
+  if (!sameCopiedValue(original.toJSON(), captured.originalValue))
+    return {
+      ok: false,
+      code: 'mutation_stale_scope',
+      message: 'The copied node no longer matches its captured source identity.',
+    }
+  const basePath = [...scope.fields.nodesPath, index]
+  let text = captured.text
+  for (const change of copiedValueChanges(captured.originalValue, mutation.node)) {
+    const result = patchWorkflowDocument(
+      text,
+      { type: 'set-field', document: 'definition', path: [...basePath, ...change.path], value: change.value },
+      captured.contract,
+    )
+    if (!result.ok) return result
+    text = result.text
+  }
+  const updated = parseWorkflowYaml(text, {
+    document: 'definition',
+    maxBytes: captured.contract.limits.max_document_bytes,
+  })
+  const node = updated.parsed?.document.getIn(basePath, true)
+  const sequence = updated.parsed?.document.getIn(scope.fields.nodesPath, true)
+  if (!isMap(node) || !isSeq(sequence) || !sameCopiedValue(node.toJSON(), mutation.node))
+    return {
+      ok: false,
+      code: 'mutation_stale_scope',
+      message: 'The copied CST does not match the requested node values.',
+    }
+  const range = nodeRange(node)!
+  let fragment: string
+  if (sequence.flow) {
+    // A flow item remains a flow mapping, preserving all of its internal spacing.
+    fragment = `- ${text.slice(range[0], range[1])}\n`
+  } else {
+    const token = sequence.srcToken
+    const item = token?.type === 'block-seq' ? token.items[index] : undefined
+    const marker = item?.start.find((token) => token.type === 'seq-item-ind')
+    if (!marker) return ambiguousAlias()
+    const lead = item?.start.find((token) => token.type === 'comment')
+    let start = lineStart(text, lead?.offset ?? marker.offset)
+    if (index === 0) {
+      const parent = updated.parsed?.document.getIn(scope.fields.nodesPath.slice(0, -1), true)
+      if (isMap(parent) && parent.srcToken?.type === 'block-map') {
+        const key = scope.fields.nodesPath.at(-1)
+        const pairIndex = parent.items.findIndex((pair) => isScalar(pair.key) && pair.key.value === key)
+        const comments = parent.srcToken.items[pairIndex]?.sep?.filter(
+          (token) =>
+            token.type === 'comment' &&
+            token.indent >= marker.indent &&
+            text.slice(lineStart(text, token.offset), token.offset).trim() === '',
+        )
+        if (comments?.length) start = lineStart(text, comments[0]!.offset)
+      }
+    }
+    const indentation = marker.indent
+    fragment = text
+      .slice(start, range[2])
+      .split('\n')
+      .map((line) => (line.slice(0, indentation).trim() === '' ? line.slice(indentation) : line))
+      .join('\n')
+    if (!fragment.endsWith('\n')) fragment += '\n'
+  }
+  let edit: SourceEdit
+  if (nodes.flow) {
+    // Empty flow sequences can become block sequences without changing any sibling.
+    if (nodes.items.length === 0 && !insideFlow) {
+      const range = nodeRange(nodes)!
+      const keyIndent = destination.slice(lineStart(destination, range[0]), range[0]).search(/\S/)
+      edit = {
+        start: range[0],
+        end: range[2],
+        text:
+          (destination.slice(range[1], range[2]) || '\n') +
+          indentLines(fragment, ' '.repeat(Math.max(0, keyIndent) + 2)),
+      }
+    } else {
+      // YAML cannot carry block scalar syntax inside a flow collection. The structured
+      // fallback preserves scalar values and comments; the candidate is revalidated.
+      const clone = node.clone()
+      if (index === 0 && sequence.commentBefore)
+        clone.commentBefore = [sequence.commentBefore, clone.commentBefore].filter(Boolean).join('\n')
+      clone.flow = true
+      const rendered = node.flow
+        ? text.slice(range[0], range[1])
+        : new Document(clone).toString({ lineWidth: 0 }).trimEnd()
+      const previous = nodeRange(nodes.items[afterIndex])
+      const start = previous?.[1] ?? nodeRange(nodes)![0] + 1
+      const indented = rendered.replaceAll(
+        '\n',
+        '\n' + ' '.repeat((nodes.srcToken?.type === 'flow-collection' ? nodes.srcToken.indent : 0) + 2),
+      )
+      edit = { start, end: start, text: previous ? `, ${indented}` : indented }
+    }
+  } else {
+    edit = sequenceItemInsertion(destination, nodes, afterIndex, mutation.node)
+    const firstRange = nodeRange(nodes.items[0])!
+    const prefix = destination.slice(lineStart(destination, firstRange[0]), firstRange[0])
+    const marker = prefix.lastIndexOf('-')
+    const indentation = marker < 0 ? prefix : prefix.slice(0, marker)
+    edit = { ...edit, text: indentLines(fragment, indentation) }
+  }
+  const result = verifiedPatch(applySourceEdits(destination, [edit]), contract, 'definition')
+  if (!result.ok) return result
+  const inserted = parseWorkflowYaml(result.text, {
+    document: 'definition',
+    maxBytes: contract.limits.max_document_bytes,
+  })
+  if (!inserted.parsed) return result
+  const targetScope = resolveGraphScope(inserted.parsed.document, mutation.scopeKey, contract)
+  if (!targetScope.ok) return targetScope
+  const insertedId = String(valueAtObjectPath(mutation.node, targetScope.fields.idPath))
+  const insertedNode = targetScope.nodes.items[nodeIndex(targetScope.nodes, targetScope.fields.idPath, insertedId)]
+  if (!isMap(insertedNode) || !sameCopiedValue(insertedNode.toJSON(), mutation.node))
+    return {
+      ok: false,
+      code: 'mutation_stale_scope',
+      message: 'The copied scalar values cannot be preserved in this destination collection.',
+    }
+  return result
+}
+
+function containsSharedNode(node: unknown): boolean {
+  if (isAlias(node)) return true
+  if ((isMap(node) || isSeq(node) || isScalar(node)) && node.anchor) return true
+  if (isMap(node)) return node.items.some((pair) => containsSharedNode(pair.key) || containsSharedNode(pair.value))
+  if (isSeq(node)) return node.items.some(containsSharedNode)
+  return false
+}
+
+function sameCopiedValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) && Array.isArray(right))
+    return left.length === right.length && left.every((value, index) => sameCopiedValue(value, right[index]))
+  if (!isRecord(left) || !isRecord(right)) return false
+  const keys = Object.keys(left)
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && sameCopiedValue(left[key], right[key]))
+  )
+}
+
+function copiedValueChanges(
+  before: unknown,
+  after: unknown,
+  path: readonly (string | number)[] = [],
+): { path: readonly (string | number)[]; value: unknown }[] {
+  if (sameCopiedValue(before, after)) return []
+  if (Array.isArray(before) && Array.isArray(after) && before.length === after.length)
+    return before.flatMap((value, index) => copiedValueChanges(value, after[index], [...path, index]))
+  if (isRecord(before) && isRecord(after) && Object.keys(before).join('\0') === Object.keys(after).join('\0'))
+    return Object.keys(before).flatMap((key) => copiedValueChanges(before[key], after[key], [...path, key]))
+  return [{ path, value: after }]
 }
 
 function flowItemInsertion(sequence: YAMLSeq, afterIndex: number, value: unknown): SourceEdit {

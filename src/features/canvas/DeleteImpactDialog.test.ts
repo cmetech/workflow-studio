@@ -1,13 +1,35 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
-import type { DeleteImpact } from './canvas-actions'
+import { nodeIdentity, type DeleteImpact } from './canvas-actions'
 import DeleteImpactDialog from './DeleteImpactDialog.svelte'
 
 const referencedImpact: DeleteImpact = {
   nodeIds: ['middle'],
+  targets: [nodeIdentity('root', 'middle')],
+  companions: [],
+  lease: {
+    revision: {
+      workflowId: 'test',
+      pairGeneration: 1,
+      definitionPath: 'test.yaml',
+      companionPath: null,
+      definitionRevision: 1,
+      companionRevision: null,
+      contractDigest: 'sha256:test',
+    },
+    scopeKey: 'root',
+    savedGeneration: 1,
+    definitionSavedRevision: 1,
+    definitionDiskHash: null,
+    companionSavedRevision: null,
+    companionDiskHash: null,
+  },
   dependencies: [
     {
+      document: 'definition',
+      consumer: nodeIdentity('root', 'leaf'),
+      producer: nodeIdentity('root', 'middle'),
       key: 'dependency:/nodes/2/depends_on/0',
       nodeId: 'leaf',
       fieldPath: ['depends_on'],
@@ -17,6 +39,12 @@ const referencedImpact: DeleteImpact = {
   ],
   references: [
     {
+      document: 'definition',
+      scopeKey: 'root',
+      consumer: nodeIdentity('root', 'leaf'),
+      producer: nodeIdentity('root', 'middle'),
+      namespace: 'root',
+      kind: 'ordinary',
       key: 'reference:/nodes/2/prompt:4-18',
       nodeId: 'leaf',
       fieldPath: ['prompt'],
@@ -123,4 +151,28 @@ describe('DeleteImpactDialog', () => {
     expect(screen.getAllByText('leaf · settings.messages.0')).toHaveLength(2)
     expect(screen.getAllByText('$middle.output then $middle.output')).toHaveLength(2)
   })
+})
+
+it('names the group and local node and blocks companion-only impacts', () => {
+  render(DeleteImpactDialog, {
+    impact: {
+      ...referencedImpact,
+      nodeIds: ['child'],
+      targets: [nodeIdentity('loop-group:repeat', 'child')],
+      dependencies: [],
+      references: [],
+      companions: [
+        {
+          document: 'companion',
+          key: 'companion:0',
+          yamlPath: ['outward_action_nodes', 0],
+          value: 'repeat/child',
+          target: nodeIdentity('loop-group:repeat', 'child'),
+        },
+      ],
+    },
+  })
+  expect(screen.getByText('repeat / child')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Delete nodes' })).toBeDisabled()
+  expect(screen.getByText('repeat/child')).toBeVisible()
 })

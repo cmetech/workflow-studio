@@ -1165,13 +1165,19 @@ describe('App canvas authoring composition', () => {
   })
 
   it('keeps deletion side-effect free on cancel and commits only after confirmation', async () => {
-    const rendered = await renderAuthoringApp()
+    const rendered = await renderAuthoringApp({ companionText: '# exact companion\npolicy: preserved\n' })
     setCanvasSelection(['collect'])
+    const beforePair = structuredClone($documentSession.get().pair)
+    const beforeLayout = structuredClone(activeLayoutStore.get())
+    const beforeSelection = [...$canvasSelection.get()]
     const before = $documentSession.get().pair?.definition.text
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
     await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
     await fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect($documentSession.get().pair?.definition.text).toBe(before)
+    expect($documentSession.get().pair).toEqual(beforePair)
+    expect($canvasSelection.get()).toEqual(beforeSelection)
+    expect(activeLayoutStore.get()).toEqual(beforeLayout)
     expect(historyStore.get().undo).toHaveLength(0)
 
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
@@ -1179,6 +1185,25 @@ describe('App canvas authoring composition', () => {
     await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).not.toContain('id: collect'))
     expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('rejects a delete dialog after the saved pair lease changes while analysis remains current', async () => {
+    const rendered = await renderAuthoringApp({ companionText: '# companion\npolicy: exact\n' })
+    setCanvasSelection(['collect'])
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+    await screen.findByRole('dialog', { name: 'Delete selected nodes' })
+    const state = $documentSession.get()
+    const pair = { ...state.pair!, definition: { ...state.pair!.definition, diskHash: 'sha256:new-save' } }
+    $documentSession.set({ ...state, pair })
+    const layout = structuredClone(activeLayoutStore.get())
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete nodes' }))
+    expect(await screen.findByText(/workflow changed after the delete preview/i)).toBeVisible()
+    expect($documentSession.get().pair).toEqual(pair)
+    expect($canvasSelection.get()).toEqual(['collect'])
+    expect(historyStore.get().undo).toHaveLength(0)
+    expect(activeLayoutStore.get()).toEqual(layout)
     rendered.unmount()
   })
 

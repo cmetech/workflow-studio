@@ -1,10 +1,21 @@
 import type { AuthoringContract, SemanticRuleDescriptor, WorkflowProfile } from '$src/lib/contract/types'
 import { compileContractValidators } from '$src/lib/validation/schema-validator'
 import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import type { GraphScopeKey } from '$src/lib/projection/types'
+import type { IndexedReferenceOccurrence } from '$src/lib/references/reference-index'
+import { codePointToEditorOffset } from '$src/lib/references/unicode'
 import type { CanvasPosition } from './types'
 import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
 import {
   commitPreparedDefinition,
+  emptyIdentityChanges,
+  identitySelected,
+  nodeIdentity,
+  occurrenceConsumer,
+  validateActionContext,
+  type ScopedNodeIdentity,
+  type ClipboardDependency,
   graphContractFields,
   isRecord,
   rawNodes,
@@ -15,6 +26,19 @@ import {
 } from './canvas-actions'
 
 export interface CanvasClipboard {
+  readonly sourceRevision: import('$src/lib/documents/types').DocumentRevision
+  readonly sourceText: string
+  readonly sourceContract: AuthoringContract
+  readonly sourceWorkflowId: string
+  readonly sourceDefinitionPath: string
+  readonly sourceScopeKey: GraphScopeKey
+  readonly selectedIdentities: readonly ScopedNodeIdentity[]
+  readonly nodePaths: Readonly<Record<string, readonly (string | number)[]>>
+  readonly dependencies: readonly ClipboardDependency[]
+  readonly references: readonly IndexedReferenceOccurrence[]
+  readonly groupScopes: readonly GraphScopeKey[]
+  readonly unavailable?: Extract<CanvasActionResult, { status: 'rejected' }>
+
   readonly sourceProfile: WorkflowProfile
   readonly selectedIds: readonly string[]
   readonly nodes: readonly Readonly<Record<string, unknown>>[]
@@ -29,14 +53,52 @@ export type DuplicateSelectionResult =
   | Exclude<CanvasActionResult, { status: 'committed' }>
 
 export function copySelection(context: CanvasActionContext, selectedIds: readonly string[]): CanvasClipboard {
+  const unavailable = validateActionContext(context)
   const fields = graphContractFields(context.contract)
   const selected = new Set(selectedIds)
   const nodes = fields
-    ? rawNodes(context.projection, context.contract).filter((node) =>
+    ? rawNodes(context.projection, context.contract, context.scopeKey).filter((node) =>
         selected.has(String(valueAtPath(node, fields.idPath))),
       )
     : []
+  const selectedIdentities = nodes.map((node) =>
+    nodeIdentity(context.scopeKey, String(valueAtPath(node, fields?.idPath ?? ['id']))),
+  )
+  const dependencies: ClipboardDependency[] = []
+  for (const graph of context.projection.graphs) {
+    for (const node of graph.nodes) {
+      const consumer = nodeIdentity(graph.scope.key, node.id)
+      if (!identitySelected(context, selected, consumer)) continue
+      for (const producerId of node.dependsOn)
+        dependencies.push({ consumer, producer: nodeIdentity(graph.scope.key, producerId) })
+    }
+  }
   return deepFreeze({
+    sourceRevision: { ...context.revision },
+    sourceText: context.pair.definition.text,
+    sourceContract: structuredClone(context.contract),
+    sourceWorkflowId: context.pair.workflowId,
+    sourceDefinitionPath: context.pair.definition.path,
+    sourceScopeKey: context.scopeKey,
+    selectedIdentities,
+    dependencies,
+    references: structuredClone(
+      context.referenceIndex?.occurrences.filter((occurrence) =>
+        identitySelected(context, selected, occurrenceConsumer(occurrence)),
+      ) ?? [],
+    ),
+    groupScopes:
+      context.scopeKey === 'root'
+        ? context.projection.graphs
+            .filter((graph) => graph.scope.groupId && selected.has(graph.scope.groupId))
+            .map((graph) => graph.scope.key)
+        : [],
+    nodePaths: Object.fromEntries(
+      context.graph.nodes.flatMap((node, index) =>
+        selected.has(node.id) ? [[node.id, [...context.graph.sourcePath, index]]] : [],
+      ),
+    ),
+    ...(unavailable ? { unavailable } : {}),
     sourceProfile: context.contract.profile,
     selectedIds: nodes.map((node) => String(valueAtPath(node, fields?.idPath ?? ['id']))),
     nodes,
@@ -57,6 +119,18 @@ export async function pasteSelection(
   context: CanvasActionContext,
   clipboard: CanvasClipboard,
 ): Promise<DuplicateSelectionResult> {
+  const unavailable = validateActionContext(context) ?? clipboard.unavailable
+  if (unavailable) return unavailable
+  if (
+    clipboard.sourceRevision.workflowId !== clipboard.sourceWorkflowId ||
+    clipboard.sourceRevision.definitionPath !== clipboard.sourceDefinitionPath ||
+    clipboard.sourceRevision.contractDigest !== clipboard.sourceContract.contract_digest ||
+    clipboard.selectedIdentities.some((identity) => identity.scopeKey !== clipboard.sourceScopeKey)
+  ) {
+    const message = 'The clipboard no longer matches its captured workflow revision and scope.'
+    context.announce(message)
+    return { status: 'rejected', code: 'stale_document', message }
+  }
   if (clipboard.nodes.length === 0) {
     const message = 'Copy at least one node before pasting.'
     context.announce(message)
@@ -75,8 +149,8 @@ export async function pasteSelection(
     return { status: 'rejected', code: 'profile_disallowed', message }
   }
 
-  const destinationNodes = rawNodes(context.projection, context.contract)
-  const occupied = new Set(context.projection.graphs[0]?.nodes.map(({ id }) => id) ?? [])
+  const destinationNodes = rawNodes(context.projection, context.contract, context.scopeKey)
+  const occupied = new Set(context.graph.nodes.map(({ id }) => id))
   const copiedIds = clipboard.nodes.map((node) => String(valueAtPath(node, fields.idPath)))
   const idMap = new Map<string, string>()
   for (const sourceId of copiedIds) {
@@ -97,7 +171,9 @@ export async function pasteSelection(
         dependencies.map((dependency) => idMap.get(String(dependency)) ?? dependency),
       )
     }
-    rewriteNodeReferences(next, sourceId, idMap, context.contract, fields.nodesPath)
+    if (clipboard.sourceContract.contract_reader_version === 3)
+      rewriteIndexedReferences(next, sourceId, clipboard, idMap)
+    else rewriteNodeReferences(next, sourceId, idMap, context.contract, fields.nodesPath)
     return next
   })
 
@@ -108,7 +184,7 @@ export async function pasteSelection(
     return { status: 'rejected', code: 'profile_disallowed', message }
   }
   const candidateDefinition = structuredClone(context.projection.definition) as Record<string, unknown>
-  setPath(candidateDefinition, fields.nodesPath, [...destinationNodes, ...copiedNodes])
+  setPath(candidateDefinition, context.graph.sourcePath, [...destinationNodes, ...copiedNodes])
   let schemaValid = false
   try {
     schemaValid = compileContractValidators(context.contract).definition(candidateDefinition)
@@ -121,12 +197,68 @@ export async function pasteSelection(
     return { status: 'rejected', code: 'profile_disallowed', message }
   }
 
+  if (context.scopeKey !== 'root') {
+    const allowed = readScopedDagCapabilities(context.contract).allowedNodeKinds
+    for (const node of copiedNodes) {
+      const kind = context.contract.node_kinds.find(
+        (descriptor) => valueAtPath(node, relativePath(descriptor.field_path, fields.nodesPath)) !== undefined,
+      )
+      if (!kind || !allowed.includes(kind.id)) {
+        const message = 'The copied node kind is not allowed in this loop group body.'
+        context.announce(message)
+        return { status: 'rejected', code: 'profile_disallowed', message }
+      }
+    }
+  }
+  const sameScope =
+    clipboard.sourceWorkflowId === context.pair.workflowId &&
+    clipboard.sourceDefinitionPath === context.pair.definition.path &&
+    clipboard.sourceScopeKey === context.scopeKey
+  if (!sameScope) {
+    const dependencies = clipboard.dependencies.filter(({ producer }) => !clipboardContains(clipboard, producer))
+    const references = clipboard.references.filter((occurrence) =>
+      occurrence.references.some(
+        (token) =>
+          !token.resolvedProducer ||
+          !clipboardContains(clipboard, nodeIdentity(token.resolvedProducer.scopeKey, token.resolvedProducer.nodeId)) ||
+          (context.scopeKey === 'root' && clipboard.sourceScopeKey !== 'root' && token.kind === 'previous'),
+      ),
+    )
+    if (dependencies.length || references.length) {
+      const message = 'Resolve incoming dependencies and scoped references before pasting into another graph.'
+      context.announce(message)
+      return {
+        status: 'resolution_required',
+        code: 'resolution_required',
+        message,
+        clipboardImpact: {
+          sourceScopeKey: clipboard.sourceScopeKey,
+          destinationScopeKey: context.scopeKey,
+          dependencies,
+          references,
+        },
+      }
+    }
+  }
+
   let preparedText = context.pair.definition.text
   let afterNodeId = destinationNodes.at(-1) ? String(valueAtPath(destinationNodes.at(-1), fields.idPath)) : undefined
-  for (const node of copiedNodes) {
+  for (const [index, node] of copiedNodes.entries()) {
     const patched = patchWorkflowDocument(
       preparedText,
-      { type: 'add-node', scopeKey: 'root', node, ...(afterNodeId ? { afterNodeId } : {}) },
+      {
+        type: 'add-node',
+        scopeKey: context.scopeKey,
+        node,
+        copiedSource: {
+          text: clipboard.sourceText,
+          scopeKey: clipboard.sourceScopeKey,
+          nodeId: copiedIds[index]!,
+          contract: clipboard.sourceContract,
+          originalValue: clipboard.nodes[index]!,
+        },
+        ...(afterNodeId ? { afterNodeId } : {}),
+      },
       context.contract,
     )
     if (!patched.ok) {
@@ -141,7 +273,56 @@ export async function pasteSelection(
 
   const positions = copiedPositions(clipboard, idMap, context.positions)
   await context.commitPositions(positions)
-  return { ...result, nodeIds: copiedIds.map((id) => idMap.get(id)!), positions }
+  return {
+    ...result,
+    nodeIds: copiedIds.map((id) => idMap.get(id)!),
+    positions,
+    identityChanges: {
+      ...emptyIdentityChanges(),
+      nodeCopies: copiedIds.map((id) => ({
+        from: nodeIdentity(clipboard.sourceScopeKey, id),
+        to: nodeIdentity(context.scopeKey, idMap.get(id)!),
+      })),
+      scopeCopies: clipboard.groupScopes.map((scope) => ({
+        from: scope,
+        to: `loop-group:${idMap.get(scope.slice('loop-group:'.length))!}` as GraphScopeKey,
+      })),
+    },
+  }
+}
+
+function clipboardContains(clipboard: CanvasClipboard, identity: ScopedNodeIdentity): boolean {
+  return (
+    clipboard.selectedIdentities.some(
+      (selected) => selected.scopeKey === identity.scopeKey && selected.nodeId === identity.nodeId,
+    ) || clipboard.groupScopes.includes(identity.scopeKey)
+  )
+}
+
+function rewriteIndexedReferences(
+  node: Record<string, unknown>,
+  sourceId: string,
+  clipboard: CanvasClipboard,
+  idMap: ReadonlyMap<string, string>,
+): void {
+  const basePath = clipboard.nodePaths[sourceId]
+  if (!basePath) return
+  for (const occurrence of clipboard.references) {
+    if (!basePath.every((segment, index) => occurrence.valuePath[index] === segment)) continue
+    let value = occurrence.authoredText
+    for (const token of [...occurrence.references].sort((left, right) => right.start - left.start)) {
+      const producer = token.resolvedProducer
+      // Descendant body producer IDs stay unchanged when the root group is copied.
+      if (!producer || producer.scopeKey !== clipboard.sourceScopeKey) continue
+      const mapped = idMap.get(producer.nodeId)
+      if (!mapped) continue
+      const prefixLength = token.kind === 'previous' ? '$LOOP_PREV.'.length : 1
+      const start = codePointToEditorOffset(occurrence.authoredText, token.start + prefixLength)
+      const end = start + token.producerId.length
+      value = value.slice(0, start) + mapped + value.slice(end)
+    }
+    if (value !== occurrence.authoredText) setPath(node, occurrence.valuePath.slice(basePath.length), value)
+  }
 }
 
 function firstDisallowedField(

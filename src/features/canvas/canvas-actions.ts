@@ -3,13 +3,22 @@ import {
   applyWorkflowMutation,
   type ApplyWorkflowMutationResult,
   type YamlTransaction,
+  type MutationAnalyzer,
 } from '$src/lib/documents/transactions'
-import { isAnalysisCurrent } from '$src/lib/documents/revisions'
-import type { DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
-import type { ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
+import { createDocumentRevision, editDocumentText, isAnalysisCurrent } from '$src/lib/documents/revisions'
+import type { DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
+import type { GraphScopeKey, ProjectedGraph, ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
-import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
+import { patchWorkflowPair } from '$src/lib/yaml/patch-document'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import type {
+  IndexedReferenceOccurrence,
+  ReferenceIndex,
+  ReferenceProducerNamespace,
+} from '$src/lib/references/reference-index'
+import { expandFieldPath } from '$src/lib/validation/scoped-dag-validator'
+import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { CanvasPosition } from './types'
 
 export interface CanvasActionContext {
@@ -17,9 +26,18 @@ export interface CanvasActionContext {
   readonly revision: DocumentRevision
   readonly projection: WorkflowProjection
   readonly contract: AuthoringContract
+  readonly scopeKey: GraphScopeKey
+  readonly graph: ProjectedGraph
+  readonly currentAnalysis?: DocumentAnalysis | undefined
+  readonly referenceIndex?: ReferenceIndex | undefined
   readonly positions: Readonly<Record<string, CanvasPosition>>
+  readonly analyzePrepared?: MutationAnalyzer
   readonly applyMutation?: typeof applyWorkflowMutation
-  readonly getCurrentSnapshot: () => { readonly pair: WorkflowPairText; readonly revision: DocumentRevision } | null
+  readonly getCurrentSnapshot: () => {
+    readonly pair: WorkflowPairText
+    readonly revision: DocumentRevision
+    readonly scopeKey: GraphScopeKey
+  } | null
   readonly commit: (
     pair: WorkflowPairText,
     transaction: YamlTransaction,
@@ -30,7 +48,7 @@ export interface CanvasActionContext {
 }
 
 function rootGraph(projection: WorkflowProjection) {
-  return projection.graphs[0]!
+  return projection.graphs.find((graph) => graph.scope.key === 'root')!
 }
 
 type MutationRejectionCode = Exclude<ApplyWorkflowMutationResult, { ok: true }>['code']
@@ -55,11 +73,30 @@ export type CanvasRejectionCode =
   | 'analysis_failed'
   | MutationRejectionCode
 
+export interface ClipboardDependency {
+  readonly consumer: ScopedNodeIdentity
+  readonly producer: ScopedNodeIdentity
+}
+
+export interface ClipboardResolutionImpact {
+  readonly sourceScopeKey: GraphScopeKey
+  readonly destinationScopeKey: GraphScopeKey
+  readonly dependencies: readonly ClipboardDependency[]
+  readonly references: readonly IndexedReferenceOccurrence[]
+}
+
 export type CanvasActionResult =
+  | {
+      readonly status: 'resolution_required'
+      readonly code: 'resolution_required'
+      readonly message: string
+      readonly clipboardImpact: ClipboardResolutionImpact
+    }
   | {
       readonly status: 'committed'
       readonly pair: WorkflowPairText
       readonly transaction: YamlTransaction
+      readonly identityChanges: CanvasIdentityChanges
       readonly nodeId?: string
       readonly nodeIds?: readonly string[]
     }
@@ -71,7 +108,49 @@ export type CanvasActionResult =
       readonly impact: DeleteImpact
     }
 
+export interface ScopedNodeIdentity {
+  readonly document: 'definition'
+  readonly scopeKey: GraphScopeKey
+  readonly groupId?: string
+  readonly nodeId: string
+}
+
+export interface CanvasActionLease {
+  readonly revision: DocumentRevision
+  readonly scopeKey: GraphScopeKey
+  readonly savedGeneration: number
+  readonly definitionSavedRevision: number
+  readonly definitionDiskHash: string | null
+  readonly companionSavedRevision: number | null
+  readonly companionDiskHash: string | null
+}
+
+export interface CanvasIdentityChanges {
+  readonly nodeRenames: readonly { scopeKey: GraphScopeKey; from: string; to: string }[]
+  readonly scopeRenames: readonly { from: GraphScopeKey; to: GraphScopeKey }[]
+  readonly nodeCopies: readonly { from: ScopedNodeIdentity; to: ScopedNodeIdentity }[]
+  readonly scopeCopies: readonly { from: GraphScopeKey; to: GraphScopeKey }[]
+  readonly removedNodes: readonly ScopedNodeIdentity[]
+  readonly removedScopes: readonly GraphScopeKey[]
+}
+
+export function emptyIdentityChanges(): CanvasIdentityChanges {
+  return { nodeRenames: [], scopeRenames: [], nodeCopies: [], scopeCopies: [], removedNodes: [], removedScopes: [] }
+}
+
+export function nodeIdentity(scopeKey: GraphScopeKey, nodeId: string): ScopedNodeIdentity {
+  return {
+    document: 'definition',
+    scopeKey,
+    ...(scopeKey === 'root' ? {} : { groupId: scopeKey.slice('loop-group:'.length) }),
+    nodeId,
+  }
+}
+
 export interface DependencyImpact {
+  readonly document: 'definition'
+  readonly consumer: ScopedNodeIdentity
+  readonly producer: ScopedNodeIdentity
   readonly key: string
   readonly nodeId: string
   readonly fieldPath: readonly (string | number)[]
@@ -80,6 +159,13 @@ export interface DependencyImpact {
 }
 
 export interface ReferenceImpact {
+  readonly document: 'definition'
+  readonly scopeKey: GraphScopeKey
+  readonly groupId?: string
+  readonly consumer: ScopedNodeIdentity
+  readonly producer: ScopedNodeIdentity
+  readonly namespace: ReferenceProducerNamespace
+  readonly kind: 'ordinary' | 'previous'
   readonly key: string
   readonly nodeId: string
   readonly fieldPath: readonly (string | number)[]
@@ -91,7 +177,20 @@ export interface ReferenceImpact {
   readonly end: number
 }
 
+export interface CompanionImpact {
+  readonly document: 'companion'
+  readonly key: string
+  readonly yamlPath: readonly (string | number)[]
+  readonly value: string
+  readonly target: ScopedNodeIdentity
+}
+
 export interface DeleteImpact {
+  readonly lease: CanvasActionLease
+  readonly targets: readonly ScopedNodeIdentity[]
+  readonly companions: readonly CompanionImpact[]
+  readonly unavailable?: Extract<CanvasActionResult, { status: 'rejected' }>
+
   readonly nodeIds: readonly string[]
   readonly dependencies: readonly DependencyImpact[]
   readonly references: readonly ReferenceImpact[]
@@ -108,19 +207,21 @@ export async function connectNodes(
   sourceId: string,
   targetId: string,
 ): Promise<CanvasActionResult> {
-  const source = rootGraph(context.projection).nodes.find(({ id }) => id === sourceId)
-  const target = rootGraph(context.projection).nodes.find(({ id }) => id === targetId)
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  const source = context.graph.nodes.find(({ id }) => id === sourceId)
+  const target = context.graph.nodes.find(({ id }) => id === targetId)
   if (!source || !target) return reject(context, 'missing_endpoint', 'Both connection endpoints must exist.')
   if (sourceId === targetId) return reject(context, 'self_edge', 'A node cannot depend on itself.')
   if (target.dependsOn.includes(sourceId)) {
     return reject(context, 'duplicate_edge', `${targetId} already depends on ${sourceId}.`)
   }
-  if (hasDependencyPath(context.projection, sourceId, targetId)) {
+  if (hasDependencyPath(context.graph, sourceId, targetId)) {
     return reject(context, 'cycle', `Connecting ${sourceId} to ${targetId} would create a cycle.`)
   }
   return commitMutation(context, {
     type: 'set-dependencies',
-    scopeKey: 'root',
+    scopeKey: context.scopeKey,
     nodeId: targetId,
     dependsOn: [...target.dependsOn, sourceId],
   })
@@ -131,8 +232,10 @@ export async function disconnectNodes(
   sourceId: string,
   targetId: string,
 ): Promise<CanvasActionResult> {
-  const target = rootGraph(context.projection).nodes.find(({ id }) => id === targetId)
-  if (!target || !rootGraph(context.projection).nodes.some(({ id }) => id === sourceId)) {
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  const target = context.graph.nodes.find(({ id }) => id === targetId)
+  if (!target || !context.graph.nodes.some(({ id }) => id === sourceId)) {
     return reject(context, 'missing_endpoint', 'Both connection endpoints must exist.')
   }
   if (!target.dependsOn.includes(sourceId)) {
@@ -140,7 +243,7 @@ export async function disconnectNodes(
   }
   return commitMutation(context, {
     type: 'set-dependencies',
-    scopeKey: 'root',
+    scopeKey: context.scopeKey,
     nodeId: targetId,
     dependsOn: target.dependsOn.filter((dependency) => dependency !== sourceId),
   })
@@ -158,14 +261,19 @@ export async function addNode(
   ) {
     return reject(context, 'descriptor_unavailable', `${descriptor.label} is unavailable in the active profile.`)
   }
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  if (
+    context.scopeKey !== 'root' &&
+    !readScopedDagCapabilities(context.contract).allowedNodeKinds.includes(descriptor.id)
+  )
+    return reject(context, 'profile_disallowed', 'This node kind is not allowed in a loop group body.')
   const fields = graphContractFields(context.contract)
   if (!fields) return reject(context, 'descriptor_unavailable', 'The contract does not publish graph fields.')
-  const after = options.afterNodeId
-    ? rootGraph(context.projection).nodes.find(({ id }) => id === options.afterNodeId)
-    : undefined
+  const after = options.afterNodeId ? context.graph.nodes.find(({ id }) => id === options.afterNodeId) : undefined
   if (options.afterNodeId && !after) return reject(context, 'node_missing', 'The selected node no longer exists.')
 
-  const nodeId = collisionFreeId(descriptor.id, new Set(rootGraph(context.projection).nodes.map(({ id }) => id)))
+  const nodeId = collisionFreeId(descriptor.id, new Set(context.graph.nodes.map(({ id }) => id)))
   const node: Record<string, unknown> = {}
   setPath(node, fields.idPath, nodeId)
   const kindPath = relativeDescriptorPath(descriptor.field_path, fields.nodesPath)
@@ -177,7 +285,7 @@ export async function addNode(
 
   const result = await commitMutation(context, {
     type: 'add-node',
-    scopeKey: 'root',
+    scopeKey: context.scopeKey,
     node,
     ...(after ? { afterNodeId: after.id } : {}),
   })
@@ -192,15 +300,11 @@ export async function addNode(
   return { ...result, nodeId }
 }
 
-export function previewDeleteNodes(
-  projection: WorkflowProjection,
-  nodeIds: readonly string[],
-  contract: AuthoringContract,
-): DeleteImpact {
+function legacyDeleteImpacts(projection: WorkflowProjection, nodeIds: readonly string[], contract: AuthoringContract) {
   const selected = new Set(nodeIds)
   const fields = graphContractFields(contract)
   const nodes = rawNodes(projection, contract)
-  const dependencies: DependencyImpact[] = []
+  const dependencies: Omit<DependencyImpact, 'document' | 'consumer' | 'producer'>[] = []
   for (const [nodeIndex, rawNode] of nodes.entries()) {
     const nodeId = String(valueAtPath(rawNode, fields?.idPath ?? ['id']))
     if (selected.has(nodeId)) continue
@@ -224,7 +328,10 @@ export function previewDeleteNodes(
     }
   }
 
-  const references: ReferenceImpact[] = []
+  const references: Omit<
+    ReferenceImpact,
+    'document' | 'scopeKey' | 'groupId' | 'consumer' | 'producer' | 'namespace' | 'kind'
+  >[] = []
   for (const [nodeIndex, rawNode] of nodes.entries()) {
     const nodeId = String(valueAtPath(rawNode, fields?.idPath ?? ['id']))
     if (selected.has(nodeId)) continue
@@ -261,25 +368,214 @@ export function previewDeleteNodes(
   return { nodeIds: [...selected], dependencies, references }
 }
 
-export async function deleteNodes(
+export function occurrenceConsumer(occurrence: IndexedReferenceOccurrence): ScopedNodeIdentity {
+  return nodeIdentity(occurrence.scope === 'group-control' ? 'root' : occurrence.scopeKey, occurrence.consumerId)
+}
+
+export function identitySelected(
   context: CanvasActionContext,
-  nodeIds: readonly string[],
-): Promise<CanvasActionResult> {
-  const selected = [...new Set(nodeIds)]
+  selected: ReadonlySet<string>,
+  identity: ScopedNodeIdentity,
+): boolean {
+  return (
+    (identity.scopeKey === context.scopeKey && selected.has(identity.nodeId)) ||
+    (context.scopeKey === 'root' && identity.groupId !== undefined && selected.has(identity.groupId))
+  )
+}
+
+export function actionLease(context: CanvasActionContext): CanvasActionLease {
+  return {
+    revision: { ...context.revision },
+    scopeKey: context.scopeKey,
+    savedGeneration: context.pair.savedGeneration,
+    definitionSavedRevision: context.pair.definition.savedRevision,
+    definitionDiskHash: context.pair.definition.diskHash,
+    companionSavedRevision: context.pair.companion?.savedRevision ?? null,
+    companionDiskHash: context.pair.companion?.diskHash ?? null,
+  }
+}
+
+function leaseIsCurrent(context: CanvasActionContext, lease: CanvasActionLease): boolean {
+  const current = context.getCurrentSnapshot()
+  return (
+    !!current &&
+    current.scopeKey === lease.scopeKey &&
+    context.scopeKey === lease.scopeKey &&
+    isAnalysisCurrent(current.revision, lease.revision) &&
+    isAnalysisCurrent(context.revision, lease.revision) &&
+    current.pair.workflowId === lease.revision.workflowId &&
+    current.pair.generation === lease.revision.pairGeneration &&
+    current.pair.definition.path === lease.revision.definitionPath &&
+    current.pair.definition.revision === lease.revision.definitionRevision &&
+    (current.pair.companion?.path ?? null) === lease.revision.companionPath &&
+    (current.pair.companion?.revision ?? null) === lease.revision.companionRevision &&
+    current.pair.savedGeneration === lease.savedGeneration &&
+    current.pair.definition.savedRevision === lease.definitionSavedRevision &&
+    current.pair.definition.diskHash === lease.definitionDiskHash &&
+    (current.pair.companion?.savedRevision ?? null) === lease.companionSavedRevision &&
+    (current.pair.companion?.diskHash ?? null) === lease.companionDiskHash
+  )
+}
+
+export function validateActionContext(
+  context: CanvasActionContext,
+): Extract<CanvasActionResult, { status: 'rejected' }> | null {
+  if (!leaseIsCurrent(context, actionLease(context)))
+    return reject(context, 'stale_document', 'The workflow or graph scope changed. Review the current YAML and retry.')
+  if (
+    context.graph.scope.key !== context.scopeKey ||
+    context.projection.graphs.find((graph) => graph.scope.key === context.scopeKey) !== context.graph
+  )
+    return reject(context, 'mutation_stale_scope', 'The selected graph scope is no longer current.')
+  if (
+    context.contract.contract_reader_version === 3 &&
+    (!context.currentAnalysis ||
+      !context.referenceIndex ||
+      context.currentAnalysis.referenceIndex !== context.referenceIndex ||
+      context.currentAnalysis.projection !== context.projection ||
+      !isAnalysisCurrent(context.revision, context.currentAnalysis) ||
+      context.currentAnalysis.contractDigest !== context.contract.contract_digest)
+  )
+    return reject(context, 'analysis_unavailable', 'Canvas authoring requires the exact current reference analysis.')
+  return null
+}
+
+export function previewDeleteNodes(context: CanvasActionContext, nodeIds: readonly string[]): DeleteImpact {
+  const selected = new Set(nodeIds)
+  const base = {
+    lease: actionLease(context),
+    targets: [...selected].map((id) => nodeIdentity(context.scopeKey, id)),
+    nodeIds: [...selected],
+  }
+  const unavailable = validateActionContext(context)
+  if (unavailable) return { ...base, dependencies: [], references: [], companions: [], unavailable }
+  if (context.contract.contract_reader_version !== 3) {
+    const legacy = legacyDeleteImpacts(context.projection, nodeIds, context.contract)
+    return {
+      ...base,
+      companions: [],
+      dependencies: legacy.dependencies.map((impact) => ({
+        ...impact,
+        document: 'definition',
+        consumer: nodeIdentity(context.scopeKey, impact.nodeId),
+        producer: nodeIdentity(context.scopeKey, impact.dependencyId),
+      })),
+      references: legacy.references.map((impact) => ({
+        ...impact,
+        document: 'definition',
+        scopeKey: context.scopeKey,
+        consumer: nodeIdentity(context.scopeKey, impact.nodeId),
+        producer: nodeIdentity(context.scopeKey, impact.referencedId),
+        namespace: 'root',
+        kind: 'ordinary',
+      })),
+    }
+  }
+  const dependencies: DependencyImpact[] = []
+  const fields = graphContractFields(context.contract)!
+  context.graph.nodes.forEach((node, index) => {
+    if (selected.has(node.id)) return
+    node.dependsOn.forEach((dependencyId, dependencyIndex) => {
+      if (!selected.has(dependencyId)) return
+      const yamlPath = [...context.graph.sourcePath, index, ...fields.dependenciesPath, dependencyIndex]
+      dependencies.push({
+        key: JSON.stringify(['definition', context.scopeKey, yamlPath, dependencyId]),
+        document: 'definition',
+        consumer: nodeIdentity(context.scopeKey, node.id),
+        producer: nodeIdentity(context.scopeKey, dependencyId),
+        nodeId: node.id,
+        dependencyId,
+        fieldPath: fields.dependenciesPath,
+        yamlPath,
+      })
+    })
+  })
+  const references: ReferenceImpact[] = []
+  for (const occurrence of context.referenceIndex!.occurrences) {
+    const consumer = occurrenceConsumer(occurrence)
+    if (identitySelected(context, selected, consumer)) continue
+    occurrence.references.forEach((token, index) => {
+      const resolved = token.resolvedProducer
+      if (!resolved) return
+      const producer = nodeIdentity(resolved.scopeKey, resolved.nodeId)
+      if (!identitySelected(context, selected, producer)) return
+      references.push({
+        key: JSON.stringify([
+          occurrence.document,
+          occurrence.scopeKey,
+          occurrence.valuePath,
+          producer,
+          token.start,
+          token.end,
+        ]),
+        document: 'definition',
+        scopeKey: occurrence.scopeKey,
+        ...(occurrence.groupId ? { groupId: occurrence.groupId } : {}),
+        consumer,
+        producer,
+        namespace: resolved.namespace,
+        kind: token.kind,
+        nodeId: occurrence.consumerId,
+        fieldPath: occurrence.valuePath.slice(occurrence.consumerPath.split('/').filter(Boolean).length),
+        yamlPath: occurrence.valuePath,
+        value: occurrence.authoredText,
+        referencedId: resolved.nodeId,
+        occurrence: index,
+        start: token.start,
+        end: token.end,
+      })
+    })
+  }
+  const companions: CompanionImpact[] = []
+  if (context.pair.companion) {
+    const parsed = parseWorkflowYaml(context.pair.companion.text, {
+      document: 'companion',
+      maxBytes: context.contract.limits.max_document_bytes,
+    })
+    const value: unknown = parsed.parsed?.document.toJS({ maxAliasCount: 1000 })
+    for (const field of readScopedDagCapabilities(context.contract).referenceSemantics.companionNodePaths.fieldPaths) {
+      for (const occurrence of expandFieldPath(value, field.startsWith('sidecar.') ? field.slice(8) : field)) {
+        if (typeof occurrence.value !== 'string') continue
+        const [group, child] = occurrence.value.split('/')
+        const target = child ? nodeIdentity(`loop-group:${group}`, child) : nodeIdentity('root', group!)
+        if (identitySelected(context, selected, target))
+          companions.push({
+            document: 'companion',
+            key: JSON.stringify(['companion', occurrence.path, target]),
+            yamlPath: occurrence.path,
+            value: occurrence.value,
+            target,
+          })
+      }
+    }
+  }
+  return { ...base, dependencies, references, companions }
+}
+
+export async function deleteNodes(context: CanvasActionContext, impact: DeleteImpact): Promise<CanvasActionResult> {
+  if (!leaseIsCurrent(context, impact.lease))
+    return reject(
+      context,
+      'stale_document',
+      'The workflow changed after the delete preview. Review the current YAML and retry.',
+    )
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  const selected = [...new Set(impact.nodeIds)]
   if (selected.length === 0) return reject(context, 'selection_empty', 'Select at least one node to delete.')
-  if (selected.some((id) => !rootGraph(context.projection).nodes.some((node) => node.id === id))) {
+  if (selected.some((id) => !context.graph.nodes.some((node) => node.id === id))) {
     return reject(context, 'node_missing', 'A selected node no longer exists.')
   }
-  const impact = previewDeleteNodes(context.projection, selected, context.contract)
-  if (impact.references.length > 0) {
+  const currentImpact = impact
+  if (currentImpact.references.length > 0 || currentImpact.companions.length > 0) {
     const message = 'Resolve the listed output references before deleting the selected nodes.'
     context.announce(message)
-    return { status: 'resolution_required', code: 'resolution_required', message, impact }
+    return { status: 'resolution_required', code: 'resolution_required', message, impact: currentImpact }
   }
 
   const mutation: WorkflowMutation =
     selected.length === 1
-      ? { type: 'delete-node', scopeKey: 'root', nodeId: selected[0]! }
+      ? { type: 'delete-node', scopeKey: context.scopeKey, nodeId: selected[0]! }
       : { type: 'replace-document', document: 'definition', text: context.pair.definition.text }
   const result =
     selected.length === 1
@@ -287,31 +583,68 @@ export async function deleteNodes(
       : await prepareAndCommitMultipleDeletes(context, selected)
   if (result.status === 'committed') {
     await context.commitPositions(Object.fromEntries(selected.map((id) => [id, null])))
+    return {
+      ...result,
+      identityChanges: {
+        ...emptyIdentityChanges(),
+        removedNodes: currentImpact.targets,
+        removedScopes:
+          context.scopeKey === 'root'
+            ? context.projection.graphs
+                .filter((graph) => graph.scope.groupId && selected.includes(graph.scope.groupId))
+                .map((graph) => graph.scope.key)
+            : [],
+      },
+    }
   }
   return result
 }
 
 export async function renameNode(context: CanvasActionContext, from: string, to: string): Promise<CanvasActionResult> {
-  if (!rootGraph(context.projection).nodes.some(({ id }) => id === from)) {
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
+  if (!context.graph.nodes.some(({ id }) => id === from)) {
     return reject(context, 'node_missing', `Node ${from} no longer exists.`)
   }
-  if (rootGraph(context.projection).nodes.some(({ id }) => id === to)) {
+  if (context.graph.nodes.some(({ id }) => id === to)) {
     return reject(context, 'node_id_duplicate', `Node ${to} already exists.`)
   }
-  const result = await commitMutation(context, { type: 'rename-node', scopeKey: 'root', from, to })
+  const result = await commitMutation(context, { type: 'rename-node', scopeKey: context.scopeKey, from, to })
   if (result.status === 'committed' && context.positions[from]) {
     await context.commitPositions({ [from]: null, [to]: context.positions[from] })
   }
-  return result.status === 'committed' ? { ...result, nodeId: to } : result
+  return result.status === 'committed'
+    ? {
+        ...result,
+        nodeId: to,
+        identityChanges: {
+          ...emptyIdentityChanges(),
+          nodeRenames: [{ scopeKey: context.scopeKey, from, to }],
+          scopeRenames:
+            context.scopeKey === 'root' &&
+            context.projection.graphs.some((graph) => graph.scope.key === `loop-group:${from}`)
+              ? [{ from: `loop-group:${from}`, to: `loop-group:${to}` }]
+              : [],
+        },
+      }
+    : result
 }
 
 export async function commitMutation(
   context: CanvasActionContext,
   mutation: WorkflowMutation,
 ): Promise<CanvasActionResult> {
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
   let result: ApplyWorkflowMutationResult
   try {
-    result = await (context.applyMutation ?? applyWorkflowMutation)(context.pair, mutation, context.contract)
+    result = await (context.applyMutation ?? applyWorkflowMutation)(
+      context.pair,
+      mutation,
+      context.contract,
+      undefined,
+      context.currentAnalysis,
+    )
   } catch (error) {
     const failure = analysisFailure(error)
     context.announce(failure.message)
@@ -325,6 +658,7 @@ export async function commitMutation(
   const current = context.getCurrentSnapshot()
   if (
     !current ||
+    current.scopeKey !== context.scopeKey ||
     !isAnalysisCurrent(current.revision, context.revision) ||
     !transactionBaseIsCurrent(current.pair, context.pair, result.transaction) ||
     !persistenceBaseIsCurrent(current.pair, context.pair)
@@ -334,7 +668,12 @@ export async function commitMutation(
     return { status: 'rejected', code: 'stale_document', message }
   }
   await context.commit(result.pair, result.transaction, result.analysis)
-  return { status: 'committed', pair: result.pair, transaction: result.transaction }
+  return {
+    status: 'committed',
+    pair: result.pair,
+    transaction: result.transaction,
+    identityChanges: emptyIdentityChanges(),
+  }
 }
 
 function persistenceBaseIsCurrent(pair: WorkflowPairText, originalPair: WorkflowPairText): boolean {
@@ -397,38 +736,71 @@ function analysisFailure(error: unknown): { readonly code: CanvasRejectionCode; 
 export async function commitPreparedDefinition(
   context: CanvasActionContext,
   text: string,
+  allowEmptyBody = false,
 ): Promise<CanvasActionResult> {
+  const unavailable = validateActionContext(context)
+  if (unavailable) return unavailable
   const pair = context.pair
-  const analysis = await analyzeWorkflowPair(
-    {
-      type: 'analyze',
-      requestId: 'canvas-prepared-mutation',
-      workflowId: pair.workflowId,
-      pairGeneration: pair.generation,
-      definition: {
-        path: pair.definition.path,
-        text,
-        revision: pair.definition.revision + 1,
-      },
-      companion: pair.companion
-        ? {
-            path: pair.companion.path,
-            text: pair.companion.text,
-            revision: pair.companion.revision,
-          }
-        : null,
-      profile: context.contract.profile,
-      contractDigest: context.contract.contract_digest,
-      reason: 'explicit-validate',
-    },
-    context.contract,
-  )
-  if (!analysis.structurallyValid) {
+  const proposedPair = editDocumentText(pair, 'definition', text)
+  let analysis: DocumentAnalysis
+  try {
+    analysis = context.analyzePrepared
+      ? await context.analyzePrepared(proposedPair, context.contract)
+      : await analyzeWorkflowPair(
+          {
+            type: 'analyze',
+            requestId: 'canvas-prepared-mutation',
+            workflowId: pair.workflowId,
+            pairGeneration: pair.generation,
+            definition: {
+              path: pair.definition.path,
+              text,
+              revision: proposedPair.definition.revision,
+            },
+            companion: pair.companion
+              ? {
+                  path: pair.companion.path,
+                  text: pair.companion.text,
+                  revision: pair.companion.revision,
+                }
+              : null,
+            profile: context.contract.profile,
+            contractDigest: context.contract.contract_digest,
+            reason: 'explicit-validate',
+          },
+          context.contract,
+        )
+  } catch (error) {
+    const failure = analysisFailure(error)
+    return reject(context, failure.code, failure.message)
+  }
+  if (!analysis.structurallyValid && !(allowEmptyBody && context.scopeKey !== 'root' && analysis.visuallyAuthorable)) {
     const message = 'The proposed canvas mutation would make the workflow structurally invalid.'
     context.announce(message)
     return { status: 'rejected', code: 'mutation_invalid_workflow', message }
   }
-  return commitMutation(context, { type: 'replace-document', document: 'definition', text })
+  if (!isAnalysisCurrent(createDocumentRevision(proposedPair, context.contract.contract_digest), analysis))
+    return reject(
+      context,
+      'analysis_unavailable',
+      'The proposed canvas analysis does not match the prepared workflow revision.',
+    )
+  return commitMutation(
+    {
+      ...context,
+      applyMutation: async (...args) => {
+        const result = await (context.applyMutation ?? applyWorkflowMutation)(...args)
+        return result.ok
+          ? {
+              ...result,
+              analysis,
+              transaction: { ...result.transaction, selection: { document: 'definition', scopeKey: context.scopeKey } },
+            }
+          : result
+      },
+    },
+    { type: 'replace-document', document: 'definition', text },
+  )
 }
 
 async function prepareAndCommitMultipleDeletes(
@@ -436,30 +808,36 @@ async function prepareAndCommitMultipleDeletes(
   selected: readonly string[],
 ): Promise<CanvasActionResult> {
   let text = context.pair.definition.text
-  const pending = new Set(selected)
-  const deletionContract: AuthoringContract = {
-    ...context.contract,
-    semantic_rules: context.contract.semantic_rules.filter((rule) => !isReferenceRule(rule)),
-  }
-  while (pending.size > 0) {
-    let removed = false
-    for (const nodeId of pending) {
-      const patched = patchWorkflowDocument(text, { type: 'delete-node', scopeKey: 'root', nodeId }, deletionContract)
-      if (patched.ok) {
-        text = patched.text
-        pending.delete(nodeId)
-        removed = true
-        break
+  const selectedSet = new Set(selected)
+  const index: ReferenceIndex = context.referenceIndex
+    ? {
+        ...context.referenceIndex,
+        occurrences: context.referenceIndex.occurrences.filter(
+          (occurrence) => !identitySelected(context, selectedSet, occurrenceConsumer(occurrence)),
+        ),
       }
-      context.announce(patched.message)
-      return { status: 'rejected', code: patched.code, message: patched.message }
-    }
-    if (removed) continue
-    const message = 'The selected nodes could not be deleted as one transaction.'
-    context.announce(message)
-    return { status: 'rejected', code: 'mutation_node_missing', message }
+    : {
+        occurrences: [],
+        metrics: {
+          indexBuilds: 1,
+          definitionTraversals: 1,
+          graphVisits: 0,
+          nodeVisits: 0,
+          traversalGroupVisits: 0,
+          occurrenceScans: 0,
+        },
+      }
+  for (const nodeId of selected) {
+    const patched = patchWorkflowPair(
+      { definition: text, companion: context.pair.companion?.text ?? null },
+      { type: 'delete-node', scopeKey: context.scopeKey, nodeId },
+      context.contract,
+      index,
+    )
+    if (!patched.ok) return reject(context, patched.code, patched.message)
+    text = patched.texts.definition
   }
-  return commitPreparedDefinition(context, text)
+  return commitPreparedDefinition(context, text, context.scopeKey !== 'root')
 }
 
 export function graphContractFields(contract: AuthoringContract): GraphContractFields | null {
@@ -478,20 +856,29 @@ export function graphContractFields(contract: AuthoringContract): GraphContractF
   return null
 }
 
-export function rawNodes(projection: WorkflowProjection, contract: AuthoringContract): Record<string, unknown>[] {
+export function rawNodes(
+  projection: WorkflowProjection,
+  contract: AuthoringContract,
+  scopeKey: GraphScopeKey = 'root',
+): Record<string, unknown>[] {
   const fields = graphContractFields(contract)
   if (!fields) return []
-  const value = valueAtPath(projection.definition, fields.nodesPath)
+  const graph = projection.graphs.find((graph) => graph.scope.key === scopeKey)
+  const value = graph ? valueAtPath(projection.definition, graph.sourcePath) : undefined
   return Array.isArray(value) ? value.filter(isRecord).map((node) => structuredClone(node)) : []
 }
 
-function reject(context: CanvasActionContext, code: CanvasRejectionCode, message: string): CanvasActionResult {
+function reject(
+  context: CanvasActionContext,
+  code: CanvasRejectionCode,
+  message: string,
+): Extract<CanvasActionResult, { status: 'rejected' }> {
   context.announce(message)
   return { status: 'rejected', code, message }
 }
 
-function hasDependencyPath(projection: WorkflowProjection, from: string, to: string): boolean {
-  const nodes = new Map(rootGraph(projection).nodes.map((node) => [node.id, node]))
+function hasDependencyPath(graph: ProjectedGraph, from: string, to: string): boolean {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
   const seen = new Set<string>()
   const pending = [from]
   while (pending.length > 0) {
@@ -628,23 +1015,31 @@ function pathTokens(value: unknown): string[] | null {
   return value.replaceAll('[]', '').replace(/^\//, '').split(/[./]/).filter(Boolean)
 }
 
-export function valueAtPath(value: unknown, path: readonly string[]): unknown {
+export function valueAtPath(value: unknown, path: readonly (string | number)[]): unknown {
   let current = value
   for (const segment of path) {
-    if (!isRecord(current)) return undefined
-    current = current[segment]
+    if (typeof segment === 'number') {
+      if (!Array.isArray(current)) return undefined
+      current = current[segment]
+    } else {
+      if (!isRecord(current)) return undefined
+      current = current[segment]
+    }
   }
   return current
 }
 
-export function setPath(target: Record<string, unknown>, path: readonly string[], value: unknown): void {
-  let current = target
+export function setPath(target: Record<string, unknown>, path: readonly (string | number)[], value: unknown): void {
+  let current: Record<string | number, unknown> = target
   for (const segment of path.slice(0, -1)) {
     const existing = current[segment]
-    current = isRecord(existing) ? existing : ((current[segment] = {}) as Record<string, unknown>)
+    current =
+      existing !== null && typeof existing === 'object'
+        ? (existing as Record<string | number, unknown>)
+        : ((current[segment] = {}) as Record<string, unknown>)
   }
   const key = path.at(-1)
-  if (key) current[key] = value
+  if (key !== undefined) current[key] = value
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,3 +1,4 @@
+import type { AuthoringContract } from '$src/lib/contract/types'
 import type { GraphScopeKey } from '$src/lib/projection/types'
 import type { DocumentKind } from '$src/lib/documents/types'
 
@@ -14,6 +15,14 @@ export type WorkflowMutation =
       readonly scopeKey: GraphScopeKey
       readonly node: Readonly<Record<string, unknown>>
       readonly afterNodeId?: string
+      /** Immutable clipboard source, reparsed and authenticated before CST transplantation. */
+      readonly copiedSource?: {
+        readonly text: string
+        readonly scopeKey: GraphScopeKey
+        readonly nodeId: string
+        readonly contract: AuthoringContract
+        readonly originalValue: Readonly<Record<string, unknown>>
+      }
     }
   | { readonly type: 'delete-node'; readonly scopeKey: GraphScopeKey; readonly nodeId: string }
   | { readonly type: 'rename-node'; readonly scopeKey: GraphScopeKey; readonly from: string; readonly to: string }

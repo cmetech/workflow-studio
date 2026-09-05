@@ -1,6 +1,6 @@
 <script lang="ts">
   import ModalShell from '$src/app/ModalShell.svelte'
-  import type { DeleteImpact } from './canvas-actions'
+  import type { DeleteImpact, ScopedNodeIdentity } from './canvas-actions'
 
   interface Props {
     impact: DeleteImpact
@@ -10,7 +10,13 @@
   }
 
   let { impact, onConfirm, onCancel, opener }: Props = $props()
-  const requiresResolution = $derived(impact.references.length > 0)
+  const requiresResolution = $derived(
+    impact.references.length > 0 || impact.companions.length > 0 || !!impact.unavailable,
+  )
+
+  function label(identity: ScopedNodeIdentity): string {
+    return identity.groupId ? `${identity.groupId} / ${identity.nodeId}` : identity.nodeId
+  }
 
   function cancel(): void {
     onCancel?.()
@@ -34,7 +40,7 @@
     <h2 id="delete-impact-title">Delete selected nodes</h2>
     <p>The following nodes will be removed:</p>
     <ul class="node-list">
-      {#each impact.nodeIds as nodeId (nodeId)}<li><code>{nodeId}</code></li>{/each}
+      {#each impact.targets as target (JSON.stringify(target))}<li><code>{label(target)}</code></li>{/each}
     </ul>
 
     {#if impact.dependencies.length > 0}
@@ -43,7 +49,7 @@
         <ul>
           {#each impact.dependencies as dependency (dependency.key)}
             <li>
-              <strong>{dependency.nodeId} · {dependency.fieldPath.join('.')}</strong> removes
+              <strong>{label(dependency.consumer)} · {dependency.fieldPath.join('.')}</strong> removes
               <code>{dependency.dependencyId}</code>
             </li>
           {/each}
@@ -51,13 +57,24 @@
       </section>
     {/if}
 
+    {#if impact.companions.length > 0}
+      <section aria-labelledby="companion-impact-title">
+        <h3 id="companion-impact-title">Companion references requiring resolution</h3>
+        <ul>
+          {#each impact.companions as companion (companion.key)}
+            <li><strong>Companion · {companion.yamlPath.join('.')}</strong><code>{companion.value}</code></li>
+          {/each}
+        </ul>
+        <p role="status">Resolve every companion reference in YAML before deleting these nodes.</p>
+      </section>
+    {/if}
     {#if impact.references.length > 0}
       <section aria-labelledby="reference-impact-title">
         <h3 id="reference-impact-title">References requiring resolution</h3>
         <ul>
           {#each impact.references as reference (reference.key)}
             <li>
-              <strong>{reference.nodeId} · {reference.fieldPath.join('.')}</strong>
+              <strong>{label(reference.consumer)} · {reference.fieldPath.join('.')}</strong>
               <code>{reference.value}</code>
             </li>
           {/each}

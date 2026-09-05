@@ -217,10 +217,14 @@ function actionContext(text = source) {
     pair: current,
     revision: currentRevision,
     projection: projection(text),
+    scopeKey: 'root',
+    get graph() {
+      return this.projection.graphs[0]!
+    },
     contract,
     positions: { root: { x: 0, y: 0 }, middle: { x: 320, y: 0 }, leaf: { x: 640, y: 0 } },
     applyMutation: apply,
-    getCurrentSnapshot: () => ({ pair: current, revision: currentRevision }),
+    getCurrentSnapshot: () => ({ pair: current, revision: currentRevision, scopeKey: 'root' }),
     commit,
     commitPositions,
     announce,
@@ -274,6 +278,7 @@ describe('canvas YAML actions', () => {
       pair: base,
       revision: createDocumentRevision(base, contract.contract_digest),
       getCurrentSnapshot: () => ({
+        scopeKey: 'root' as const,
         pair: activePair,
         revision: createDocumentRevision(activePair, contract.contract_digest),
       }),
@@ -311,6 +316,7 @@ describe('canvas YAML actions', () => {
       pair: base,
       revision: createDocumentRevision(base, contract.contract_digest),
       getCurrentSnapshot: () => ({
+        scopeKey: 'root' as const,
         pair: activePair,
         revision: createDocumentRevision(activePair, contract.contract_digest),
       }),
@@ -348,7 +354,7 @@ describe('canvas YAML actions', () => {
       ...fixture.context,
       pair: base,
       revision: baseRevision,
-      getCurrentSnapshot: () => ({ pair: base, revision: activeRevision }),
+      getCurrentSnapshot: () => ({ pair: base, revision: activeRevision, scopeKey: 'root' as const }),
       applyMutation: vi.fn(() => analysis.promise),
       commit: vi.fn(),
     }
@@ -382,7 +388,7 @@ describe('canvas YAML actions', () => {
       ...fixture.context,
       pair: base,
       revision: baseRevision,
-      getCurrentSnapshot: () => ({ pair: activePair, revision: baseRevision }),
+      getCurrentSnapshot: () => ({ pair: activePair, revision: baseRevision, scopeKey: 'root' as const }),
       applyMutation: vi.fn(() => analysis.promise),
       commit: vi.fn((next: WorkflowPairText) => {
         activePair = next
@@ -450,6 +456,7 @@ describe('canvas YAML actions', () => {
       pair: base,
       revision: createDocumentRevision(base, contract.contract_digest),
       getCurrentSnapshot: () => ({
+        scopeKey: 'root' as const,
         pair: activePair,
         revision: createDocumentRevision(activePair, contract.contract_digest),
       }),
@@ -573,12 +580,31 @@ describe('canvas YAML actions', () => {
         },
       }
       const productionRevision = createDocumentRevision(productionPair, productionContract.contract_digest)
+      const productionAnalysis = await analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: 'production-context',
+          workflowId: productionPair.workflowId,
+          pairGeneration: productionPair.generation,
+          definition: productionPair.definition,
+          companion: productionPair.companion,
+          profile: productionContract.profile,
+          contractDigest: productionContract.contract_digest,
+          reason: 'explicit-validate',
+        },
+        productionContract,
+      )
+      const productionProjection = productionAnalysis.projection as WorkflowProjection
       const productionContext: CanvasActionContext = {
         ...fixture.context,
         contract: productionContract,
+        projection: productionProjection,
+        graph: productionProjection.graphs[0]!,
+        currentAnalysis: productionAnalysis,
+        referenceIndex: productionAnalysis.referenceIndex,
         pair: productionPair,
         revision: productionRevision,
-        getCurrentSnapshot: () => ({ pair: productionPair, revision: productionRevision }),
+        getCurrentSnapshot: () => ({ pair: productionPair, revision: productionRevision, scopeKey: 'root' }),
       }
 
       const result = await addNode(productionContext, descriptor, { viewportCenter: { x: 900, y: 420 } })
@@ -644,7 +670,7 @@ describe('canvas YAML actions', () => {
   it('previews exact dependency/reference impacts and requires resolution before deleting referenced YAML', async () => {
     const fixture = actionContext()
 
-    expect(previewDeleteNodes(fixture.context.projection, ['middle'], contract)).toEqual({
+    expect(previewDeleteNodes(fixture.context, ['middle'])).toMatchObject({
       nodeIds: ['middle'],
       dependencies: [
         {
@@ -670,7 +696,7 @@ describe('canvas YAML actions', () => {
       ],
     })
 
-    const result = await deleteNodes(fixture.context, ['middle'])
+    const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['middle']))
     expect(result).toMatchObject({ status: 'resolution_required' })
     expect(fixture.apply).not.toHaveBeenCalled()
     expect(fixture.commit).not.toHaveBeenCalled()
@@ -710,9 +736,9 @@ describe('canvas YAML actions', () => {
       '    prompt: leaf\n    settings:\n      messages:\n        - "$middle.output then $middle.output"',
     )
 
-    const impact = previewDeleteNodes(projection(text), ['middle'], nestedContract)
+    const impact = previewDeleteNodes({ ...actionContext(text).context, contract: nestedContract }, ['middle'])
 
-    expect(impact.references).toEqual([
+    expect(impact.references).toMatchObject([
       {
         key: 'reference:/nodes/2/settings/messages/0:0-14',
         nodeId: 'leaf',
@@ -737,7 +763,10 @@ describe('canvas YAML actions', () => {
       },
     ])
     const fixture = actionContext(text)
-    const result = await deleteNodes({ ...fixture.context, contract: nestedContract }, ['middle'])
+    const result = await deleteNodes(
+      { ...fixture.context, contract: nestedContract },
+      previewDeleteNodes({ ...fixture.context, contract: nestedContract }, ['middle']),
+    )
     expect(result).toMatchObject({ status: 'resolution_required', impact: { references: impact.references } })
     expect(fixture.apply).not.toHaveBeenCalled()
     expect(fixture.commit).not.toHaveBeenCalled()
@@ -756,7 +785,7 @@ nodes:
 `
     const fixture = actionContext(text)
 
-    const result = await deleteNodes(fixture.context, ['left', 'right'])
+    const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['left', 'right']))
 
     expect(result).toMatchObject({ status: 'committed' })
     expect(fixture.apply).toHaveBeenCalledOnce()
@@ -767,7 +796,7 @@ nodes:
   it('deletes an unreferenced node and its exact downstream dependency in one transaction', async () => {
     const fixture = actionContext(source.replace('prompt: "Use $middle.output"', 'prompt: leaf'))
 
-    const result = await deleteNodes(fixture.context, ['middle'])
+    const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['middle']))
 
     expect(result).toMatchObject({ status: 'committed' })
     expect(fixture.apply).toHaveBeenCalledOnce()
@@ -782,7 +811,7 @@ nodes:
       .replace('prompt: "Use $middle.output"', 'prompt: |\n      leaf exact')
     const fixture = actionContext(text)
 
-    const result = await deleteNodes(fixture.context, ['middle', 'leaf'])
+    const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['middle', 'leaf']))
 
     expect(result).toMatchObject({ status: 'committed' })
     expect(fixture.current().definition.text).toContain('  # root lead\n  - id: root\n    command: "root" # inline')
@@ -831,4 +860,326 @@ nodes:
     const invalid = await renameNode({ ...invalidFixture.context, contract: unicodeContract }, 'café', 'bad/id')
     expect(invalid).toMatchObject({ status: 'rejected', code: 'mutation_invalid_workflow' })
   })
+})
+
+const scopedSource = `name: Scoped actions
+description: Scoped action evidence
+nodes:
+  - id: child
+    bash: echo root
+  - id: repeat
+    loop_group:
+      max_iterations: 2
+      until: 'false'
+      until_bash: 'test "$child.output" = done'
+      nodes:
+        - id: child
+          bash: echo child
+        - id: consumer
+          depends_on: [child]
+          bash: |
+            echo "😀 $child.output $LOOP_PREV.child.output"
+            echo \\$child.output # $child.output
+  - id: sibling
+    loop_group:
+      max_iterations: 2
+      until: 'false'
+      nodes:
+        - id: child
+          bash: echo sibling
+  - id: finish
+    depends_on: [repeat]
+    bash: echo finish
+`
+
+async function scopedContext(
+  scopeKey: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:repeat',
+  text = scopedSource,
+  companion = 'language_compatibility: archon-2026-07\noutward_action_nodes: [repeat/child, sibling/child]\n',
+) {
+  const contracts = await loadBundledAuthoringContracts()
+  const activeContract = contracts.find((candidate) => candidate.profile === 'archon-2026-07')!
+  let current = {
+    ...pair(text),
+    companion: {
+      ...pair(text).definition,
+      id: 'companion',
+      kind: 'companion' as const,
+      path: 'actions.hermes.yaml',
+      text: companion,
+    },
+  }
+  let scope = scopeKey
+  const analysis = await analyzeWorkflowPair(
+    {
+      type: 'analyze',
+      requestId: 'scoped-action',
+      workflowId: current.workflowId,
+      pairGeneration: current.generation,
+      definition: current.definition,
+      companion: current.companion,
+      profile: activeContract.profile,
+      contractDigest: activeContract.contract_digest,
+      reason: 'explicit-validate',
+    },
+    activeContract,
+  )
+  expect(analysis.structurallyValid, JSON.stringify(analysis.issues)).toBe(true)
+  const projection = analysis.projection as WorkflowProjection
+  const context = {
+    pair: current,
+    revision: createDocumentRevision(current, activeContract.contract_digest),
+    projection,
+    graph: projection.graphs.find((graph) => graph.scope.key === scopeKey)!,
+    scopeKey,
+    currentAnalysis: analysis,
+    referenceIndex: analysis.referenceIndex,
+    contract: activeContract,
+    positions: { child: { x: 10, y: 20 } },
+    getCurrentSnapshot: () => ({
+      pair: current,
+      revision: createDocumentRevision(current, activeContract.contract_digest),
+      scopeKey: scope,
+    }),
+    commit: vi.fn((next: WorkflowPairText) => {
+      current = next as typeof current
+    }),
+    commitPositions: vi.fn(),
+    announce: vi.fn(),
+  }
+  return {
+    context,
+    current: () => current,
+    replace: (next: WorkflowPairText) => {
+      current = next as typeof current
+    },
+    scope: (next: typeof scope) => {
+      scope = next
+    },
+  }
+}
+
+describe('scoped indexed canvas actions', () => {
+  it('renames only the resolved body producer, previous tokens, group control and companion identity atomically', async () => {
+    const fixture = await scopedContext()
+    const result = await renameNode(fixture.context, 'child', 'renamed')
+    expect(result).toMatchObject({
+      status: 'committed',
+      identityChanges: { nodeRenames: [{ scopeKey: 'loop-group:repeat', from: 'child', to: 'renamed' }] },
+    })
+    expect(fixture.current().definition.text).toContain('😀 $renamed.output $LOOP_PREV.renamed.output')
+    expect(fixture.current().definition.text).toContain('test "$renamed.output"')
+    expect(fixture.current().definition.text).toContain('echo \\$child.output # $child.output')
+    expect(fixture.current().definition.text).toContain('- id: child\n    bash: echo root')
+    expect(fixture.current().companion?.text).toContain('[repeat/renamed, sibling/child]')
+    expect(fixture.context.commit).toHaveBeenCalledOnce()
+    if (result.status === 'committed')
+      expect(result.transaction.before.companion).toBe(fixture.context.pair.companion.text)
+  })
+
+  it('previews local, previous, control and companion impacts with unambiguous identities and code-point spans', async () => {
+    const { context } = await scopedContext()
+    const impact = previewDeleteNodes(context, ['child'])
+    expect(impact.dependencies).toHaveLength(1)
+    expect(impact.references.map((reference) => reference.namespace)).toEqual(['body', 'body', 'previous'])
+    expect(impact.references.every((reference) => reference.producer.scopeKey === 'loop-group:repeat')).toBe(true)
+    expect(impact.companions).toMatchObject([
+      { document: 'companion', value: 'repeat/child', target: { groupId: 'repeat', nodeId: 'child' } },
+    ])
+    expect(await deleteNodes(context, impact)).toMatchObject({ status: 'resolution_required' })
+    expect(context.commit).not.toHaveBeenCalled()
+  })
+
+  it.each(['scope', 'workflow', 'generation', 'definition', 'companion', 'path', 'saved', 'hash'] as const)(
+    'rejects a saved delete preview after %s changes without touching the new state',
+    async (change) => {
+      const fixture = await scopedContext('root')
+      const impact = previewDeleteNodes(fixture.context, ['finish'])
+      const next = structuredClone(fixture.current())
+      if (change === 'scope') fixture.scope('loop-group:sibling')
+      if (change === 'workflow') next.workflowId += '-new'
+      if (change === 'generation') next.generation++
+      if (change === 'definition') next.definition.revision++
+      if (change === 'companion') next.companion.revision++
+      if (change === 'path') next.companion.path += '.new'
+      if (change === 'saved') next.savedGeneration++
+      if (change === 'hash') next.definition.diskHash = 'new hash'
+      fixture.replace(next)
+      expect(await deleteNodes(fixture.context, impact)).toMatchObject({ status: 'rejected', code: 'stale_document' })
+      expect(fixture.current()).toEqual(next)
+      expect(fixture.context.commit).not.toHaveBeenCalled()
+      expect(fixture.context.commitPositions).not.toHaveBeenCalled()
+    },
+  )
+
+  it('renames a whole group without losing its body and reports the scope mapping', async () => {
+    const fixture = await scopedContext('root')
+    const result = await renameNode(fixture.context, 'repeat', 'again')
+    expect(result).toMatchObject({
+      status: 'committed',
+      identityChanges: { scopeRenames: [{ from: 'loop-group:repeat', to: 'loop-group:again' }] },
+    })
+    expect(fixture.current().definition.text).toContain('depends_on: [again]')
+    expect(fixture.current().definition.text).toContain('😀 $child.output $LOOP_PREV.child.output')
+    expect(fixture.current().companion?.text).toContain('[again/child, sibling/child]')
+  })
+
+  it('group deletion excludes doomed body references but includes outer dependencies and descendant companion paths', async () => {
+    const { context } = await scopedContext('root')
+    const impact = previewDeleteNodes(context, ['repeat'])
+    expect(impact.dependencies).toHaveLength(1)
+    expect(impact.references).toMatchObject([])
+    expect(impact.companions).toHaveLength(1)
+    expect(await deleteNodes(context, impact)).toMatchObject({ status: 'resolution_required' })
+  })
+
+  it('requires the exact current reader-3 analysis before any mutation', async () => {
+    const { context } = await scopedContext()
+    expect(
+      await renameNode({ ...context, currentAnalysis: undefined, referenceIndex: undefined }, 'child', 'new'),
+    ).toMatchObject({ status: 'rejected', code: 'analysis_unavailable' })
+  })
+})
+
+it('connects and disconnects only body-local dependencies and refuses forbidden body kinds', async () => {
+  const fixture = await scopedContext('loop-group:sibling')
+  const descriptor = fixture.context.contract.node_kinds.find((node) => node.id === 'loop_group')!
+  expect(await addNode(fixture.context, descriptor, { viewportCenter: { x: 0, y: 0 } })).toMatchObject({
+    status: 'rejected',
+    code: 'profile_disallowed',
+  })
+  expect(await connectNodes(fixture.context, 'finish', 'child')).toMatchObject({
+    status: 'rejected',
+    code: 'missing_endpoint',
+  })
+  const editable = await scopedContext(
+    'loop-group:repeat',
+    scopedSource
+      .replace('          depends_on: [child]\n', '')
+      .replace('echo "😀 $child.output $LOOP_PREV.child.output"', 'echo consumer'),
+  )
+  expect(await connectNodes(editable.context, 'child', 'consumer')).toMatchObject({ status: 'committed' })
+  expect(parse(editable.current().definition.text).nodes[1].loop_group.nodes[1].depends_on).toEqual(['child'])
+  const connected = await scopedContext('loop-group:repeat', editable.current().definition.text)
+  expect(await disconnectNodes(connected.context, 'child', 'consumer')).toMatchObject({ status: 'committed' })
+  expect(parse(connected.current().definition.text).nodes[1].loop_group.nodes[1].depends_on).toEqual([])
+})
+
+it('commits body rename with one new reference analysis and one exact pair undo/redo boundary', async () => {
+  const { referenceIndexBuildCountForTest } = await import('$src/lib/references/reference-index')
+  const { createHistoryState, recordTransaction, undoTransaction, redoTransaction } =
+    await import('$src/stores/history')
+  const fixture = await scopedContext()
+  const before = referenceIndexBuildCountForTest()
+  const result = await renameNode(fixture.context, 'child', 'renamed')
+  expect(result.status).toBe('committed')
+  expect(referenceIndexBuildCountForTest() - before).toBe(1)
+  if (result.status !== 'committed') return
+  const history = recordTransaction(createHistoryState(), result.transaction)
+  expect(history.undo).toHaveLength(1)
+  const undone = undoTransaction(history, result.pair)
+  expect(undone.ok).toBe(true)
+  if (!undone.ok) return
+  expect(undone.pair.definition.text).toBe(fixture.context.pair.definition.text)
+  expect(undone.pair.companion?.text).toBe(fixture.context.pair.companion.text)
+  const redone = redoTransaction(undone.history, undone.pair)
+  expect(redone.ok).toBe(true)
+  if (redone.ok) expect(redone.pair.companion?.text).toBe(result.pair.companion?.text)
+})
+
+it('does not commit either renamed document or layout after invalid final pair analysis', async () => {
+  const fixture = await scopedContext()
+  const analyze = vi.fn(async () => ({
+    ...fixture.context.currentAnalysis,
+    structurallyValid: false,
+    visuallyAuthorable: false,
+  }))
+  const context = {
+    ...fixture.context,
+    applyMutation: ((pair, mutation, contract, _analyze, analysis) =>
+      applyWorkflowMutation(pair, mutation, contract, analyze, analysis)) as typeof applyWorkflowMutation,
+  }
+  expect(await renameNode(context, 'child', 'renamed')).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_invalid_workflow',
+  })
+  expect(analyze).toHaveBeenCalledOnce()
+  expect(fixture.current()).toEqual(fixture.context.pair)
+  expect(context.commit).not.toHaveBeenCalled()
+  expect(context.commitPositions).not.toHaveBeenCalled()
+})
+
+it('rejects a scoped delete when its scope changes during asynchronous analysis', async () => {
+  const fixture = await scopedContext('root')
+  const impact = previewDeleteNodes(fixture.context, ['finish'])
+  const gate = deferred<void>()
+  const entered = deferred<void>()
+  const context = {
+    ...fixture.context,
+    applyMutation: (async (...args) => {
+      const result = await applyWorkflowMutation(...args)
+      entered.resolve()
+      await gate.promise
+      return result
+    }) as typeof applyWorkflowMutation,
+  }
+  const pending = deleteNodes(context, impact)
+  await entered.promise
+  fixture.scope('loop-group:sibling')
+  gate.resolve()
+  expect(await pending).toMatchObject({ status: 'rejected', code: 'stale_document' })
+  expect(context.commit).not.toHaveBeenCalled()
+  expect(context.commitPositions).not.toHaveBeenCalled()
+})
+
+it('deletes a resolved group and its external dependency entries in one transaction with removed scope identity', async () => {
+  const fixture = await scopedContext(
+    'root',
+    scopedSource,
+    'language_compatibility: archon-2026-07\noutward_action_nodes: [sibling/child]\n',
+  )
+  const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['repeat']))
+  expect(result).toMatchObject({ status: 'committed', identityChanges: { removedScopes: ['loop-group:repeat'] } })
+  expect(fixture.context.commit).toHaveBeenCalledOnce()
+  expect(
+    parse(fixture.current().definition.text).nodes.find((node: { id: string }) => node.id === 'finish').depends_on,
+  ).toEqual([])
+})
+
+it('retains numeric hook occurrence paths in scoped reference impacts', async () => {
+  const text = scopedSource.replace(
+    '          depends_on: [child]',
+    '          depends_on: [child]\n          hooks:\n            PreToolUse:\n              - response:\n                  systemMessage: "$child.output"',
+  )
+  const { context } = await scopedContext('loop-group:repeat', text)
+  const impact = previewDeleteNodes(context, ['child'])
+  expect(impact.references.find((reference) => reference.yamlPath.includes('hooks'))?.fieldPath).toEqual([
+    'hooks',
+    'PreToolUse',
+    0,
+    'response',
+    'systemMessage',
+  ])
+})
+
+it('deletes the final body selection as one repairable empty-group transaction', async () => {
+  const fixture = await scopedContext(
+    'loop-group:repeat',
+    scopedSource.replace('      until_bash: \'test "$child.output" = done\'\n', ''),
+    'language_compatibility: archon-2026-07\n',
+  )
+  const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['child', 'consumer']))
+  expect(result.status).toBe('committed')
+  expect(fixture.context.commit).toHaveBeenCalledOnce()
+  expect(parse(fixture.current().definition.text).nodes[1].loop_group.nodes).toEqual([])
+})
+
+it('adds an allowed node kind to the active body without inserting a root node', async () => {
+  const fixture = await scopedContext('loop-group:sibling')
+  const descriptor = fixture.context.contract.node_kinds.find((node) => node.id === 'bash')!
+  const result = await addNode(fixture.context, descriptor, { viewportCenter: { x: 0, y: 0 } })
+  expect(result.status).toBe('committed')
+  const nodes = parse(fixture.current().definition.text).nodes
+  expect(nodes.some((node: { id: string }) => node.id === 'bash')).toBe(false)
+  expect(nodes[2].loop_group.nodes.some((node: { id: string }) => node.id === 'bash')).toBe(true)
 })

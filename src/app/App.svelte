@@ -849,12 +849,19 @@
       pair: session.pair,
       revision: session.revision,
       projection,
+      scopeKey: 'root',
+      graph: projection.graphs.find((graph) => graph.scope.key === 'root')!,
+      currentAnalysis: session.analysis,
+      referenceIndex: session.analysis.referenceIndex,
       contract,
       positions: canvasPositionsStore.get(),
       getCurrentSnapshot: () => {
         const current = documentSessionStore.get()
-        return current.pair && current.revision ? { pair: current.pair, revision: current.revision } : null
+        return current.pair && current.revision
+          ? { pair: current.pair, revision: current.revision, scopeKey: 'root' }
+          : null
       },
+      analyzePrepared: analyzePairInWorker,
       applyMutation: (pair, mutation, contract) =>
         applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker, session.analysis ?? undefined),
       commit: (pair, transaction, analysis) => {
@@ -1125,9 +1132,9 @@
   }
 
   async function confirmCanvasDelete(): Promise<void> {
-    const nodeIds = deleteRequest?.impact.nodeIds
-    if (!nodeIds) return
-    const result = await canvasAuthoring.delete(nodeIds)
+    const impact = deleteRequest?.impact
+    if (!impact) return
+    const result = await canvasAuthoring.delete(impact)
     if (result.status === 'committed') deleteRequest = null
     else workspaceError = result.message
   }

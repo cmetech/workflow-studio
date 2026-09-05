@@ -5,6 +5,7 @@ import {
   deleteNodes,
   disconnectNodes,
   previewDeleteNodes,
+  validateActionContext,
   type CanvasActionContext,
   type CanvasActionResult,
   type DeleteImpact,
@@ -20,7 +21,7 @@ export type CanvasCoordinatorResult =
   | CanvasActionResult
   | { readonly status: 'rejected'; readonly code: 'canvas_action_unavailable'; readonly message: string }
 
-type CanvasUnavailableResult = Extract<CanvasCoordinatorResult, { readonly code: 'canvas_action_unavailable' }>
+type CanvasUnavailableResult = Extract<CanvasCoordinatorResult, { readonly status: 'rejected' }>
 type CanvasCopyResult =
   { readonly status: 'copied'; readonly count: number } | Extract<CanvasCoordinatorResult, { status: 'rejected' }>
 
@@ -38,7 +39,7 @@ export interface CanvasAuthoringCoordinator {
   copy(nodeIds: readonly string[]): CanvasCopyResult
   paste(): Promise<CanvasCoordinatorResult>
   previewDelete(nodeIds: readonly string[]): CanvasDeletePreview
-  delete(nodeIds: readonly string[]): Promise<CanvasCoordinatorResult>
+  delete(impact: DeleteImpact): Promise<CanvasCoordinatorResult>
 }
 
 export function createCanvasAuthoringCoordinator(dependencies: {
@@ -50,7 +51,7 @@ export function createCanvasAuthoringCoordinator(dependencies: {
     const current = dependencies.getContext()
     return 'unavailable' in current
       ? { status: 'rejected', code: 'canvas_action_unavailable', message: current.unavailable }
-      : current
+      : (validateActionContext(current) ?? current)
   }
 
   return {
@@ -94,13 +95,11 @@ export function createCanvasAuthoringCoordinator(dependencies: {
     },
     previewDelete(nodeIds) {
       const current = context()
-      return isUnavailable(current)
-        ? current
-        : { status: 'ready', impact: previewDeleteNodes(current.projection, nodeIds, current.contract) }
+      return isUnavailable(current) ? current : { status: 'ready', impact: previewDeleteNodes(current, nodeIds) }
     },
-    async delete(nodeIds) {
+    async delete(impact) {
       const current = context()
-      return isUnavailable(current) ? current : deleteNodes(current, nodeIds)
+      return isUnavailable(current) ? current : deleteNodes(current, impact)
     },
   }
 }

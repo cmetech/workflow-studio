@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NodeKindDescriptor } from '$src/lib/contract/types'
+import { createDocumentRevision } from '$src/lib/documents/revisions'
 import type { CanvasActionContext } from './canvas-actions'
 import { createCanvasAuthoringCoordinator } from './canvas-authoring-coordinator'
 
@@ -15,8 +16,30 @@ describe('canvas authoring coordinator', () => {
   })
 
   it('owns the clipboard and routes one accepted context through copy and paste', async () => {
+    const pair = {
+      workflowId: 'clipboard',
+      generation: 1,
+      savedGeneration: 1,
+      definition: {
+        id: 'definition',
+        kind: 'definition' as const,
+        path: 'clipboard.yaml',
+        text: 'nodes: []',
+        revision: 1,
+        savedRevision: 1,
+        diskHash: null,
+      },
+      companion: null,
+    }
+    const revision = createDocumentRevision(pair, 'sha256:clipboard')
+    const graph = { scope: { key: 'root' }, nodes: [] }
     const context = {
-      projection: { nodes: [] },
+      pair,
+      revision,
+      graph,
+      scopeKey: 'root',
+      getCurrentSnapshot: () => ({ pair, revision, scopeKey: 'root' }),
+      projection: { graphs: [graph] },
       contract: { semantic_rules: [] },
       positions: {},
       announce: vi.fn(),

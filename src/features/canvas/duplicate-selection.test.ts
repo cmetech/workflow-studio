@@ -218,6 +218,10 @@ function context(text = source, activeContract = contract()) {
     pair: currentPair,
     revision,
     projection: projection(text, activeContract.profile),
+    scopeKey: 'root' as const,
+    get graph() {
+      return this.projection.graphs[0]!
+    },
     contract: activeContract,
     positions: {
       bootstrap: { x: 0, y: 0 },
@@ -226,7 +230,7 @@ function context(text = source, activeContract = contract()) {
       finish: { x: 960, y: 0 },
     },
     applyMutation: vi.fn(applyWorkflowMutation),
-    getCurrentSnapshot: () => ({ pair: currentPair, revision }),
+    getCurrentSnapshot: () => ({ pair: currentPair, revision, scopeKey: 'root' as const }),
     commit,
     commitPositions: vi.fn(),
     announce: vi.fn(),
@@ -449,4 +453,299 @@ describe('duplicate/copy/paste YAML transforms', () => {
       'prepare-prefix:$prepare-2.output',
     )
   })
+})
+
+async function scopedClipboardContext(
+  scopeKey: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:first',
+) {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const { analyzeWorkflowPair } = await import('$src/lib/validation/analyze-workflow')
+  const activeContract = (await loadBundledAuthoringContracts()).find(
+    (candidate) => candidate.profile === 'archon-2026-07',
+  )!
+  const text = `name: Scoped clipboard
+description: Copied namespaces
+nodes:
+  - id: external
+    bash: echo external
+  - id: rootconsumer
+    depends_on: [external]
+    bash: echo $external.output
+  - id: first
+    loop_group:
+      max_iterations: 2
+      until: 'false'
+      nodes:
+        - id: external
+          bash: echo local
+        - id: producer
+          bash: echo producer
+        - id: consumer
+          depends_on: [producer]
+          bash: |
+            echo "😀 $producer.output $LOOP_PREV.producer.output"
+            echo \\$producer.output # $producer.output
+        - id: incoming
+          depends_on: [external]
+          bash: echo $external.output
+  - id: second
+    loop_group:
+      max_iterations: 2
+      until: 'false'
+      nodes:
+        - id: external
+          bash: echo unrelated
+`
+  const currentPair = {
+    ...pair(text, activeContract.profile),
+    companion: {
+      ...pair(text, activeContract.profile).definition,
+      id: 'companion',
+      kind: 'companion' as const,
+      path: 'clipboard.hermes.yaml',
+      text: 'language_compatibility: archon-2026-07\n',
+    },
+  }
+  const analysis = await analyzeWorkflowPair(
+    {
+      type: 'analyze',
+      requestId: 'clipboard-scope',
+      workflowId: currentPair.workflowId,
+      pairGeneration: currentPair.generation,
+      definition: currentPair.definition,
+      companion: currentPair.companion,
+      profile: activeContract.profile,
+      contractDigest: activeContract.contract_digest,
+      reason: 'explicit-validate',
+    },
+    activeContract,
+  )
+  expect(analysis.structurallyValid, JSON.stringify(analysis.issues)).toBe(true)
+  const projection = analysis.projection as WorkflowProjection
+  return {
+    ...context(),
+    pair: currentPair,
+    revision: createDocumentRevision(currentPair, activeContract.contract_digest),
+    contract: activeContract,
+    scopeKey,
+    graph: projection.graphs.find((graph) => graph.scope.key === scopeKey)!,
+    projection,
+    currentAnalysis: analysis,
+    referenceIndex: analysis.referenceIndex,
+    getCurrentSnapshot: () => ({
+      pair: currentPair,
+      revision: createDocumentRevision(currentPair, activeContract.contract_digest),
+      scopeKey,
+    }),
+  }
+}
+
+describe('indexed scoped clipboard', () => {
+  it('duplicates local selection-internal current and previous references using Unicode spans and scanner exclusions', async () => {
+    const fixture = await scopedClipboardContext()
+    const clipboard = copySelection(fixture, ['producer', 'consumer'])
+    expect(clipboard).toMatchObject({ sourceScopeKey: 'loop-group:first', sourceWorkflowId: fixture.pair.workflowId })
+    const result = await pasteSelection(fixture, clipboard)
+    expect(result).toMatchObject({ status: 'committed', nodeIds: ['producer-2', 'consumer-2'] })
+    if (result.status !== 'committed') return
+    const nodes = parse(result.pair.definition.text).nodes[2].loop_group.nodes
+    expect(nodes.find((node: { id: string }) => node.id === 'consumer-2').bash).toBe(
+      'echo "😀 $producer-2.output $LOOP_PREV.producer-2.output"\necho \\$producer.output # $producer.output\n',
+    )
+    expect(nodes.find((node: { id: string }) => node.id === 'consumer').depends_on).toEqual(['producer'])
+    expect(fixture.commit).toHaveBeenCalledOnce()
+  })
+
+  it.each(['root', 'loop-group:first'] as const)(
+    'refuses cross-scope %s incoming references despite coincidentally matching external IDs',
+    async (scope) => {
+      const source = await scopedClipboardContext(scope)
+      const destination = await scopedClipboardContext('loop-group:second')
+      const result = await pasteSelection(
+        destination,
+        copySelection(source, [scope === 'root' ? 'rootconsumer' : 'incoming']),
+      )
+      expect(result).toMatchObject({
+        status: 'resolution_required',
+        code: 'resolution_required',
+        clipboardImpact: {
+          dependencies: [{ producer: { nodeId: 'external' } }],
+          references: [{ references: [{ resolvedProducer: { nodeId: 'external' } }] }],
+        },
+      })
+      expect(destination.commit).not.toHaveBeenCalled()
+      expect(destination.commitPositions).not.toHaveBeenCalled()
+    },
+  )
+
+  it('pastes a self-contained body selection into a sibling graph in one transaction', async () => {
+    const source = await scopedClipboardContext()
+    const destination = await scopedClipboardContext('loop-group:second')
+    const result = await pasteSelection(destination, copySelection(source, ['producer', 'consumer']))
+    expect(result).toMatchObject({
+      status: 'committed',
+      identityChanges: {
+        nodeCopies: [
+          {
+            from: { scopeKey: 'loop-group:first', nodeId: 'producer' },
+            to: { scopeKey: 'loop-group:second', nodeId: 'producer' },
+          },
+          {
+            from: { scopeKey: 'loop-group:first', nodeId: 'consumer' },
+            to: { scopeKey: 'loop-group:second', nodeId: 'consumer' },
+          },
+        ],
+      },
+    })
+    if (result.status !== 'committed') return
+    expect(parse(result.pair.definition.text).nodes[3].loop_group.nodes.map((node: { id: string }) => node.id)).toEqual(
+      ['external', 'producer', 'consumer'],
+    )
+    expect(result.pair.definition.text).toContain('echo unrelated')
+    expect(destination.commit).toHaveBeenCalledOnce()
+  })
+
+  it('duplicates a whole group with unchanged complete body and an explicit scope copy mapping', async () => {
+    const fixture = await scopedClipboardContext('root')
+    const result = await duplicateSelection(fixture, ['first'])
+    expect(result).toMatchObject({
+      status: 'committed',
+      identityChanges: { scopeCopies: [{ from: 'loop-group:first', to: 'loop-group:first-2' }] },
+    })
+    if (result.status !== 'committed') return
+    const nodes = parse(result.pair.definition.text).nodes
+    expect(nodes.find((node: { id: string }) => node.id === 'first-2').loop_group).toEqual(
+      nodes.find((node: { id: string }) => node.id === 'first').loop_group,
+    )
+    expect(result.pair.companion?.text).toBe(fixture.pair.companion.text)
+  })
+})
+
+it('preserves the copied node comments, quoted scalars, literal blocks and unusual flow values', async () => {
+  const styled = source.replace(
+    '  - id: prepare\n    depends_on: [bootstrap]\n    command: prepare',
+    '  # copied lead\n  - id: "prepare" # copied identity\n    depends_on: ["bootstrap"]\n    command: |\n      prepare exactly\n    x-unknown: { keep : "value", spacing: [ 1,  2 ] }',
+  )
+  const fixture = context(styled)
+  const result = await duplicateSelection(fixture, ['prepare'])
+  expect(result).toMatchObject({ status: 'committed' })
+  if (result.status !== 'committed') return
+  expect(result.pair.definition.text).toContain(
+    '  # copied lead\n  - id: "prepare-2" # copied identity\n    depends_on: ["bootstrap"]\n    command: |\n      prepare exactly\n    x-unknown: { keep : "value", spacing: [ 1,  2 ] }',
+  )
+})
+
+it('rejects inconsistent captured clipboard workflow and revision evidence', async () => {
+  const fixture = await scopedClipboardContext()
+  const copied = copySelection(fixture, ['producer'])
+  const result = await pasteSelection(fixture, {
+    ...copied,
+    sourceRevision: { ...copied.sourceRevision, definitionPath: 'different.yaml' },
+  })
+  expect(result).toMatchObject({ status: 'rejected', code: 'stale_document' })
+  expect(fixture.commit).not.toHaveBeenCalled()
+})
+
+it('requires explicit resolution for previous-iteration tokens pasted from a body into root', async () => {
+  const source = await scopedClipboardContext()
+  const destination = await scopedClipboardContext('root')
+  const result = await pasteSelection(destination, copySelection(source, ['producer', 'consumer']))
+  expect(result).toMatchObject({
+    status: 'resolution_required',
+    clipboardImpact: {
+      references: [{ references: expect.arrayContaining([expect.objectContaining({ kind: 'previous' })]) }],
+    },
+  })
+  expect(destination.commit).not.toHaveBeenCalled()
+})
+
+it('preserves exact flow mapping spacing when copying between flow collection items', async () => {
+  const fixture = context(
+    'name: Flow\ndescription: Flow copy\nnodes: [ { id: prepare, command: "value", x-unknown: { x : [1,  2] } } ]\n',
+  )
+  const result = await duplicateSelection(fixture, ['prepare'])
+  expect(result.status).toBe('committed')
+  if (result.status === 'committed')
+    expect(result.pair.definition.text).toContain('{ id: prepare-2, command: "value", x-unknown: { x : [1,  2] } }')
+})
+
+it('copies a first node leading comment with CRLF and literal scalar chomping intact', async () => {
+  const fixture = context(
+    'name: Copy\ndescription: CRLF\nnodes:\n  # first lead\n  - id: "prepare"\n    command: |-\n      first\n      second\n'.replaceAll(
+      '\n',
+      '\r\n',
+    ),
+  )
+  const result = await duplicateSelection(fixture, ['prepare'])
+  expect(result.status).toBe('committed')
+  if (result.status !== 'committed') return
+  expect(result.pair.definition.text).toContain(
+    '  # first lead\r\n  - id: "prepare-2"\r\n    command: |-\r\n      first\r\n      second\r\n',
+  )
+  expect(parsedNodes(result.pair.definition.text)[1]?.command).toBe('first\nsecond')
+})
+
+it('rejects invalid final clipboard analysis atomically through the active analyzer', async () => {
+  const fixture = await scopedClipboardContext()
+  const analyzePrepared = vi.fn(async () => ({
+    ...fixture.currentAnalysis,
+    structurallyValid: false,
+    visuallyAuthorable: false,
+  }))
+  const result = await duplicateSelection({ ...fixture, analyzePrepared }, ['producer', 'consumer'])
+  expect(result).toMatchObject({ status: 'rejected', code: 'mutation_invalid_workflow' })
+  expect(analyzePrepared).toHaveBeenCalledOnce()
+  expect(fixture.commit).not.toHaveBeenCalled()
+  expect(fixture.commitPositions).not.toHaveBeenCalled()
+})
+
+it('rejects mismatched captured source values without mutating the destination', async () => {
+  const fixture = await scopedClipboardContext()
+  const copied = copySelection(fixture, ['producer'])
+  const result = await pasteSelection(fixture, {
+    ...copied,
+    sourceText: copied.sourceText.replace('bash: echo producer', 'bash: echo changed'),
+  })
+  expect(result).toMatchObject({ status: 'rejected', code: 'mutation_stale_scope' })
+  expect(fixture.commit).not.toHaveBeenCalled()
+})
+
+it('preserves a kept literal scalar value when pasting into an empty flow sequence', async () => {
+  const source = context(
+    'name: Copy\ndescription: Empty destination\nnodes:\n  - id: producer\n    command: |+\n      value\n\n',
+  )
+  const destination = context('name: Empty\ndescription: Ready\nnodes: []\n')
+  const result = await pasteSelection(destination, copySelection(source, ['producer']))
+  expect(result.status).toBe('committed')
+  if (result.status === 'committed') expect(parsedNodes(result.pair.definition.text)[0]?.command).toBe('value\n\n')
+})
+
+it('preserves a first-node leading comment through the necessary block-to-flow insertion fallback', async () => {
+  const source = context(
+    'name: Copy\ndescription: Flow fallback\nnodes:\n  # copied first comment\n  - id: producer\n    command: |-\n      literal\n',
+  )
+  const destination = context('name: Flow\ndescription: Destination\nnodes: [{ id: other, command: exact }]\n')
+  const result = await pasteSelection(destination, copySelection(source, ['producer']))
+  expect(result.status).toBe('committed')
+  if (result.status !== 'committed') return
+  expect(result.pair.definition.text).toContain('# copied first comment')
+  expect(parsedNodes(result.pair.definition.text)[1]?.command).toBe('literal')
+})
+
+it('rejects an inconsistent non-finite unknown scalar in captured clipboard values', async () => {
+  const fixture = context(
+    'name: Copy\ndescription: Unknown scalar\nnodes:\n  - id: producer\n    command: exact\n    x-unknown: .inf\n',
+  )
+  const copied = copySelection(fixture, ['producer'])
+  const result = await pasteSelection(fixture, { ...copied, nodes: [{ ...copied.nodes[0]!, 'x-unknown': null }] })
+  expect(result).toMatchObject({ status: 'rejected', code: 'mutation_stale_scope' })
+  expect(fixture.commit).not.toHaveBeenCalled()
+})
+
+it('pastes into an empty graph inside a flow mapping without changing scalar values', async () => {
+  const source = context('name: Copy\ndescription: Source\nnodes:\n  - id: producer\n    command: |-\n      exact\n')
+  const destination = context('{ name: Flow, description: Destination, nodes: [] }\n')
+  const result = await pasteSelection(destination, copySelection(source, ['producer']))
+  expect(result.status).toBe('committed')
+  if (result.status === 'committed') expect(parsedNodes(result.pair.definition.text)[0]?.command).toBe('exact')
 })
