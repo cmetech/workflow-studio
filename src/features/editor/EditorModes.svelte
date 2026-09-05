@@ -50,11 +50,13 @@
     if (!pair.companion && $activeYamlDocument === 'companion') showYamlDocument('definition')
   })
 
-  export async function focusProblem(issue: ValidationIssue): Promise<boolean> {
-    if (issue.document === 'companion' && !pair.companion) return false
+  export async function focusProblem(issue: ValidationIssue, current: () => boolean = () => true): Promise<boolean> {
+    if (!current() || (issue.document === 'companion' && !pair.companion)) return false
     showYamlDocument(issue.document)
     await tick()
+    if (!current()) return false
     const editor = issue.document === 'definition' ? definitionEditor : companionEditor
+    if (!current()) return false
     editor?.focusProblem(issue)
     return Boolean(editor)
   }

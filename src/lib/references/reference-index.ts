@@ -11,6 +11,7 @@ import {
 
 export type ReferenceSurfaceScope = 'root' | 'body' | 'group-control'
 export type ReferenceProducerNamespace = 'root' | 'body' | 'previous'
+export type ReferenceInsertionNamespace = 'current' | 'outer' | 'previous'
 
 export interface IndexedProducerIdentity {
   readonly namespace: ReferenceProducerNamespace
@@ -73,6 +74,8 @@ export interface ReferenceSurface {
   readonly mode: ReferenceScanMode
   readonly previousOutputs: boolean
   readonly callerPolicy: string
+  readonly authoredValue: string
+  readonly discriminatorId?: string
 }
 
 interface TraversalGroup {
@@ -153,23 +156,42 @@ export function referenceSurfaceForField(
   prepared: PreparedReferenceContract,
   scope: ReferenceSurfaceScope,
   canonicalFieldPath: string,
+  currentValue: string,
+  namespace: ReferenceInsertionNamespace,
 ): ReferenceSurface | null {
   const relativePath = canonicalRelativePath(scope, canonicalFieldPath)
   const policy = prepared.policies.get(policyKey(scope, relativePath))
-  if (!policy || policy.authoredValue === 'literal-resource-name') return null
+  if (
+    !policy ||
+    !admittedAuthoredValue(currentValue, policy, prepared) ||
+    !surfaceAllowsNamespace(scope, policy, namespace)
+  )
+    return null
   return Object.freeze({
     canonicalFieldPath,
     scope,
     mode: policy.mode,
     previousOutputs: policy.previousOutputs,
     callerPolicy: policy.callerPolicy,
+    authoredValue: policy.authoredValue,
+    ...(policy.discriminatorId ? { discriminatorId: policy.discriminatorId } : {}),
   })
+}
+
+function surfaceAllowsNamespace(
+  scope: ReferenceSurfaceScope,
+  policy: SurfacePolicy,
+  namespace: ReferenceInsertionNamespace,
+): boolean {
+  if (namespace === 'previous') return policy.previousOutputs
+  if (namespace === 'outer') return true
+  return scope !== 'group-control' || policy.callerPolicy === 'group-until-bash-references'
 }
 
 function canonicalRelativePath(scope: ReferenceSurfaceScope, canonicalFieldPath: string): string {
   const normalized = canonicalFieldPath.replaceAll('[*]', '[]')
   if (scope === 'body') return normalized.replace(/^nodes\[\]\.loop_group\.nodes\[\]\./, '').replace(/^nodes\[\]\./, '')
-  if (scope === 'group-control') return normalized.replace(/^nodes\[\]\.loop_group\./, '')
+  if (scope === 'group-control') return normalized.replace(/^nodes\[\]\./, '')
   return normalized.replace(/^nodes\[\]\./, '')
 }
 

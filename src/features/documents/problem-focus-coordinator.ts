@@ -31,16 +31,19 @@ export interface ProblemFocusCoordinatorDependencies {
   readonly getRequest: () => ProblemFocusRequest
   readonly getRevision: () => DocumentRevision | null
   readonly getProjection: () => WorkflowProjection | null
+  readonly getActiveScope: () => GraphScopeKey
   readonly enterScope: (scopeKey: GraphScopeKey) => Promise<boolean>
   readonly focusNode: (
     route: Extract<ProblemFocusRoute, { kind: 'node-field' }>,
     issue: ValidationIssue,
+    current: () => boolean,
   ) => Promise<boolean>
   readonly focusGroup: (
     route: Extract<ProblemFocusRoute, { kind: 'group-field' }>,
     issue: ValidationIssue,
+    current: () => boolean,
   ) => Promise<boolean>
-  readonly focusYaml: (issue: ValidationIssue) => Promise<boolean>
+  readonly focusYaml: (issue: ValidationIssue, current: () => boolean) => Promise<boolean>
   readonly acknowledge: (requestRevision: number) => void
 }
 
@@ -63,16 +66,17 @@ export async function runProblemFocusCoordinator(
     const request = dependencies.getRequest()
     if (!request.issue || !current()) return
     const route = problemFocusRoute(dependencies.getProjection(), request.issue)
-    if (route.kind !== 'yaml' && route.scopeKey !== 'root') {
+    if (route.kind !== 'yaml' && route.scopeKey !== dependencies.getActiveScope()) {
       if (!(await dependencies.enterScope(route.scopeKey)) || !current()) return
     }
+    if (!current()) return
     const focused =
       route.kind === 'yaml'
-        ? await dependencies.focusYaml(request.issue)
+        ? await dependencies.focusYaml(request.issue, current)
         : route.kind === 'node-field'
-          ? await dependencies.focusNode(route, request.issue)
-          : await dependencies.focusGroup(route, request.issue)
-    if (!focused && current()) await dependencies.focusYaml(request.issue)
+          ? await dependencies.focusNode(route, request.issue, current)
+          : await dependencies.focusGroup(route, request.issue, current)
+    if (!focused && current()) await dependencies.focusYaml(request.issue, current)
   } finally {
     dependencies.acknowledge(requestRevision)
   }

@@ -1,8 +1,13 @@
 import type { WorkflowProfile } from '$src/lib/contract/types'
 import type { GraphScopeKey, ProjectedGraph } from '$src/lib/projection/types'
-import { referenceSurfaceForField, type PreparedReferenceContract } from '$src/lib/references/reference-index'
+import {
+  referenceSurfaceForField,
+  type PreparedReferenceContract,
+  type ReferenceInsertionNamespace,
+  type ReferenceSurfaceScope,
+} from '$src/lib/references/reference-index'
 
-export type ReferenceSuggestionNamespace = 'current' | 'outer' | 'previous'
+export type ReferenceSuggestionNamespace = ReferenceInsertionNamespace
 
 export interface LoopGroupReferenceSuggestion {
   readonly namespace: ReferenceSuggestionNamespace
@@ -66,6 +71,8 @@ export interface ReferenceTargetIdentity {
   readonly bindingIdentity: string
   readonly concretePath: readonly (string | number)[]
   readonly canonicalFieldPath: string
+  readonly surfaceScope: Extract<ReferenceSurfaceScope, 'body' | 'group-control'>
+  readonly surfaceDiscriminatorId?: string
   readonly originalText: string
   readonly selectionStart: number
   readonly selectionEnd: number
@@ -87,7 +94,12 @@ export class LoopGroupReferenceTargetOwner {
     this.#target = null
   }
 
-  insert(token: string, current: ReferenceTargetIdentity, prepared: PreparedReferenceContract): ReferenceTargetResult {
+  insert(
+    token: string,
+    namespace: ReferenceInsertionNamespace,
+    current: ReferenceTargetIdentity,
+    prepared: PreparedReferenceContract,
+  ): ReferenceTargetResult {
     const target = this.#target
     if (
       !target ||
@@ -96,13 +108,38 @@ export class LoopGroupReferenceTargetOwner {
       target.control.value !== target.identity.originalText ||
       target.control.selectionStart !== target.identity.selectionStart ||
       target.control.selectionEnd !== target.identity.selectionEnd ||
-      !referenceSurfaceForField(prepared, 'body', current.canonicalFieldPath)
+      !this.accepts(namespace, current, prepared)
     )
       return { ok: false, message: 'The Inspector field changed. Focus it again before inserting a reference.' }
     target.control.setRangeText(token, current.selectionStart, current.selectionEnd, 'end')
     target.control.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: token }))
     target.control.focus()
     return { ok: true }
+  }
+
+  accepts(
+    namespace: ReferenceInsertionNamespace,
+    current: ReferenceTargetIdentity,
+    prepared: PreparedReferenceContract,
+  ): boolean {
+    const target = this.#target
+    if (
+      !target ||
+      !target.control.isConnected ||
+      stableIdentity(target.identity) !== stableIdentity(current) ||
+      target.control.value !== target.identity.originalText ||
+      target.control.selectionStart !== target.identity.selectionStart ||
+      target.control.selectionEnd !== target.identity.selectionEnd
+    )
+      return false
+    const surface = referenceSurfaceForField(
+      prepared,
+      current.surfaceScope,
+      current.canonicalFieldPath,
+      current.originalText,
+      namespace,
+    )
+    return Boolean(surface && surface.discriminatorId === current.surfaceDiscriminatorId)
   }
 
   async copy(token: string, write: (text: string) => Promise<void>): Promise<ReferenceTargetResult> {

@@ -103,10 +103,12 @@
     }
     host.addEventListener('pointerup', refreshTarget)
     host.addEventListener('keyup', refreshTarget)
+    host.addEventListener('input', refreshTarget)
     host.addEventListener('select', refreshTarget, true)
     return () => {
       host.removeEventListener('pointerup', refreshTarget)
       host.removeEventListener('keyup', refreshTarget)
+      host.removeEventListener('input', refreshTarget)
       host.removeEventListener('select', refreshTarget, true)
     }
   })

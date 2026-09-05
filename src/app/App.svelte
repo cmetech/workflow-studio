@@ -132,6 +132,7 @@
   import {
     buildLoopGroupReferenceGuidance,
     LoopGroupReferenceTargetOwner,
+    type LoopGroupReferenceSuggestion,
     type ReferenceTargetIdentity,
   } from '$src/features/canvas/loop-group-reference-guidance'
   import { prepareReferenceContract, referenceSurfaceForField } from '$src/lib/references/reference-index'
@@ -170,7 +171,10 @@
     type CanvasActionContext,
     type DeleteImpact,
   } from '$src/features/canvas/canvas-actions'
-  import { createCanvasAuthoringCoordinator } from '$src/features/canvas/canvas-authoring-coordinator'
+  import {
+    createCanvasAuthoringCoordinator,
+    type CanvasCoordinatorResult,
+  } from '$src/features/canvas/canvas-authoring-coordinator'
   import {
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
@@ -822,6 +826,11 @@
   }
 
   async function focusInspector(invoker?: HTMLElement): Promise<void> {
+    await focusInspectorIfCurrent(invoker, () => true)
+  }
+
+  async function focusInspectorIfCurrent(invoker: HTMLElement | undefined, current: () => boolean): Promise<boolean> {
+    if (!current()) return false
     inspectorDrawerOwner =
       workbenchPresentation.panels === 'drawers'
         ? {
@@ -833,15 +842,19 @@
                 : undefined,
           }
         : undefined
+    if (!current()) return false
     openInspectorPanel()
     await tick()
+    if (!current()) return false
     const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
     const target =
       inspector?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
       inspector?.querySelector<HTMLElement>(
         'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
       )
+    if (!current()) return false
     target?.focus()
+    return true
   }
 
   function currentInspectorRestorationTarget(): HTMLElement | undefined {
@@ -1254,6 +1267,10 @@
     if (!request) return
     const result = await canvasAuthoring.add(descriptor, request)
     addNodeRequest = null
+    handleCanvasAddResult(descriptor, result)
+  }
+
+  function handleCanvasAddResult(descriptor: NodeKindDescriptor, result: CanvasCoordinatorResult): void {
     if (result.status !== 'committed') workspaceError = result.message
     else if (descriptor.id === 'loop_group' && result.nodeId) pendingOpenLoopGroup = result.nodeId
   }
@@ -1261,13 +1278,17 @@
   function rememberInspectorTextTarget(field: FormField, control: HTMLInputElement | HTMLTextAreaElement): void {
     const session = documentSessionStore.get()
     const prepared = preparedReferences
+    const surfaceScope = inspectorTarget.kind === 'group' ? 'group-control' : 'body'
+    const surface = prepared
+      ? referenceSurfaceForField(prepared, surfaceScope, field.fieldPath, control.value, 'outer')
+      : null
     if (
       !session.pair ||
       !session.revision ||
       !prepared ||
+      !surface ||
       !field.concretePath ||
-      canvasGraph?.scope.kind !== 'loop-group' ||
-      !referenceSurfaceForField(prepared, 'body', field.fieldPath)
+      canvasGraph?.scope.kind !== 'loop-group'
     )
       return
     const identity: ReferenceTargetIdentity = {
@@ -1281,6 +1302,8 @@
       bindingIdentity: inspectorBindingIdentity,
       concretePath: field.concretePath,
       canonicalFieldPath: field.fieldPath,
+      surfaceScope,
+      ...(surface.discriminatorId ? { surfaceDiscriminatorId: surface.discriminatorId } : {}),
       originalText: control.value,
       selectionStart: control.selectionStart ?? 0,
       selectionEnd: control.selectionEnd ?? 0,
@@ -1295,7 +1318,7 @@
     referenceStatus = result.ok ? `Copied ${token}.` : result.message
   }
 
-  function insertLoopGroupReference(token: string): void {
+  function currentReferenceTargetIdentity(): ReferenceTargetIdentity | null {
     const captured = rememberedReferenceIdentity
     const session = documentSessionStore.get()
     const prepared = preparedReferences
@@ -1307,28 +1330,38 @@
             field.concretePath.every((segment, index) => segment === captured.concretePath[index]),
         )
       : undefined
-    if (!captured || !currentField?.concretePath || !session.pair || !session.revision || !prepared) {
+    if (!captured || !currentField?.concretePath || !session.pair || !session.revision || !prepared) return null
+    return {
+      ...captured,
+      workflowId: session.pair.workflowId,
+      pairGeneration: session.pair.generation,
+      definitionRevision: session.pair.definition.revision,
+      companionRevision: session.pair.companion?.revision ?? null,
+      contractDigest: session.revision.contractDigest,
+      profile: prepared.contract.profile,
+      scopeKey: $activeScopeKeyStore,
+      bindingIdentity: inspectorBindingIdentity,
+      concretePath: currentField.concretePath,
+      canonicalFieldPath: currentField.fieldPath,
+    }
+  }
+
+  function canInsertLoopGroupReference(suggestion: LoopGroupReferenceSuggestion): boolean {
+    const current = currentReferenceTargetIdentity()
+    return Boolean(
+      current && preparedReferences && referenceTargetOwner.accepts(suggestion.namespace, current, preparedReferences),
+    )
+  }
+
+  function insertLoopGroupReference(suggestion: LoopGroupReferenceSuggestion): void {
+    const current = currentReferenceTargetIdentity()
+    const prepared = preparedReferences
+    if (!current || !prepared) {
       referenceStatus = 'Focus a compatible Inspector text field before inserting a reference.'
       return
     }
-    const result = referenceTargetOwner.insert(
-      token,
-      {
-        ...captured,
-        workflowId: session.pair.workflowId,
-        pairGeneration: session.pair.generation,
-        definitionRevision: session.pair.definition.revision,
-        companionRevision: session.pair.companion?.revision ?? null,
-        contractDigest: session.revision.contractDigest,
-        profile: prepared.contract.profile,
-        scopeKey: $activeScopeKeyStore,
-        bindingIdentity: inspectorBindingIdentity,
-        concretePath: currentField.concretePath,
-        canonicalFieldPath: currentField.fieldPath,
-      },
-      prepared,
-    )
-    referenceStatus = result.ok ? `Inserted ${token}. Apply the field to update YAML.` : result.message
+    const result = referenceTargetOwner.insert(suggestion.token, suggestion.namespace, current, prepared)
+    referenceStatus = result.ok ? `Inserted ${suggestion.token}. Apply the field to update YAML.` : result.message
   }
 
   async function addOuterGroupDependency(producerId: string): Promise<void> {
@@ -1409,15 +1442,22 @@
             readonly path?: string
           },
       issue: import('$src/lib/documents/types').ValidationIssue,
+      current: () => boolean,
     ): Promise<boolean> => {
       const graph = canvasProjection?.graphs.find(({ scope }) => scope.key === route.scopeKey)
-      if (!graph || graph.capacity.status === 'yaml-only') return false
+      if (!graph || graph.capacity.status === 'yaml-only' || !current()) return false
       if (route.kind === 'node-field') {
+        if (!current()) return false
         setCanvasSelection([route.nodeId])
+        if (!current()) return false
         inspectorTarget = { kind: 'node', scopeKey: route.scopeKey, nodeId: route.nodeId }
-      } else inspectorTarget = { kind: 'group', bodyScopeKey: route.scopeKey, groupId: route.groupId }
-      await focusInspector()
+      } else {
+        if (!current()) return false
+        inspectorTarget = { kind: 'group', bodyScopeKey: route.scopeKey, groupId: route.groupId }
+      }
+      if (!current() || !(await focusInspectorIfCurrent(undefined, current)) || !current()) return false
       await tick()
+      if (!current()) return false
       const field = inspectorFields.find((candidate) => {
         const pointer = candidate.concretePath
           ? `/${candidate.concretePath.map((token) => String(token).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`
@@ -1426,28 +1466,34 @@
       })
       if (!field?.concretePath) return false
       const tab = field.section === 'Execution' || field.section === 'Advanced' ? field.section : 'General'
+      if (!current()) return false
       updateScopeLayout(route.scopeKey, (scope) => ({ ...scope, inspector: { ...scope.inspector, tab } }))
-      inspectorFocusField = field.concretePath
       await tick()
+      if (!current()) return false
+      inspectorFocusField = field.concretePath
       return true
     }
     await runProblemFocusCoordinator(requestRevision, {
       getRequest: () => problemFocusStore.get(),
       getRevision: () => documentSessionStore.get().revision,
       getProjection: () => canvasProjection,
+      getActiveScope: () => $activeScopeKeyStore,
       enterScope: async (scopeKey) => {
         if ($activeScopeKeyStore === scopeKey) return true
-        if (!enterLoopGroup(scopeKey.slice('loop-group:'.length))) return false
+        const entered = scopeKey === 'root' ? returnToRoot() : enterLoopGroup(scopeKey.slice('loop-group:'.length))
+        if (!entered) return false
         await tick()
         await tick()
         return $activeScopeKeyStore === scopeKey
       },
       focusNode: focusField,
       focusGroup: focusField,
-      focusYaml: async (issue) => {
+      focusYaml: async (issue, current) => {
+        if (!current()) return false
         showEditorMode('yaml')
         await tick()
-        return (await editorModesHost?.focusProblem(issue)) ?? false
+        if (!current()) return false
+        return (await editorModesHost?.focusProblem(issue, current)) ?? false
       },
       acknowledge: acknowledgeProblemFocus,
     })
@@ -1456,8 +1502,7 @@
   async function choosePaletteNode(descriptor: NodeKindDescriptor): Promise<void> {
     const position = graphCanvas?.viewportCenterPosition() ?? { x: 0, y: 0 }
     const result = await canvasAuthoring.add(descriptor, { viewportCenter: position })
-    if (result.status !== 'committed') workspaceError = result.message
-    else if (descriptor.id === 'loop_group' && result.nodeId) pendingOpenLoopGroup = result.nodeId
+    handleCanvasAddResult(descriptor, result)
   }
 
   async function dropPaletteNode(kind: string, position: { readonly x: number; readonly y: number }): Promise<void> {
@@ -1465,7 +1510,7 @@
     const descriptor = activeNodeDescriptors.find((candidate) => candidate.id === kind)
     if (!descriptor || !profile || !nodeKindAvailable(descriptor, profile) || nodesPaletteDisabled) return
     const result = await canvasAuthoring.add(descriptor, { viewportCenter: position })
-    if (result.status !== 'committed') workspaceError = result.message
+    handleCanvasAddResult(descriptor, result)
   }
 
   async function chooseCanvasChord(kind: NodeChordKind, afterSelection: boolean): Promise<void> {
@@ -1481,7 +1526,7 @@
       ...(afterSelection && selected.length === 1 ? { afterNodeId: selected[0] } : {}),
       viewportCenter: { x: 0, y: 0 },
     })
-    if (result.status !== 'committed') workspaceError = result.message
+    handleCanvasAddResult(descriptor, result)
   }
 
   function requestCanvasDelete(nodeIds: readonly string[]): void {
@@ -2507,6 +2552,7 @@
               suggestions={loopGroupReferenceSuggestions}
               status={referenceStatus}
               onCopy={copyLoopGroupReference}
+              canInsert={canInsertLoopGroupReference}
               onInsert={insertLoopGroupReference}
               onAddDependency={addOuterGroupDependency}
             />

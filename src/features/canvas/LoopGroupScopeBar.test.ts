@@ -45,8 +45,29 @@ describe('LoopGroupScopeBar', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Insert $LOOP_PREV.child.output' }))
     await fireEvent.click(screen.getByRole('button', { name: /add later as group dependency/i }))
     expect(onCopy).toHaveBeenCalledWith('$prepare.output')
-    expect(onInsert).toHaveBeenCalledWith('$LOOP_PREV.child.output')
+    expect(onInsert).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: 'previous', token: '$LOOP_PREV.child.output' }),
+    )
     expect(onAddDependency).toHaveBeenCalledWith('later')
     expect(screen.getByText(/add later as a dependency/i)).toBeVisible()
+  })
+
+  it('disables Insert unless the remembered target accepts the exact suggestion namespace', () => {
+    render(LoopGroupScopeBar, {
+      groupId: 'repeat',
+      suggestions: [
+        { namespace: 'outer', producerId: 'outer', token: '$outer.output', available: true, canAddDependency: false },
+        {
+          namespace: 'previous',
+          producerId: 'child',
+          token: '$LOOP_PREV.child.output',
+          available: true,
+          canAddDependency: false,
+        },
+      ],
+      canInsert: (suggestion) => suggestion.namespace === 'outer',
+    })
+    expect(screen.getByRole('button', { name: 'Insert $outer.output' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Insert $LOOP_PREV.child.output' })).toBeDisabled()
   })
 })

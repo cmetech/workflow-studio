@@ -78,6 +78,55 @@ const issue = (overrides: Partial<ValidationIssue>): ValidationIssue => ({
 })
 
 describe('problem focus coordinator', () => {
+  it('returns from a body before selecting the repeated root ID', async () => {
+    const repeatedProjection: WorkflowProjection = {
+      ...projection,
+      graphs: projection.graphs.map((graph) =>
+        graph.scope.key === 'loop-group:first'
+          ? {
+              ...graph,
+              nodes: graph.nodes.map((node) => ({ ...node, id: 'first' })),
+              definitionOrder: ['first'],
+            }
+          : graph,
+      ),
+    }
+    let activeScope: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:first'
+    const enterScope = vi.fn(async (scopeKey: import('$src/lib/projection/types').GraphScopeKey) => {
+      activeScope = scopeKey
+      return true
+    })
+    const focusNode = vi.fn(async () => activeScope === 'root')
+    const revision: DocumentRevision = {
+      workflowId: 'workflow',
+      pairGeneration: 1,
+      definitionPath: 'flow.yaml',
+      companionPath: null,
+      definitionRevision: 2,
+      companionRevision: null,
+      contractDigest: `sha256:${'a'.repeat(64)}`,
+    }
+    const request = {
+      issue: issue({ scopeKey: 'root', nodeId: 'first' }),
+      targetRevision: revision,
+      requested: true,
+      requestRevision: 2,
+    }
+    await runProblemFocusCoordinator(2, {
+      getRequest: () => request,
+      getRevision: () => revision,
+      getProjection: () => repeatedProjection,
+      getActiveScope: () => activeScope,
+      enterScope,
+      focusNode,
+      focusGroup: vi.fn(async () => true),
+      focusYaml: vi.fn(async () => true),
+      acknowledge: vi.fn(),
+    })
+    expect(enterScope).toHaveBeenCalledExactlyOnceWith('root')
+    expect(focusNode).toHaveBeenCalledOnce()
+  })
+
   it('routes repeated child IDs to their exact graph and field', () => {
     expect(
       problemFocusRoute(
@@ -143,6 +192,7 @@ describe('problem focus coordinator', () => {
       getRequest: () => request,
       getRevision: () => activeRevision,
       getProjection: () => projection,
+      getActiveScope: () => 'root',
       enterScope: async () => {
         await entered
         return true
@@ -157,5 +207,48 @@ describe('problem focus coordinator', () => {
     await work
     expect(focusNode).not.toHaveBeenCalled()
     expect(acknowledge).toHaveBeenCalledExactlyOnceWith(4)
+  })
+
+  it('gives delayed Inspector work a live guard and acknowledges stale work once without mutation', async () => {
+    const revision: DocumentRevision = {
+      workflowId: 'workflow',
+      pairGeneration: 1,
+      definitionPath: 'flow.yaml',
+      companionPath: null,
+      definitionRevision: 2,
+      companionRevision: null,
+      contractDigest: `sha256:${'a'.repeat(64)}`,
+    }
+    let activeRevision = revision
+    let release!: () => void
+    const rendered = new Promise<void>((resolve) => (release = resolve))
+    const mutate = vi.fn()
+    const acknowledge = vi.fn()
+    const request = {
+      issue: issue({ scopeKey: 'root', nodeId: 'first' }),
+      targetRevision: revision,
+      requested: true,
+      requestRevision: 8,
+    }
+    const work = runProblemFocusCoordinator(8, {
+      getRequest: () => request,
+      getRevision: () => activeRevision,
+      getProjection: () => projection,
+      getActiveScope: () => 'root',
+      enterScope: vi.fn(async () => true),
+      focusNode: async (_route, _issue, guard) => {
+        await rendered
+        if (guard()) mutate()
+        return true
+      },
+      focusGroup: vi.fn(async () => true),
+      focusYaml: vi.fn(async () => true),
+      acknowledge,
+    })
+    activeRevision = { ...revision, definitionRevision: 3 }
+    release()
+    await work
+    expect(mutate).not.toHaveBeenCalled()
+    expect(acknowledge).toHaveBeenCalledExactlyOnceWith(8)
   })
 })

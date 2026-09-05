@@ -86,14 +86,35 @@ describe('indexed reference discovery', () => {
     const prepared = prepareReferenceContract(contract)
     if (!prepared) throw new Error('Expected reader-3 reference capabilities.')
 
-    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].prompt')).toEqual({
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].prompt', '', 'outer')).toEqual({
       canonicalFieldPath: 'nodes[].prompt',
       scope: 'body',
       mode: 'text',
       previousOutputs: true,
       callerPolicy: 'body-text-references',
+      authoredValue: 'reference-template',
     })
-    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].command')).toBeNull()
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].command', '', 'outer')).toBeNull()
+  })
+
+  it('applies exact namespace, group-control, and inline-script eligibility', () => {
+    const prepared = prepareReferenceContract(contract)
+    if (!prepared) throw new Error('Expected reader-3 reference capabilities.')
+
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].script', 'jobs/report.py', 'outer')).toBeNull()
+    expect(referenceSurfaceForField(prepared, 'body', 'nodes[].script', 'echo $outer.output', 'outer')).not.toBeNull()
+    expect(
+      referenceSurfaceForField(prepared, 'group-control', 'nodes[].loop_group.until_bash', 'test done', 'previous'),
+    ).not.toBeNull()
+    expect(
+      referenceSurfaceForField(prepared, 'group-control', 'nodes[].loop_group.gate_message', 'ready', 'previous'),
+    ).toBeNull()
+    expect(
+      referenceSurfaceForField(prepared, 'group-control', 'nodes[].loop_group.gate_message', 'ready', 'current'),
+    ).toBeNull()
+    expect(
+      referenceSurfaceForField(prepared, 'group-control', 'nodes[].loop_group.gate_message', 'ready', 'outer'),
+    ).not.toBeNull()
   })
 
   it('traverses the published root, body, and group-control inventory once in native order', () => {

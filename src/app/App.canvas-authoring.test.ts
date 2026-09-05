@@ -536,6 +536,66 @@ describe('App canvas authoring composition', () => {
     rendered.unmount()
   })
 
+  it('opens a picker-added loop group body through the shared add result path', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Picker group\nnodes:\n  - id: prepare\n    command: prepare\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
+    await fireEvent.click(await screen.findByRole('option', { name: /loop group/i }))
+    await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:loop_group'))
+    expect(historyStore.get().undo).toHaveLength(1)
+    const heading = await screen.findByRole('heading', { name: /loop_group loop body/i })
+    await waitFor(() => expect(heading).toHaveFocus())
+    rendered.unmount()
+  })
+
+  it('preserves exact drop position while opening a dropped loop group through the shared add result path', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Dropped group\nnodes:\n  - id: prepare\n    command: prepare\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    const canvasViewport = screen.getByRole('region', { name: 'Workflow canvas viewport' })
+    vi.spyOn(canvasViewport, 'getBoundingClientRect').mockReturnValue({
+      x: 100,
+      y: 50,
+      left: 100,
+      top: 50,
+      right: 900,
+      bottom: 650,
+      width: 800,
+      height: 600,
+      toJSON: () => undefined,
+    })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperties(drop, {
+      clientX: { value: 500 },
+      clientY: { value: 350 },
+      dataTransfer: { value: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'loop_group' } },
+    })
+    await fireEvent(canvasViewport, drop)
+    await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:loop_group'))
+    expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.loop_group).toEqual({ x: 400, y: 300 })
+    expect(historyStore.get().undo).toHaveLength(1)
+    const heading = await screen.findByRole('heading', { name: /loop_group loop body/i })
+    await waitFor(() => expect(heading).toHaveFocus())
+    rendered.unmount()
+  })
+
   it('restores a body canvas through root navigation and a Settings page without heavy scope-switch work', async () => {
     const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
       kind: 'bundled',

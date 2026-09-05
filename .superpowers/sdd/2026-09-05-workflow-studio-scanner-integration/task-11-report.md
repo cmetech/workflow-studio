@@ -76,3 +76,35 @@ The full repository suite was not run because the required Task 11 suite, every 
 ## Self-review and limits
 
 All Task 11 audit RED items have direct implementation and test coverage. The scope bar intentionally offers whole-output tokens only; users may type contract-valid structured suffixes in the field. Insert changes only the widget draft and still requires the existing explicit Apply action to mutate YAML. Adding a missing outer dependency remains a separate explicit mutation and never inserts text automatically. No unsupported contract behavior is inferred: palette, fields, reference eligibility, previous prefix, and dependency rules come from the prepared pinned capability.
+
+## Fix round 1: scoped authoring leases
+
+The correction started from candidate `61144ab1ddf1637e5f785d84366251e680e15c4c` and addressed the four Important findings in `task-11-review.md` without widening Task 11.
+
+### RED evidence
+
+- The exact reference, root-navigation, and delayed-render command failed 4 tests across 3 files: a named script was accepted, a previous-output Insert remained enabled, a root Problem did not leave the active body, and delayed Inspector work had no live revision guard.
+- The drag journey was separately proven RED by restoring the pre-fix duplicated drop-result branch: 1 test failed with 35 skipped because the committed group remained in root scope. The source was immediately restored to the shared handler before GREEN verification.
+
+### Finding disposition
+
+| Finding | Correction | Exact witness |
+| --- | --- | --- |
+| `T11-REF-01` | The target lease now retains the actual body/group-control surface and prepared discriminator. Eligibility receives the current authored text and exact current/outer/previous namespace. Named scripts fail inline-script admission; `gate_message` accepts only direct outer suggestions; `until_bash` accepts current, direct outer, and `$LOOP_PREV`; Insert is disabled unless the current connected control, every lease identity, selection, text, discriminator, surface, and suggestion namespace still match. | `reference-index.test.ts`, `loop-group-reference-guidance.test.ts`, `LoopGroupScopeBar.test.ts` |
+| `T11-PROBLEM-01` | The coordinator compares the requested and active scopes for every graph route. App explicitly calls `returnToRoot()` for root routes, waits for scope rendering, and only then selects the exact routed node or group. | `problem-focus-coordinator.test.ts` covers a repeated root/body ID while returning from the body. |
+| `T11-PROBLEM-02` | The coordinator passes a live captured-request/revision guard into Inspector and YAML focus work. App checks it before each selection, target, drawer, tab, and focus mutation and after every awaited render; EditorModes repeats the check around its awaited render. Stale work acknowledges its request exactly once. | `problem-focus-coordinator.test.ts` delays Inspector work, changes the document revision, and proves no mutation plus one acknowledgment. |
+| `T11-GROUP-01` | Picker, palette, drop, and keyboard chord additions all route committed results through one handler. Group results schedule the existing accepted-projection/layout boundary before entry, preserving the caller's exact drop coordinates and the single YAML/history transaction. | `App.canvas-authoring.test.ts` covers picker addition and a drop at `{x: 400, y: 300}` with one undo entry, active body scope, and body-heading focus; the original palette journey remains covered. |
+
+### GREEN and final verification
+
+- Exact correction witnesses: 3 files, 4 tests passed (11 skipped by the name filter).
+- Picker and exact-position drop journeys: 1 file, 2 tests passed (35 skipped by the name filter).
+- Focused changed-module set: 7 files, 97 tests passed.
+- Required Task 11 behavior command: 7 files, 87 tests passed.
+- Affected action/reference/coordinator/editor/forms and accessibility command: 8 files, 139 tests passed.
+- `npm run check`: passed with 0 errors and 0 warnings.
+- Scoped ESLint passed for every changed source and test path.
+- Scoped Prettier write/check passed for every changed source and test path.
+- `git diff --check`: passed.
+
+The self-review re-ran each review witness against the actual owner boundaries. Reference queries use the prepared reader-v3 policy map and existing authored-value discriminator rather than rescanning YAML. Scope routing still rejects unavailable graph scopes. Stale navigation/focus paths add no YAML mutation, history item, or persistence path. The shared add-result handler does not alter position calculation or transaction ownership. Hermes, bundled resources, Task 12, and controller-owned review documents were not changed.

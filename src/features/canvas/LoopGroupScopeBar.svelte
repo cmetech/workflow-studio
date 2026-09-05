@@ -6,11 +6,12 @@
     suggestions: readonly LoopGroupReferenceSuggestion[]
     status?: string | undefined
     onCopy?: (token: string) => void | Promise<void>
-    onInsert?: (token: string) => void | Promise<void>
+    canInsert?: (suggestion: LoopGroupReferenceSuggestion) => boolean
+    onInsert?: (suggestion: LoopGroupReferenceSuggestion) => void | Promise<void>
     onAddDependency?: (producerId: string) => void | Promise<void>
   }
 
-  let { groupId, suggestions, status, onCopy, onInsert, onAddDependency }: Props = $props()
+  let { groupId, suggestions, status, onCopy, canInsert, onInsert, onAddDependency }: Props = $props()
 </script>
 
 <section class="scope-bar" aria-label={`References for ${groupId}`} data-scroll-owner="scope-references">
@@ -25,7 +26,11 @@
         <span>{suggestion.namespace}</span>
         {#if suggestion.available}
           <button type="button" onclick={() => onCopy?.(suggestion.token)}>Copy {suggestion.token}</button>
-          <button type="button" onclick={() => onInsert?.(suggestion.token)}>Insert {suggestion.token}</button>
+          <button
+            type="button"
+            disabled={canInsert ? !canInsert(suggestion) : false}
+            onclick={() => onInsert?.(suggestion)}>Insert {suggestion.token}</button
+          >
         {:else}
           <p>{suggestion.reason}</p>
           {#if suggestion.canAddDependency}

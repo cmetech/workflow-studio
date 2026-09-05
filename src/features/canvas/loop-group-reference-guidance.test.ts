@@ -95,6 +95,7 @@ describe('loop-group reference guidance', () => {
       bindingIdentity: 'binding',
       concretePath: ['nodes', 2, 'loop_group', 'nodes', 1, 'prompt'],
       canonicalFieldPath: 'nodes[].prompt',
+      surfaceScope: 'body',
       originalText: 'before after',
       selectionStart: 7,
       selectionEnd: 12,
@@ -102,13 +103,52 @@ describe('loop-group reference guidance', () => {
     owner.remember(identity, control)
     const input = vi.fn()
     control.addEventListener('input', input)
-    expect(owner.insert('$outer.output', identity, await prepared())).toEqual({ ok: true })
+    expect(owner.insert('$outer.output', 'outer', identity, await prepared())).toEqual({ ok: true })
     expect(control.value).toBe('before $outer.output')
     expect(input).toHaveBeenCalledOnce()
     expect(control).toHaveFocus()
     const write = vi.fn(async () => undefined)
     await expect(owner.copy('$LOOP_PREV.child.output', write)).resolves.toEqual({ ok: true })
     expect(write).toHaveBeenCalledWith('$LOOP_PREV.child.output')
+  })
+
+  it('accepts suggestions against the exact remembered group-control surface', async () => {
+    const contract = await prepared()
+    const owner = new LoopGroupReferenceTargetOwner()
+    const control = document.createElement('textarea')
+    control.value = 'ready'
+    document.body.append(control)
+    control.setSelectionRange(5, 5)
+    const gate: ReferenceTargetIdentity = {
+      workflowId: 'workflow',
+      pairGeneration: 1,
+      definitionRevision: 2,
+      companionRevision: null,
+      contractDigest: `sha256:${'a'.repeat(64)}`,
+      profile: 'archon-2026-07',
+      scopeKey: 'loop-group:repeat',
+      bindingIdentity: 'group:repeat',
+      concretePath: ['nodes', 2, 'loop_group', 'gate_message'],
+      canonicalFieldPath: 'nodes[].loop_group.gate_message',
+      surfaceScope: 'group-control',
+      originalText: 'ready',
+      selectionStart: 5,
+      selectionEnd: 5,
+    }
+    owner.remember(gate, control)
+    expect(owner.accepts('outer', gate, contract)).toBe(true)
+    expect(owner.accepts('current', gate, contract)).toBe(false)
+    expect(owner.accepts('previous', gate, contract)).toBe(false)
+
+    const until = {
+      ...gate,
+      concretePath: ['nodes', 2, 'loop_group', 'until_bash'],
+      canonicalFieldPath: 'nodes[].loop_group.until_bash',
+    }
+    owner.remember(until, control)
+    expect(owner.accepts('current', until, contract)).toBe(true)
+    expect(owner.accepts('outer', until, contract)).toBe(true)
+    expect(owner.accepts('previous', until, contract)).toBe(true)
   })
 
   it.each([
@@ -143,6 +183,7 @@ describe('loop-group reference guidance', () => {
       bindingIdentity: 'binding',
       concretePath: ['nodes', 2, 'loop_group', 'nodes', 0, 'prompt'],
       canonicalFieldPath: 'nodes[].prompt',
+      surfaceScope: 'body',
       originalText: 'draft',
       selectionStart: 5,
       selectionEnd: 5,
@@ -165,7 +206,7 @@ describe('loop-group reference guidance', () => {
     }
     if (change === 'text') control.value = 'changed'
     if (change === 'disconnected control') control.remove()
-    expect(owner.insert('$child.output', current, await prepared())).toMatchObject({ ok: false })
+    expect(owner.insert('$child.output', 'current', current, await prepared())).toMatchObject({ ok: false })
     expect(control.value).toBe(change === 'text' ? 'changed' : 'draft')
   })
 
