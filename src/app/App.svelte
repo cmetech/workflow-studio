@@ -352,7 +352,13 @@
   const referenceTargetOwner = new LoopGroupReferenceTargetOwner()
   let rememberedReferenceIdentity = $state.raw<ReferenceTargetIdentity | null>(null)
   let referenceStatus = $state<string | undefined>()
-  let inspectorFocusField = $state.raw<readonly (string | number)[] | undefined>()
+  let inspectorFocusRequest = $state.raw<
+    | {
+        readonly path: readonly (string | number)[]
+        readonly current: () => boolean
+      }
+    | undefined
+  >()
   let handledProblemRequest = 0
   let pendingOpenLoopGroup = $state<string | null>(null)
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
@@ -669,11 +675,24 @@
     if (!preparedReferences || canvasGraph?.scope.kind !== 'loop-group' || !canvasProjection) return []
     const root = canvasProjection.graphs.find(({ scope }) => scope.key === 'root')
     if (!root) return []
+    const currentTarget = currentReferenceTargetIdentity()
+    const activeField =
+      currentTarget && referenceTargetOwner.accepts('current', currentTarget, preparedReferences)
+        ? {
+            surfaceScope: currentTarget.surfaceScope,
+            canonicalFieldPath: currentTarget.canonicalFieldPath,
+            currentValue: currentTarget.originalText,
+            ...(currentTarget.surfaceDiscriminatorId
+              ? { surfaceDiscriminatorId: currentTarget.surfaceDiscriminatorId }
+              : {}),
+            ...(inspectorTarget.kind === 'node' ? { consumerId: inspectorTarget.nodeId } : {}),
+          }
+        : undefined
     return buildLoopGroupReferenceGuidance({
       bodyGraph: canvasGraph,
       rootGraph: root,
       prepared: preparedReferences,
-      ...(canvasSelectedNodes.length === 1 ? { consumerId: canvasSelectedNodes[0]!.id } : {}),
+      ...(activeField ? { activeField } : {}),
     })
   })
   const resolvedInspectorTarget = $derived(resolveInspectorTarget(canvasProjection, inspectorTarget))
@@ -1470,8 +1489,10 @@
       updateScopeLayout(route.scopeKey, (scope) => ({ ...scope, inspector: { ...scope.inspector, tab } }))
       await tick()
       if (!current()) return false
-      inspectorFocusField = field.concretePath
-      return true
+      inspectorFocusRequest = Object.freeze({ path: Object.freeze([...field.concretePath]), current })
+      await tick()
+      await Promise.resolve()
+      return current()
     }
     await runProblemFocusCoordinator(requestRevision, {
       getRequest: () => problemFocusStore.get(),
@@ -2764,7 +2785,7 @@
         onDocumentationTopic={(id) => (inspectorDocumentationTopicId = id)}
         onCommit={commitInspectorField}
         onTextTarget={rememberInspectorTextTarget}
-        focusField={inspectorFocusField}
+        focusRequest={inspectorFocusRequest}
         activeTab={$activeScopeLayoutStore?.inspector.tab === 'Execution' ||
         $activeScopeLayoutStore?.inspector.tab === 'Advanced' ||
         $activeScopeLayoutStore?.inspector.tab === 'Docs'

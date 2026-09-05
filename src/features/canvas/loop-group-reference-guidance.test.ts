@@ -56,7 +56,12 @@ describe('loop-group reference guidance', () => {
       bodyGraph: body,
       rootGraph: root,
       prepared: await prepared(),
-      consumerId: 'consumer',
+      activeField: {
+        surfaceScope: 'body',
+        canonicalFieldPath: 'nodes[].prompt',
+        currentValue: '',
+        consumerId: 'consumer',
+      },
     })
     expect(guidance.filter(({ namespace }) => namespace === 'current').map(({ token }) => token)).toEqual([
       '$prepare.output',
@@ -76,6 +81,32 @@ describe('loop-group reference guidance', () => {
       reason: 'Add unconnected as a dependency of repeat to use this outer output.',
     })
     expect(guidance.some(({ namespace, producerId }) => namespace === 'outer' && producerId === 'prepare')).toBe(false)
+  })
+
+  it('derives current producers from the active group field instead of a preserved child selection', async () => {
+    const body = graph('loop-group:repeat', ['prepare', 'child', 'consumer'], ['outer'])
+    const root = graph('root', ['outer', 'repeat'])
+    const contract = await prepared()
+    const currentTokens = (canonicalFieldPath: string) =>
+      buildLoopGroupReferenceGuidance({
+        bodyGraph: body,
+        rootGraph: root,
+        prepared: contract,
+        activeField: {
+          surfaceScope: 'group-control',
+          canonicalFieldPath,
+          currentValue: 'ready',
+        },
+      })
+        .filter(({ namespace }) => namespace === 'current')
+        .map(({ token }) => token)
+
+    expect(currentTokens('nodes[].loop_group.until_bash')).toEqual([
+      '$prepare.output',
+      '$child.output',
+      '$consumer.output',
+    ])
+    expect(currentTokens('nodes[].loop_group.gate_message')).toEqual([])
   })
 
   it('copies exact bytes and inserts only into an unchanged compatible remembered control', async () => {

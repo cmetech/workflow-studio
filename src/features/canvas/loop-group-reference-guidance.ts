@@ -18,18 +18,41 @@ export interface LoopGroupReferenceSuggestion {
   readonly reason?: string
 }
 
+export interface ReferenceGuidanceField {
+  readonly surfaceScope: Extract<ReferenceSurfaceScope, 'body' | 'group-control'>
+  readonly canonicalFieldPath: string
+  readonly currentValue: string
+  readonly surfaceDiscriminatorId?: string
+  readonly consumerId?: string
+}
+
 export function buildLoopGroupReferenceGuidance(input: {
   readonly bodyGraph: ProjectedGraph
   readonly rootGraph: ProjectedGraph
   readonly prepared: PreparedReferenceContract
-  readonly consumerId?: string
+  readonly activeField?: ReferenceGuidanceField
 }): readonly LoopGroupReferenceSuggestion[] {
   const { bodyGraph, rootGraph, prepared } = input
   if (bodyGraph.scope.kind !== 'loop-group' || !bodyGraph.scope.groupId) return []
   const bodyIds = new Set(bodyGraph.nodes.map(({ id }) => id))
   const groupId = bodyGraph.scope.groupId
-  const consumer = bodyGraph.nodes.find(({ id }) => id === input.consumerId)
-  const currentIds = consumer?.dependsOn ?? []
+  const activeSurface = input.activeField
+    ? referenceSurfaceForField(
+        prepared,
+        input.activeField.surfaceScope,
+        input.activeField.canonicalFieldPath,
+        input.activeField.currentValue,
+        'current',
+      )
+    : null
+  const exactSurface =
+    activeSurface && activeSurface.discriminatorId === input.activeField?.surfaceDiscriminatorId ? activeSurface : null
+  const consumer = bodyGraph.nodes.find(({ id }) => id === input.activeField?.consumerId)
+  const currentIds = exactSurface
+    ? input.activeField?.surfaceScope === 'group-control'
+      ? bodyGraph.definitionOrder
+      : (consumer?.dependsOn ?? [])
+    : []
   const current = currentIds
     .filter((id) => bodyIds.has(id))
     .map((producerId) => suggestion('current', producerId, `$${producerId}.output`, true))

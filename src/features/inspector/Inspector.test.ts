@@ -90,6 +90,27 @@ const codeField: FormField = {
 }
 
 describe('Inspector', () => {
+  it('checks a published focus request guard inside the queued callback before DOM focus', async () => {
+    const sentinel = document.createElement('button')
+    document.body.append(sentinel)
+    sentinel.focus()
+    let current = true
+    const guard = vi.fn(() => current)
+    const field = { ...fields[0]!, concretePath: ['nodes', 2, 'loop_group', 'nodes', 1, 'id'] }
+
+    render(Inspector, {
+      fields: [field],
+      values: { [field.id]: 'child' },
+      selectionLabel: 'child in repeat',
+      focusRequest: { path: field.concretePath, current: guard },
+    })
+    current = false
+    await Promise.resolve()
+
+    expect(guard).toHaveBeenCalled()
+    expect(sentinel).toHaveFocus()
+  })
+
   it('refreshes the remembered text target after pointer and keyboard selection changes', async () => {
     const selections: number[] = []
     render(Inspector, {
@@ -117,7 +138,7 @@ describe('Inspector', () => {
       selectionLabel: 'child in repeat',
       selectionNodeId: 'child',
       selectionScopeKey: 'loop-group:repeat',
-      focusField: field.concretePath,
+      focusRequest: { path: field.concretePath, current: () => true },
       issues: [
         {
           code: 'other-body',

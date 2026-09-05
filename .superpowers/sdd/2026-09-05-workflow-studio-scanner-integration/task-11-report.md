@@ -108,3 +108,32 @@ The correction started from candidate `61144ab1ddf1637e5f785d84366251e680e15c4c`
 - `git diff --check`: passed.
 
 The self-review re-ran each review witness against the actual owner boundaries. Reference queries use the prepared reader-v3 policy map and existing authored-value discriminator rather than rescanning YAML. Scope routing still rejects unavailable graph scopes. Stale navigation/focus paths add no YAML mutation, history item, or persistence path. The shared add-result handler does not alter position calculation or transaction ownership. Hermes, bundled resources, Task 12, and controller-owned review documents were not changed.
+
+## Fix round 2: guarded focus and group guidance
+
+The second correction started from `4c453be68c0ea4525d364fb74aa5541723d36c03` and addresses the two remaining Important findings from the round-one scoped re-review.
+
+### RED evidence
+
+The exact two-file witness failed 2 tests with 39 skipped:
+
+- `T11-PROBLEM-02`: Inspector ignored the new guarded focus request, so the live guard was never called inside its queued callback.
+- `T11-REF-02`: a preserved selected child leaked its direct dependencies into group-control guidance; `until_bash` omitted the selected consumer and `gate_message` would receive current-body suggestions.
+
+### Corrections and self-review
+
+- Inspector now accepts an immutable focus request containing only a concrete field path and a live `current` callback. Its queued microtask resolves the DOM target, checks the callback immediately before `.focus()`, and suppresses an invalidated request. App waits for that publication/microtask boundary before the coordinator can acknowledge the request. The existing coordinator guard still checks request identity and full `DocumentRevision`; delayed stale work acknowledges once and has no selection, target, tab, or focus mutation. Inspector contains no document/revision business logic.
+- Current-producer guidance now receives an exact active field surface: body/group-control scope, canonical path, current authored value, prepared discriminator, and the body consumer only when the active Inspector target is a node. The prepared reference policy must admit the `current` namespace. Body fields then expose direct dependencies, group `until_bash` exposes every body producer in definition order, and group `gate_message` exposes none. A preserved child selection is no longer consulted while group settings own the Inspector. Outer and previous suggestions retain the round-one eligibility checks at insertion.
+- The direct App journey covers a body child field with one direct dependency, then preserves that child selection while changing the Inspector target to group settings. It observes exactly one current token for the child, none for `gate_message`, and all body producers for `until_bash`.
+
+### Verification
+
+- Exact RED-to-GREEN witnesses: 2 files, 2 tests passed (39 skipped by the name filter).
+- Focused Inspector/guidance/coordinator/App set: 4 files, 82 tests passed.
+- Required Task 11 behavior command: 7 files, 88 tests passed.
+- Affected action/reference/coordinator/editor/forms and accessibility command: 8 files, 140 tests passed.
+- `npm run check`: passed with 0 errors and 0 warnings.
+- Scoped ESLint passed for all six changed source and test paths.
+- Scoped Prettier check and `git diff --check` passed for the complete correction diff.
+
+No Task 12, Hermes, bundled resource, ledger, or controller-owned review file was changed.

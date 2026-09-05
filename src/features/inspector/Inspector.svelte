@@ -24,7 +24,12 @@
     scrollTop?: number | undefined
     onTabChange?: ((tab: InspectorTab) => void) | undefined
     onScroll?: ((scrollTop: number) => void) | undefined
-    focusField?: readonly (string | number)[] | undefined
+    focusRequest?:
+      | {
+          readonly path: readonly (string | number)[]
+          readonly current: () => boolean
+        }
+      | undefined
     onTextTarget?: ((field: FormField, control: HTMLInputElement | HTMLTextAreaElement) => void) | undefined
   }
 
@@ -49,7 +54,7 @@
     scrollTop = 0,
     onTabChange,
     onScroll,
-    focusField,
+    focusRequest,
     onTextTarget,
   }: Props = $props()
 
@@ -80,15 +85,16 @@
   })
 
   $effect(() => {
-    if (!panel || !focusField) return
-    const pointer = pathPointer(focusField)
-    queueMicrotask(() =>
-      panel
-        ?.querySelector<HTMLElement>(
-          `[data-field-pointer="${CSS.escape(pointer)}"] input, [data-field-pointer="${CSS.escape(pointer)}"] textarea, [data-field-pointer="${CSS.escape(pointer)}"] select`,
-        )
-        ?.focus(),
-    )
+    const request = focusRequest
+    if (!panel || !request) return
+    const pointer = pathPointer(request.path)
+    queueMicrotask(() => {
+      const target = panel?.querySelector<HTMLElement>(
+        `[data-field-pointer="${CSS.escape(pointer)}"] input, [data-field-pointer="${CSS.escape(pointer)}"] textarea, [data-field-pointer="${CSS.escape(pointer)}"] select`,
+      )
+      if (!request.current()) return
+      target?.focus()
+    })
   })
 
   $effect(() => {

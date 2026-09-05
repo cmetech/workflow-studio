@@ -663,7 +663,7 @@ describe('App canvas authoring composition', () => {
     additionalContract = loadedContract.contract
     const rendered = await renderAuthoringApp({
       scopeContract: additionalContract,
-      text: 'name: Scoped\ndescription: Drill in\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n',
+      text: 'name: Scoped\ndescription: Drill in\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      until_bash: echo ready\n      gate_message: Wait here\n      max_iterations: 2\n      nodes:\n        - id: prepare\n          bash: echo prepare\n        - id: child\n          depends_on: [prepare]\n          bash: echo child\n',
       companionText: 'language_compatibility: archon-2026-07\n',
     })
 
@@ -677,10 +677,23 @@ describe('App canvas authoring composition', () => {
 
     setCanvasSelection(['child'])
     await tick()
+    const referenceBar = screen.getByRole('region', { name: 'References for repeat' })
+    const currentTokens = () =>
+      [...referenceBar.querySelectorAll('article')]
+        .filter((article) => [...article.querySelectorAll('span')].some(({ textContent }) => textContent === 'current'))
+        .map((article) => article.querySelector('code')?.textContent)
+    await fireEvent.focusIn(screen.getByRole('textbox', { name: /bash/i }))
+    await waitFor(() => expect(currentTokens()).toEqual(['$prepare.output']))
+
     await fireEvent.click(screen.getByRole('button', { name: 'Edit Group Settings' }))
     expect($canvasSelection.get()).toEqual(['child'])
     expect(screen.getByText('repeat', { selector: '.inspector strong' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus()
+    await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
+    await fireEvent.focusIn(screen.getByRole('textbox', { name: /gate message/i }))
+    await waitFor(() => expect(currentTokens()).toEqual([]))
+    await fireEvent.focusIn(screen.getByRole('textbox', { name: /until bash/i }))
+    await waitFor(() => expect(currentTokens()).toEqual(['$prepare.output', '$child.output']))
 
     await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
     await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveFocus())
