@@ -4,6 +4,10 @@ import type { ProjectedGraph } from '$src/lib/projection/types'
 import { layoutGraph } from './layout-graph'
 import { loopGroupSummariesForProjection, projectCanvas } from './project-canvas'
 import type { WorkflowProjection } from '$src/lib/projection/types'
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+import archonContractJson from '../../../contracts/archon-2026-07-v6.json'
 
 const projection: ProjectedGraph = deepFreeze({
   scope: { key: 'root', kind: 'root', workflow: { name: 'Release', profile: 'hermes-legacy' } },
@@ -45,7 +49,44 @@ const savedLayout: ScopeLayoutV1 = {
 }
 
 describe('projectCanvas', () => {
-  it('derives compound summaries from the owning node and body projection without canvas-position input', () => {
+  it('derives required group status from the prepared contract and literal minimum authored payload', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error('Bundled Archon contract did not activate')
+    const text = 'name: Minimum\ndescription: Empty group\nnodes:\n  - id: repeat\n    loop_group:\n      nodes: []\n'
+    const analysis = await analyzeWorkflowPair(
+      {
+        type: 'analyze',
+        requestId: 'minimum-empty-group',
+        workflowId: 'workflow:minimum',
+        pairGeneration: 0,
+        definition: { path: 'minimum.yaml', text, revision: 0 },
+        companion: { path: 'minimum.hermes.yaml', text: 'language_compatibility: archon-2026-07\n', revision: 0 },
+        profile: loaded.contract.profile,
+        contractDigest: loaded.contract.contract_digest,
+        reason: 'explicit-validate',
+      },
+      loaded.contract,
+    )
+    expect(analysis.structurallyValid).toBe(false)
+    expect(analysis.visuallyAuthorable).toBe(true)
+    expect(analysis.issues.some(({ code }) => code === 'loop_group_shape_invalid')).toBe(true)
+    const summaries = loopGroupSummariesForProjection(
+      analysis.projection as WorkflowProjection,
+      analysis.issues,
+      readScopedDagCapabilities(loaded.contract),
+    )
+    expect(summaries.repeat).toMatchObject({ bodyNodeCount: 0, errorCount: 1, requiredIssueCount: 3 })
+  })
+
+  it('derives compound summaries from the owning node and body projection without canvas-position input', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error('Bundled Archon contract did not activate')
     const group = { ...projection.nodes[0]!, id: 'repeat', kind: 'loop_group', value: { max_iterations: 4, nodes: [] } }
     const root: ProjectedGraph = {
       ...projection,
@@ -76,26 +117,30 @@ describe('projectCanvas', () => {
     }
 
     expect(
-      loopGroupSummariesForProjection(workflow, [
-        {
-          code: 'schema_required',
-          layer: 'contract',
-          severity: 'error',
-          blocking: true,
-          message: 'Until is required.',
-          document: 'definition',
-          scopeKey: 'loop-group:repeat',
-          groupId: 'repeat',
-          nodeId: 'repeat',
-        },
-      ]),
+      loopGroupSummariesForProjection(
+        workflow,
+        [
+          {
+            code: 'schema_required',
+            layer: 'contract',
+            severity: 'error',
+            blocking: true,
+            message: 'Until is required.',
+            document: 'definition',
+            scopeKey: 'loop-group:repeat',
+            groupId: 'repeat',
+            nodeId: 'repeat',
+          },
+        ],
+        readScopedDagCapabilities(loaded.contract),
+      ),
     ).toEqual({
       repeat: {
         bodyNodeCount: 2,
         maxIterations: 4,
         primarySinkId: 'review',
         errorCount: 1,
-        requiredIssueCount: 1,
+        requiredIssueCount: 2,
       },
     })
   })
@@ -142,7 +187,8 @@ describe('projectCanvas', () => {
     })
 
     expect(canvas.nodes[0]).toMatchObject({
-      ariaLabel: 'loop group repeat, 2 body nodes, primary output publish, 2 errors, 1 required issue',
+      ariaLabel:
+        'loop group repeat, 2 body nodes, maximum 7 iterations, primary output publish, 2 errors, 1 required issue',
       data: {
         id: 'repeat',
         kind: 'loop_group',

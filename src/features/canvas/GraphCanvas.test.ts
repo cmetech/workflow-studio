@@ -118,7 +118,7 @@ describe('GraphCanvas', () => {
       definitionOrder: ['repeat'],
       capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
     }
-    const { container } = renderCanvas({
+    const rendered = renderCanvas({
       projection: groupProjection,
       layout: { ...layout, nodePositions: { repeat: { x: 0, y: 0 } } },
       groupSummaries: {
@@ -132,8 +132,13 @@ describe('GraphCanvas', () => {
       },
       onOpenLoopGroup,
     })
+    const { container } = rendered
     const node = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="repeat"]')!
 
+    expect(node).toHaveAttribute(
+      'aria-label',
+      'loop group repeat, 2 body nodes, maximum 3 iterations, primary output publish, 1 error, 1 required issue',
+    )
     expect(screen.getByRole('article', { name: /loop group repeat/i })).toBeVisible()
     expect(screen.getByText('2 body nodes')).toBeVisible()
     expect(screen.getByText('Maximum 3 iterations')).toBeVisible()
@@ -154,6 +159,19 @@ describe('GraphCanvas', () => {
     expect(onOpenLoopGroup).toHaveBeenNthCalledWith(1, 'repeat', open)
     expect(onOpenLoopGroup).toHaveBeenNthCalledWith(2, 'repeat', node)
     expect(onOpenLoopGroup).toHaveBeenNthCalledWith(3, 'repeat', node)
+
+    rendered.component.arrange()
+    await tick()
+    expect(screen.getByText('2 body nodes')).toBeVisible()
+    expect(screen.getByText('Maximum 3 iterations')).toBeVisible()
+    expect(screen.getByText('Group output: publish')).toBeVisible()
+    expect(screen.getByText('1 required')).toBeVisible()
+    expect(screen.getByText('1 error')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open loop body' })).toBeVisible()
+    expect(container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveAttribute(
+      'aria-label',
+      'loop group repeat, 2 body nodes, maximum 3 iterations, primary output publish, 1 error, 1 required issue',
+    )
   })
 
   it('reports whether Escape ownership cancelled an edge gesture or a real selection', async () => {

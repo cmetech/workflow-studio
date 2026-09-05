@@ -81,7 +81,6 @@
     onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
     groupSummaries?: Readonly<Record<string, LoopGroupNodeSummary>>
     onOpenLoopGroup?: (groupId: string, invoker: HTMLElement) => void | Promise<void>
-    onEditLoopGroup?: (groupId: string, invoker: HTMLElement) => void | Promise<void>
   }
 
   type KeyboardSelectionGesture =
@@ -116,7 +115,6 @@
     onDropNodeKind,
     groupSummaries = {},
     onOpenLoopGroup,
-    onEditLoopGroup,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -140,7 +138,6 @@
   setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)
   const scopeRelationship: CanvasScopeRelationship = {
     openLoopGroup: (groupId, invoker) => onOpenLoopGroup?.(groupId, invoker),
-    editLoopGroup: (groupId, invoker) => onEditLoopGroup?.(groupId, invoker),
   }
   setContext(CANVAS_SCOPE_RELATIONSHIP, scopeRelationship)
   const initialProjection = deriveCanvas()
@@ -313,7 +310,13 @@
 
   export function arrange(): void {
     if (readOnly || stale || transitionLocked) return
-    const projected = projectCanvas(projection, layout, { issues, arrange: true })
+    const projected = projectCanvas(projection, layout, {
+      issues,
+      stale,
+      readOnly: readOnly || transitionLocked,
+      groupSummaries,
+      arrange: true,
+    })
     flowNodes = withAuthoritativeSelection(projected.nodes, flowNodes)
     flowEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
     replaceCanvasPositions(projected.positions)
@@ -405,9 +408,6 @@
     if (event.key === 'Escape') {
       event.preventDefault()
       cancelEdge()
-      if (event.target instanceof Element && event.target.closest('.svelte-flow__node, .svelte-flow__edge')) {
-        clearSurfaceSelection()
-      }
       return
     }
     if (!targets.length) return

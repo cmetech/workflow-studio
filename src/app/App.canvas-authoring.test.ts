@@ -2,7 +2,7 @@ import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
 import archonContractJson from '../../contracts/archon-2026-07-v6.json'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import * as placement from '$src/lib/layout/place-new-nodes'
-import { enterLoopGroup, returnToRoot } from '$src/stores/canvas-scope'
+import { $scopeNavigationEvent, enterLoopGroup, publishCanvasProjection, returnToRoot } from '$src/stores/canvas-scope'
 import { updateScopeLayout } from '$src/stores/layout'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
 import type { WorkflowProjection } from '$src/lib/projection/types'
@@ -12,6 +12,7 @@ import { parse } from 'yaml'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
+import { editDocumentText } from '$src/lib/documents/revisions'
 
 const nativeWindow = vi.hoisted(() => ({
   unlistenClose: vi.fn(),
@@ -662,9 +663,11 @@ describe('App canvas authoring composition', () => {
 
     await fireEvent.keyDown(canvas, { key: 'e' })
     expect(screen.getByText(/create edge from child/i)).toBeVisible()
-    await fireEvent.keyDown(canvas, { key: 'Escape' })
+    const childNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="child"]')!
+    await fireEvent.keyDown(childNode, { key: 'Escape' })
     expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:repeat')
     expect(screen.queryByText(/create edge from child/i)).not.toBeInTheDocument()
+    expect($canvasSelection.get()).toEqual(['child'])
 
     await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
     expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
@@ -679,6 +682,73 @@ describe('App canvas authoring composition', () => {
     await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('root'))
     expect(historyStore.get().undo).toHaveLength(0)
     rendered.unmount()
+  })
+
+  it('consumes a removed active-scope event, explains the fallback, and focuses the recorded root target without work', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Removed group\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n  - id: tail\n    bash: echo tail\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    updateScopeLayout('root', (scope) => ({ ...scope, focusTarget: { kind: 'node', nodeId: 'tail' } }), 'navigation')
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+    const session = $documentSession.get()
+    const before = session.analysis!.projection as WorkflowProjection
+    const nextPair = editDocumentText(
+      session.pair!,
+      'definition',
+      'name: Scoped\ndescription: Removed group\nnodes:\n  - id: tail\n    bash: echo tail\n',
+    )
+    const analysis = await analyzeWorkflowPair(
+      {
+        type: 'analyze',
+        requestId: 'removed-active-group',
+        workflowId: nextPair.workflowId,
+        pairGeneration: nextPair.generation,
+        definition: nextPair.definition,
+        companion: nextPair.companion,
+        profile: additionalContract.profile,
+        contractDigest: additionalContract.contract_digest,
+        reason: 'edit',
+      },
+      additionalContract,
+    )
+    expect(analysis.structurallyValid).toBe(true)
+    expect(updateDocumentSession(nextPair, additionalContract.contract_digest, 'unknown', analysis)).toBe(true)
+    publishCanvasProjection(nextPair.workflowId, analysis.projection as WorkflowProjection, before, {
+      definition: nextPair.definition.text,
+      companion: nextPair.companion?.text ?? null,
+    })
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    try {
+      expect(activeLayoutStore.get()?.activeScopeKey).toBe('root')
+      expect($scopeNavigationEvent.get()).not.toBeNull()
+      expect(await screen.findByText(/open loop group no longer exists.*returned to the root graph/i)).toBeVisible()
+      await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="tail"]')).toHaveFocus())
+      expect($scopeNavigationEvent.get()).toBeNull()
+      expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+      expect(historyStore.get().undo).toHaveLength(0)
+      expect($documentSession.get().pair).toBe(nextPair)
+      expect(metrics.snapshot()).toMatchObject({
+        parseRequests: 0,
+        validationPasses: 0,
+        layouts: 0,
+        yamlTransactions: 0,
+        nativeCalls: 0,
+        gitCalls: 0,
+        layoutSaves: 0,
+      })
+    } finally {
+      restoreMetrics()
+      rendered.unmount()
+    }
   })
 
   it('renders the exact empty-body repair UI without inventing values and keeps save blocked', async () => {

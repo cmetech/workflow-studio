@@ -10,6 +10,7 @@ import {
 } from '$src/lib/projection/types'
 import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH, layoutGraph, type LayoutGraphAdapter } from './layout-graph'
 import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition, LoopGroupNodeSummary } from './types'
+import type { ScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 
 const SUMMARY_LIMIT = 72
 export const MAX_VISUAL_NODES = VISUAL_NODE_CAPACITY
@@ -182,6 +183,7 @@ export function canvasCapacityForProjection(projection: ProjectedGraph): CanvasC
 export function loopGroupSummariesForProjection(
   projection: WorkflowProjection,
   issues: readonly ValidationIssue[],
+  capabilities?: ScopedDagCapabilities,
 ): Readonly<Record<string, LoopGroupNodeSummary>> {
   const root = projection.graphs.find(({ scope }) => scope.key === 'root')
   if (!root) return {}
@@ -203,9 +205,7 @@ export function loopGroupSummariesForProjection(
       ...(typeof maxIterations === 'number' && Number.isFinite(maxIterations) ? { maxIterations } : {}),
       ...(body?.primarySinkId ? { primarySinkId: body.primarySinkId } : {}),
       errorCount: groupIssues.filter(({ severity }) => severity === 'error').length,
-      requiredIssueCount: groupIssues.filter(
-        ({ code, message }) => code.toLowerCase().includes('required') || message.toLowerCase().includes('required'),
-      ).length,
+      requiredIssueCount: requiredGroupFieldCount(value, capabilities),
     }
   }
   return summaries
@@ -301,11 +301,25 @@ function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOpti
 
 function loopGroupAccessibleLabel(id: string, summary: LoopGroupNodeSummary): string {
   const parts = [`loop group ${id}`, `${summary.bodyNodeCount} body node${summary.bodyNodeCount === 1 ? '' : 's'}`]
+  if (summary.maxIterations !== undefined) parts.push(`maximum ${summary.maxIterations} iterations`)
   if (summary.primarySinkId) parts.push(`primary output ${summary.primarySinkId}`)
   if (summary.errorCount > 0) parts.push(`${summary.errorCount} error${summary.errorCount === 1 ? '' : 's'}`)
   if (summary.requiredIssueCount > 0)
     parts.push(`${summary.requiredIssueCount} required issue${summary.requiredIssueCount === 1 ? '' : 's'}`)
   return parts.join(', ')
+}
+
+function requiredGroupFieldCount(
+  payload: Readonly<Record<string, unknown>>,
+  capabilities?: ScopedDagCapabilities,
+): number {
+  if (!capabilities) return 0
+  const bodyField = capabilities.bodyPath.at(-1)
+  return capabilities.topology.required_group_fields.filter((field) => {
+    if (!Object.hasOwn(payload, field)) return true
+    const value = payload[field]
+    return field === bodyField && (!Array.isArray(value) || value.length < capabilities.topology.min_nodes)
+  }).length
 }
 
 export function isProjectedGraph(value: unknown): value is ProjectedGraph {

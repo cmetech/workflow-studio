@@ -28,6 +28,7 @@
   import BrandSettings from '$src/features/branding/BrandSettings.svelte'
   import BrandPreview from '$src/features/branding/BrandPreview.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
+  import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
   import { collectContractFields, fieldsForNode, materializeFormFields } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
   import { applyWorkflowMutation, type ApplyWorkflowMutationResult } from '$src/lib/documents/transactions'
@@ -67,7 +68,7 @@
     type WorkbenchPresentation,
   } from '$src/lib/layout/workbench-layout'
   import type { LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
-  import type { WorkflowProjection } from '$src/lib/projection/types'
+  import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
   import {
     $documentSession as documentSessionStore,
@@ -77,6 +78,8 @@
   import {
     $activeScopeKey as activeScopeKeyStore,
     $canvasScopeRestoration as canvasScopeRestorationStore,
+    $scopeNavigationEvent as scopeNavigationEventStore,
+    consumeScopeNavigationEvent,
     publishCanvasProjection,
     commitCanvasIdentityChanges,
     queueCanvasLayoutHistory,
@@ -599,9 +602,21 @@
     ),
   )
   const canvasSurfaceMode = $derived(canvasCapacity?.visual === false ? 'yaml' : $activeEditorMode)
+  const scopedDagCapabilities = $derived.by(() => {
+    if (!inspectorContract) return undefined
+    try {
+      return readScopedDagCapabilities(inspectorContract)
+    } catch {
+      return undefined
+    }
+  })
   const loopGroupSummaries = $derived(
     canvasProjection
-      ? loopGroupSummariesForProjection(canvasProjection, $documentSessionStore.analysis?.issues ?? [])
+      ? loopGroupSummariesForProjection(
+          canvasProjection,
+          $documentSessionStore.analysis?.issues ?? [],
+          scopedDagCapabilities,
+        )
       : {},
   )
   const nodesPaletteDisabled = $derived(nodesPaletteDisabledReason())
@@ -1219,6 +1234,23 @@
     await focusInspector(invoker)
   }
 
+  async function focusScopeNavigationFallback(scopeKey: GraphScopeKey): Promise<void> {
+    await tick()
+    await tick()
+    if ($activeScopeKeyStore !== scopeKey) return
+    const graph = canvasProjection?.graphs.find((candidate) => candidate.scope.key === scopeKey)
+    const focusTarget = activeScopeLayoutStore.get()?.focusTarget
+    const nodeId = focusTarget?.kind === 'node' ? focusTarget.nodeId : undefined
+    const node =
+      nodeId && graph?.nodes.some((candidate) => candidate.id === nodeId)
+        ? [...document.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]')].find(
+            (candidate) => candidate.dataset.id === nodeId,
+          )
+        : undefined
+    const fallback = node ?? document.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')
+    fallback?.focus()
+  }
+
   async function choosePaletteNode(descriptor: NodeKindDescriptor): Promise<void> {
     const position = graphCanvas?.viewportCenterPosition() ?? { x: 0, y: 0 }
     const result = await canvasAuthoring.add(descriptor, { viewportCenter: position })
@@ -1645,6 +1677,15 @@
       quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
       quickOpenVisible = true
     } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
+  })
+
+  $effect(() => {
+    const pending = $scopeNavigationEventStore
+    if (!pending) return
+    const event = consumeScopeNavigationEvent()
+    if (!event) return
+    workspaceError = event.message
+    void focusScopeNavigationFallback(event.scopeKey)
   })
 
   $effect(() => {
@@ -2287,7 +2328,6 @@
                   onDropNodeKind={dropPaletteNode}
                   groupSummaries={loopGroupSummaries}
                   onOpenLoopGroup={(groupId) => openLoopGroup(groupId)}
-                  onEditLoopGroup={editLoopGroupSettings}
                 />
                 {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
                   <LoopGroupEmptyState

@@ -54,7 +54,6 @@ export const CANVAS_INSPECTOR_RELATIONSHIP = Symbol('canvas-inspector-relationsh
 
 export interface CanvasScopeRelationship {
   readonly openLoopGroup: (groupId: string, invoker: HTMLElement) => void | Promise<void>
-  readonly editLoopGroup: (groupId: string, invoker: HTMLElement) => void | Promise<void>
 }
 
 export const CANVAS_SCOPE_RELATIONSHIP = Symbol('canvas-scope-relationship')
