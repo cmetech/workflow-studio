@@ -277,6 +277,28 @@ function isCorpusDiagnostic(value: unknown): value is { readonly code: string; r
   )
 }
 
+function classifyCorpusFeature(feature: string): 'validation' | 'projection' | undefined {
+  const prefix = feature.split(':', 1)[0]
+  if (prefix === 'projection') return 'projection'
+  if (
+    prefix === 'boundary' ||
+    prefix === 'field-family' ||
+    prefix === 'invalid' ||
+    prefix === 'legacy' ||
+    prefix === 'mode' ||
+    prefix === 'node-kind' ||
+    prefix === 'ordering' ||
+    prefix === 'preservation' ||
+    prefix === 'provenance' ||
+    prefix === 'reference' ||
+    prefix === 'schema-proof' ||
+    prefix === 'scope' ||
+    prefix === 'surface'
+  )
+    return 'validation'
+  return undefined
+}
+
 describe('workflow pair analysis', () => {
   it.each([
     ['archon-2026-07-v6.json', archonContractText, archonCorpusText],
@@ -294,12 +316,25 @@ describe('workflow pair analysis', () => {
       expectedDiagnostics: readonly { code: string; path: string }[]
       actualDiagnostics: readonly { code: string; path: string }[]
     }[] = []
+    const featureTags = new Set<string>()
+    const unclassifiedFeatureTags = new Set<string>()
+    const primarySinkFindings: string[] = []
 
     for (const testCase of corpus.cases) {
       const analysis = await analyzeWorkflowPair(
         request(loaded.contract, testCase.definitionYaml, testCase.companionYaml ?? null),
         loaded.contract,
       )
+      for (const feature of testCase.features) {
+        featureTags.add(feature)
+        if (!classifyCorpusFeature(feature)) unclassifiedFeatureTags.add(feature)
+      }
+      if (testCase.features.includes('projection:primary-sink')) {
+        const projection = analysis.projection as WorkflowProjection | undefined
+        const body = projection?.graphs.find(({ scope }) => scope.kind === 'loop-group')
+        const terminals = body?.definitionOrder.filter((nodeId) => !body.edges.some(({ source }) => source === nodeId))
+        if (!body || body.primarySinkId !== terminals?.[0]) primarySinkFindings.push(testCase.id)
+      }
 
       const expectedDiagnostics = testCase.diagnostics.map((diagnostic) => {
         if (!isCorpusDiagnostic(diagnostic)) throw new Error(`Invalid diagnostic in ${testCase.id}.`)
@@ -318,6 +353,13 @@ describe('workflow pair analysis', () => {
     }
 
     expect(mismatches).toEqual([])
+    expect([...unclassifiedFeatureTags]).toEqual([])
+    expect(primarySinkFindings).toEqual([])
+    if (loaded.contract.profile === 'archon-2026-07') {
+      expect(featureTags.size).toBe(70)
+      expect(new Set([...featureTags].map((feature) => feature.split(':', 1)[0])).size).toBe(13)
+      expect([...featureTags].filter((feature) => feature === 'projection:primary-sink')).toHaveLength(1)
+    }
   })
 
   it('builds one prepared reader capability and one reference index for one multi-scope analysis', async () => {

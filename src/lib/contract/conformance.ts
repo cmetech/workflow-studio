@@ -78,25 +78,6 @@ export function loadConformanceCorpus(bytes: Uint8Array, contract: AuthoringCont
   })
 }
 
-export async function loadBundledConformanceCorpora(
-  contracts: readonly AuthoringContract[],
-): Promise<readonly ConformanceCorpus[]> {
-  const sources = import.meta.glob('/contracts/*.corpus.json', {
-    eager: true,
-    import: 'default',
-    query: '?raw',
-  }) as Readonly<Record<string, string>>
-  const corpora: ConformanceCorpus[] = []
-  for (const contract of contracts) {
-    const suffix =
-      contract.profile === 'archon-2026-07' ? 'archon-2026-07-v6.corpus.json' : 'hermes-legacy-v2.corpus.json'
-    const source = Object.entries(sources).find(([identifier]) => identifier.endsWith(`/${suffix}`))?.[1]
-    if (!source) throw new Error(`Missing bundled Hermes conformance corpus for ${contract.profile}.`)
-    corpora.push(loadConformanceCorpus(new TextEncoder().encode(source), contract))
-  }
-  return Object.freeze(corpora)
-}
-
 function parseCase(value: unknown): ConformanceCase {
   if (
     !isRecord(value) ||

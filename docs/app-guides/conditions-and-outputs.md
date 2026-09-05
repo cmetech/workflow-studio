@@ -7,7 +7,14 @@ name: conditional-review
 description: Review only a ready upstream result.
 nodes:
   - id: prepare
-    bash: "printf 'ok\\n'"
+    bash: |-
+      printf '%s\n' '{"status":"ready"}'
+    output_format:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ready, blocked]}
   - id: review
     prompt: Review the change.
     depends_on: [prepare]

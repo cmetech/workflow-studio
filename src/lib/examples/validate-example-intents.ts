@@ -11,6 +11,9 @@ const EXPECTED_IDS = [
   'retry-trigger',
   'bounded-loop',
   'advanced-reference',
+  'loop-group-current-output',
+  'loop-group-iteration-context',
+  'loop-group-primary-sink',
 ] as const
 
 export function validateExampleIntents(projections: ReadonlyMap<string, WorkflowProjection>): readonly string[] {
@@ -28,7 +31,7 @@ export function validateExampleIntents(projections: ReadonlyMap<string, Workflow
 }
 
 function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowProjection, errors: string[]): void {
-  const graph = projection.graphs[0]
+  const graph = projection.graphs.find(({ scope }) => scope.key === 'root')
   if (!graph) {
     errors.push(`${id}: expected a root graph.`)
     return
@@ -78,9 +81,8 @@ function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowP
       if (node('approve')?.kind !== 'approval') errors.push('approval: expected an approval node.')
       dependsOn('approve', ['work'])
       dependsOn('continue', ['approve'])
-      if (node('continue')?.options.when !== '$approve.output.accepted == 1') {
-        errors.push('approval: continuation must use the accepted outcome.')
-      }
+      if (node('continue')?.options.when !== undefined)
+        errors.push('approval: continuation must rely on the approval dependency gate.')
       break
     case 'bash-script':
       exactNodeKinds(['bash', 'script'])
@@ -141,6 +143,68 @@ function validateIntent(id: (typeof EXPECTED_IDS)[number], projection: WorkflowP
       if (!Array.isArray(definition.tags) || definition.tags.length === 0) {
         errors.push('advanced-reference: expected common definition structures.')
       }
+      break
+    }
+    case 'loop-group-current-output': {
+      const body = projection.graphs.find(({ scope }) => scope.key === 'loop-group:refine')
+      if (!body) {
+        errors.push('loop-group-current-output: expected the refine body graph.')
+        break
+      }
+      if (body.definitionOrder.join('\0') !== ['draft', 'review'].join('\0'))
+        errors.push('loop-group-current-output: body definition order is incorrect.')
+      const review = body.nodes.find(({ id }) => id === 'review')
+      if (review?.dependsOn.join('\0') !== ['draft'].join('\0'))
+        errors.push('loop-group-current-output: review dependencies are incorrect.')
+      if (review?.value !== 'Review $draft.output')
+        errors.push('loop-group-current-output: review must consume the exact current output reference.')
+      if (body.primarySinkId !== 'review') errors.push('loop-group-current-output: review must be the primary sink.')
+      break
+    }
+    case 'loop-group-iteration-context': {
+      dependsOn('refine', ['seed'])
+      const body = projection.graphs.find(({ scope }) => scope.key === 'loop-group:refine')
+      const revise = body?.nodes.find(({ id }) => id === 'revise')
+      if (!body) errors.push('loop-group-iteration-context: expected the refine body graph.')
+      else if (body.outerInputs.join('\0') !== ['seed'].join('\0'))
+        errors.push('loop-group-iteration-context: outer inputs are incorrect.')
+      if ((revise?.dependsOn ?? []).length !== 0)
+        errors.push('loop-group-iteration-context: previous output must not add a current-body edge.')
+      if (
+        typeof revise?.value !== 'string' ||
+        !revise.value.includes('$seed.output') ||
+        !revise.value.includes('$LOOP_PREV.revise.output')
+      )
+        errors.push('loop-group-iteration-context: revise references are incorrect.')
+      if (body?.primarySinkId !== 'revise')
+        errors.push('loop-group-iteration-context: revise must be the primary sink.')
+      break
+    }
+    case 'loop-group-primary-sink': {
+      const body = projection.graphs.find(({ scope }) => scope.key === 'loop-group:summarize')
+      if (!body) {
+        errors.push('loop-group-primary-sink: expected the summarize body graph.')
+        break
+      }
+      if (body.definitionOrder.join('\0') !== ['prepare', 'publish', 'archive'].join('\0'))
+        errors.push('loop-group-primary-sink: body definition order is incorrect.')
+      for (const terminal of ['publish', 'archive']) {
+        const child = body.nodes.find(({ id }) => id === terminal)
+        if (child?.dependsOn.join('\0') !== ['prepare'].join('\0'))
+          errors.push(`loop-group-primary-sink: ${terminal} dependencies are incorrect.`)
+        if (body.edges.some(({ source }) => source === terminal))
+          errors.push(`loop-group-primary-sink: ${terminal} must be terminal.`)
+      }
+      if (body.primarySinkId !== 'publish')
+        errors.push('loop-group-primary-sink: publish must be the first terminal primary sink.')
+      const companion = projection.companion
+      if (
+        !isRecord(companion) ||
+        !Array.isArray(companion.outward_action_nodes) ||
+        companion.outward_action_nodes.join('\0') !== ['summarize/publish'].join('\0') ||
+        companion.outward_action_policy !== 'approval_required'
+      )
+        errors.push('loop-group-primary-sink: scoped companion policy is incorrect.')
       break
     }
   }

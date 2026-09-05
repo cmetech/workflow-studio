@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadBundledAuthoringContracts } from './bundled-contracts'
-import { loadBundledConformanceCorpora } from './conformance'
+import { loadBundledAuthoringContracts, loadBundledConformanceCorpora } from './bundled-contracts'
 
 describe('bundled Hermes authoring resources', () => {
   it('activates the exact v6/v2 contract and corpus pairs offline', async () => {

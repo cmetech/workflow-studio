@@ -1,0 +1,4 @@
+language_compatibility: archon-2026-07
+outward_action_nodes: [summarize/publish]
+outward_action_policy: approval_required
+tags: [example, loop-group]

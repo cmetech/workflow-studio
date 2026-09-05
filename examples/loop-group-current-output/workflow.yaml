@@ -1,0 +1,13 @@
+name: Loop group current output
+description: Use one body node output from a dependent body node.
+nodes:
+  - id: refine
+    loop_group:
+      until: complete
+      max_iterations: 2
+      nodes:
+        - id: draft
+          prompt: Draft a concise summary.
+        - id: review
+          depends_on: [draft]
+          prompt: Review $draft.output

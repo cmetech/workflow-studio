@@ -32,6 +32,21 @@ const sequentialExample: ExampleDescriptor = {
   definitionText: 'name: Sequential\n',
 }
 
+const loopGroupExample: ExampleDescriptor = {
+  ...example,
+  id: 'loop-group-primary-sink',
+  title: 'Primary loop output',
+  summary: 'Multiple terminal children select the first terminal output.',
+  profiles: ['archon-2026-07'],
+  profile: 'archon-2026-07',
+  concepts: ['loop-group', 'primary-sink'],
+  highlightedNodeIds: ['summarize', 'summarize/prepare', 'summarize/publish', 'summarize/archive'],
+  definitionPath: 'examples/loop-group-primary-sink/workflow.yaml',
+  companionPath: 'examples/loop-group-primary-sink/workflow.hermes.yaml',
+  definitionText: 'name: Loop group primary sink\nnodes:\n  - id: summarize\n    loop_group:\n      nodes: []\n',
+  companionText: 'language_compatibility: archon-2026-07\noutward_action_nodes: [summarize/publish]\n',
+}
+
 describe('ExampleGallery', () => {
   it('omits its standalone landmark and title when embedded in a workbench page', () => {
     render(ExampleGallery, {
@@ -90,6 +105,23 @@ describe('ExampleGallery', () => {
     await rerender({ ...props, catalogState: { phase: 'empty' } })
     expect(screen.getByRole('status')).toHaveTextContent('No bundled examples are available.')
     expect(screen.queryByText('Loading validated examples…')).not.toBeInTheDocument()
+  })
+
+  it('shows scope-qualified loop body nodes and both offline YAML files', async () => {
+    render(ExampleGallery, {
+      catalogState: { phase: 'ready', examples: [loopGroupExample] },
+      topicLabels: {},
+      onCreateEditableCopy: vi.fn(),
+      onOpenDocumentation: vi.fn(),
+    })
+
+    const card = screen.getByRole('article', { name: 'Primary loop output' })
+    expect(within(card).getByText('summarize, summarize/prepare, summarize/publish, summarize/archive')).toBeVisible()
+    await fireEvent.click(within(card).getByRole('button', { name: 'Preview Primary loop output' }))
+    expect(screen.getByRole('region', { name: 'Definition YAML' })).toHaveTextContent('loop_group')
+    expect(screen.getByRole('region', { name: 'Companion YAML' })).toHaveTextContent(
+      'outward_action_nodes: [summarize/publish]',
+    )
   })
 
   it('offers retry only for a recoverable catalog error', async () => {

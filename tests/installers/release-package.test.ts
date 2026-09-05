@@ -13,10 +13,21 @@ type PackagedResourceVerifier = (
   integrityManifestPath: string,
 ) => Promise<{ verifiedFiles: number }>
 
+type IntegrityManifestWriter = (
+  resourceRoot: string,
+  integrityManifestPath: string,
+) => Promise<{ writtenFiles: number }>
+
 function verifier(): PackagedResourceVerifier {
   const candidate = (releaseAssets as Record<string, unknown>).verifyPackagedResources
   expect(typeof candidate).toBe('function')
   return candidate as PackagedResourceVerifier
+}
+
+function writer(): IntegrityManifestWriter {
+  const candidate = (releaseAssets as Record<string, unknown>).writeSourceResourceIntegrityManifest
+  expect(typeof candidate).toBe('function')
+  return candidate as IntegrityManifestWriter
 }
 
 function materializeResourceRoot() {
@@ -92,12 +103,44 @@ function verifyPackagedResourcesWithPe(root: string, manifestPath: string, execu
 }
 
 describe('packaged resource verification', () => {
-  it('accepts the exact 34-file packaged resource tree', async () => {
+  it('accepts the exact 40-file packaged resource tree', async () => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
-      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 34 })
+      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 40 })
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('generates the exact manifest deterministically and observes changed source bytes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-integrity-writer-'))
+    const source = join(root, 'source')
+    const first = join(root, 'first.json')
+    const second = join(root, 'second.json')
+    const changed = join(root, 'changed.json')
+    try {
+      for (const directory of RESOURCE_DIRECTORIES) cpSync(directory, join(source, directory), { recursive: true })
+      await expect(writer()(source, first)).resolves.toEqual({ writtenFiles: 40 })
+      await expect(writer()(source, second)).resolves.toEqual({ writtenFiles: 40 })
+      expect(readFileSync(first)).toEqual(readFileSync(second))
+      const firstManifest = JSON.parse(readFileSync(first, 'utf8')) as {
+        files: Array<{ path: string; sha256: string }>
+      }
+      expect(firstManifest.files.map(({ path }) => path)).toEqual(
+        [...firstManifest.files.map(({ path }) => path)].sort(),
+      )
+
+      const changedPath = join(source, 'examples/README.md')
+      writeFileSync(changedPath, `${readFileSync(changedPath, 'utf8')}changed\n`)
+      await writer()(source, changed)
+      const changedManifest = JSON.parse(readFileSync(changed, 'utf8')) as {
+        files: Array<{ path: string; sha256: string }>
+      }
+      expect(changedManifest.files.find(({ path }) => path === 'examples/README.md')?.sha256).not.toBe(
+        firstManifest.files.find(({ path }) => path === 'examples/README.md')?.sha256,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 
@@ -225,7 +268,7 @@ describe('packaged resource verification', () => {
         { encoding: 'utf8' },
       )
       expect(verification.status, verification.stderr).toBe(0)
-      expect(verification.stdout).toContain('Verified 34 packaged resource files')
+      expect(verification.stdout).toContain('Verified 40 packaged resource files')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -241,7 +284,7 @@ describe('Windows packaged executable verification', () => {
 
       const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toContain('Verified 34 packaged resource files')
+      expect(result.stdout).toContain('Verified 40 packaged resource files')
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }

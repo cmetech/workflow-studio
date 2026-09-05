@@ -48,6 +48,12 @@ export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
     description: 'Use loop and approval nodes inside an acyclic graph.',
     useWhen: 'Use this when your graph needs repeated work or an approval gate.',
   },
+  'loop-groups': {
+    group: 'build-graph',
+    order: 55,
+    description: 'Drill into loop bodies and use scoped output references safely.',
+    useWhen: 'Use this when authoring a loop group or its child graph.',
+  },
   'retry-and-triggers': {
     group: 'configure-behavior',
     order: 60,
@@ -107,6 +113,7 @@ export const DOCUMENTATION_TASKS: readonly DocumentationTask[] = [
   { id: 'conditions-outputs', title: 'Add conditions and use outputs', description: 'Control later steps with earlier results.', topicId: 'guide:conditions-and-outputs' },
   { id: 'retries-triggers', title: 'Configure retries and trigger rules', description: 'Set execution behavior for a node.', topicId: 'guide:retry-and-triggers' },
   { id: 'loops-approvals', title: 'Use loops and approvals', description: 'Add bounded repetition or a review gate.', topicId: 'guide:loops-and-approvals' },
+  { id: 'loop-groups', title: 'Author a loop group', description: 'Edit a loop body and its scoped references.', topicId: 'guide:loop-groups' },
   { id: 'companion-profiles', title: 'Configure companion policy and profiles', description: 'Manage companion settings and compatibility.', topicId: 'guide:companion-policies' },
   { id: 'git-versions', title: 'Review local Git versions', description: 'Inspect or record local workflow history.', topicId: 'guide:git-versions' },
   { id: 'fix-problem', title: 'Fix a validation problem', description: 'Understand save-blocking issues and advisories.', topicId: 'guide:problems-and-validation' },

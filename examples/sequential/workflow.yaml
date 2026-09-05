@@ -4,7 +4,7 @@ nodes:
   - id: prepare
     command: /prepare
   - id: review
-    prompt: Review $prepare.output.
+    prompt: Review $prepare.output
     depends_on: [prepare]
   - id: finish
     command: /finish

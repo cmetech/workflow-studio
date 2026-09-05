@@ -99,3 +99,33 @@ examples:
     highlighted_nodes: [command, prompt, bash, script, loop, approval, cancel]
     highlighted_fields: [approval.node.approval]
     documentation_topics: [workflow-definition, dag-and-conditions, companion-policy]
+  - id: loop-group-current-output
+    path: loop-group-current-output
+    title: Current body output
+    summary: One loop body node consumes a direct dependency's output.
+    difficulty: intermediate
+    profiles: [archon-2026-07]
+    concepts: [loop-group, current-scope-references, dependencies]
+    highlighted_nodes: [refine, refine/draft, refine/review]
+    highlighted_fields: [loop_group.node.loop_group, prompt.node.depends_on, prompt.node.prompt]
+    documentation_topics: [workflow-definition, dag-and-conditions]
+  - id: loop-group-iteration-context
+    path: loop-group-iteration-context
+    title: Iteration context
+    summary: A loop body combines a declared outer input with its previous output.
+    difficulty: advanced
+    profiles: [archon-2026-07]
+    concepts: [loop-group, outer-inputs, previous-iteration]
+    highlighted_nodes: [seed, refine, refine/revise]
+    highlighted_fields: [loop_group.node.depends_on, prompt.node.prompt]
+    documentation_topics: [workflow-definition, dag-and-conditions]
+  - id: loop-group-primary-sink
+    path: loop-group-primary-sink
+    title: Primary loop output
+    summary: Multiple terminal children show the first terminal output and a scoped companion path.
+    difficulty: advanced
+    profiles: [archon-2026-07]
+    concepts: [loop-group, primary-sink, companion-policy]
+    highlighted_nodes: [summarize, summarize/prepare, summarize/publish, summarize/archive]
+    highlighted_fields: [loop_group.node.loop_group, command.node.depends_on]
+    documentation_topics: [workflow-definition, dag-and-conditions, companion-policy]

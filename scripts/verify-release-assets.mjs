@@ -49,6 +49,12 @@ const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'examples/catalog.yaml',
   'examples/conditional/workflow.hermes.yaml',
   'examples/conditional/workflow.yaml',
+  'examples/loop-group-current-output/workflow.hermes.yaml',
+  'examples/loop-group-current-output/workflow.yaml',
+  'examples/loop-group-iteration-context/workflow.hermes.yaml',
+  'examples/loop-group-iteration-context/workflow.yaml',
+  'examples/loop-group-primary-sink/workflow.hermes.yaml',
+  'examples/loop-group-primary-sink/workflow.yaml',
   'examples/minimal/workflow.yaml',
   'examples/parallel-fan-in/workflow.hermes.yaml',
   'examples/parallel-fan-in/workflow.yaml',
@@ -510,6 +516,30 @@ export async function verifyPackagedResources(resourceRoot, integrityManifestPat
   return verifyResourceTree(resourceRoot, integrityManifestPath, false)
 }
 
+export async function writeSourceResourceIntegrityManifest(resourceRoot, integrityManifestPath) {
+  if (typeof resourceRoot !== 'string' || resourceRoot === '') throw new Error('Source resource root is required')
+  if (typeof integrityManifestPath !== 'string' || integrityManifestPath === '')
+    throw new Error('Packaged resource integrity manifest path is required')
+  const actualPaths = await collectPackagedResourcePaths(resourceRoot, true)
+  const actual = new Set(actualPaths)
+  for (const path of PACKAGED_RESOURCE_PATHS) {
+    if (!actual.has(path)) throw new Error(`Missing packaged resource: ${path}`)
+  }
+  if (actual.size !== PACKAGED_RESOURCE_PATHS.length)
+    throw new Error(`Source resource tree must contain exactly ${PACKAGED_RESOURCE_PATHS.length} files`)
+  const files = []
+  for (const path of [...PACKAGED_RESOURCE_PATHS].sort()) {
+    const absolutePath = join(resourceRoot, path)
+    const info = await lstat(absolutePath)
+    if (info.isSymbolicLink()) throw new Error(`Packaged resource must not be a symbolic link: ${path}`)
+    if (!info.isFile()) throw new Error(`Packaged resource must be a regular file: ${path}`)
+    if (info.size > 2 * 1024 * 1024) throw new Error(`Packaged resource exceeds maximum size: ${path}`)
+    files.push({ path, sha256: await digestFile(absolutePath), maxBytes: 2 * 1024 * 1024 })
+  }
+  await writeFile(integrityManifestPath, `${JSON.stringify({ schemaVersion: 1, files }, null, 2)}\n`, 'utf8')
+  return { writtenFiles: files.length }
+}
+
 async function verifyWindowsGuiExecutable(executablePath) {
   let executableInfo
   try {
@@ -689,6 +719,7 @@ async function main(args) {
   const sourceResourceRoot = readOption(args, '--source-resource-root')
   const integrityManifest = readOption(args, '--integrity-manifest')
   const peExecutable = readOption(args, '--pe-executable')
+  const writeIntegrityManifest = args.includes('--write-integrity-manifest')
   if (packagedResourceRoot || sourceResourceRoot || integrityManifest || peExecutable) {
     if ((packagedResourceRoot ? 1 : 0) + (sourceResourceRoot ? 1 : 0) !== 1 || !integrityManifest) {
       throw new Error('Use exactly one of --packaged-resource-root or --source-resource-root with --integrity-manifest')
@@ -696,10 +727,18 @@ async function main(args) {
     if (peExecutable && !packagedResourceRoot) {
       throw new Error('--pe-executable requires --packaged-resource-root')
     }
+    if (writeIntegrityManifest && !sourceResourceRoot) {
+      throw new Error('--write-integrity-manifest requires --source-resource-root')
+    }
     if (fixturePath || directory) {
       throw new Error('Packaged resource verification cannot be combined with release asset verification')
     }
     if (peExecutable) await verifyWindowsGuiExecutable(peExecutable)
+    if (writeIntegrityManifest) {
+      const result = await writeSourceResourceIntegrityManifest(sourceResourceRoot, integrityManifest)
+      process.stdout.write(`Wrote ${result.writtenFiles} packaged resource files\n`)
+      return
+    }
     const result = packagedResourceRoot
       ? await verifyPackagedResources(packagedResourceRoot, integrityManifest)
       : await verifySourceResourceTree(sourceResourceRoot, integrityManifest)

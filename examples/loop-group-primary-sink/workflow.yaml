@@ -1,0 +1,16 @@
+name: Loop group primary sink
+description: Select the first terminal child as the loop group output.
+nodes:
+  - id: summarize
+    loop_group:
+      until: complete
+      max_iterations: 2
+      nodes:
+        - id: prepare
+          prompt: Prepare a summary.
+        - id: publish
+          depends_on: [prepare]
+          command: /publish
+        - id: archive
+          depends_on: [prepare]
+          command: /archive

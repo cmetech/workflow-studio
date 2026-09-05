@@ -68,7 +68,7 @@
     },
     {
       "path": "examples/README.md",
-      "sha256": "8aef9dc9fcae2d43d2159bc111fd673d33afa09b23efa8e79b02c329d08e5f22",
+      "sha256": "efa57f89f31c0d5660d218d0c8b2c41b5dc95b06393b67e4a631ff2df0101b92",
       "maxBytes": 2097152
     },
     {
@@ -78,7 +78,7 @@
     },
     {
       "path": "examples/advanced-reference/workflow.yaml",
-      "sha256": "806742559bd515896d76b57906d1a216295b40691a06a5369f16b2d101f4bbb3",
+      "sha256": "b58bdefe18dcc064f667bfbdc3132e489cd96d6423e889ef65f54da9eb5b5a80",
       "maxBytes": 2097152
     },
     {
@@ -98,7 +98,7 @@
     },
     {
       "path": "examples/approval/workflow.yaml",
-      "sha256": "a1c147aa411d50c13a03b67390133404a8884d2c0bc25e288da5ebd71834c82f",
+      "sha256": "72f3f31960198649105371144d4e9872149773a71fe138e6ac2eda295de91de9",
       "maxBytes": 2097152
     },
     {
@@ -123,7 +123,7 @@
     },
     {
       "path": "examples/catalog.yaml",
-      "sha256": "f68ab15bb234d8a680dacf07acfc62569a290ed647399fe111f266f9fca8686b",
+      "sha256": "174631b6a2f7bffd81f1c860f40f8aec218248172248b2d9e0fcf867e2e53dfb",
       "maxBytes": 2097152
     },
     {
@@ -133,7 +133,37 @@
     },
     {
       "path": "examples/conditional/workflow.yaml",
-      "sha256": "1b8e019d9e60e0cfd0a2ed601be525554a4863a179db2004efd7556e3e521a06",
+      "sha256": "30b2206b4bab0b654dfb95d975e33deaf4ec91eb2811a1c7817267359fe56010",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-current-output/workflow.hermes.yaml",
+      "sha256": "1ee620b16f30d372e066557a6a944f5f9d3997b5f5823d92aeda90ded10a0cd9",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-current-output/workflow.yaml",
+      "sha256": "53202f07ddee368ead5b4ab638cdf2e80f529c06021b23a1aa87acc265decd05",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-iteration-context/workflow.hermes.yaml",
+      "sha256": "1ee620b16f30d372e066557a6a944f5f9d3997b5f5823d92aeda90ded10a0cd9",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-iteration-context/workflow.yaml",
+      "sha256": "fb478c46ad2e40ad6fdea7b3d04365efd20651a194a64064af8c49c138cc8e65",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-primary-sink/workflow.hermes.yaml",
+      "sha256": "7d6a9a4e2e7f6ff557b5f80f3cc77895db887b97b1eac7e3fb2327f6d4dc1d42",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/loop-group-primary-sink/workflow.yaml",
+      "sha256": "4822ac883b56e2d9dc4e11133dcd2cece4d2d1043e634031f8f54cea42501623",
       "maxBytes": 2097152
     },
     {
@@ -148,7 +178,7 @@
     },
     {
       "path": "examples/parallel-fan-in/workflow.yaml",
-      "sha256": "5c147f393abe3dacd2ea0abf4e7f19830eab9c708a2212539f6b941b95b28fb5",
+      "sha256": "c2261e90b8128a84e204b7d64f827a991785b1038faedb87ef77d844e30cc883",
       "maxBytes": 2097152
     },
     {
@@ -168,7 +198,7 @@
     },
     {
       "path": "examples/sequential/workflow.yaml",
-      "sha256": "871bbce181ad3e1ca89eb0df40a1c04ffde3cb5db9becc89375533fdbbb000d9",
+      "sha256": "03859a390e01cf287596325241d9c739146cc8850cf71e5bc37e09363c2d5b1c",
       "maxBytes": 2097152
     }
   ]

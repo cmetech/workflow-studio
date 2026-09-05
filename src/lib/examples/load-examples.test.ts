@@ -16,7 +16,7 @@ describe('bundled workflow examples', () => {
       ...(example.companionPath ? [example.companionPath] : []),
     ])
 
-    expect(ids).toHaveLength(10)
+    expect(ids).toHaveLength(13)
     expect(new Set(ids).size).toBe(ids.length)
     expect(new Set(paths).size).toBe(paths.length)
     expect(paths.every((path) => path.startsWith('examples/') && !path.includes('..') && !path.startsWith('/'))).toBe(
@@ -53,9 +53,10 @@ describe('bundled workflow examples', () => {
         `${example.id}: ${analysis.issues.map(({ message }) => message).join('; ')}`,
       ).toBe(true)
       const projection = analysis.projection as WorkflowProjection | undefined
-      expect(
-        example.highlightedNodeIds.every((id) => projection?.graphs[0]?.nodes.some((node) => node.id === id)),
-      ).toBe(true)
+      const projectedIds = new Set(
+        projection?.graphs.flatMap((graph) => graph.nodes.map((node) => `${graph.editorNodePrefix}${node.id}`)) ?? [],
+      )
+      expect(example.highlightedNodeIds.every((id) => projectedIds.has(id))).toBe(true)
       expect(
         example.highlightedFieldIds.every((id) =>
           contract!.node_kinds.some((kind) => kind.fields.some((field) => field.id === id)),
@@ -94,8 +95,8 @@ describe('bundled workflow examples', () => {
     expect(validateExampleIntents(projections)).toEqual([])
 
     const approval = projections.get('approval')!
-    const rejectedContinuation = new Map(projections)
-    rejectedContinuation.set('approval', {
+    const syntheticApprovalOutcome = new Map(projections)
+    syntheticApprovalOutcome.set('approval', {
       ...approval,
       graphs: approval.graphs.map((graph, index) =>
         index === 0
@@ -103,15 +104,72 @@ describe('bundled workflow examples', () => {
               ...graph,
               nodes: graph.nodes.map((node) =>
                 node.id === 'continue'
-                  ? { ...node, options: { ...node.options, when: '$approve.output.accepted == 0' } }
+                  ? { ...node, options: { ...node.options, when: '$approve.output.accepted == 1' } }
                   : node,
               ),
             }
           : graph,
       ),
     })
-    expect(validateExampleIntents(rejectedContinuation)).toContain(
-      'approval: continuation must use the accepted outcome.',
+    expect(validateExampleIntents(syntheticApprovalOutcome)).toContain(
+      'approval: continuation must rely on the approval dependency gate.',
+    )
+
+    const currentOutput = projections.get('loop-group-current-output')!
+    const wrongCurrentDependency = new Map(projections)
+    wrongCurrentDependency.set('loop-group-current-output', {
+      ...currentOutput,
+      graphs: currentOutput.graphs.map((graph) =>
+        graph.scope.key === 'loop-group:refine'
+          ? {
+              ...graph,
+              nodes: graph.nodes.map((node) => (node.id === 'review' ? { ...node, dependsOn: [] } : node)),
+            }
+          : graph,
+      ),
+    })
+    expect(validateExampleIntents(wrongCurrentDependency)).toContain(
+      'loop-group-current-output: review dependencies are incorrect.',
+    )
+
+    const iterationContext = projections.get('loop-group-iteration-context')!
+    const wrongIterationContext = new Map(projections)
+    wrongIterationContext.set('loop-group-iteration-context', {
+      ...iterationContext,
+      graphs: iterationContext.graphs.map((graph) =>
+        graph.scope.key === 'loop-group:refine'
+          ? {
+              ...graph,
+              outerInputs: [],
+              nodes: graph.nodes.map((node) =>
+                node.id === 'revise' ? { ...node, value: 'Combine $seed.output' } : node,
+              ),
+            }
+          : graph,
+      ),
+    })
+    expect(validateExampleIntents(wrongIterationContext)).toEqual(
+      expect.arrayContaining([
+        'loop-group-iteration-context: outer inputs are incorrect.',
+        'loop-group-iteration-context: revise references are incorrect.',
+      ]),
+    )
+
+    const primarySink = projections.get('loop-group-primary-sink')!
+    const wrongPrimarySink = new Map(projections)
+    wrongPrimarySink.set('loop-group-primary-sink', {
+      ...primarySink,
+      graphs: primarySink.graphs.map((graph) =>
+        graph.scope.key === 'loop-group:summarize' ? { ...graph, primarySinkId: 'archive' } : graph,
+      ),
+    })
+    expect(validateExampleIntents(wrongPrimarySink)).toContain(
+      'loop-group-primary-sink: publish must be the first terminal primary sink.',
+    )
+    const wrongCompanion = new Map(projections)
+    wrongCompanion.set('loop-group-primary-sink', { ...primarySink, companion: { outward_action_nodes: ['publish'] } })
+    expect(validateExampleIntents(wrongCompanion)).toContain(
+      'loop-group-primary-sink: scoped companion policy is incorrect.',
     )
   })
 

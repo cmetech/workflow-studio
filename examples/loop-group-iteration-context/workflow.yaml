@@ -1,0 +1,13 @@
+name: Loop group iteration context
+description: Combine an outer input with the previous iteration output.
+nodes:
+  - id: seed
+    prompt: Create the initial draft.
+  - id: refine
+    depends_on: [seed]
+    loop_group:
+      until: complete
+      max_iterations: 3
+      nodes:
+        - id: revise
+          prompt: Combine $seed.output with $LOOP_PREV.revise.output

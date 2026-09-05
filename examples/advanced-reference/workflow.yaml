@@ -6,7 +6,7 @@ nodes:
     command: /prepare
     context: fresh
   - id: prompt
-    prompt: Summarize $command.output.
+    prompt: Summarize $command.output
     depends_on: [command]
     allowed_tools: [read_file]
   - id: bash
@@ -33,6 +33,6 @@ nodes:
         max_attempts: 2
     depends_on: [loop]
   - id: cancel
-    cancel: Stop when the reference result is rejected.
+    cancel: Stop when the captured approval response requests cancellation.
     depends_on: [approval]
-    when: $approval.output.accepted == 0
+    when: $approval.output == 'cancel'

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildDocumentationIndex, searchDocumentation } from './build-index'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
-import { collectContractFields } from '$src/lib/forms/widget-registry'
+import { collectContractFields, resolveWidget } from '$src/lib/forms/widget-registry'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { createDocumentationGuides } from './guide-sources'
 
@@ -179,7 +179,7 @@ describe('buildDocumentationIndex', () => {
       ['getting-started', ['guide:quick-start', 'guide:workflow-pairs']],
       [
         'build-graph',
-        ['guide:dag-dependencies', 'guide:conditions-and-outputs', 'guide:loops-and-approvals'],
+        ['guide:dag-dependencies', 'guide:conditions-and-outputs', 'guide:loops-and-approvals', 'guide:loop-groups'],
       ],
       [
         'configure-behavior',
@@ -247,13 +247,38 @@ describe('buildDocumentationIndex', () => {
     for (const activeContract of await loadBundledAuthoringContracts()) {
       const index = buildDocumentationIndex(activeContract)
       for (const field of collectContractFields(activeContract)) {
-        expect(index.byId.get(`field:${field.id}`)).toEqual(
-          expect.objectContaining({ fieldPaths: [field.fieldPath], examples: field.examples }),
+        const topic = index.byId.get(`field:${field.id}`)
+        expect(topic).toEqual(
+          expect.objectContaining({ fieldPaths: [field.fieldPath], examples: field.examples, status: field.status }),
         )
         const occurrences = [...index.referenceGroups.values()].flat().filter(({ id }) => id === `field:${field.id}`)
         expect(occurrences).toHaveLength(1)
+        if (field.status === 'supported') expect(resolveWidget(field), field.id).toEqual(expect.objectContaining({ ok: true }))
+        else expect(topic?.status).toBe(field.status)
       }
     }
+  })
+
+  it('bundles searchable loop group guidance using the visual authoring labels', async () => {
+    const activeContract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    const index = buildDocumentationIndex(activeContract, bundledGuideFixtures())
+    const topic = index.byId.get('guide:loop-groups')
+
+    expect(topic).toEqual(expect.objectContaining({ title: 'Loop groups', kind: 'guide' }))
+    for (const phrase of [
+      'Open loop body',
+      'Add First Node',
+      'Edit Group Settings',
+      'Add group dependency',
+      '$LOOP_PREV.child.output',
+      'summarize/publish',
+      '250 nodes',
+      '500 edges',
+      'YAML-only mode',
+    ]) expect(topic?.body).toContain(phrase)
+    expect(searchDocumentation(index, 'previous iteration loop output', { mode: 'guides' })[0]?.id).toBe(
+      'guide:loop-groups',
+    )
   })
 
   it('derives complete node topics from each bundled contract descriptor and schema', async () => {

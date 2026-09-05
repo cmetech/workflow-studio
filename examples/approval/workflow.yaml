@@ -11,4 +11,3 @@ nodes:
   - id: continue
     command: /apply
     depends_on: [approve]
-    when: $approve.output.accepted == 1

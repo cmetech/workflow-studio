@@ -4,11 +4,11 @@ nodes:
   - id: root
     command: /collect
   - id: left
-    prompt: Analyze the left part of $root.output.
+    prompt: Analyze the left part from $root.output
     depends_on: [root]
   - id: right
-    prompt: Analyze the right part of $root.output.
+    prompt: Analyze the right part from $root.output
     depends_on: [root]
   - id: join
-    prompt: Combine $left.output and $right.output.
+    prompt: Combine $left.output with $right.output
     depends_on: [left, right]

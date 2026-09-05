@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parse } from 'yaml'
-import { loadAuthoringContract } from '../src/lib/contract/contract-loader'
+import { loadBundledResourceSet } from '../src/lib/contract/bundled-resource-manifest'
+import { loadConformanceCorpus } from '../src/lib/contract/conformance'
 import type { WorkflowProfile } from '../src/lib/contract/types'
 import { parseExampleCatalog } from '../src/lib/examples/types'
 import { validateExampleIntents } from '../src/lib/examples/validate-example-intents'
@@ -21,24 +22,22 @@ export async function validateExampleResources(
   } catch (error) {
     return [`catalog.yaml: ${error instanceof Error ? error.message : String(error)}`]
   }
-  const contracts = new Map<WorkflowProfile, Awaited<ReturnType<typeof loadAuthoringContract>>>()
-  for (const profile of ['hermes-legacy', 'archon-2026-07'] as const) {
-    try {
-      contracts.set(
-        profile,
-        await loadAuthoringContract(await readFile(join(contractsDirectory, `${profile}-v1.json`)), {
-          kind: 'bundled',
-          identifier: profile,
-        }),
-      )
-    } catch (error) {
-      errors.push(`${profile}: ${error instanceof Error ? error.message : String(error)}`)
-    }
+  let contracts: Map<WorkflowProfile, Awaited<ReturnType<typeof loadBundledResourceSet>>['contracts'][number]>
+  try {
+    const resources = await loadBundledResourceSet(
+      await readFile(join(contractsDirectory, 'manifest.json'), 'utf8'),
+      (file) => readFile(join(contractsDirectory, file), 'utf8'),
+    )
+    for (const resource of resources.corpusResources)
+      loadConformanceCorpus(new TextEncoder().encode(resource.text), resource.contract)
+    contracts = new Map(resources.contracts.map((contract) => [contract.profile, contract]))
+  } catch (error) {
+    return [`contracts: ${error instanceof Error ? error.message : String(error)}`]
   }
   for (const example of catalog) {
     const profile = example.profiles[0]!
-    const contractResult = contracts.get(profile)
-    if (!contractResult?.ok) {
+    const contract = contracts.get(profile)
+    if (!contract) {
       errors.push(`${example.id}: production ${profile} contract is unavailable.`)
       continue
     }
@@ -55,7 +54,6 @@ export async function validateExampleResources(
           errors.push(`${example.id}: profile tag does not match companion declaration.`)
         }
       }
-      const contract = contractResult.contract
       const analysis = await analyzeWorkflowPair(
         {
           type: 'analyze',
@@ -81,7 +79,11 @@ export async function validateExampleResources(
             .join('; ')}`,
         )
       if (analysis.projection) projections.set(example.id, analysis.projection as WorkflowProjection)
-      const nodeIds = new Set(analysis.projection?.nodes.map(({ id }) => id) ?? [])
+      const nodeIds = new Set(
+        analysis.projection?.graphs.flatMap((graph) =>
+          graph.nodes.map((node) => `${graph.editorNodePrefix}${node.id}`),
+        ) ?? [],
+      )
       if (example.highlighted_nodes.some((id) => !nodeIds.has(id)))
         errors.push(`${example.id}: highlighted node is missing.`)
       const fields = new Set(contract.node_kinds.flatMap((kind) => kind.fields.map(({ id }) => id)))

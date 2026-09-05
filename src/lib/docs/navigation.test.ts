@@ -64,7 +64,7 @@ describe('documentation navigation metadata', () => {
       ),
     ).toEqual([
       ['quick-start', 'workflow-pairs'],
-      ['dag-dependencies', 'conditions-and-outputs', 'loops-and-approvals'],
+      ['dag-dependencies', 'conditions-and-outputs', 'loops-and-approvals', 'loop-groups'],
       ['retry-and-triggers', 'companion-policies', 'profiles-and-compatibility'],
       ['problems-and-validation', 'git-versions', 'troubleshooting'],
       ['keyboard-shortcuts'],

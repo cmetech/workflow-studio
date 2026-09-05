@@ -15,6 +15,7 @@
     "contracts:check": "tsx scripts/validate-contracts.ts",
     "examples:check": "tsx scripts/validate-examples.ts",
     "resources:verify": "node scripts/verify-release-assets.mjs --source-resource-root . --integrity-manifest src-tauri/resources/setup-integrity-v1.json",
+    "resources:sync-integrity": "node scripts/verify-release-assets.mjs --source-resource-root . --integrity-manifest src-tauri/resources/setup-integrity-v1.json --write-integrity-manifest",
     "lint": "eslint .",
     "release:verify-assets": "node scripts/verify-release-assets.mjs",
     "format": "prettier --write .",
