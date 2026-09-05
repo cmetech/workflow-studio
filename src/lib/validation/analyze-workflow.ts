@@ -1,10 +1,11 @@
-import { isMap, isSeq } from 'yaml'
+import { isMap, isScalar, isSeq } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue } from '$src/lib/documents/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import type { WorkflowProjection } from '$src/lib/projection/types'
+import { buildReferenceIndex, prepareReferenceContract } from '$src/lib/references/reference-index'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
@@ -59,7 +60,9 @@ export async function analyzeWorkflowPair(
     return { ...identity, issues, structurallyValid: false }
   }
 
-  const profileSelection = selectWorkflowProfile(companionResult?.parsed?.document.toJS({ maxAliasCount: 1_000 }))
+  const definition = definitionResult.parsed.document.toJS({ maxAliasCount: 1_000 }) as unknown
+  const companion = companionResult?.parsed?.document.toJS({ maxAliasCount: 1_000 }) as unknown
+  const profileSelection = selectWorkflowProfile(companion)
   if (!profileSelection.recognized || profileSelection.profile !== contract.profile) {
     const selectedProfile = profileSelection.recognized
       ? profileSelection.profile
@@ -85,17 +88,32 @@ export async function analyzeWorkflowPair(
     companionResult?.parsed ?? null,
     profileSelection.profile,
     contract,
+    { definition, ...(companionResult ? { companion } : {}) },
   )
-  const definition = definitionResult.parsed.document.toJS({ maxAliasCount: 1_000 })
   const publishedCompatibility = publishedBlockingCompatibilityIssues(definition, definitionResult.parsed, contract)
   let combined = reconcilePublishedCompatibility([...issues, ...projected.issues], publishedCompatibility, contract)
+  const integerPrecision = unsupportedAuthoringIntegerPrecision(definitionResult.parsed)
+  combined.push(...integerPrecision.issues)
+  const preparedReferences = prepareReferenceContract(contract)
+  const referenceIndex = preparedReferences
+    ? buildReferenceIndex(definition, projected.projection, preparedReferences)
+    : null
   const rootGraph = projected.projection.graphs.find(({ scope }) => scope.key === 'root')
-  if (rootGraph) combined.push(...validateDag(rootGraph, contract.semantic_rules).issues)
+  if (rootGraph)
+    combined.push(
+      ...validateDag(rootGraph, contract.semantic_rules, {
+        references: referenceIndex === null,
+        conditions: referenceIndex === null,
+      }).issues,
+    )
   const scoped = validateScopedDag(
     projected.projection,
     definitionResult.parsed,
     companionResult?.parsed ?? null,
     contract,
+    preparedReferences,
+    referenceIndex,
+    integerPrecision.schemaOwnerPaths,
   )
   combined = reconcileScopedIssues(combined, scoped.issues, projected.projection, contract)
   combined = deduplicateAnalysisIssues(combined)
@@ -111,8 +129,60 @@ export async function analyzeWorkflowPair(
     issues: combined,
     structurallyValid,
     ...(visuallyAuthorable ? { visuallyAuthorable: true } : {}),
+    ...(referenceIndex ? { referenceIndex } : {}),
     ...(structurallyValid || visuallyAuthorable ? { projection: validatedProjection } : {}),
   }
+}
+
+interface UnsupportedIntegerPrecisionResult {
+  readonly issues: readonly ValidationIssue[]
+  readonly schemaOwnerPaths: ReadonlySet<string>
+}
+
+function unsupportedAuthoringIntegerPrecision(parsed: ParsedYamlDocument): UnsupportedIntegerPrecisionResult {
+  const issues: ValidationIssue[] = []
+  const schemaOwnerPaths = new Set<string>()
+  const visit = (node: unknown, path: readonly (string | number)[], schemaOwnerPath: string | null): void => {
+    if (isMap(node)) {
+      for (const pair of node.items) {
+        const key = isScalar(pair.key) && typeof pair.key.value === 'string' ? pair.key.value : null
+        if (key === null) continue
+        const childPath = [...path, key]
+        const nextOwner = key === 'output_format' ? pointerPath(path) : schemaOwnerPath
+        if (key === 'maxItems' && nextOwner && isScalar(pair.value)) {
+          const source = pair.value.source
+          const value = pair.value.value
+          if (typeof source === 'string' && typeof value === 'number' && Number.isInteger(value)) {
+            const normalized = source.replaceAll('_', '').replace(/^\+/, '')
+            try {
+              if (/^-?[0-9]+$/.test(normalized) && BigInt(normalized) !== BigInt(value)) {
+                const issuePath = pointerPath(childPath)
+                issues.push({
+                  code: 'unsupported_authoring_integer_precision',
+                  layer: 'semantic',
+                  severity: 'error',
+                  blocking: true,
+                  message: 'This authored schema integer cannot be represented exactly by the editor.',
+                  document: 'definition',
+                  path: issuePath,
+                  ...(sourceLocation(parsed, issuePath) ?? {}),
+                  field: key,
+                })
+                schemaOwnerPaths.add(nextOwner)
+              }
+            } catch {
+              // YAML schema validation owns non-decimal and malformed numeric forms.
+            }
+          }
+        }
+        visit(pair.value, childPath, nextOwner)
+      }
+      return
+    }
+    if (isSeq(node)) node.items.forEach((child, index) => visit(child, [...path, index], schemaOwnerPath))
+  }
+  visit(parsed.document.contents, [], null)
+  return { issues, schemaOwnerPaths }
 }
 
 function publishedBlockingCompatibilityIssues(
@@ -285,6 +355,8 @@ function deduplicateAnalysisIssues(issues: readonly ValidationIssue[]): Validati
       issue.groupId,
       issue.nodeId,
       issue.field,
+      issue.referenceStart,
+      issue.referenceEnd,
     ])
     if (seen.has(key)) return false
     seen.add(key)

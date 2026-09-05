@@ -12,6 +12,8 @@ export function issueViewKey(issue: ValidationIssue, occurrence: number): string
     issue.groupId ?? '',
     issue.nodeId ?? '',
     issue.field ?? '',
+    issue.referenceStart ?? null,
+    issue.referenceEnd ?? null,
     occurrence,
   ])
 }

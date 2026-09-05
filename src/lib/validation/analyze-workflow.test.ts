@@ -4,6 +4,7 @@ import archonCorpusText from '../../../contracts/archon-2026-07-v6.corpus.json?r
 import legacyContractText from '../../../contracts/hermes-legacy-v2.json?raw'
 import legacyCorpusText from '../../../contracts/hermes-legacy-v2.corpus.json?raw'
 import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import { scopedDagCapabilityBuildCountForTest } from '$src/lib/contract/scoped-dag-rule'
 import { loadConformanceCorpus } from '$src/lib/contract/conformance'
 import type {
   AuthoringContract,
@@ -14,6 +15,10 @@ import type {
 } from '$src/lib/contract/types'
 import type { ContractDigest } from '$src/lib/documents/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
+import {
+  preparedReferenceContractBuildCountForTest,
+  referenceIndexBuildCountForTest,
+} from '$src/lib/references/reference-index'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import invalidCycle from '../../../tests/fixtures/workflows/invalid-cycle.yaml?raw'
 import invalidReference from '../../../tests/fixtures/workflows/invalid-reference.yaml?raw'
@@ -234,6 +239,43 @@ function request(
   }
 }
 
+function corpusPathToPointer(path: string): string {
+  const normalized = path.startsWith('sidecar.') ? path.slice('sidecar.'.length) : path
+  return `/${normalized
+    .replace(/\[([0-9]+)\]/g, '.$1')
+    .split('.')
+    .filter(Boolean)
+    .map((segment) => segment.replaceAll('~', '~0').replaceAll('/', '~1'))
+    .join('/')}`
+}
+
+function structuredArrayReference(maxItems: string, index: string): string {
+  return [
+    'name: Large schema integer',
+    'description: Preserve authored numeric meaning.',
+    'nodes:',
+    '  - id: producer',
+    '    prompt: Produce.',
+    '    output_format:',
+    '      type: array',
+    `      maxItems: ${maxItems}`,
+    '      items: {type: string}',
+    '  - id: consumer',
+    '    depends_on: [producer]',
+    `    prompt: Use $producer.output.${index}`,
+    '',
+  ].join('\n')
+}
+
+function isCorpusDiagnostic(value: unknown): value is { readonly code: string; readonly path: string } {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { code?: unknown }).code === 'string' &&
+    typeof (value as { path?: unknown }).path === 'string'
+  )
+}
+
 describe('workflow pair analysis', () => {
   it.each([
     ['archon-2026-07-v6.json', archonContractText, archonCorpusText],
@@ -245,7 +287,12 @@ describe('workflow pair analysis', () => {
     })
     if (!loaded.ok) throw new Error(loaded.message)
     const corpus = loadConformanceCorpus(new TextEncoder().encode(corpusText), loaded.contract)
-    const mismatches: { id: string; expectedValid: boolean; expectedCodes: string[]; actualCodes: string[] }[] = []
+    const mismatches: {
+      id: string
+      expectedValid: boolean
+      expectedDiagnostics: readonly { code: string; path: string }[]
+      actualDiagnostics: readonly { code: string; path: string }[]
+    }[] = []
 
     for (const testCase of corpus.cases) {
       const analysis = await analyzeWorkflowPair(
@@ -253,21 +300,279 @@ describe('workflow pair analysis', () => {
         loaded.contract,
       )
 
-      const expectedCodes = [...testCase.codes].sort()
-      const expectedCodeSet = new Set(expectedCodes)
-      const actualCodes = analysis.issues
+      const expectedDiagnostics = testCase.diagnostics.map((diagnostic) => {
+        if (!isCorpusDiagnostic(diagnostic)) throw new Error(`Invalid diagnostic in ${testCase.id}.`)
+        return { code: diagnostic.code, path: corpusPathToPointer(diagnostic.path) }
+      })
+      const expectedCodeSet = new Set(testCase.codes)
+      const actualDiagnostics = analysis.issues
         .filter((issue) => issue.blocking || expectedCodeSet.has(issue.code))
-        .map(({ code }) => code)
-        .sort()
+        .map(({ code, path }) => ({ code, path: path ?? '/' }))
       if (
         analysis.structurallyValid !== testCase.valid ||
-        JSON.stringify(actualCodes) !== JSON.stringify(expectedCodes)
+        JSON.stringify(actualDiagnostics) !== JSON.stringify(expectedDiagnostics)
       ) {
-        mismatches.push({ id: testCase.id, expectedValid: testCase.valid, expectedCodes, actualCodes })
+        mismatches.push({ id: testCase.id, expectedValid: testCase.valid, expectedDiagnostics, actualDiagnostics })
       }
     }
 
     expect(mismatches).toEqual([])
+  })
+
+  it('builds one prepared reader capability and one reference index for one multi-scope analysis', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const beforePrepared = preparedReferenceContractBuildCountForTest()
+    const beforeIndexes = referenceIndexBuildCountForTest()
+    const beforeCapabilities = scopedDagCapabilityBuildCountForTest()
+    const definition = [
+      'name: Indexed analysis',
+      'description: One traversal across several scopes.',
+      'nodes:',
+      '  - id: root',
+      '    prompt: Produce.',
+      '  - id: first',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: child',
+      '          prompt: Work.',
+      '  - id: second',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: child',
+      '          prompt: Work.',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(referenceIndexBuildCountForTest() - beforeIndexes).toBe(1)
+    expect(preparedReferenceContractBuildCountForTest() - beforePrepared).toBe(1)
+    expect(scopedDagCapabilityBuildCountForTest() - beforeCapabilities).toBe(1)
+    expect(analysis.referenceIndex).toMatchObject({
+      metrics: { indexBuilds: 1, definitionTraversals: 1, graphVisits: 3, nodeVisits: 5 },
+    })
+    expect(() => structuredClone(analysis.referenceIndex)).not.toThrow()
+  })
+
+  it('keeps two invalid references in one authored field as distinct diagnostics', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Repeated references',
+      'description: Preserve both authored occurrences.',
+      'nodes:',
+      '  - id: consumer',
+      '    prompt: Use $missing.output and $missing.output',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ code }) => code === 'output_reference_not_declared_dependency')).toHaveLength(2)
+  })
+
+  it('fails safely at the authored schema field when YAML integer precision is lost', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = structuredArrayReference('9007199254740993', '9007199254740992')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'unsupported_authoring_integer_precision',
+        blocking: true,
+        path: '/nodes/0/output_format/maxItems',
+      }),
+    )
+    expect(analysis.issues.some(({ code }) => code === 'structured_output_field_impossible')).toBe(false)
+  })
+
+  it('accepts an exactly representable large authored schema bound without a precision diagnostic', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        loaded.contract,
+        structuredArrayReference('9007199254740992', '9007199254740991'),
+        'language_compatibility: archon-2026-07\n',
+      ),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.some(({ code }) => code === 'unsupported_authoring_integer_precision')).toBe(false)
+    expect(analysis.structurallyValid).toBe(true)
+  })
+
+  it('preserves eager root scanner failure precedence over an earlier missing dependency', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Eager root scanner',
+      'description: A later malformed candidate wins within the template.',
+      'nodes:',
+      '  - id: consumer',
+      '    prompt: Use $missing.output then $broken.output.',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
+      'output_reference_path_unsupported',
+    ])
+  })
+
+  it('translates an eager body scanner failure without emitting partial dependency diagnostics', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Eager body scanner',
+      'description: Scoped callers translate scanner failure.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: consumer',
+      '          prompt: Use $missing.output then $broken.output.',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
+      'loop_group_scope_invalid',
+    ])
+  })
+
+  it('keeps references in Bash comments and escaped literals outside validation', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Bash authored context',
+      'description: Literal candidates do not become dependencies.',
+      'nodes:',
+      '  - id: shell',
+      '    bash: |',
+      '      # $missing.output',
+      '      printf "%s" \\$missing.output',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.structurallyValid).toBe(true)
+    expect(analysis.issues).toEqual([])
+  })
+
+  it('uses only the reader-3 condition scanner diagnostic for malformed root syntax', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Root condition syntax',
+      'description: The scanner owns reader-3 condition parsing.',
+      'nodes:',
+      '  - id: producer',
+      '    prompt: Produce.',
+      '  - id: consumer',
+      '    depends_on: [producer]',
+      '    prompt: Consume.',
+      '    when: $producer.output ==',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
+      'condition_runtime_syntax_invalid',
+    ])
+  })
+
+  it('uses only the translated reader-3 condition scanner diagnostic for malformed body syntax', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Body condition syntax',
+      'description: Scoped condition parsing retains native caller translation.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: producer',
+      '          prompt: Produce.',
+      '        - id: consumer',
+      '          depends_on: [producer]',
+      '          prompt: Consume.',
+      '          when: $producer.output ==',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
+      'loop_group_scope_invalid',
+    ])
   })
 
   it.each([

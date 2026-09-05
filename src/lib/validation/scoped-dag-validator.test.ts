@@ -163,14 +163,14 @@ describe('scoped DAG validation', () => {
     )
   })
 
-  it('rejects previous-iteration references on contract surfaces that do not allow them', () => {
+  it('preserves the root group-gate scanner error for a previous-iteration candidate', () => {
     const result = validate([
       loopGroup([{ id: 'producer', prompt: 'Produce.' }], {
         gate_message: 'Review $LOOP_PREV.producer.output',
       }),
     ])
 
-    expect(codes(result)).toEqual(['scoped-reference-unknown-producer'])
+    expect(codes(result)).toEqual(['output_reference_path_unsupported'])
     expect(result.issues[0]).toMatchObject({
       path: '/nodes/0/loop_group/gate_message',
       field: 'loop_group.gate_message',
@@ -234,7 +234,7 @@ describe('scoped DAG validation', () => {
       expect(codes(result)).toEqual(['scoped-companion-reference-unknown-node'])
       expect(result.issues[0]).toMatchObject({
         document: 'companion',
-        path: '/outward_action_nodes/0',
+        path: '/outward_action_nodes',
         field: 'outward_action_nodes',
       })
     },

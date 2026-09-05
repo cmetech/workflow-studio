@@ -29,4 +29,16 @@ describe('issueViewKey', () => {
     expect(issueViewKey(first, 0)).not.toBe(issueViewKey(second, 0))
     expect(issueViewKey({ ...first }, 0)).toBe(issueViewKey(first, 0))
   })
+
+  it('distinguishes repeated reference tokens by their authored code-point spans', () => {
+    const first = issue({
+      code: 'output_reference_not_declared_dependency',
+      path: '/nodes/0/prompt',
+      referenceStart: 4,
+      referenceEnd: 19,
+    })
+    const second = { ...first, referenceStart: 24, referenceEnd: 39 }
+
+    expect(issueViewKey(first, 0)).not.toBe(issueViewKey(second, 0))
+  })
 })

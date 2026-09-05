@@ -22,16 +22,21 @@ export function discoverGraphScopes(
   definitionDocument: ParsedYamlDocument,
   contract: AuthoringContract,
   profile: WorkflowProfile,
+  resolvedDefinition?: unknown,
 ): readonly ProjectedGraph[] {
-  return projectGraphScopes(definitionDocument, contract, profile).graphs
+  return projectGraphScopes(definitionDocument, contract, profile, resolvedDefinition).graphs
 }
 
 function projectGraphScopes(
   definitionDocument: ParsedYamlDocument,
   contract: AuthoringContract,
   profile: WorkflowProfile,
+  resolvedDefinition?: unknown,
 ): GraphScopeDiscovery {
-  const definitionValue = definitionDocument.document.toJS({ maxAliasCount: 1_000 }) as unknown
+  const definitionValue =
+    resolvedDefinition === undefined
+      ? (definitionDocument.document.toJS({ maxAliasCount: 1_000 }) as unknown)
+      : resolvedDefinition
   const definition = isRecord(definitionValue) ? definitionValue : {}
   const identity: WorkflowIdentity = deepFreeze({
     name: typeof definition.name === 'string' ? definition.name : '',
@@ -65,6 +70,7 @@ function projectGraphScopes(
   }))
   const root = projectGraph({
     definitionDocument,
+    definitionValue,
     sourcePath: nodesPath,
     scope: deepFreeze({ key: 'root', kind: 'root', workflow: identity }),
     editorNodePrefix: '',
@@ -93,6 +99,7 @@ function projectGraphScopes(
     graphs.push(
       projectGraph({
         definitionDocument,
+        definitionValue,
         sourcePath,
         scope: deepFreeze({ key: `loop-group:${node.id}`, kind: 'loop-group', groupId: node.id, workflow: identity }),
         editorNodePrefix: `${node.id}/`,
@@ -121,6 +128,7 @@ function validOuterInputs(
 
 interface ProjectGraphInput {
   readonly definitionDocument: ParsedYamlDocument
+  readonly definitionValue: unknown
   readonly sourcePath: readonly (string | number)[]
   readonly scope: GraphScope
   readonly editorNodePrefix: string
@@ -136,8 +144,8 @@ interface ProjectGraphInput {
 
 function projectGraph(input: ProjectGraphInput): ProjectedGraph {
   const yamlNodes = input.definitionDocument.document.getIn(input.sourcePath, true) as
-    { readonly range?: readonly number[]; toJSON?: () => unknown } | undefined
-  const rawNodes = yamlNodes?.toJSON?.() as unknown
+    { readonly range?: readonly number[] } | undefined
+  const rawNodes = valueAtPath(input.definitionValue, input.sourcePath)
   const nodeValues = Array.isArray(rawNodes) ? rawNodes : []
   const issues: ValidationIssue[] = []
   const nodes: ProjectedNode[] = []
@@ -308,11 +316,16 @@ function parseFieldPath(value: unknown): string[] | null {
     : value.replaceAll('[]', '').split('.').filter(Boolean)
 }
 
-function valueAtPath(value: unknown, path: readonly string[]): unknown {
+function valueAtPath(value: unknown, path: readonly (string | number)[]): unknown {
   let current = value
   for (const segment of path) {
-    if (!isRecord(current) && !Array.isArray(current)) return undefined
-    current = Array.isArray(current) ? current[Number(segment)] : current[segment]
+    if (typeof segment === 'number') {
+      if (!Array.isArray(current)) return undefined
+      current = current[segment]
+    } else {
+      if (!isRecord(current)) return undefined
+      current = current[segment]
+    }
   }
   return current
 }

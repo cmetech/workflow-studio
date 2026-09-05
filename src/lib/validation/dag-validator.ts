@@ -9,6 +9,7 @@ export interface DagValidationResult {
 
 export interface DagValidationOptions {
   readonly references?: boolean
+  readonly conditions?: boolean
 }
 
 export function validateDag(
@@ -82,7 +83,7 @@ export function validateDag(
     return { issues, topologicalOrder: [] }
   }
 
-  issues.push(...validateConditions(projection, rules))
+  if (options.conditions !== false) issues.push(...validateConditions(projection, rules))
   if (options.references !== false) {
     issues.push(...validateReferences(projection, rules, nodesById, dependencies, topologicalOrder))
   }

@@ -4,9 +4,18 @@ import {
   requiresScopedDagCapabilities,
   type ScopedDagCapabilities,
 } from '$src/lib/contract/scoped-dag-rule'
-import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
+import type { AuthoringContract } from '$src/lib/contract/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import type { ProjectedGraph, ProjectedNode, WorkflowProjection } from '$src/lib/projection/types'
+import {
+  buildReferenceIndex,
+  prepareReferenceContract,
+  type IndexedReferenceOccurrence,
+  type IndexedReferenceToken,
+  type PreparedReferenceContract,
+  type ReferenceIndex,
+} from '$src/lib/references/reference-index'
+import { outputPathImpossible, schemaHasUnaddressableDottedKey } from '$src/lib/references/structured-path'
 import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import { validateDag } from './dag-validator'
 import { calculateLoopGroupWorkProduct } from './loop-group-work-product'
@@ -20,11 +29,16 @@ export function validateScopedDag(
   definitionDocument: ParsedYamlDocument,
   companionDocument: ParsedYamlDocument | null,
   contract: AuthoringContract,
+  suppliedPrepared?: PreparedReferenceContract | null,
+  suppliedReferenceIndex?: ReferenceIndex | null,
+  impreciseOutputSchemaOwners: ReadonlySet<string> = new Set(),
 ): ScopedDagValidationResult {
   if (!requiresScopedDagCapabilities(contract, projection.profile, 'definition')) return Object.freeze({ issues: [] })
   let capabilities: ScopedDagCapabilities
+  let prepared: PreparedReferenceContract | null
   try {
-    capabilities = readScopedDagCapabilities(contract)
+    prepared = suppliedPrepared === undefined ? prepareReferenceContract(contract) : suppliedPrepared
+    capabilities = prepared?.capabilities ?? readScopedDagCapabilities(contract)
   } catch {
     return Object.freeze({ issues: [] })
   }
@@ -33,6 +47,9 @@ export function validateScopedDag(
   const root = projection.graphs.find(({ scope }) => scope.key === 'root')
   if (!root) return Object.freeze({ issues })
   const documentationId = scopedDocumentationId(contract, capabilities)
+  const referenceIndex = prepared
+    ? (suppliedReferenceIndex ?? buildReferenceIndex(projection.definition, projection, prepared))
+    : null
   const context: ValidationContext = {
     projection,
     definitionDocument,
@@ -40,6 +57,7 @@ export function validateScopedDag(
     contract,
     capabilities,
     root,
+    impreciseOutputSchemaOwners,
     ...(documentationId ? { documentationId } : {}),
   }
   if (root.capacity.status === 'yaml-only') {
@@ -59,9 +77,9 @@ export function validateScopedDag(
     if (graph.scope.kind !== 'loop-group' || !graph.scope.groupId) continue
     validateBodyGraph(graph, context, issues)
   }
-  validatePromotedRootReferences(context, issues)
+  if (referenceIndex) validateIndexedReferences(context, referenceIndex, issues)
   validateCompanionReferences(context, issues)
-  return Object.freeze({ issues: Object.freeze(deduplicate(issues)) })
+  return Object.freeze({ issues: Object.freeze(issues) })
 }
 
 interface ValidationContext {
@@ -71,6 +89,7 @@ interface ValidationContext {
   readonly contract: AuthoringContract
   readonly capabilities: ScopedDagCapabilities
   readonly root: ProjectedGraph
+  readonly impreciseOutputSchemaOwners: ReadonlySet<string>
   readonly documentationId?: string
 }
 
@@ -114,10 +133,19 @@ function validateBodyGraph(graph: ProjectedGraph, context: ValidationContext, is
     }
   }
 
-  const dag = validateDag(graph, context.contract.semantic_rules, { references: false })
+  const dag = validateDag(graph, context.contract.semantic_rules, {
+    references: false,
+    conditions: context.contract.contract_reader_version !== 3,
+  })
   for (const issue of dag.issues) {
     const missingDependency = issue.code === 'missing_dependency'
-    const path = issue.code === 'dependency_cycle' ? pointerPath(graph.sourcePath) : issue.path
+    const collectionPath = pointerPath(graph.sourcePath)
+    const path =
+      issue.code === 'dependency_cycle' || issue.code === 'self_dependency'
+        ? collectionPath
+        : issue.code === 'duplicate_node_id' && issue.path
+          ? `${issue.path}/${context.capabilities.nodeIdField}`
+          : issue.path
     issues.push(
       scopedIssue(context, graph, {
         code: missingDependency
@@ -126,7 +154,10 @@ function validateBodyGraph(graph: ProjectedGraph, context: ValidationContext, is
         message: issue.message,
         path: path ?? pointerPath(graph.sourcePath),
         nodeId: issue.nodeId ?? groupId,
-        field: issue.field ?? context.capabilities.dependsOnField,
+        field:
+          issue.code === 'duplicate_node_id'
+            ? context.capabilities.nodeIdField
+            : (issue.field ?? context.capabilities.dependsOnField),
       }),
     )
   }
@@ -159,8 +190,6 @@ function validateBodyGraph(graph: ProjectedGraph, context: ValidationContext, is
       }),
     )
   }
-
-  validateBodyReferences(graph, groupNodePath, context, issues)
 }
 
 function invalidShapePath(
@@ -197,138 +226,221 @@ function invalidShapePath(
     return pointerPath(graph.sourcePath)
   for (const [index, node] of bodyNodes.entries()) {
     const forbidden = capabilities.forbiddenNodeKinds.find((kind) => hasPath(node, [kind]))
-    if (forbidden) return pointerPath([...graph.sourcePath, index, forbidden])
+    if (forbidden)
+      return pointerPath(
+        forbidden === capabilities.groupKind ? [...graph.sourcePath, index] : [...graph.sourcePath, index, forbidden],
+      )
   }
   return null
 }
 
-function validateBodyReferences(
-  graph: ProjectedGraph,
-  groupNodePath: readonly (string | number)[],
+function validateIndexedReferences(context: ValidationContext, index: ReferenceIndex, issues: ValidationIssue[]): void {
+  const rootPhase = index.occurrences.filter(
+    (occurrence) =>
+      occurrence.scope === 'root' ||
+      (occurrence.scope === 'group-control' && occurrence.callerPolicy === 'group-gate-text-references'),
+  )
+  for (const occurrence of rootPhase) validateRootOccurrence(context, occurrence, issues)
+
+  for (const graph of context.projection.graphs) {
+    if (graph.scope.kind !== 'loop-group' || !graph.scope.groupId) continue
+    for (const occurrence of index.occurrences) {
+      if (occurrence.scopeKey !== graph.scope.key) continue
+      if (occurrence.scope === 'body') validateScopedOccurrence(context, graph, occurrence, issues)
+    }
+    for (const occurrence of index.occurrences) {
+      if (
+        occurrence.scopeKey === graph.scope.key &&
+        occurrence.scope === 'group-control' &&
+        occurrence.callerPolicy === 'group-until-bash-references'
+      )
+        validateScopedOccurrence(context, graph, occurrence, issues)
+    }
+  }
+}
+
+function validateRootOccurrence(
   context: ValidationContext,
+  occurrence: IndexedReferenceOccurrence,
   issues: ValidationIssue[],
 ): void {
-  const grammar = referenceGrammar(context.contract, context.capabilities)
-  if (!grammar) return
-  const definition = context.projection.definition
-  const bodyById = new Map(graph.nodes.filter(({ id }) => id).map((node) => [node.id, node]))
-  const rootById = uniqueNodes(context.root.nodes)
-  const fields = context.capabilities.referenceSemantics.interpolationFields
-  for (const surface of fields) {
-    const fieldPath = surface.field_path
-    if (typeof fieldPath !== 'string' || !surfaceAllowsReferences(surface, context.capabilities)) continue
-    const currentApplies =
-      appliesTo(fieldPath, context.capabilities.references, 'current_scope') ||
-      groupUntilAllowsCurrentBody(fieldPath, context.capabilities)
-    const outerApplies = appliesTo(fieldPath, context.capabilities.references, 'outer_scope')
-    const previousApplies = appliesTo(fieldPath, context.capabilities.references, 'previous_iteration')
-    for (const occurrence of expandFieldPath(definition, fieldPath)) {
-      if (!startsWithPath(occurrence.path, groupNodePath)) continue
-      const consumer = bodyConsumer(graph, occurrence.path)
-      const nodeId = consumer?.id ?? graph.scope.groupId ?? ''
-      const field = fieldIdentity(occurrence.path, consumer?.source.path ?? pointerPath(groupNodePath))
-      const previousReferences = collectReferences(occurrence.value, grammar.previous)
-      if (previousApplies) {
-        for (const reference of previousReferences) {
-          const producer = bodyById.get(reference.producer)
-          if (!producer) {
-            issues.push(
-              referenceIssue(context, graph, occurrence.path, nodeId, field, 'unknownProducer', reference.producer),
-            )
-          } else {
-            validateStructuredReference(context, graph, occurrence.path, nodeId, field, producer, reference, issues)
-          }
-        }
-      } else {
-        for (const reference of previousReferences) {
-          issues.push(
-            referenceIssue(context, graph, occurrence.path, nodeId, field, 'unknownProducer', reference.producer),
-          )
-        }
-      }
-      for (const reference of collectReferences(
-        withoutPreviousReferences(occurrence.value, grammar.previous),
-        grammar.current,
-      )) {
-        let producer: ProjectedNode | undefined
-        let producerKind: 'body' | 'outer' | undefined
-        for (const scope of resolutionOrder(context.capabilities)) {
-          if (scope === 'body-sibling' && currentApplies && bodyById.has(reference.producer)) {
-            producer = bodyById.get(reference.producer)
-            producerKind = 'body'
-            break
-          }
-          if (scope === 'outer-node' && outerApplies && rootById.has(reference.producer)) {
-            producer = rootById.get(reference.producer)
-            producerKind = 'outer'
-            break
-          }
-        }
-        if (!producer || !producerKind) {
-          issues.push(
-            referenceIssue(context, graph, occurrence.path, nodeId, field, 'unknownProducer', reference.producer),
-          )
-          continue
-        }
-        const bodyDependencyRequired =
-          producerKind === 'body' && consumer !== undefined && currentScopeRequiresDependency(context.capabilities)
-        const groupDependencyRequired = producerKind === 'outer' && outerScopeRequiresDependency(context.capabilities)
-        if (
-          (bodyDependencyRequired && !consumer.dependsOn.includes(producer.id)) ||
-          (groupDependencyRequired && !graph.outerInputs.includes(producer.id))
-        ) {
-          issues.push(
-            referenceIssue(context, graph, occurrence.path, nodeId, field, 'missingDependency', reference.producer),
-          )
-          continue
-        }
-        validateStructuredReference(context, graph, occurrence.path, nodeId, field, producer, reference, issues)
-      }
-    }
+  const groupGate = occurrence.scope === 'group-control'
+  const graph = groupGate
+    ? (context.projection.graphs.find(
+        ({ scope }) => scope.kind === 'loop-group' && scope.groupId === occurrence.groupId,
+      ) ?? context.root)
+    : context.root
+  for (const error of occurrence.errors) {
+    issues.push(
+      indexedIssue(context, graph, occurrence, error.code, `Reference syntax is invalid: ${error.name}.`, undefined),
+    )
   }
-}
-
-function withoutPreviousReferences(value: unknown, parser: { readonly expression: RegExp }): unknown {
-  if (typeof value !== 'string') return value
-  parser.expression.lastIndex = 0
-  return value.replace(parser.expression, '')
-}
-
-function validatePromotedRootReferences(context: ValidationContext, issues: ValidationIssue[]): void {
-  const grammar = referenceGrammar(context.contract, context.capabilities)
-  if (!grammar) return
-  const groups = new Map(
-    context.root.nodes
-      .filter(({ kind, id }) => kind === context.capabilities.groupKind && id)
-      .map((node) => [node.id, node]),
-  )
-  if (groups.size === 0) return
-  const rule = context.contract.semantic_rules.find(
-    ({ id }) => id === context.capabilities.referenceSemantics.syntaxRule,
-  )
-  if (!rule) return
-  for (const fieldPath of rule.field_paths) {
-    for (const occurrence of expandFieldPath(context.projection.definition, fieldPath)) {
-      const consumer = rootConsumer(context.root, occurrence.path)
-      if (!consumer) continue
-      const field = fieldIdentity(occurrence.path, consumer.source.path)
-      for (const reference of collectReferences(occurrence.value, grammar.current)) {
-        const producer = groups.get(reference.producer)
-        if (!producer || !consumer.dependsOn.includes(producer.id)) continue
-        validateStructuredReference(
+  if (occurrence.errors.length) return
+  const consumer = context.root.nodes.find(({ source }) => source.path === occurrence.consumerPath)
+  for (const reference of occurrence.references) {
+    if (reference.kind === 'previous') continue
+    const producer =
+      reference.resolvedProducer?.namespace === 'root'
+        ? context.root.nodes.find(({ source }) => source.path === reference.resolvedProducer?.sourcePath)
+        : undefined
+    if (!consumer || !producer || !consumer.dependsOn.includes(reference.producerId)) {
+      issues.push(
+        indexedIssue(
           context,
-          context.root,
-          occurrence.path,
-          consumer.id,
-          field,
-          producer,
+          graph,
+          occurrence,
+          groupGate
+            ? context.capabilities.referenceSemantics.diagnosticCodes.missingDependency
+            : 'output_reference_not_declared_dependency',
+          `Output reference "${reference.producerId}" must be listed directly in depends_on.`,
           reference,
-          issues,
-          producer.id,
-        )
-      }
+        ),
+      )
+      continue
     }
+    validateIndexedStructuredReference(context, graph, occurrence, producer, reference, issues, groupGate)
   }
+}
+
+function validateScopedOccurrence(
+  context: ValidationContext,
+  graph: ProjectedGraph,
+  occurrence: IndexedReferenceOccurrence,
+  issues: ValidationIssue[],
+): void {
+  for (const error of occurrence.errors) {
+    issues.push(
+      indexedIssue(
+        context,
+        graph,
+        occurrence,
+        'loop_group_scope_invalid',
+        `Reference syntax is invalid: ${error.name}.`,
+      ),
+    )
+  }
+  if (occurrence.errors.length) return
+  const consumer = graph.nodes.find(({ source }) => source.path === occurrence.consumerPath)
+  const previous = occurrence.references.filter(({ kind }) => kind === 'previous')
+  const ordinary = occurrence.references.filter(({ kind }) => kind === 'ordinary')
+  for (const reference of previous) {
+    const producer =
+      reference.resolvedProducer?.namespace === 'previous'
+        ? graph.nodes.find(({ source }) => source.path === reference.resolvedProducer?.sourcePath)
+        : undefined
+    if (!producer) {
+      issues.push(
+        indexedIssue(
+          context,
+          graph,
+          occurrence,
+          context.capabilities.referenceSemantics.diagnosticCodes.unknownProducer,
+          `Unknown previous-iteration body node "${reference.producerId}".`,
+          reference,
+        ),
+      )
+      continue
+    }
+    validateIndexedStructuredReference(context, graph, occurrence, producer, reference, issues, false)
+  }
+  for (const reference of ordinary) {
+    const identity = reference.resolvedProducer
+    const producer =
+      identity?.namespace === 'body'
+        ? graph.nodes.find(({ source }) => source.path === identity.sourcePath)
+        : identity?.namespace === 'root'
+          ? context.root.nodes.find(({ source }) => source.path === identity.sourcePath)
+          : undefined
+    const bodyAllowed =
+      identity?.namespace === 'body' &&
+      (occurrence.scope === 'group-control' || Boolean(consumer?.dependsOn.includes(reference.producerId)))
+    const outerAllowed = identity?.namespace === 'root' && graph.outerInputs.includes(reference.producerId)
+    if (!producer || (!bodyAllowed && !outerAllowed)) {
+      issues.push(
+        indexedIssue(
+          context,
+          graph,
+          occurrence,
+          context.capabilities.referenceSemantics.diagnosticCodes.missingDependency,
+          `Reference producer "${reference.producerId}" is outside the loop-group dependency scope.`,
+          reference,
+        ),
+      )
+      continue
+    }
+    validateIndexedStructuredReference(context, graph, occurrence, producer, reference, issues, false)
+  }
+}
+
+function validateIndexedStructuredReference(
+  context: ValidationContext,
+  graph: ProjectedGraph,
+  occurrence: IndexedReferenceOccurrence,
+  producer: ProjectedNode,
+  reference: IndexedReferenceToken,
+  issues: ValidationIssue[],
+  groupGate: boolean,
+): void {
+  if (!reference.path.length) return
+  if (context.impreciseOutputSchemaOwners.has(producer.source.path)) return
+  const schema = producerOutputSchema(context, producer)
+  if (schema === undefined) {
+    issues.push(
+      indexedIssue(
+        context,
+        graph,
+        occurrence,
+        groupGate
+          ? context.capabilities.referenceSemantics.diagnosticCodes.producerSchemaRequired
+          : occurrence.scope === 'root'
+            ? 'output_reference_path_unsupported'
+            : context.capabilities.referenceSemantics.diagnosticCodes.producerSchemaRequired,
+        `Output field reference requires a structured output contract on "${producer.id}".`,
+        reference,
+      ),
+    )
+    return
+  }
+  if (!outputPathImpossible(schema, reference.path)) return
+  const nativeCode = schemaHasUnaddressableDottedKey(schema, reference.path)
+    ? 'output_reference_path_unsupported'
+    : 'structured_output_field_impossible'
+  issues.push(
+    indexedIssue(
+      context,
+      graph,
+      occurrence,
+      groupGate || occurrence.scope !== 'root'
+        ? context.capabilities.referenceSemantics.diagnosticCodes.structuredPathImpossible
+        : nativeCode,
+      `Structured output path "${reference.path.join('.')}" is impossible for "${producer.id}".`,
+      reference,
+    ),
+  )
+}
+
+function indexedIssue(
+  context: ValidationContext,
+  graph: ProjectedGraph,
+  occurrence: IndexedReferenceOccurrence,
+  code: string,
+  message: string,
+  reference?: IndexedReferenceToken,
+): ValidationIssue {
+  return scopedIssue(
+    context,
+    graph,
+    {
+      code,
+      message,
+      path: pointerPath(occurrence.valuePath),
+      nodeId: occurrence.consumerId,
+      field: occurrence.field,
+      ...(reference ? { referenceStart: reference.start, referenceEnd: reference.end } : {}),
+    },
+    'definition',
+    occurrence.groupId,
+  )
 }
 
 function validateCompanionReferences(context: ValidationContext, issues: ValidationIssue[]): void {
@@ -375,161 +487,13 @@ function companionReferenceIssue(
     {
       code: context.capabilities.referenceSemantics.diagnosticCodes.unknownCompanionNode,
       message: `Companion reference "${reference}" does not name a known group child.`,
-      path: pointerPath(occurrence.path),
+      path: pointerPath(typeof occurrence.path.at(-1) === 'number' ? occurrence.path.slice(0, -1) : occurrence.path),
       nodeId: parsedChildId ?? parsedGroupId ?? reference,
       field: fieldIdentity(occurrence.path),
     },
     'companion',
     groupId,
   )
-}
-
-interface ParsedReference {
-  readonly producer: string
-  readonly path: readonly string[]
-}
-
-interface ReferenceGrammar {
-  readonly current: { readonly expression: RegExp; readonly capture: number }
-  readonly previous: { readonly expression: RegExp; readonly capture: number }
-}
-
-function referenceGrammar(contract: AuthoringContract, capabilities: ScopedDagCapabilities): ReferenceGrammar | null {
-  const rule = contract.semantic_rules.find(({ id }) => id === capabilities.referenceSemantics.syntaxRule)
-  if (!rule) return null
-  const parser = parserForRule(rule)
-  if (!parser) return null
-  const previousSource = parser.expression.source.replace(
-    /^\\\$\(/,
-    `${escapeRegex(capabilities.previousIteration.prefix)}(`,
-  )
-  if (previousSource === parser.expression.source) return null
-  return {
-    current: parser,
-    previous: { expression: new RegExp(previousSource, parser.expression.flags), capture: parser.capture },
-  }
-}
-
-function parserForRule(rule: SemanticRuleDescriptor): { readonly expression: RegExp; readonly capture: number } | null {
-  const pattern = rule.parameters.pattern
-  const flags = rule.parameters.pattern_flags
-  const capture = rule.parameters.node_id_capture_group
-  if (typeof pattern !== 'string' || (flags !== undefined && typeof flags !== 'string')) return null
-  if (typeof capture !== 'number' || !Number.isInteger(capture) || capture < 1) return null
-  try {
-    return { expression: new RegExp(pattern, `${flags ?? ''}g`), capture }
-  } catch {
-    return null
-  }
-}
-
-function collectReferences(
-  value: unknown,
-  parser: { readonly expression: RegExp; readonly capture: number },
-): readonly ParsedReference[] {
-  if (typeof value !== 'string') return []
-  const references: ParsedReference[] = []
-  parser.expression.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = parser.expression.exec(value)) !== null) {
-    const producer = match[parser.capture]
-    if (producer) {
-      const marker = `${producer}.output`
-      const markerIndex = match[0].indexOf(marker)
-      const suffix = markerIndex < 0 ? '' : match[0].slice(markerIndex + marker.length)
-      references.push({ producer, path: suffix.split('.').filter(Boolean) })
-    }
-    if (match[0].length === 0) parser.expression.lastIndex += 1
-  }
-  return references
-}
-
-function validateStructuredReference(
-  context: ValidationContext,
-  graph: ProjectedGraph,
-  occurrencePath: readonly (string | number)[],
-  nodeId: string,
-  field: string,
-  producer: ProjectedNode,
-  reference: ParsedReference,
-  issues: ValidationIssue[],
-  groupId?: string,
-): void {
-  if (reference.path.length === 0) return
-  const schema = producerOutputSchema(context, producer)
-  if (schema === undefined) {
-    issues.push(
-      referenceIssue(context, graph, occurrencePath, nodeId, field, 'producerSchemaRequired', producer.id, groupId),
-    )
-    return
-  }
-  if (structuredPathStatus(schema, reference.path) === 'impossible') {
-    issues.push(
-      referenceIssue(context, graph, occurrencePath, nodeId, field, 'structuredPathImpossible', producer.id, groupId),
-    )
-  }
-}
-
-type StructuredPathStatus = 'possible' | 'impossible' | 'unknown'
-
-function structuredPathStatus(
-  schema: unknown,
-  path: readonly string[],
-  root: unknown = schema,
-  seen = new Set<string>(),
-): StructuredPathStatus {
-  if (path.length === 0) return schema === false ? 'impossible' : 'possible'
-  if (schema === false) return 'impossible'
-  if (!isRecord(schema)) return 'unknown'
-  if (typeof schema.$ref === 'string') {
-    if (!schema.$ref.startsWith('#/') || seen.has(schema.$ref)) return 'unknown'
-    const resolved = resolveLocalReference(root, schema.$ref)
-    if (resolved === undefined) return 'unknown'
-    return structuredPathStatus(resolved, path, root, new Set([...seen, schema.$ref]))
-  }
-  for (const keyword of ['anyOf', 'oneOf'] as const) {
-    const branches = schema[keyword]
-    if (Array.isArray(branches) && branches.length > 0) {
-      const statuses = branches.map((branch) => structuredPathStatus(branch, path, root, seen))
-      return statuses.every((status) => status === 'impossible')
-        ? 'impossible'
-        : statuses.some((status) => status === 'possible')
-          ? 'possible'
-          : 'unknown'
-    }
-  }
-  if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
-    const statuses = schema.allOf.map((branch) => structuredPathStatus(branch, path, root, seen))
-    if (statuses.some((status) => status === 'impossible')) return 'impossible'
-    return statuses.some((status) => status === 'possible') ? 'possible' : 'unknown'
-  }
-
-  const [segment, ...rest] = path
-  if (!segment) return 'possible'
-  const numeric = /^(?:0|[1-9][0-9]*)$/.test(segment)
-  if (numeric) {
-    if (!typeAllows(schema.type, ['object', 'array'])) return 'impossible'
-    const index = Number(segment)
-    if (Array.isArray(schema.prefixItems) && index < schema.prefixItems.length) {
-      return structuredPathStatus(schema.prefixItems[index], rest, root, seen)
-    }
-    if (typeof schema.maxItems === 'number' && index >= schema.maxItems) return 'impossible'
-    if (schema.items !== undefined) return structuredPathStatus(schema.items, rest, root, seen)
-    if (schema.additionalItems === false) return 'impossible'
-  } else if (!typeAllows(schema.type, ['object'])) {
-    return 'impossible'
-  }
-
-  const properties = record(schema.properties)
-  if (properties && Object.hasOwn(properties, segment)) {
-    return structuredPathStatus(properties[segment], rest, root, seen)
-  }
-  if (isRecord(schema.patternProperties) && Object.keys(schema.patternProperties).length > 0) return 'unknown'
-  if (schema.additionalProperties === false) return 'impossible'
-  if (schema.additionalProperties !== undefined) {
-    return structuredPathStatus(schema.additionalProperties, rest, root, seen)
-  }
-  return 'unknown'
 }
 
 function producerOutputSchema(context: ValidationContext, producer: ProjectedNode): unknown {
@@ -553,32 +517,6 @@ function projectedNodeValue(node: ProjectedNode): Record<string, unknown> {
   return { ...node.options, ...(node.kind ? { [node.kind]: node.value } : {}) }
 }
 
-function referenceIssue(
-  context: ValidationContext,
-  graph: ProjectedGraph,
-  path: readonly (string | number)[],
-  nodeId: string,
-  field: string,
-  kind: keyof ScopedDagCapabilities['referenceSemantics']['diagnosticCodes'],
-  producer: string,
-  groupId?: string,
-): ValidationIssue {
-  const code = context.capabilities.referenceSemantics.diagnosticCodes[kind]
-  return scopedIssue(
-    context,
-    graph,
-    {
-      code,
-      message: `Reference producer "${producer}" violates the contract-declared ${kind} rule.`,
-      path: pointerPath(path),
-      nodeId,
-      field,
-    },
-    'definition',
-    groupId,
-  )
-}
-
 interface ScopedIssueInput {
   readonly code: string
   readonly message: string
@@ -587,6 +525,8 @@ interface ScopedIssueInput {
   readonly field: string
   readonly blocking?: boolean
   readonly severity?: ValidationIssue['severity']
+  readonly referenceStart?: number
+  readonly referenceEnd?: number
 }
 
 function scopedIssue(
@@ -611,6 +551,8 @@ function scopedIssue(
     ...(groupId ? { groupId } : {}),
     nodeId: input.nodeId,
     field: input.field,
+    ...(input.referenceStart === undefined ? {} : { referenceStart: input.referenceStart }),
+    ...(input.referenceEnd === undefined ? {} : { referenceEnd: input.referenceEnd }),
     ...(context.documentationId ? { documentationId: context.documentationId } : {}),
   }
 }
@@ -676,67 +618,6 @@ function expandFieldPath(value: unknown, fieldPath: string): readonly FieldOccur
   return results
 }
 
-function surfaceAllowsReferences(
-  surface: Readonly<Record<string, unknown>>,
-  capabilities: ScopedDagCapabilities,
-): boolean {
-  if (surface.authored_value === 'reference-template') return true
-  if (surface.authored_value === 'literal-resource-name') return false
-  if (surface.authored_value !== 'reference-template-if-inline-otherwise-literal-resource-name') return false
-  const discriminatorId = surface.value_discriminator
-  if (typeof discriminatorId !== 'string') return false
-  const discriminator = capabilities.referenceSemantics.valueDiscriminators[discriminatorId]
-  return discriminator?.operation === 'contains-listed-codepoint'
-}
-
-function appliesTo(fieldPath: string, references: Readonly<Record<string, unknown>>, kind: string): boolean {
-  const descriptor = record(references[kind])
-  return Boolean(
-    descriptor &&
-    Array.isArray(descriptor.applies_to) &&
-    descriptor.applies_to.some(
-      (path) => typeof path === 'string' && (fieldPath === path || fieldPath.startsWith(`${path}.`)),
-    ),
-  )
-}
-
-function currentScopeRequiresDependency(capabilities: ScopedDagCapabilities): boolean {
-  return record(capabilities.references.current_scope)?.requires_direct_dependency === true
-}
-
-function groupUntilAllowsCurrentBody(fieldPath: string, capabilities: ScopedDagCapabilities): boolean {
-  const descriptor = capabilities.referenceSemantics.groupUntilBash
-  return (
-    descriptor.current_scope === 'all-body-nodes' &&
-    Array.isArray(descriptor.field_path) &&
-    descriptor.field_path.every((value) => typeof value === 'string') &&
-    fieldPath.endsWith(`.${descriptor.field_path.join('.')}`)
-  )
-}
-
-function outerScopeRequiresDependency(capabilities: ScopedDagCapabilities): boolean {
-  return record(capabilities.references.outer_scope)?.requires_group_dependency === true
-}
-
-function resolutionOrder(capabilities: ScopedDagCapabilities): readonly string[] {
-  const resolution = record(capabilities.references.unqualified_producer_resolution)
-  return Array.isArray(resolution?.order) && resolution.order.every((value) => typeof value === 'string')
-    ? (resolution.order as string[])
-    : []
-}
-
-function bodyConsumer(graph: ProjectedGraph, path: readonly (string | number)[]): ProjectedNode | undefined {
-  if (!startsWithPath(path, graph.sourcePath)) return undefined
-  const index = path[graph.sourcePath.length]
-  return typeof index === 'number' ? graph.nodes[index] : undefined
-}
-
-function rootConsumer(graph: ProjectedGraph, path: readonly (string | number)[]): ProjectedNode | undefined {
-  if (!startsWithPath(path, graph.sourcePath)) return undefined
-  const index = path[graph.sourcePath.length]
-  return typeof index === 'number' ? graph.nodes[index] : undefined
-}
-
 function uniqueNodes(nodes: readonly ProjectedNode[]): ReadonlyMap<string, ProjectedNode> {
   const counts = new Map<string, number>()
   for (const node of nodes) counts.set(node.id, (counts.get(node.id) ?? 0) + 1)
@@ -758,24 +639,6 @@ function formattedPathMatcher(format: string): RegExp | null {
   } catch {
     return null
   }
-}
-
-function resolveLocalReference(root: unknown, reference: string): unknown {
-  let current = root
-  for (const token of reference
-    .slice(2)
-    .split('/')
-    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))) {
-    if (!isRecord(current) && !Array.isArray(current)) return undefined
-    current = Array.isArray(current) ? current[Number(token)] : current[token]
-  }
-  return current
-}
-
-function typeAllows(value: unknown, allowed: readonly string[]): boolean {
-  if (value === undefined) return true
-  if (typeof value === 'string') return allowed.includes(value)
-  return Array.isArray(value) && value.some((candidate) => typeof candidate === 'string' && allowed.includes(candidate))
 }
 
 function scopedDocumentationId(contract: AuthoringContract, capabilities: ScopedDagCapabilities): string | undefined {
@@ -843,30 +706,6 @@ function hasPath(value: unknown, path: readonly string[]): boolean {
     current = current[segment]
   }
   return true
-}
-
-function deduplicate(issues: readonly ValidationIssue[]): ValidationIssue[] {
-  const seen = new Set<string>()
-  return issues.filter((issue) => {
-    const key = JSON.stringify([
-      issue.code,
-      issue.document,
-      issue.path,
-      issue.scopeKey,
-      issue.groupId,
-      issue.nodeId,
-      issue.field,
-    ])
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-function record(value: unknown): Readonly<Record<string, unknown>> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Readonly<Record<string, unknown>>)
-    : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

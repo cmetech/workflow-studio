@@ -9,16 +9,28 @@ export interface WorkflowProjectionResult {
   readonly issues: readonly ValidationIssue[]
 }
 
+export interface ResolvedWorkflowValues {
+  readonly definition: unknown
+  readonly companion?: unknown
+}
+
 export function projectWorkflow(
   definitionDocument: ParsedYamlDocument,
   companionDocument: ParsedYamlDocument | null,
   profile: WorkflowProfile,
   contract: AuthoringContract,
+  resolved?: ResolvedWorkflowValues,
 ): WorkflowProjectionResult {
-  const definitionValue = definitionDocument.document.toJS({ maxAliasCount: 1_000 }) as unknown
-  const companionValue = companionDocument?.document.toJS({ maxAliasCount: 1_000 }) as unknown
+  const definitionValue =
+    resolved === undefined
+      ? (definitionDocument.document.toJS({ maxAliasCount: 1_000 }) as unknown)
+      : resolved.definition
+  const companionValue =
+    resolved && Object.hasOwn(resolved, 'companion')
+      ? resolved.companion
+      : (companionDocument?.document.toJS({ maxAliasCount: 1_000 }) as unknown)
   const definition = isRecord(definitionValue) ? definitionValue : {}
-  const graphs = discoverGraphScopes(definitionDocument, contract, profile)
+  const graphs = discoverGraphScopes(definitionDocument, contract, profile, definitionValue)
   return deepFreeze({
     projection: {
       name: typeof definition.name === 'string' ? definition.name : '',

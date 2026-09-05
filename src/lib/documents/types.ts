@@ -1,4 +1,5 @@
 import type { GraphScopeKey } from '$src/lib/projection/types'
+import type { ReferenceIndex } from '$src/lib/references/reference-index'
 
 export type DocumentKind = 'definition' | 'companion'
 
@@ -20,6 +21,9 @@ export interface ValidationIssue {
   scopeKey?: GraphScopeKey
   groupId?: string
   field?: string
+  /** Half-open authored scalar offsets in Unicode code points. */
+  referenceStart?: number
+  referenceEnd?: number
   documentationId?: string
   quickFixId?: string
 }
@@ -55,6 +59,7 @@ export interface DocumentRevision {
 export interface DocumentAnalysis extends DocumentRevision {
   issues: readonly ValidationIssue[]
   projection?: unknown
+  referenceIndex?: ReferenceIndex
   structurallyValid: boolean
   visuallyAuthorable?: boolean
 }

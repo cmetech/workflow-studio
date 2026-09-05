@@ -76,6 +76,13 @@ export interface ScopedWorkProductSemantics {
   readonly retrySelectorPredicate: Readonly<Record<string, unknown>>
 }
 
+const capabilityCache = new WeakMap<AuthoringContract, ScopedDagCapabilities>()
+let capabilityBuildCount = 0
+
+export function scopedDagCapabilityBuildCountForTest(): number {
+  return capabilityBuildCount
+}
+
 export function requiresScopedDagCapabilities(
   contract: AuthoringContract,
   profile: WorkflowProfile,
@@ -91,6 +98,9 @@ export function requiresScopedDagCapabilities(
 }
 
 export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDagCapabilities {
+  const cached = capabilityCache.get(contract)
+  if (cached) return cached
+  capabilityBuildCount += 1
   const rules = new Map(contract.semantic_rules.map((rule) => [rule.id, rule]))
   const topology = requireRule(rules.get('scoped-dag-topology-v1'), 'scoped DAG topology capability')
   const references = requireRule(rules.get('scoped-output-reference-v1'), 'scoped output reference capability')
@@ -133,7 +143,7 @@ export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDa
   const workProductSemantics = readWorkProductSemantics(workDefinition)
   if (!referenceSemantics || !workProductSemantics || !validTypedParameters(parameters, workProduct.parameters))
     throw new Error('The generated scoped semantic capability is unsupported by this Studio reader.')
-  return Object.freeze({
+  const capabilities = Object.freeze({
     groupKind: 'loop_group',
     bodyPath: parameters.body_path,
     nodeIdField: parameters.node_id_field,
@@ -148,6 +158,8 @@ export function readScopedDagCapabilities(contract: AuthoringContract): ScopedDa
     referenceSemantics,
     workProductSemantics,
   })
+  capabilityCache.set(contract, capabilities)
+  return capabilities
 }
 
 function validTypedParameters(topology: Record<string, unknown>, work: Record<string, unknown>): boolean {
