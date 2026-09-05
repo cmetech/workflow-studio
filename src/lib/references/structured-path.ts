@@ -9,8 +9,21 @@ function localRef(root: Schema, reference: string): unknown {
   for (const raw of reference.slice(2).split('/')) {
     const part = raw.replaceAll('~1', '/').replaceAll('~0', '~')
     if (record(current) && Object.hasOwn(current, part)) current = current[part]
-    else if (Array.isArray(current) && decimal(part) && Number(part) < current.length) current = current[Number(part)]
+    else if (Array.isArray(current) && decimal(part) && BigInt(part) < BigInt(current.length))
+      current = current[Number(BigInt(part))]
     else return undefined
+  }
+  return current
+}
+// Hermes's dotted-key diagnostic helper deliberately resolves mapping keys only.
+// The impossibility resolver above also admits array entries in local JSON pointers.
+function mappingLocalRef(root: Schema, reference: string): unknown {
+  if (!reference.startsWith('#/')) return undefined
+  let current: unknown = root
+  for (const raw of reference.slice(2).split('/')) {
+    const part = raw.replaceAll('~1', '/').replaceAll('~0', '~')
+    if (!record(current) || !Object.hasOwn(current, part)) return undefined
+    current = current[part]
   }
   return current
 }
@@ -20,7 +33,8 @@ export function outputPathImpossible(schema: unknown, path: readonly string[]): 
   function impossible(current: unknown, remaining: readonly string[], resolving: ReadonlySet<string>): boolean {
     if (current === false) return true
     if (!record(current)) return false
-    const index = decimal(remaining[0]!) ? Number(remaining[0]) : null
+    // Keep authored indices exact; convert to Number only after an array-length bound.
+    const index = decimal(remaining[0]!) ? BigInt(remaining[0]!) : null
     return (
       interpretation(current, remaining, resolving, 'object', index) &&
       (index === null || interpretation(current, remaining, resolving, 'array', index))
@@ -31,7 +45,7 @@ export function outputPathImpossible(schema: unknown, path: readonly string[]): 
     remaining: readonly string[],
     resolving: ReadonlySet<string>,
     expected: 'object' | 'array',
-    index: number | null,
+    index: bigint | null,
   ): boolean {
     const type = current.type
     if (typeof type === 'string' && type !== expected) return true
@@ -56,11 +70,12 @@ export function outputPathImpossible(schema: unknown, path: readonly string[]): 
       }
     } else if (index !== null) {
       const maximum = current.maxItems
-      if (typeof maximum === 'number' && Number.isInteger(maximum) && index >= maximum) return true
+      if (typeof maximum === 'number' && Number.isInteger(maximum) && index >= BigInt(maximum)) return true
       let child: unknown
-      if (Array.isArray(current.prefixItems) && index < current.prefixItems.length) child = current.prefixItems[index]
+      if (Array.isArray(current.prefixItems) && index < BigInt(current.prefixItems.length))
+        child = current.prefixItems[Number(index)]
       else if (Array.isArray(current.items))
-        child = index < current.items.length ? current.items[index] : current.additionalItems
+        child = index < BigInt(current.items.length) ? current.items[Number(index)] : current.additionalItems
       else child = current.items
       if (remaining.length === 1 ? child === false : impossible(child, remaining.slice(1), resolving)) return true
     }
@@ -86,7 +101,7 @@ export function schemaHasUnaddressableDottedKey(schema: unknown, path: readonly 
     if (indices.has(index)) return false
     indices.add(index)
     seen.set(current, indices)
-    if (typeof current.$ref === 'string' && visit(localRef(schema as Schema, current.$ref), index)) return true
+    if (typeof current.$ref === 'string' && visit(mappingLocalRef(schema as Schema, current.$ref), index)) return true
     for (const key of ['allOf', 'anyOf', 'oneOf'])
       if (Array.isArray(current[key]) && current[key].some((branch) => visit(branch, index))) return true
     const capable = (type: string) =>
@@ -99,15 +114,15 @@ export function schemaHasUnaddressableDottedKey(schema: unknown, path: readonly 
       if (Object.hasOwn(current.properties, segment) && visit(current.properties[segment], index + 1)) return true
     }
     if (capable('array') && decimal(segment)) {
-      const n = Number(segment),
+      const n = BigInt(segment),
         prefix = current.prefixItems,
         items = current.items
       const child =
-        Array.isArray(prefix) && n < prefix.length
-          ? prefix[n]
+        Array.isArray(prefix) && n < BigInt(prefix.length)
+          ? prefix[Number(n)]
           : Array.isArray(items)
-            ? n < items.length
-              ? items[n]
+            ? n < BigInt(items.length)
+              ? items[Number(n)]
               : current.additionalItems
             : items
       return visit(child, index + 1)

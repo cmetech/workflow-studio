@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { observeScannerCase, type ObservationInput } from '../src/lib/references/test-observations'
-import { outputPathImpossible } from '../src/lib/references/structured-path'
+import { outputPathImpossible, schemaHasUnaddressableDottedKey } from '../src/lib/references/structured-path'
 import { SCANNER_UNICODE_PROFILE } from '../src/lib/references/unicode'
 const python = process.env.HERMES_SCANNER_PYTHON,
   hermes = process.env.HERMES_SCANNER_ROOT
@@ -206,7 +206,40 @@ for (let i = 0; i < 1000; i++)
       path: pick([[], ['x'], ['0'], ['01'], ['x', '0'], ['0', 'x'], ['x', 'y'], ['9999999999999999999999'], ['²']]),
     },
   })
-const program = `import sys,json,runpy\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\napi=runpy.run_path(str(Path(sys.argv[1])/'tests/plugins/workflow/reference_scanner_observations.py'))\nassert api['profile_id']()==sys.argv[2]\nfor case in json.load(sys.stdin):\n result=api['observe_structured_path_case'](case) if case['api']=='_v3_output_path_impossible' else api['observe_scanner_case'](case,Path('/unused-authoring-only'))\n print(json.dumps(result,ensure_ascii=True))\n`
+// Review regressions: exact numeric boundaries and the two native local-ref policies.
+for (const maximum of [9007199254740992, 9007199254740996, 18014398509481984, 18014398509481988]) {
+  for (const offset of [-2n, -1n, 0n, 1n, 2n]) {
+    const path = [(BigInt(maximum) + offset).toString()]
+    const arraySchema = { type: 'array', maxItems: maximum }
+    for (const [variant, schema] of [
+      arraySchema,
+      { ...arraySchema, type: ['object', 'array'], additionalProperties: false },
+      { $defs: { list: arraySchema }, $ref: '#/$defs/list' },
+    ].entries())
+      cases.push({
+        id: `exact-path-${maximum}-${offset}-${variant}`,
+        api: '_v3_output_path_impossible',
+        normalizer_version: 6,
+        input: { schema, path },
+      })
+  }
+}
+for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+  for (const suffix of ['', '/0', '/00', '/1', '/99999999999999999999999']) {
+    const schema = {
+      $defs: { choice: { [keyword]: [{ type: 'object', properties: { 'x.y': {} }, additionalProperties: false }] } },
+      $ref: '#/$defs/choice' + (suffix ? '/' + keyword + suffix : ''),
+    }
+    for (const api of ['_v3_output_path_impossible', '_schema_has_unaddressable_dotted_key'])
+      cases.push({
+        id: `local-ref-${keyword}-${suffix}-${api}`,
+        api,
+        normalizer_version: 6,
+        input: { schema, path: ['x', 'y'] },
+      })
+  }
+}
+const program = `import sys,json,runpy\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\napi=runpy.run_path(str(Path(sys.argv[1])/'tests/plugins/workflow/reference_scanner_observations.py'))\nassert api['profile_id']()==sys.argv[2]\nfrom plugins.workflow.schema import _schema_has_unaddressable_dotted_key\nfor case in json.load(sys.stdin):\n result={'value':_schema_has_unaddressable_dotted_key(case['input']['schema'],tuple(case['input']['path'])),'error':None} if case['api']=='_schema_has_unaddressable_dotted_key' else api['observe_structured_path_case'](case) if case['api']=='_v3_output_path_impossible' else api['observe_scanner_case'](case,Path('/unused-authoring-only'))\n print(json.dumps(result,ensure_ascii=True))\n`
 const oracle = spawnSync(python, ['-B', '-c', program, resolve(hermes), SCANNER_UNICODE_PROFILE], {
   input: JSON.stringify(cases),
   encoding: 'utf8',
@@ -224,14 +257,24 @@ for (const [i, fixture] of cases.entries()) {
   const actual =
     fixture.api === '_v3_output_path_impossible'
       ? { value: outputPathImpossible(fixture.input.schema, fixture.input.path as string[]), error: null }
-      : observeScannerCase(fixture)
+      : fixture.api === '_schema_has_unaddressable_dotted_key'
+        ? { value: schemaHasUnaddressableDottedKey(fixture.input.schema, fixture.input.path as string[]), error: null }
+        : observeScannerCase(fixture)
   if (!isDeepStrictEqual(actual, expected[i])) mismatches.push({ fixture, actual, expected: expected[i] })
 }
 const report = {
   seed,
   profile: SCANNER_UNICODE_PROFILE,
   cases: cases.length,
-  families: { grammar: 1600, bash: 3200, condition: 600, span: 600, path: 1000 },
+  families: {
+    grammar: 1600,
+    bash: 3200,
+    condition: 600,
+    span: 600,
+    path: 1000,
+    exactNumericPath: 60,
+    localRefPolicy: 30,
+  },
   mismatches,
 }
 if (process.env.SCANNER_DIFFERENTIAL_REPORT)
