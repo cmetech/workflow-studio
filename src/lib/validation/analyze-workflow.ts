@@ -1,4 +1,4 @@
-import { isMap, isScalar, isSeq } from 'yaml'
+import { isAlias, isMap, isScalar, isSeq } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
@@ -149,29 +149,26 @@ function unsupportedAuthoringIntegerPrecision(parsed: ParsedYamlDocument): Unsup
         if (key === null) continue
         const childPath = [...path, key]
         const nextOwner = key === 'output_format' ? pointerPath(path) : schemaOwnerPath
-        if (key === 'maxItems' && nextOwner && isScalar(pair.value)) {
-          const source = pair.value.source
-          const value = pair.value.value
+        if (key === 'maxItems' && nextOwner) {
+          const scalar = resolvePrecisionScalar(pair.value, parsed)
+          const source = scalar?.source
+          const value = scalar?.value
           if (typeof source === 'string' && typeof value === 'number' && Number.isInteger(value)) {
-            const normalized = source.replaceAll('_', '').replace(/^\+/, '')
-            try {
-              if (/^-?[0-9]+$/.test(normalized) && BigInt(normalized) !== BigInt(value)) {
-                const issuePath = pointerPath(childPath)
-                issues.push({
-                  code: 'unsupported_authoring_integer_precision',
-                  layer: 'semantic',
-                  severity: 'error',
-                  blocking: true,
-                  message: 'This authored schema integer cannot be represented exactly by the editor.',
-                  document: 'definition',
-                  path: issuePath,
-                  ...(sourceLocation(parsed, issuePath) ?? {}),
-                  field: key,
-                })
-                schemaOwnerPaths.add(nextOwner)
-              }
-            } catch {
-              // YAML schema validation owns non-decimal and malformed numeric forms.
+            const exact = exactAuthoredInteger(source)
+            if (exact !== null && exact !== BigInt(value)) {
+              const issuePath = pointerPath(childPath)
+              issues.push({
+                code: 'unsupported_authoring_integer_precision',
+                layer: 'semantic',
+                severity: 'error',
+                blocking: true,
+                message: 'This authored schema integer cannot be represented exactly by the editor.',
+                document: 'definition',
+                path: issuePath,
+                ...(sourceLocation(parsed, issuePath) ?? {}),
+                field: key,
+              })
+              schemaOwnerPaths.add(nextOwner)
             }
           }
         }
@@ -183,6 +180,31 @@ function unsupportedAuthoringIntegerPrecision(parsed: ParsedYamlDocument): Unsup
   }
   visit(parsed.document.contents, [], null)
   return { issues, schemaOwnerPaths }
+}
+
+function resolvePrecisionScalar(node: unknown, parsed: ParsedYamlDocument) {
+  if (isScalar(node)) return node
+  if (!isAlias(node)) return null
+  try {
+    const resolved = node.resolve(parsed.document)
+    return isScalar(resolved) ? resolved : null
+  } catch {
+    return null
+  }
+}
+
+function exactAuthoredInteger(source: string): bigint | null {
+  const normalized = source.replaceAll('_', '')
+  const match = /^([+-]?)(.*)$/.exec(normalized)
+  if (!match) return null
+  const sign = match[1] === '-' ? BigInt(-1) : BigInt(1)
+  const magnitude = match[2] ?? ''
+  if (!/^(?:[0-9]+|0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+)$/.test(magnitude)) return null
+  try {
+    return sign * BigInt(magnitude)
+  } catch {
+    return null
+  }
 }
 
 function publishedBlockingCompatibilityIssues(

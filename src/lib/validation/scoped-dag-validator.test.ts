@@ -206,7 +206,7 @@ describe('scoped DAG validation', () => {
           },
           { id: 'downstream', depends_on: ['producer-group'], prompt: `Use $producer-group.output.${field}` },
         ])
-        expect(codes(result).includes('scoped-reference-structured-path-impossible')).toBe(field === 'missing')
+        expect(codes(result)).toEqual(field === 'missing' ? ['structured_output_field_impossible'] : [])
       }),
     )
   })

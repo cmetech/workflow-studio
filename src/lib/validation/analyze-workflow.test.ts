@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { stringify } from 'yaml'
 import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 import archonCorpusText from '../../../contracts/archon-2026-07-v6.corpus.json?raw'
 import legacyContractText from '../../../contracts/hermes-legacy-v2.json?raw'
@@ -411,7 +412,10 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues.some(({ code }) => code === 'structured_output_field_impossible')).toBe(false)
   })
 
-  it('accepts an exactly representable large authored schema bound without a precision diagnostic', async () => {
+  it.each([
+    ['decimal', '9007199254740992'],
+    ['hexadecimal', '0x20000000000000'],
+  ])('accepts an exactly representable large %s schema bound without a precision diagnostic', async (_label, bound) => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
       kind: 'bundled',
       identifier: 'archon-2026-07-v6.json',
@@ -421,7 +425,7 @@ describe('workflow pair analysis', () => {
     const analysis = await analyzeWorkflowPair(
       request(
         loaded.contract,
-        structuredArrayReference('9007199254740992', '9007199254740991'),
+        structuredArrayReference(bound, '9007199254740991'),
         'language_compatibility: archon-2026-07\n',
       ),
       loaded.contract,
@@ -429,6 +433,35 @@ describe('workflow pair analysis', () => {
 
     expect(analysis.issues.some(({ code }) => code === 'unsupported_authoring_integer_precision')).toBe(false)
     expect(analysis.structurallyValid).toBe(true)
+  })
+
+  it.each([
+    ['a hexadecimal integer', '0x20000000000001'],
+    ['an aliased integer', '*bound'],
+  ])('fails safely when %s loses YAML precision', async (_label, maxItems) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = structuredArrayReference(maxItems, '9007199254740992').replace(
+      '      type: array',
+      `      type: array\n${maxItems === '*bound' ? '      minItems: &bound 9007199254740993' : ''}`,
+    )
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues).toContainEqual(
+      expect.objectContaining({
+        code: 'unsupported_authoring_integer_precision',
+        blocking: true,
+        path: '/nodes/0/output_format/maxItems',
+      }),
+    )
+    expect(analysis.issues.some(({ code }) => code === 'structured_output_field_impossible')).toBe(false)
   })
 
   it('preserves eager root scanner failure precedence over an earlier missing dependency', async () => {
@@ -512,7 +545,7 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues).toEqual([])
   })
 
-  it('uses only the reader-3 condition scanner diagnostic for malformed root syntax', async () => {
+  it('validates root conditions before static references and translates generic syntax failures', async () => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
       kind: 'bundled',
       identifier: 'archon-2026-07-v6.json',
@@ -522,12 +555,11 @@ describe('workflow pair analysis', () => {
       'name: Root condition syntax',
       'description: The scanner owns reader-3 condition parsing.',
       'nodes:',
-      '  - id: producer',
-      '    prompt: Produce.',
-      '  - id: consumer',
-      '    depends_on: [producer]',
-      '    prompt: Consume.',
-      '    when: $producer.output ==',
+      '  - id: first',
+      '    prompt: $missing.output',
+      '  - id: second',
+      '    prompt: fine',
+      '    when: $first.output ==',
       '',
     ].join('\n')
 
@@ -536,12 +568,12 @@ describe('workflow pair analysis', () => {
       loaded.contract,
     )
 
-    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
-      'condition_runtime_syntax_invalid',
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: 'malformed_condition', path: '/nodes/1/when' },
     ])
   })
 
-  it('uses only the translated reader-3 condition scanner diagnostic for malformed body syntax', async () => {
+  it('translates generic body condition syntax during normalization', async () => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
       kind: 'bundled',
       identifier: 'archon-2026-07-v6.json',
@@ -551,6 +583,8 @@ describe('workflow pair analysis', () => {
       'name: Body condition syntax',
       'description: Scoped condition parsing retains native caller translation.',
       'nodes:',
+      '  - id: root',
+      '    prompt: $missing.output',
       '  - id: group',
       '    loop_group:',
       '      until: done',
@@ -570,8 +604,86 @@ describe('workflow pair analysis', () => {
       loaded.contract,
     )
 
-    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code }) => code)).toEqual([
-      'loop_group_scope_invalid',
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: 'malformed_condition', path: '/nodes/1/loop_group/nodes/1/when' },
+    ])
+  })
+
+  it.each([
+    ['root', '$producer.output. == 1'],
+    ['body', '$producer.output. == 1'],
+  ])('preserves the reference-syntax cause from a malformed %s condition', async (scope, when) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const nodes =
+      scope === 'root'
+        ? [
+            { id: 'producer', prompt: 'Produce.' },
+            { id: 'consumer', depends_on: ['producer'], prompt: 'Consume.', when },
+          ]
+        : [
+            {
+              id: 'group',
+              loop_group: {
+                until: 'done',
+                max_iterations: 1,
+                nodes: [
+                  { id: 'producer', prompt: 'Produce.' },
+                  { id: 'consumer', depends_on: ['producer'], prompt: 'Consume.', when },
+                ],
+              },
+            },
+          ]
+
+    const analysis = await analyzeWorkflowPair(
+      request(
+        loaded.contract,
+        stringify({ name: 'Condition cause', description: 'Preserve nested reference syntax.', nodes }),
+        'language_compatibility: archon-2026-07\n',
+      ),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
+      {
+        code: 'output_reference_path_unsupported',
+        path: scope === 'root' ? '/nodes/1/when' : '/nodes/0/loop_group/nodes/1/when',
+      },
+    ])
+  })
+
+  it('stops before scoped reference validation when root static references fail', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Root before scoped',
+      'description: Root static failure ends the reference phase.',
+      'nodes:',
+      '  - id: first',
+      '    prompt: $missing.output',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: child',
+      '          prompt: $also_missing.output',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: 'output_reference_not_declared_dependency', path: '/nodes/0/prompt' },
     ])
   })
 

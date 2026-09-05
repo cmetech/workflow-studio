@@ -4,6 +4,7 @@ import archonContractText from '../../../contracts/archon-2026-07-v6.json?raw'
 import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import {
   buildReferenceIndex,
@@ -12,6 +13,43 @@ import {
 } from './reference-index'
 
 let contract: AuthoringContract
+
+const SCAN_SURFACE_PATHS = [
+  'nodes[].when',
+  'nodes[].loop_group.nodes[].when',
+  'nodes[].prompt',
+  'nodes[].loop_group.nodes[].prompt',
+  'nodes[].bash',
+  'nodes[].loop_group.nodes[].bash',
+  'nodes[].script',
+  'nodes[].loop_group.nodes[].script',
+  'nodes[].loop.prompt',
+  'nodes[].loop_group.nodes[].loop.prompt',
+  'nodes[].loop.until_bash',
+  'nodes[].loop_group.nodes[].loop.until_bash',
+  'nodes[].loop.gate_message',
+  'nodes[].loop_group.nodes[].loop.gate_message',
+  'nodes[].approval.message',
+  'nodes[].loop_group.nodes[].approval.message',
+  'nodes[].approval.on_reject.prompt',
+  'nodes[].loop_group.nodes[].approval.on_reject.prompt',
+  'nodes[].loop_group.until_bash',
+  'nodes[].loop_group.gate_message',
+  'nodes[].systemPrompt',
+  'nodes[].loop_group.nodes[].systemPrompt',
+  'nodes[].agents.*.description',
+  'nodes[].agents.*.prompt',
+  'nodes[].loop_group.nodes[].agents.*.description',
+  'nodes[].loop_group.nodes[].agents.*.prompt',
+  'nodes[].hooks.*[].response.systemMessage',
+  'nodes[].hooks.*[].response.stopReason',
+  'nodes[].hooks.*[].response.hookSpecificOutput.permissionDecisionReason',
+  'nodes[].hooks.*[].response.hookSpecificOutput.additionalContext',
+  'nodes[].loop_group.nodes[].hooks.*[].response.systemMessage',
+  'nodes[].loop_group.nodes[].hooks.*[].response.stopReason',
+  'nodes[].loop_group.nodes[].hooks.*[].response.hookSpecificOutput.permissionDecisionReason',
+  'nodes[].loop_group.nodes[].hooks.*[].response.hookSpecificOutput.additionalContext',
+] as const
 
 beforeAll(async () => {
   const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
@@ -57,7 +95,12 @@ describe('indexed reference discovery', () => {
             response: {
               systemMessage: reference,
               stopReason: reference,
-              hookSpecificOutput: { permissionDecisionReason: reference, additionalContext: reference },
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+                permissionDecisionReason: reference,
+                additionalContext: reference,
+              },
             },
           },
         ],
@@ -105,47 +148,127 @@ describe('indexed reference discovery', () => {
     const index = indexed({ name: 'Inventory', description: 'All authored scanner surfaces.', nodes: root })
     const surfacePaths = new Set(index.occurrences.map(({ surfacePath }) => surfacePath))
 
-    expect(surfacePaths).toEqual(
-      new Set([
-        'nodes[].when',
-        'nodes[].loop_group.nodes[].when',
-        'nodes[].prompt',
-        'nodes[].loop_group.nodes[].prompt',
-        'nodes[].bash',
-        'nodes[].loop_group.nodes[].bash',
-        'nodes[].script',
-        'nodes[].loop_group.nodes[].script',
-        'nodes[].loop.prompt',
-        'nodes[].loop_group.nodes[].loop.prompt',
-        'nodes[].loop.until_bash',
-        'nodes[].loop_group.nodes[].loop.until_bash',
-        'nodes[].loop.gate_message',
-        'nodes[].loop_group.nodes[].loop.gate_message',
-        'nodes[].approval.message',
-        'nodes[].loop_group.nodes[].approval.message',
-        'nodes[].approval.on_reject.prompt',
-        'nodes[].loop_group.nodes[].approval.on_reject.prompt',
-        'nodes[].loop_group.until_bash',
-        'nodes[].loop_group.gate_message',
-        'nodes[].systemPrompt',
-        'nodes[].loop_group.nodes[].systemPrompt',
-        'nodes[].agents.*.description',
-        'nodes[].agents.*.prompt',
-        'nodes[].loop_group.nodes[].agents.*.description',
-        'nodes[].loop_group.nodes[].agents.*.prompt',
-        'nodes[].hooks.*[].response.systemMessage',
-        'nodes[].hooks.*[].response.stopReason',
-        'nodes[].hooks.*[].response.hookSpecificOutput.permissionDecisionReason',
-        'nodes[].hooks.*[].response.hookSpecificOutput.additionalContext',
-        'nodes[].loop_group.nodes[].hooks.*[].response.systemMessage',
-        'nodes[].loop_group.nodes[].hooks.*[].response.stopReason',
-        'nodes[].loop_group.nodes[].hooks.*[].response.hookSpecificOutput.permissionDecisionReason',
-        'nodes[].loop_group.nodes[].hooks.*[].response.hookSpecificOutput.additionalContext',
-      ]),
-    )
+    expect(surfacePaths).toEqual(new Set(SCAN_SURFACE_PATHS))
     expect(index.occurrences.some(({ surfacePath }) => surfacePath.endsWith('.command'))).toBe(false)
     expect(index.metrics).toMatchObject({ indexBuilds: 1, definitionTraversals: 1 })
     expect(index.metrics.occurrenceScans).toBe(index.occurrences.length)
+  })
+
+  it('covers every scan-eligible published surface through production workflow analysis', async () => {
+    const reference = 'Use $producer.output'
+    const condition = '$producer.output == 1'
+    const phase4 = {
+      systemPrompt: reference,
+      agents: { reviewer: { description: reference, prompt: reference } },
+      hooks: {
+        PreToolUse: [
+          {
+            response: {
+              systemMessage: reference,
+              stopReason: reference,
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+                permissionDecisionReason: reference,
+                additionalContext: reference,
+              },
+            },
+          },
+        ],
+      },
+    }
+    const loopPrompt = {
+      prompt: reference,
+      until: 'done',
+      max_iterations: 1,
+      until_bash: reference,
+      gate_message: reference,
+    }
+    const loopCommand = { command: 'named-command', until: 'done', max_iterations: 1 }
+    const body = [
+      { id: 'body-prompt', prompt: reference, when: condition, ...structuredClone(phase4) },
+      { id: 'body-bash', bash: reference },
+      { id: 'body-script', script: `print('${reference}')`, runtime: 'uv' },
+      { id: 'body-loop-prompt', loop: structuredClone(loopPrompt) },
+      { id: 'body-loop-command', loop: loopCommand },
+      { id: 'body-approval', approval: { message: reference, on_reject: { prompt: reference } } },
+      { id: 'body-command', command: 'named-command' },
+    ]
+    const nodes = [
+      { id: 'producer', command: 'named-producer' },
+      {
+        id: 'root-prompt',
+        depends_on: ['producer'],
+        prompt: reference,
+        when: condition,
+        ...structuredClone(phase4),
+      },
+      { id: 'root-bash', depends_on: ['producer'], bash: reference },
+      { id: 'root-script', depends_on: ['producer'], script: `print('${reference}')`, runtime: 'uv' },
+      { id: 'root-loop-prompt', depends_on: ['producer'], loop: structuredClone(loopPrompt) },
+      { id: 'root-loop-command', loop: loopCommand },
+      {
+        id: 'root-approval',
+        depends_on: ['producer'],
+        approval: { message: reference, on_reject: { prompt: reference } },
+      },
+      { id: 'root-command', command: 'named-command' },
+      {
+        id: 'group',
+        depends_on: ['producer'],
+        loop_group: {
+          until: 'done',
+          max_iterations: 1,
+          until_bash: reference,
+          gate_message: reference,
+          nodes: body,
+        },
+      },
+    ]
+    const definition = { name: 'Production inventory', description: 'Exercise every scanner surface.', nodes }
+    const analyze = (value: unknown, requestId: string) =>
+      analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId,
+          workflowId: requestId,
+          pairGeneration: 0,
+          definition: { path: 'workflow.yaml', text: stringify(value), revision: 0 },
+          companion: {
+            path: 'workflow.hermes.yaml',
+            text: 'language_compatibility: archon-2026-07\n',
+            revision: 0,
+          },
+          profile: contract.profile,
+          contractDigest: contract.contract_digest,
+          reason: 'explicit-validate',
+        },
+        contract,
+      )
+    const analysis = await analyze(definition, 'production-inventory')
+
+    expect(analysis.issues.filter(({ blocking }) => blocking)).toEqual([])
+    expect(analysis.structurallyValid).toBe(true)
+    const occurrences = analysis.referenceIndex?.occurrences ?? []
+    expect(occurrences).toHaveLength(SCAN_SURFACE_PATHS.length)
+    expect(new Set(occurrences.map(({ surfacePath }) => surfacePath))).toEqual(new Set(SCAN_SURFACE_PATHS))
+
+    for (const occurrence of occurrences) {
+      const invalid = structuredClone(definition)
+      setValueAtPath(
+        invalid,
+        occurrence.valuePath,
+        occurrence.authoredText.replaceAll('$producer.output', '$missing.output'),
+      )
+      const result = await analyze(invalid, `invalid:${occurrence.surfacePath}`)
+      const path = `/${occurrence.valuePath.join('/')}`
+      const code =
+        occurrence.scope === 'root' ? 'output_reference_not_declared_dependency' : 'scoped-reference-missing-dependency'
+      expect(
+        result.issues.filter(({ blocking }) => blocking).map((issue) => ({ code: issue.code, path: issue.path })),
+        occurrence.surfacePath,
+      ).toEqual([{ code, path }])
+    }
   })
 
   it('retains distinct tokens, code-point spans, source paths, and resolved producer namespaces', () => {
@@ -251,3 +374,14 @@ describe('indexed reference discovery', () => {
     expect(index.occurrences.map(({ field }) => field)).toContain('hooks.PreToolUse.response.systemMessage')
   })
 })
+
+function setValueAtPath(value: unknown, path: readonly (string | number)[], replacement: string): void {
+  let current = value
+  for (const segment of path.slice(0, -1)) {
+    if (current === null || typeof current !== 'object') throw new Error(`Missing inventory path ${path.join('.')}`)
+    current = (current as Record<string | number, unknown>)[segment]
+  }
+  if (current === null || typeof current !== 'object') throw new Error(`Missing inventory path ${path.join('.')}`)
+  const container = current as Record<string | number, unknown>
+  container[path.at(-1)!] = replacement
+}

@@ -235,12 +235,16 @@ function invalidShapePath(
 }
 
 function validateIndexedReferences(context: ValidationContext, index: ReferenceIndex, issues: ValidationIssue[]): void {
+  if (validateConditionPhase(context, index, issues)) return
+
   const rootPhase = index.occurrences.filter(
     (occurrence) =>
       occurrence.scope === 'root' ||
       (occurrence.scope === 'group-control' && occurrence.callerPolicy === 'group-gate-text-references'),
   )
+  const rootIssueStart = issues.length
   for (const occurrence of rootPhase) validateRootOccurrence(context, occurrence, issues)
+  if (issues.length !== rootIssueStart) return
 
   for (const graph of context.projection.graphs) {
     if (graph.scope.kind !== 'loop-group' || !graph.scope.groupId) continue
@@ -257,6 +261,41 @@ function validateIndexedReferences(context: ValidationContext, index: ReferenceI
         validateScopedOccurrence(context, graph, occurrence, issues)
     }
   }
+}
+
+function validateConditionPhase(context: ValidationContext, index: ReferenceIndex, issues: ValidationIssue[]): boolean {
+  const malformed = index.occurrences
+    .filter(({ mode, errors }) => (mode === 'condition-v3' || mode === 'body-when') && errors.length > 0)
+    .sort((left, right) => comparePaths(left.valuePath, right.valuePath))[0]
+  const error = malformed?.errors[0]
+  if (!malformed || !error) return false
+  const graph =
+    malformed.scopeKey === 'root'
+      ? context.root
+      : (context.projection.graphs.find(({ scope }) => scope.key === malformed.scopeKey) ?? context.root)
+  const referenceCause = error.cause?.name === 'WorkflowReferenceSyntaxError' ? error.cause.code : undefined
+  issues.push(
+    indexedIssue(
+      context,
+      graph,
+      malformed,
+      referenceCause ?? 'malformed_condition',
+      referenceCause ? `Reference syntax is invalid: ${error.cause?.name}.` : 'Condition is statically malformed.',
+    ),
+  )
+  return true
+}
+
+function comparePaths(left: readonly (string | number)[], right: readonly (string | number)[]): number {
+  const length = Math.min(left.length, right.length)
+  for (let index = 0; index < length; index += 1) {
+    const leftSegment = left[index]!
+    const rightSegment = right[index]!
+    if (leftSegment === rightSegment) continue
+    if (typeof leftSegment === 'number' && typeof rightSegment === 'number') return leftSegment - rightSegment
+    return String(leftSegment).localeCompare(String(rightSegment))
+  }
+  return left.length - right.length
 }
 
 function validateRootOccurrence(
