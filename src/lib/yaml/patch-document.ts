@@ -603,6 +603,14 @@ function insertCopiedNode(
   const index = nodeIndex(scope.nodes, scope.fields.idPath, captured.nodeId)
   const original = scope.nodes.items[index]
   if (!isMap(original) || containsSharedNode(original)) return ambiguousAlias()
+  if (hasCopiedFlowBoundaryComments(scope.nodes, index) || hasCopiedFlowBoundaryComments(nodes, afterIndex)) {
+    return {
+      ok: false,
+      code: 'mutation_stale_scope',
+      message:
+        'Copying across these flow-item comments cannot preserve their ownership safely. Expand the collection in YAML before copying.',
+    }
+  }
   if (!sameCopiedValue(original.toJSON(), captured.originalValue))
     return {
       ok: false,
@@ -634,6 +642,7 @@ function insertCopiedNode(
     }
   const range = nodeRange(node)!
   let fragment: string
+  let fragmentIndentation = 0
   if (sequence.flow) {
     // A flow item remains a flow mapping, preserving all of its internal spacing.
     fragment = `- ${text.slice(range[0], range[1])}\n`
@@ -658,12 +667,8 @@ function insertCopiedNode(
         if (comments?.length) start = lineStart(text, comments[0]!.offset)
       }
     }
-    const indentation = marker.indent
-    fragment = text
-      .slice(start, range[2])
-      .split('\n')
-      .map((line) => (line.slice(0, indentation).trim() === '' ? line.slice(indentation) : line))
-      .join('\n')
+    fragmentIndentation = marker.indent
+    fragment = text.slice(start, range[2])
     if (!fragment.endsWith('\n')) fragment += '\n'
   }
   let edit: SourceEdit
@@ -677,7 +682,7 @@ function insertCopiedNode(
         end: range[2],
         text:
           (destination.slice(range[1], range[2]) || '\n') +
-          indentLines(fragment, ' '.repeat(Math.max(0, keyIndent) + 2)),
+          reindentCopiedLines(fragment, Math.max(0, keyIndent) + 2 - fragmentIndentation),
       }
     } else {
       // YAML cannot carry block scalar syntax inside a flow collection. The structured
@@ -703,7 +708,7 @@ function insertCopiedNode(
     const prefix = destination.slice(lineStart(destination, firstRange[0]), firstRange[0])
     const marker = prefix.lastIndexOf('-')
     const indentation = marker < 0 ? prefix : prefix.slice(0, marker)
-    edit = { ...edit, text: indentLines(fragment, indentation) }
+    edit = { ...edit, text: reindentCopiedLines(fragment, indentation.length - fragmentIndentation) }
   }
   const result = verifiedPatch(applySourceEdits(destination, [edit]), contract, 'definition')
   if (!result.ok) return result
@@ -723,6 +728,29 @@ function insertCopiedNode(
       message: 'The copied scalar values cannot be preserved in this destination collection.',
     }
   return result
+}
+
+/** Trivia around a flow item may belong to either neighbor. Do not move it
+ * implicitly: a safe exact copy needs a boundary with no attached comments. */
+function hasCopiedFlowBoundaryComments(sequence: YAMLSeq, index: number): boolean {
+  if (!sequence.flow || index < 0 || sequence.srcToken?.type !== 'flow-collection') return false
+  const token = sequence.srcToken
+  const item = token.items[index]
+  const value = item?.value ?? item?.key
+  const ending = value && 'end' in value ? value.end : undefined
+  return [...(item?.start ?? []), ...(ending ?? []), ...(token.items[index + 1]?.start ?? [])].some(
+    (token) => token.type === 'comment',
+  )
+}
+
+/** Change indentation without ever splitting or normalizing CRLF/blank lines. */
+function reindentCopiedLines(text: string, delta: number): string {
+  if (delta === 0) return text
+  return text.replace(/[^\r\n]+/g, (line) => {
+    if (delta > 0) return ' '.repeat(delta) + line
+    const leadingSpaces = line.length - line.trimStart().length
+    return line.slice(Math.min(-delta, leadingSpaces))
+  })
 }
 
 function containsSharedNode(node: unknown): boolean {

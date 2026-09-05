@@ -52,6 +52,10 @@ export type DuplicateSelectionResult =
     })
   | Exclude<CanvasActionResult, { status: 'committed' }>
 
+// Clipboard handles are process-local and deeply frozen. Keeping provenance outside
+// the structural object prevents callers from replacing derived scanner evidence.
+const issuedClipboards = new WeakSet<CanvasClipboard>()
+
 export function copySelection(context: CanvasActionContext, selectedIds: readonly string[]): CanvasClipboard {
   const unavailable = validateActionContext(context)
   const fields = graphContractFields(context.contract)
@@ -73,7 +77,7 @@ export function copySelection(context: CanvasActionContext, selectedIds: readonl
         dependencies.push({ consumer, producer: nodeIdentity(graph.scope.key, producerId) })
     }
   }
-  return deepFreeze({
+  const clipboard: CanvasClipboard = deepFreeze({
     sourceRevision: { ...context.revision },
     sourceText: context.pair.definition.text,
     sourceContract: structuredClone(context.contract),
@@ -106,6 +110,8 @@ export function copySelection(context: CanvasActionContext, selectedIds: readonl
       selectedIds.flatMap((id) => (context.positions[id] ? [[id, { ...context.positions[id] }]] : [])),
     ),
   })
+  issuedClipboards.add(clipboard)
+  return clipboard
 }
 
 export async function duplicateSelection(
@@ -130,6 +136,11 @@ export async function pasteSelection(
     const message = 'The clipboard no longer matches its captured workflow revision and scope.'
     context.announce(message)
     return { status: 'rejected', code: 'stale_document', message }
+  }
+  if (!issuedClipboards.has(clipboard)) {
+    const message = 'The clipboard is not an original immutable copy from this application session.'
+    context.announce(message)
+    return { status: 'rejected', code: 'mutation_stale_scope', message }
   }
   if (clipboard.nodes.length === 0) {
     const message = 'Copy at least one node before pasting.'

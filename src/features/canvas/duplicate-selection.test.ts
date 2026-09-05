@@ -457,13 +457,14 @@ describe('duplicate/copy/paste YAML transforms', () => {
 
 async function scopedClipboardContext(
   scopeKey: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:first',
+  rewriteSource: (text: string) => string = (text) => text,
 ) {
   const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
   const { analyzeWorkflowPair } = await import('$src/lib/validation/analyze-workflow')
   const activeContract = (await loadBundledAuthoringContracts()).find(
     (candidate) => candidate.profile === 'archon-2026-07',
   )!
-  const text = `name: Scoped clipboard
+  const originalSource = `name: Scoped clipboard
 description: Copied namespaces
 nodes:
   - id: external
@@ -496,6 +497,7 @@ nodes:
         - id: external
           bash: echo unrelated
 `
+  const text = rewriteSource(originalSource)
   const currentPair = {
     ...pair(text, activeContract.profile),
     companion: {
@@ -748,4 +750,171 @@ it('pastes into an empty graph inside a flow mapping without changing scalar val
   const result = await pasteSelection(destination, copySelection(source, ['producer']))
   expect(result.status).toBe('committed')
   if (result.status === 'committed') expect(parsedNodes(result.pair.definition.text)[0]?.command).toBe('exact')
+})
+
+it.each(['references', 'dependencies', 'selectedIdentities', 'nodePaths', 'groupScopes', 'selectedIds'] as const)(
+  'rejects forged clipboard %s evidence before mutation',
+  async (field) => {
+    const source = await scopedClipboardContext()
+    const destination = await scopedClipboardContext('loop-group:second')
+    const clipboard = copySelection(source, ['incoming'])
+    const forged = { ...clipboard, [field]: field === 'nodePaths' ? {} : [] }
+    expect(await pasteSelection(destination, forged)).toMatchObject({
+      status: 'rejected',
+      code: 'mutation_stale_scope',
+    })
+    expect(destination.commit).not.toHaveBeenCalled()
+    expect(destination.commitPositions).not.toHaveBeenCalled()
+  },
+)
+
+it('rejects forged ordinary reference and dependency removal despite matching destination producer spelling', async () => {
+  const source = await scopedClipboardContext()
+  const destination = await scopedClipboardContext('loop-group:second')
+  const clipboard = copySelection(source, ['incoming'])
+  expect(await pasteSelection(destination, clipboard)).toMatchObject({ status: 'resolution_required' })
+  expect(await pasteSelection(destination, { ...clipboard, dependencies: [], references: [] })).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_stale_scope',
+  })
+  expect(destination.commit).not.toHaveBeenCalled()
+})
+
+it('rejects a structurally cloned clipboard while allowing the original immutable snapshot after source changes', async () => {
+  const source = await scopedClipboardContext()
+  const clipboard = copySelection(source, ['producer'])
+  const destination = await scopedClipboardContext('loop-group:second')
+  expect(await pasteSelection(destination, structuredClone(clipboard))).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_stale_scope',
+  })
+  source.pair.definition.text = source.pair.definition.text.replace('echo producer', 'echo later')
+  source.pair.definition.revision++
+  expect(await pasteSelection(destination, clipboard)).toMatchObject({ status: 'committed' })
+})
+
+it('rejects forged whole-group identities and deeply freezes the captured subtree evidence', async () => {
+  const source = await scopedClipboardContext('root')
+  const clipboard = copySelection(source, ['first'])
+  expect(Object.isFrozen(clipboard.sourceContract.semantic_rules[0]!.parameters)).toBe(true)
+  expect(Object.isFrozen(clipboard.references[0]!.references)).toBe(true)
+  expect(Object.isFrozen(clipboard.nodes[0]!.loop_group)).toBe(true)
+  expect(await pasteSelection(source, { ...clipboard, groupScopes: [], selectedIdentities: [] })).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_stale_scope',
+  })
+  expect(
+    await pasteSelection(source, {
+      ...clipboard,
+      references: clipboard.references.map((occurrence) => ({ ...occurrence, references: [] })),
+    }),
+  ).toMatchObject({ status: 'rejected', code: 'mutation_stale_scope' })
+  expect(source.commit).not.toHaveBeenCalled()
+})
+
+it('rejects forged LOOP_PREV-only evidence with no dependency entry to reveal the external producer', async () => {
+  const source = await scopedClipboardContext('loop-group:first', (text) =>
+    text.replace(
+      '          depends_on: [external]\n          bash: echo $external.output',
+      '          bash: echo $LOOP_PREV.external.output',
+    ),
+  )
+  const destination = await scopedClipboardContext('loop-group:second')
+  const clipboard = copySelection(source, ['incoming'])
+  expect(clipboard.dependencies).toEqual([])
+  expect(clipboard.references[0]?.references[0]?.kind).toBe('previous')
+  expect(await pasteSelection(destination, clipboard)).toMatchObject({ status: 'resolution_required' })
+  expect(await pasteSelection(destination, { ...clipboard, references: [] })).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_stale_scope',
+  })
+  expect(destination.commit).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['leading', '# copied lead, comma\n  { id: producer, command: exact },\n  { id: neighbor, command: other }'],
+  [
+    'trailing after comma',
+    '{ id: producer, command: exact }, # copied tail, comma\n  { id: neighbor, command: other }',
+  ],
+  [
+    'trailing before comma',
+    '{ id: producer, command: exact } # copied tail, comma\n  , { id: neighbor, command: other }',
+  ],
+  ['last trailing', '{ id: neighbor, command: other },\n  { id: producer, command: exact }, # final tail, comma\n'],
+])(
+  'rejects unsafe %s flow comment transplantation for block and flow destinations with unchanged bytes',
+  async (_name, items) => {
+    for (const newline of ['\n', '\r\n']) {
+      const source = context(`name: Copy\ndescription: Source\nnodes: [\n  ${items}\n]\n`.replaceAll('\n', newline))
+      const clipboard = copySelection(source, ['producer'])
+      for (const destinationText of [
+        'name: Destination\ndescription: Block\nnodes:\n  - id: other\n    command: keep\n',
+        'name: Destination\ndescription: Flow\nnodes: [{ id: other, command: keep }]\n',
+      ]) {
+        const destination = context(destinationText.replaceAll('\n', newline))
+        const before = structuredClone(destination.pair)
+        expect(await pasteSelection(destination, clipboard)).toMatchObject({
+          status: 'rejected',
+          code: 'mutation_stale_scope',
+        })
+        expect(destination.pair).toEqual(before)
+        expect(destination.commit).not.toHaveBeenCalled()
+        expect(destination.commitPositions).not.toHaveBeenCalled()
+      }
+    }
+  },
+)
+
+it('does not reassign the existing last flow node comment to a copied item', async () => {
+  const source = context('name: Copy\ndescription: Source\nnodes:\n  - id: producer\n    command: exact\n')
+  const destination = context(
+    'name: Destination\ndescription: Flow\nnodes: [\n  { id: existing, command: keep }, # belongs to existing, comma\n]\n',
+  )
+  const before = destination.pair.definition.text
+  expect(await pasteSelection(destination, copySelection(source, ['producer']))).toMatchObject({
+    status: 'rejected',
+    code: 'mutation_stale_scope',
+  })
+  expect(destination.pair.definition.text).toBe(before)
+  expect(destination.commit).not.toHaveBeenCalled()
+})
+
+it.each(['value\n\nnext\n', 'value\n\n', 'value\n  \nnext\n\n'])(
+  'preserves CRLF blank lines and kept literal scalar values: %j',
+  async (body) => {
+    const scalar = body
+      .split('\n')
+      .map((line, index, lines) => (index === lines.length - 1 ? '' : line ? `      ${line}\n` : '\n'))
+      .join('')
+    const text = (
+      'name: Copy\ndescription: CRLF blanks\nnodes:\n  - id: producer\n    command: |+\n' + scalar
+    ).replaceAll('\n', '\r\n')
+    const fixture = context(text)
+    const result = await duplicateSelection(fixture, ['producer'])
+    expect(result.status).toBe('committed')
+    if (result.status !== 'committed') return
+    expect(result.pair.definition.text).toContain(
+      '  - id: producer-2\r\n    command: |+\r\n' + scalar.replaceAll('\n', '\r\n'),
+    )
+    const nodes = parsedNodes(result.pair.definition.text)
+    expect(nodes[1]?.command).toBe(nodes[0]?.command)
+    expect(result.pair.definition.text.replaceAll('\r\n', '')).not.toContain('\n')
+  },
+)
+
+it('preserves CRLF blank lines and scalar values while reindenting a root copy into a body', async () => {
+  const source = await scopedClipboardContext('root', (text) =>
+    text.replace('    bash: echo external', '    bash: |+\n      alpha\n\n      omega\n\n').replaceAll('\n', '\r\n'),
+  )
+  const destination = await scopedClipboardContext('loop-group:second')
+  const result = await pasteSelection(destination, copySelection(source, ['external']))
+  expect(result.status).toBe('committed')
+  if (result.status !== 'committed') return
+  expect(result.pair.definition.text).toContain(
+    '        - id: external-2\r\n          bash: |+\r\n            alpha\r\n\r\n            omega\r\n\r\n',
+  )
+  expect(parse(result.pair.definition.text).nodes[3].loop_group.nodes[1].bash).toBe(
+    parse(source.pair.definition.text).nodes[0].bash,
+  )
 })
