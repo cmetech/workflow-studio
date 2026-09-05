@@ -25,6 +25,9 @@
     type CanvasDragDetail,
     type CanvasEdge,
     type CanvasInspectorRelationship,
+    CANVAS_SCOPE_RELATIONSHIP,
+    type CanvasScopeRelationship,
+    type LoopGroupNodeSummary,
     type CanvasNode,
     type CanvasPosition,
   } from './types'
@@ -76,6 +79,9 @@
     onOpenInspector?: () => void
     onToggleInspector?: (expanded: boolean, invoker: HTMLElement) => void | Promise<void>
     onDropNodeKind?: (kind: string, position: { readonly x: number; readonly y: number }) => void | Promise<void>
+    groupSummaries?: Readonly<Record<string, LoopGroupNodeSummary>>
+    onOpenLoopGroup?: (groupId: string, invoker: HTMLElement) => void | Promise<void>
+    onEditLoopGroup?: (groupId: string, invoker: HTMLElement) => void | Promise<void>
   }
 
   type KeyboardSelectionGesture =
@@ -108,6 +114,9 @@
     onOpenInspector,
     onToggleInspector,
     onDropNodeKind,
+    groupSummaries = {},
+    onOpenLoopGroup,
+    onEditLoopGroup,
   }: Props = $props()
 
   const nodeTypes = { workflow: WorkflowNode }
@@ -129,6 +138,11 @@
     },
   }
   setContext(CANVAS_INSPECTOR_RELATIONSHIP, inspectorRelationship)
+  const scopeRelationship: CanvasScopeRelationship = {
+    openLoopGroup: (groupId, invoker) => onOpenLoopGroup?.(groupId, invoker),
+    editLoopGroup: (groupId, invoker) => onEditLoopGroup?.(groupId, invoker),
+  }
+  setContext(CANVAS_SCOPE_RELATIONSHIP, scopeRelationship)
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -201,7 +215,12 @@
   }
 
   function deriveCanvas() {
-    return projectMemoizedCanvas(projection, layout, { issues, stale, readOnly: readOnly || transitionLocked })
+    return projectMemoizedCanvas(projection, layout, {
+      issues,
+      stale,
+      readOnly: readOnly || transitionLocked,
+      groupSummaries,
+    })
   }
 
   $effect(() => {
@@ -415,9 +434,23 @@
     }
   }
 
-  export function cancel(): void {
-    if (cancelEdge()) return
+  export function cancel(): boolean {
+    if (cancelEdge()) return true
+    if (selection.length === 0 && edgeSelectionState.edgeIds.length === 0) return false
     clearSurfaceSelection()
+    return true
+  }
+
+  function openLoopGroupFromEvent(event: MouseEvent | KeyboardEvent): void {
+    if (!onOpenLoopGroup || projection.scope.key !== 'root' || !(event.target instanceof Element)) return
+    if (event.target.closest('button, input, textarea, select, a, [data-port]')) return
+    if (event instanceof KeyboardEvent && event.key !== 'Enter') return
+    const node = event.target.closest<HTMLElement>('.svelte-flow__node[data-id]')
+    const nodeId = node?.dataset.id
+    if (!nodeId || projection.nodes.find(({ id }) => id === nodeId)?.kind !== 'loop_group') return
+    event.preventDefault()
+    event.stopPropagation()
+    void onOpenLoopGroup(nodeId, node)
   }
 
   function clearSurfaceSelection(): void {
@@ -822,6 +855,8 @@
     root.addEventListener('click', finishPointerSelectionGesture, true)
     root.addEventListener('keydown', resumeSelectionPublication, true)
     root.addEventListener('keydown', handleEdgeKeydown)
+    root.addEventListener('dblclick', openLoopGroupFromEvent)
+    root.addEventListener('keydown', openLoopGroupFromEvent)
     motionQuery.addEventListener?.('change', motionChanged)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
       selection = [...ids]
@@ -840,6 +875,8 @@
       root.removeEventListener('click', finishPointerSelectionGesture, true)
       root.removeEventListener('keydown', resumeSelectionPublication, true)
       root.removeEventListener('keydown', handleEdgeKeydown)
+      root.removeEventListener('dblclick', openLoopGroupFromEvent)
+      root.removeEventListener('keydown', openLoopGroupFromEvent)
       motionQuery.removeEventListener?.('change', motionChanged)
       unsubscribeSelection()
     }

@@ -8,6 +8,16 @@ export interface CanvasNodeData extends Record<string, unknown> {
   readonly requiredIssueCount: number
   readonly stale: boolean
   readonly readOnly: boolean
+  readonly accessibleLabel: string
+  readonly compound?: LoopGroupNodeSummary
+}
+
+export interface LoopGroupNodeSummary {
+  readonly bodyNodeCount: number
+  readonly maxIterations?: number
+  readonly primarySinkId?: string
+  readonly errorCount: number
+  readonly requiredIssueCount: number
 }
 
 export interface CanvasEdgeData extends Record<string, unknown> {
@@ -41,3 +51,10 @@ export interface CanvasInspectorRelationship {
 }
 
 export const CANVAS_INSPECTOR_RELATIONSHIP = Symbol('canvas-inspector-relationship')
+
+export interface CanvasScopeRelationship {
+  readonly openLoopGroup: (groupId: string, invoker: HTMLElement) => void | Promise<void>
+  readonly editLoopGroup: (groupId: string, invoker: HTMLElement) => void | Promise<void>
+}
+
+export const CANVAS_SCOPE_RELATIONSHIP = Symbol('canvas-scope-relationship')

@@ -1,7 +1,13 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte'
   import { getContext } from 'svelte'
-  import { CANVAS_INSPECTOR_RELATIONSHIP, type CanvasInspectorRelationship, type CanvasNodeData } from './types'
+  import {
+    CANVAS_INSPECTOR_RELATIONSHIP,
+    CANVAS_SCOPE_RELATIONSHIP,
+    type CanvasInspectorRelationship,
+    type CanvasNodeData,
+    type CanvasScopeRelationship,
+  } from './types'
 
   let {
     data,
@@ -10,6 +16,7 @@
   }: { data: CanvasNodeData; selected?: boolean; isConnectable?: boolean } = $props()
 
   const inspectorRelationship = getContext<CanvasInspectorRelationship | undefined>(CANVAS_INSPECTOR_RELATIONSHIP)
+  const scopeRelationship = getContext<CanvasScopeRelationship | undefined>(CANVAS_SCOPE_RELATIONSHIP)
   const inspectorControls = $derived(inspectorRelationship?.controls())
   const inspectorExpanded = $derived(Boolean(selected && inspectorRelationship?.expanded()))
 </script>
@@ -20,7 +27,7 @@
   class:stale={data.stale}
   class:read-only={data.readOnly}
   data-node-id={data.id}
-  aria-label={`${data.kind || 'workflow'} node ${data.id}`}
+  aria-label={data.accessibleLabel}
 >
   <Handle
     id="dependency-in"
@@ -52,7 +59,25 @@
       >
     {/if}
   </header>
-  <p title={data.summary}>{data.summary || 'No summary'}</p>
+  {#if data.compound}
+    <div class="compound-summary" aria-label="Loop group summary">
+      <span>{data.compound.bodyNodeCount} body node{data.compound.bodyNodeCount === 1 ? '' : 's'}</span>
+      {#if data.compound.maxIterations !== undefined}<span>Maximum {data.compound.maxIterations} iterations</span>{/if}
+      {#if data.compound.primarySinkId}<span>Group output: {data.compound.primarySinkId}</span>{/if}
+    </div>
+    {#if scopeRelationship}
+      <button
+        type="button"
+        class="open-body nodrag nopan"
+        onclick={(event) => scopeRelationship.openLoopGroup(data.id, event.currentTarget)}
+        onkeydown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+        }}>Open loop body</button
+      >
+    {/if}
+  {:else}
+    <p title={data.summary}>{data.summary || 'No summary'}</p>
+  {/if}
   {#if data.errorCount > 0 || data.requiredIssueCount > 0}
     <footer aria-label="Node issues">
       {#if data.requiredIssueCount > 0}
@@ -124,6 +149,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .compound-summary {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.55rem 0.7rem 0.35rem;
+    color: var(--color-text-muted);
+    font-size: 0.68rem;
+  }
+
+  .compound-summary span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .open-body {
+    margin: 0 0.7rem 0.55rem;
+    min-height: 1.9rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.68rem;
   }
 
   strong {

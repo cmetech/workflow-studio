@@ -90,6 +90,29 @@ const codeField: FormField = {
 }
 
 describe('Inspector', () => {
+  it('restores and publishes the controlled scope tab and panel scroll', async () => {
+    const onTabChange = vi.fn()
+    const onScroll = vi.fn()
+    const rendered = render(Inspector, {
+      fields,
+      values: { 'prompt.node.when': 'ready' },
+      selectionLabel: 'review',
+      activeTab: 'Execution',
+      scrollTop: 42,
+      onTabChange,
+      onScroll,
+    })
+    const panel = rendered.container.querySelector<HTMLElement>('[data-scroll-owner="inspector"]')!
+
+    expect(screen.getByRole('tab', { name: 'Execution' })).toHaveAttribute('aria-selected', 'true')
+    expect(panel.scrollTop).toBe(42)
+    await fireEvent.click(screen.getByRole('tab', { name: 'General' }))
+    expect(onTabChange).toHaveBeenCalledWith('General')
+    panel.scrollTop = 73
+    await fireEvent.scroll(panel)
+    expect(onScroll).toHaveBeenCalledWith(73)
+  })
+
   it('renders accessible roving tabs and field semantics from contract descriptors', async () => {
     render(Inspector, { fields, values: { 'prompt.node.id': 'review' }, selectionLabel: 'review' })
 

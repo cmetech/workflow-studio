@@ -80,6 +80,8 @@
     publishCanvasProjection,
     commitCanvasIdentityChanges,
     queueCanvasLayoutHistory,
+    enterLoopGroup,
+    returnToRoot,
   } from '$src/stores/canvas-scope'
   import { canvasInstanceIdentity } from '$src/stores/canvas'
   import {
@@ -111,7 +113,9 @@
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
   import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-  import { canvasCapacityForProjection } from '$src/features/canvas/project-canvas'
+  import { canvasCapacityForProjection, loopGroupSummariesForProjection } from '$src/features/canvas/project-canvas'
+  import GraphScopeHeader from '$src/features/canvas/GraphScopeHeader.svelte'
+  import LoopGroupEmptyState from '$src/features/canvas/LoopGroupEmptyState.svelte'
   import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
   import NodePalette from '$src/features/canvas/NodePalette.svelte'
   import { nodeKindAvailable } from '$src/features/canvas/node-kind-options'
@@ -119,6 +123,7 @@
   import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
   import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
   import Inspector from '$src/features/inspector/Inspector.svelte'
+  import { resolveInspectorTarget, type InspectorTarget } from '$src/features/inspector/inspector-target'
   import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
   import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
   import GitView from '$src/features/version-control/GitView.svelte'
@@ -314,6 +319,8 @@
   let exportBlockingIssues = $state<readonly string[]>([])
   let nodeChordState = $state.raw<NodeChordState>({ pending: false, choices: [], afterSelection: false })
   let inspectorDocumentationTopicId = $state<string | undefined>()
+  let inspectorTarget = $state<InspectorTarget>({ kind: 'workflow' })
+  let observedInspectorSelection = ''
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
   let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
   let documentationNavigationSequence = 0
@@ -581,13 +588,48 @@
     canvasProjection?.graphs.find((graph) => graph.scope.key === $activeScopeKeyStore) ?? null,
   )
   const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
+  const canvasRepairableDraft = $derived(
+    Boolean(
+      canvasGraph?.scope.kind === 'loop-group' &&
+      canvasGraph.nodes.length === 0 &&
+      $documentSessionStore.revision &&
+      $documentSessionStore.analysis?.visuallyAuthorable === true &&
+      isAnalysisCurrent($documentSessionStore.revision, $documentSessionStore.analysis) &&
+      $documentSessionStore.analysis.projection === canvasProjection,
+    ),
+  )
+  const canvasSurfaceMode = $derived(canvasCapacity?.visual === false ? 'yaml' : $activeEditorMode)
+  const loopGroupSummaries = $derived(
+    canvasProjection
+      ? loopGroupSummariesForProjection(canvasProjection, $documentSessionStore.analysis?.issues ?? [])
+      : {},
+  )
   const nodesPaletteDisabled = $derived(nodesPaletteDisabledReason())
-  const inspectorNodes = $derived((canvasGraph?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)))
+  const canvasSelectedNodes = $derived(
+    (canvasGraph?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)),
+  )
+  const resolvedInspectorTarget = $derived(resolveInspectorTarget(canvasProjection, inspectorTarget))
+  const inspectorGraph = $derived(inspectorTarget.kind === 'group' ? resolvedInspectorTarget.graph : canvasGraph)
+  const inspectorNodes = $derived(
+    inspectorTarget.kind === 'group' && resolvedInspectorTarget.node
+      ? [resolvedInspectorTarget.node]
+      : canvasSelectedNodes,
+  )
+  $effect(() => {
+    const pair = $documentSessionStore.pair
+    const lease = `${pair?.workflowId ?? ''}\0${$activeScopeKeyStore}\0${$canvasSelectionStore.join('\0')}`
+    if (lease === observedInspectorSelection) return
+    observedInspectorSelection = lease
+    inspectorTarget =
+      $canvasSelectionStore.length === 1
+        ? { kind: 'node', scopeKey: $activeScopeKeyStore, nodeId: $canvasSelectionStore[0]! }
+        : { kind: 'workflow' }
+  })
   const inspectorFields = $derived.by(() => {
     const node = inspectorNodes[0]
     const projection = canvasProjection
     if (!inspectorContract || !projection || inspectorNodes.length > 1) return []
-    const index = node ? (canvasGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
+    const index = node ? (inspectorGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
     if (!node) {
       const fields = collectContractFields(inspectorContract).filter(
         (field) => !field.nodeKinds && (field.document !== 'companion' || projection.companion),
@@ -858,13 +900,19 @@
 
   function canvasAuthoringContext(): CanvasActionContext | { readonly unavailable: string } {
     if (canvasTransitionLocked) return { unavailable: 'Canvas authoring is unavailable during a document transition.' }
-    if (canvasStale) return { unavailable: 'Canvas authoring is unavailable while the YAML projection is stale.' }
+    if (canvasStale && !canvasRepairableDraft)
+      return { unavailable: 'Canvas authoring is unavailable while the YAML projection is stale.' }
     if ($documentWorkspaceState.missingChange) {
       return { unavailable: 'Canvas authoring is unavailable while a backing YAML file is missing.' }
     }
     const session = documentSessionStore.get()
     const projection = canvasProjection
-    if (!session.pair || !session.revision || !projection || !session.analysis?.structurallyValid) {
+    if (
+      !session.pair ||
+      !session.revision ||
+      !projection ||
+      (!session.analysis?.structurallyValid && !session.analysis?.visuallyAuthorable)
+    ) {
       return { unavailable: 'Canvas authoring requires a current valid YAML projection.' }
     }
     const contract = contracts.find(
@@ -973,6 +1021,8 @@
       session.pair.definition.revision,
       session.pair.companion?.revision ?? -1,
       session.revision.contractDigest,
+      inspectorTarget.kind,
+      inspectorTarget.kind === 'group' ? inspectorTarget.bodyScopeKey : (inspectorGraph?.scope.key ?? 'root'),
       nodeId,
     ].join(':')
   }
@@ -1032,7 +1082,7 @@
     const expectedIdentity = inspectorBindingIdentity
     if (!contract || !session.pair || !projection || inspectorDisabledReason) return
     const bindingSubject = node?.id ?? 'workflow'
-    const nodeIndex = node ? (canvasGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
+    const nodeIndex = node ? (inspectorGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
     const path = concreteFormPath(commit.field, nodeIndex)
     if (!path) {
       workspaceError = 'This contract field cannot be mutated safely by the current reader.'
@@ -1136,6 +1186,37 @@
     const result = await canvasAuthoring.add(descriptor, request)
     addNodeRequest = null
     if (result.status !== 'committed') workspaceError = result.message
+  }
+
+  async function openLoopGroup(groupId: string): Promise<void> {
+    if (!enterLoopGroup(groupId)) return
+    inspectorTarget = { kind: 'workflow' }
+    updateScopeLayout(
+      `loop-group:${groupId}`,
+      (scope) => ({ ...scope, focusTarget: { kind: 'scope-heading' } }),
+      'navigation',
+    )
+    await tick()
+    await tick()
+    document.querySelector<HTMLElement>('[data-scope-heading]')?.focus()
+  }
+
+  async function leaveLoopGroup(): Promise<void> {
+    const groupId = canvasGraph?.scope.groupId
+    if (!groupId || !returnToRoot()) return
+    inspectorTarget = { kind: 'node', scopeKey: 'root', nodeId: groupId }
+    updateScopeLayout('root', (scope) => ({ ...scope, focusTarget: { kind: 'node', nodeId: groupId } }), 'navigation')
+    await tick()
+    await tick()
+    const node = [...document.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]')].find(
+      (candidate) => candidate.dataset.id === groupId,
+    )
+    node?.focus()
+  }
+
+  async function editLoopGroupSettings(groupId: string, invoker: HTMLElement): Promise<void> {
+    inspectorTarget = { kind: 'group', bodyScopeKey: `loop-group:${groupId}`, groupId }
+    await focusInspector(invoker)
   }
 
   async function choosePaletteNode(descriptor: NodeKindDescriptor): Promise<void> {
@@ -1608,10 +1689,6 @@
   })
 
   $effect(() => {
-    if (canvasCapacity && !canvasCapacity.visual && $activeEditorMode !== 'yaml') showEditorMode('yaml')
-  })
-
-  $effect(() => {
     documentWorkspace.layoutChanged($activeLayoutStore)
   })
 
@@ -1681,7 +1758,10 @@
       fitSelection: () => graphCanvas?.fitSelection(),
       nudge: (larger, direction) => graphCanvas?.nudge(larger, direction),
       openInspector: () => graphCanvas?.openInspector(),
-      cancel: () => graphCanvas?.cancel(),
+      cancel: () => {
+        const handled = graphCanvas?.cancel() ?? false
+        if (!handled && $activeScopeKeyStore !== 'root') void leaveLoopGroup()
+      },
       createEdge: () => graphCanvas?.requestEdge(),
     })
     let resizeFrame: number | null = null
@@ -2138,18 +2218,34 @@
           </div>
         {/if}
       </div>
-      <section class="editor-region" aria-label="Workflow editor">
+      <section
+        class="editor-region"
+        class:scoped-canvas={canvasGraph?.scope.kind === 'loop-group'}
+        aria-label="Workflow editor"
+      >
         {#if $workspace.id !== null}
+          {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
+            <GraphScopeHeader
+              workflowName={canvasProjection?.name ?? canvasGraph.scope.workflow.name}
+              groupId={canvasGraph.scope.groupId}
+              onBack={leaveLoopGroup}
+              onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
+            />
+          {/if}
           <div
             class="editor-surfaces"
-            class:split={$activeEditorMode === 'split'}
-            class:split-tabs={$activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
-            class:yaml-only={$activeEditorMode === 'yaml'}
+            class:split={canvasSurfaceMode === 'split'}
+            class:split-tabs={canvasSurfaceMode === 'split' && workbenchPresentation.split === 'tabs'}
+            class:yaml-only={canvasSurfaceMode === 'yaml'}
             class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
             data-split-pane={compactSplitPane}
           >
             {#if canvasCapacity?.advisory}
-              <p class="canvas-capacity-advisory" role="status">{canvasCapacity.advisory}</p>
+              <p class="canvas-capacity-advisory" role="status">
+                {canvasGraph?.scope.kind === 'loop-group'
+                  ? 'This loop body is preserved and remains editable in YAML-only mode because the visual canvas supports at most 250 nodes and 500 edges.'
+                  : canvasCapacity.advisory}
+              </p>
             {/if}
             {#if canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false}
               <div class="canvas-pane">
@@ -2171,11 +2267,11 @@
                       compactSplitPane === 'yaml'
                     )}
                   issues={$documentSessionStore.analysis?.issues ?? []}
-                  stale={canvasStale}
+                  stale={canvasStale && !canvasRepairableDraft}
                   staleSource={canvasStaleSource}
                   inspectorControls={inspectorPanelId}
                   inspectorExpanded={!inspectorPanelHidden}
-                  readOnly={canvasReadOnly ||
+                  readOnly={(canvasReadOnly && !canvasRepairableDraft) ||
                     $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
                       ?.readOnly === true}
                   onLayoutChange={captureCanvasLayout}
@@ -2189,7 +2285,17 @@
                   onToggleInspector={(expanded, invoker) =>
                     expanded ? focusInspector(invoker) : closeInspectorDrawer(invoker)}
                   onDropNodeKind={dropPaletteNode}
+                  groupSummaries={loopGroupSummaries}
+                  onOpenLoopGroup={(groupId) => openLoopGroup(groupId)}
+                  onEditLoopGroup={editLoopGroupSettings}
                 />
+                {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
+                  <LoopGroupEmptyState
+                    groupId={canvasGraph.scope.groupId}
+                    onAddNode={() => graphCanvas?.requestAdd()}
+                    onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
+                  />
+                {/if}
               </div>
             {/if}
             {#if $documentSessionStore.pair && $documentSessionStore.revision}
@@ -2201,7 +2307,7 @@
                     revision={$documentSessionStore.revision}
                     analysis={$documentSessionStore.analysis}
                     projection={canvasProjection}
-                    mode={$activeEditorMode}
+                    mode={canvasSurfaceMode}
                     syncOrigins={{
                       definition:
                         $documentSyncOriginsStore.definition?.revision ===
@@ -2329,6 +2435,19 @@
         documentationTopicId={inspectorDocumentationTopicId}
         onDocumentationTopic={(id) => (inspectorDocumentationTopicId = id)}
         onCommit={commitInspectorField}
+        activeTab={$activeScopeLayoutStore?.inspector.tab === 'Execution' ||
+        $activeScopeLayoutStore?.inspector.tab === 'Advanced' ||
+        $activeScopeLayoutStore?.inspector.tab === 'Docs'
+          ? $activeScopeLayoutStore.inspector.tab
+          : 'General'}
+        scrollTop={$activeScopeLayoutStore?.inspector.scrollTop ?? 0}
+        onTabChange={(tab) =>
+          updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, inspector: { ...scope.inspector, tab } }))}
+        onScroll={(scrollTop) =>
+          updateScopeLayout($activeScopeKeyStore, (scope) => ({
+            ...scope,
+            inspector: { ...scope.inspector, scrollTop },
+          }))}
       />
     </aside>
     {#if workbenchSurface === 'welcome'}
@@ -3029,12 +3148,20 @@
     background-size: 1.25rem 1.25rem;
   }
 
+  .editor-region.scoped-canvas {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
   .editor-surfaces,
   .canvas-pane,
   .yaml-pane {
     display: grid;
     min-width: 0;
     min-height: 0;
+  }
+
+  .canvas-pane {
+    position: relative;
   }
 
   .editor-surfaces {

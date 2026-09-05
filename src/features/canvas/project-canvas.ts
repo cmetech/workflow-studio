@@ -9,7 +9,7 @@ import {
   type WorkflowProjection,
 } from '$src/lib/projection/types'
 import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH, layoutGraph, type LayoutGraphAdapter } from './layout-graph'
-import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition } from './types'
+import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition, LoopGroupNodeSummary } from './types'
 
 const SUMMARY_LIMIT = 72
 export const MAX_VISUAL_NODES = VISUAL_NODE_CAPACITY
@@ -21,6 +21,7 @@ export interface ProjectCanvasOptions {
   readonly arrange?: boolean
   readonly issues?: readonly ValidationIssue[]
   readonly layoutGraph?: LayoutGraphAdapter
+  readonly groupSummaries?: Readonly<Record<string, LoopGroupNodeSummary>>
 }
 
 export interface CanvasCapacity {
@@ -105,7 +106,27 @@ export function sameCanvasNode(left: CanvasNode, right: CanvasNode): boolean {
     left.data.errorCount === right.data.errorCount &&
     left.data.requiredIssueCount === right.data.requiredIssueCount &&
     left.data.stale === right.data.stale &&
-    left.data.readOnly === right.data.readOnly
+    left.data.readOnly === right.data.readOnly &&
+    left.data.accessibleLabel === right.data.accessibleLabel &&
+    sameLoopGroupSummary(left.data.compound, right.data.compound)
+  )
+}
+
+function sameLoopGroupSummary(
+  left: LoopGroupNodeSummary | undefined,
+  right: LoopGroupNodeSummary | undefined,
+): boolean {
+  return (
+    left === right ||
+    Boolean(
+      left &&
+      right &&
+      left.bodyNodeCount === right.bodyNodeCount &&
+      left.maxIterations === right.maxIterations &&
+      left.primarySinkId === right.primarySinkId &&
+      left.errorCount === right.errorCount &&
+      left.requiredIssueCount === right.requiredIssueCount,
+    )
   )
 }
 
@@ -141,9 +162,10 @@ function samePositions(
 }
 
 export function canvasCapacityForProjection(projection: ProjectedGraph): CanvasCapacity {
-  const nodeCount = projection.nodes.length
-  const edgeCount = projection.edges.length
-  const visual = nodeCount <= MAX_VISUAL_NODES && edgeCount <= MAX_VISUAL_EDGES
+  const nodeCount = projection.capacity.nodeCount
+  const edgeCount = projection.capacity.edgeCount
+  const visual =
+    projection.capacity.status === 'visual' && nodeCount <= MAX_VISUAL_NODES && edgeCount <= MAX_VISUAL_EDGES
   return {
     visual,
     blocking: false,
@@ -155,6 +177,38 @@ export function canvasCapacityForProjection(projection: ProjectedGraph): CanvasC
         }
       : {}),
   }
+}
+
+export function loopGroupSummariesForProjection(
+  projection: WorkflowProjection,
+  issues: readonly ValidationIssue[],
+): Readonly<Record<string, LoopGroupNodeSummary>> {
+  const root = projection.graphs.find(({ scope }) => scope.key === 'root')
+  if (!root) return {}
+  const summaries: Record<string, LoopGroupNodeSummary> = {}
+  for (const node of root.nodes) {
+    if (node.kind !== 'loop_group') continue
+    const scopeKey = `loop-group:${node.id}` as const
+    const body = projection.graphs.find(({ scope }) => scope.key === scopeKey)
+    const groupIssues = issues.filter(
+      (issue) =>
+        issue.groupId === node.id ||
+        issue.scopeKey === scopeKey ||
+        ((issue.scopeKey === undefined || issue.scopeKey === 'root') && issue.nodeId === node.id),
+    )
+    const value = isRecord(node.value) ? node.value : {}
+    const maxIterations = value.max_iterations
+    summaries[node.id] = {
+      bodyNodeCount: body?.nodes.length ?? 0,
+      ...(typeof maxIterations === 'number' && Number.isFinite(maxIterations) ? { maxIterations } : {}),
+      ...(body?.primarySinkId ? { primarySinkId: body.primarySinkId } : {}),
+      errorCount: groupIssues.filter(({ severity }) => severity === 'error').length,
+      requiredIssueCount: groupIssues.filter(
+        ({ code, message }) => code.toLowerCase().includes('required') || message.toLowerCase().includes('required'),
+      ).length,
+    }
+  }
+  return summaries
 }
 
 export function projectCanvas(
@@ -169,6 +223,8 @@ export function projectCanvas(
   const issuesByNode = new Map<string, ValidationIssue[]>()
   for (const issue of issues) {
     if (!issue.nodeId) continue
+    const issueScope = issue.scopeKey ?? 'root'
+    if (issueScope !== projection.scope.key) continue
     const nodeIssues = issuesByNode.get(issue.nodeId) ?? []
     nodeIssues.push(issue)
     issuesByNode.set(issue.nodeId, nodeIssues)
@@ -180,6 +236,15 @@ export function projectCanvas(
     const requiredIssueCount = nodeIssues.filter(
       (issue) => issue.code.toLowerCase().includes('required') || issue.message.toLowerCase().includes('required'),
     ).length
+    const compound = node.kind === 'loop_group' ? options.groupSummaries?.[node.id] : undefined
+    const renderedErrorCount = compound?.errorCount ?? errorCount
+    const renderedRequiredIssueCount = compound?.requiredIssueCount ?? requiredIssueCount
+    const accessibleLabel = compound
+      ? `loop group ${node.id}`
+      : `${node.kind || 'workflow'} node ${node.id}${projection.scope.groupId ? ` in loop group ${projection.scope.groupId}` : ''}`
+    const canvasAriaLabel = compound
+      ? loopGroupAccessibleLabel(node.id, compound)
+      : `${accessibleLabel}${renderedErrorCount > 0 ? `, ${renderedErrorCount} errors` : ''}`
     return {
       id: node.id,
       type: 'workflow',
@@ -192,15 +257,17 @@ export function projectCanvas(
       connectable: !readOnly,
       selectable: true,
       focusable: true,
-      ariaLabel: `${node.kind || 'workflow'} node ${node.id}${errorCount > 0 ? `, ${errorCount} errors` : ''}`,
+      ariaLabel: canvasAriaLabel,
       data: {
         id: node.id,
         kind: node.kind,
         summary: boundedSummary(node.value),
-        errorCount,
-        requiredIssueCount,
+        errorCount: renderedErrorCount,
+        requiredIssueCount: renderedRequiredIssueCount,
         stale,
         readOnly,
+        accessibleLabel,
+        ...(compound ? { compound } : {}),
       },
     }
   })
@@ -227,8 +294,18 @@ function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOpti
     left.readOnly === right.readOnly &&
     left.arrange === right.arrange &&
     left.issues === right.issues &&
-    left.layoutGraph === right.layoutGraph,
+    left.layoutGraph === right.layoutGraph &&
+    left.groupSummaries === right.groupSummaries,
   )
+}
+
+function loopGroupAccessibleLabel(id: string, summary: LoopGroupNodeSummary): string {
+  const parts = [`loop group ${id}`, `${summary.bodyNodeCount} body node${summary.bodyNodeCount === 1 ? '' : 's'}`]
+  if (summary.primarySinkId) parts.push(`primary output ${summary.primarySinkId}`)
+  if (summary.errorCount > 0) parts.push(`${summary.errorCount} error${summary.errorCount === 1 ? '' : 's'}`)
+  if (summary.requiredIssueCount > 0)
+    parts.push(`${summary.requiredIssueCount} required issue${summary.requiredIssueCount === 1 ? '' : 's'}`)
+  return parts.join(', ')
 }
 
 export function isProjectedGraph(value: unknown): value is ProjectedGraph {

@@ -18,7 +18,14 @@
     documentationTopicId?: string | undefined
     onDocumentationTopic?: ((id: string) => void) | undefined
     onCommit?: ((commit: FormFieldCommit) => void | Promise<void>) | undefined
+    activeTab?: InspectorTab | undefined
+    scrollTop?: number | undefined
+    onTabChange?: ((tab: InspectorTab) => void) | undefined
+    onScroll?: ((scrollTop: number) => void) | undefined
   }
+
+  const tabs = ['General', 'Execution', 'Advanced', 'Docs'] as const
+  type InspectorTab = (typeof tabs)[number]
 
   let {
     fields,
@@ -33,12 +40,14 @@
     documentationTopicId,
     onDocumentationTopic,
     onCommit,
+    activeTab = 'General',
+    scrollTop = 0,
+    onTabChange,
+    onScroll,
   }: Props = $props()
 
-  const tabs = ['General', 'Execution', 'Advanced', 'Docs'] as const
-  type InspectorTab = (typeof tabs)[number]
-  let activeTab = $state<InspectorTab>('General')
   let tabButtons = $state<HTMLButtonElement[]>([])
+  let panel = $state<HTMLElement>()
   let resetVersions = $state<Record<string, number>>({})
   const visibleFields = $derived(
     activeTab === 'Docs' ? [] : fields.filter(({ section }) => section.toLowerCase() === activeTab.toLowerCase()),
@@ -50,9 +59,18 @@
 
   function activateTab(index: number): void {
     const normalized = (index + tabs.length) % tabs.length
-    activeTab = tabs[normalized] ?? 'General'
+    selectTab(tabs[normalized] ?? 'General')
     tabButtons[normalized]?.focus()
   }
+
+  function selectTab(tab: InspectorTab): void {
+    activeTab = tab
+    onTabChange?.(tab)
+  }
+
+  $effect(() => {
+    if (panel && panel.scrollTop !== scrollTop) panel.scrollTop = scrollTop
+  })
 
   function onTabKeydown(event: KeyboardEvent, index: number): void {
     if (event.key === 'ArrowRight') activateTab(index + 1)
@@ -118,18 +136,20 @@
         aria-selected={activeTab === tab}
         tabindex={activeTab === tab ? 0 : -1}
         class:active={activeTab === tab}
-        onclick={() => (activeTab = tab)}
+        onclick={() => selectTab(tab)}
         onkeydown={(event) => onTabKeydown(event, index)}>{tab}</button
       >
     {/each}
   </div>
 
   <div
+    bind:this={panel}
     class="panel"
     data-scroll-owner="inspector"
     role="tabpanel"
     id={`inspector-panel-${activeTab.toLowerCase()}`}
     aria-labelledby={`inspector-tab-${activeTab.toLowerCase()}`}
+    onscroll={() => onScroll?.(panel?.scrollTop ?? 0)}
   >
     {#if selectionCount > 1}
       <div class="selection-summary">

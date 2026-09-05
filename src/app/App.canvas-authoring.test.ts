@@ -404,7 +404,9 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
     : undefined
   if (scopedAnalysis) expect(scopedAnalysis.structurallyValid, JSON.stringify(scopedAnalysis.issues)).toBe(true)
   const currentProjection = scopedAnalysis ? (scopedAnalysis.projection as WorkflowProjection) : projection(text)
-  receiveDocumentAnalysis({ ...revision, structurallyValid: true, issues: [], projection: currentProjection })
+  receiveDocumentAnalysis(
+    scopedAnalysis ?? { ...revision, structurallyValid: true, issues: [], projection: currentProjection },
+  )
   if (options.missingEntry) {
     $documentWorkspace.set({
       ...$documentWorkspace.get(),
@@ -558,6 +560,259 @@ describe('App canvas authoring composition', () => {
       restoreMetrics()
       rendered.unmount()
     }
+  })
+
+  it('drills into one loop-body canvas, preserves child selection for group settings, and restores root focus', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Drill in\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+
+    expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+    const heading = await screen.findByRole('heading', { name: 'Scoped / repeat loop body' })
+    await waitFor(() => expect(heading).toHaveFocus())
+    expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+    expect(rendered.container.querySelector('.svelte-flow__node[data-id="child"]')).toBeVisible()
+    expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toBeNull()
+
+    setCanvasSelection(['child'])
+    await tick()
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit Group Settings' }))
+    expect($canvasSelection.get()).toEqual(['child'])
+    expect(screen.getByText('repeat', { selector: '.inspector strong' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveFocus())
+    expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('keeps a capacity-limited body YAML-only while the supported root remains visual', async () => {
+    const rendered = await renderAuthoringApp()
+    const current = projection()
+    const groupNode = {
+      ...current.graphs[0]!.nodes[0]!,
+      id: 'repeat',
+      kind: 'loop_group',
+      value: { max_iterations: 2, nodes: [] },
+    }
+    const root = {
+      ...current.graphs[0]!,
+      nodes: [groupNode],
+      edges: [],
+      definitionOrder: ['repeat'],
+      capacity: { status: 'visual' as const, nodeCount: 1, edgeCount: 0 },
+    }
+    const body = {
+      ...current.graphs[0]!,
+      scope: {
+        key: 'loop-group:repeat' as const,
+        kind: 'loop-group' as const,
+        groupId: 'repeat',
+        workflow: current.graphs[0]!.scope.workflow,
+      },
+      nodes: [],
+      edges: [],
+      definitionOrder: [],
+      primarySinkId: undefined,
+      sourcePath: ['nodes', 0, 'loop_group', 'nodes'],
+      capacity: { status: 'yaml-only' as const, nodeCount: 251, edgeCount: 0 },
+    }
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: true,
+      issues: [],
+      projection: { ...current, graphs: [root, body] },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open loop body' })).toBeVisible())
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+
+    expect(await screen.findByText(/this loop body is preserved.*yaml-only.*250 nodes.*500 edges/i)).toBeVisible()
+    expect(rendered.container.querySelector('.svelte-flow')).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow')).toBeVisible())
+    rendered.unmount()
+  })
+
+  it('lets canvas gestures and overlays consume Escape before body Back', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Escape order\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+    const canvas = await screen.findByRole('region', { name: 'Workflow graph' })
+    setCanvasSelection(['child'])
+    canvas.focus()
+
+    await fireEvent.keyDown(canvas, { key: 'e' })
+    expect(screen.getByText(/create edge from child/i)).toBeVisible()
+    await fireEvent.keyDown(canvas, { key: 'Escape' })
+    expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:repeat')
+    expect(screen.queryByText(/create edge from child/i)).not.toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
+    expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    await fireEvent.keyDown(screen.getByRole('dialog', { name: 'Add node' }), { key: 'Escape' })
+    expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:repeat')
+    expect(screen.queryByRole('dialog', { name: 'Add node' })).not.toBeInTheDocument()
+
+    await fireEvent.keyDown(canvas, { key: 'Escape' })
+    expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:repeat')
+    expect($canvasSelection.get()).toEqual([])
+    await fireEvent.keyDown(canvas, { key: 'Escape' })
+    await waitFor(() => expect(activeLayoutStore.get()?.activeScopeKey).toBe('root'))
+    expect(historyStore.get().undo).toHaveLength(0)
+    rendered.unmount()
+  })
+
+  it('renders the exact empty-body repair UI without inventing values and keeps save blocked', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Empty repair\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    const session = $documentSession.get()
+    const current = session.analysis!.projection as WorkflowProjection
+    const body = current.graphs.find(({ scope }) => scope.key === 'loop-group:repeat')!
+    const emptyProjection: WorkflowProjection = {
+      ...current,
+      graphs: current.graphs.map((graph) => {
+        if (graph !== body) return graph
+        const { primarySinkId, ...bodyWithoutPrimarySink } = graph
+        void primarySinkId
+        return {
+          ...bodyWithoutPrimarySink,
+          nodes: [],
+          edges: [],
+          definitionOrder: [],
+          capacity: { status: 'visual', nodeCount: 0, edgeCount: 0 },
+        }
+      }),
+    }
+    const authored = session.pair!.definition.text.replace('        - id: child\n          bash: echo child\n', '')
+    updateDocumentSession(
+      { ...session.pair!, definition: { ...session.pair!.definition, text: authored, revision: 1 } },
+      additionalContract.contract_digest,
+    )
+    const referenceIndex = session.analysis?.referenceIndex
+    if (!referenceIndex) throw new Error('The reader-v3 fixture did not publish a reference index')
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: false,
+      visuallyAuthorable: true,
+      referenceIndex,
+      issues: [
+        {
+          code: 'schema_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'A body node is required.',
+          document: 'definition',
+          scopeKey: 'loop-group:repeat',
+          groupId: 'repeat',
+          path: '/nodes/0/loop_group/nodes',
+        },
+      ],
+      projection: emptyProjection,
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open loop body' })).toBeVisible())
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+
+    expect(await screen.findByRole('region', { name: 'Empty loop body for repeat' })).toBeVisible()
+    expect(screen.getByText('nodes: []')).toBeVisible()
+    expect(screen.getByText(/save and export remain blocked/i)).toBeVisible()
+    expect($documentSession.get().pair?.definition.text).toBe(authored)
+    expect($documentSession.get().analysis?.structurallyValid).toBe(false)
+    await fireEvent.click(screen.getByRole('button', { name: 'Add First Node' }))
+    expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    expect($documentSession.get().pair?.definition.text).toBe(authored)
+    rendered.unmount()
+  })
+
+  it('records body and root edits in the one document undo history while navigation records none', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Shared history\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n        - id: publish\n          bash: echo publish\n  - id: tail\n    bash: echo tail\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
+    expect(historyStore.get().undo).toHaveLength(0)
+    await fireEvent(
+      screen.getByRole('region', { name: 'Workflow graph' }),
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'child', target: 'publish' } }),
+    )
+    await waitFor(() => expect(historyStore.get().undo).toHaveLength(1))
+    expect(parse($documentSession.get().pair!.definition.text)).toMatchObject({
+      nodes: [{ loop_group: { nodes: [{ id: 'child' }, { id: 'publish', depends_on: ['child'] }] } }, { id: 'tail' }],
+    })
+    // This fixture opens the document store directly instead of through the workspace
+    // controller. Republish the worker result that a real workspace session schedules
+    // after the edit so the second action has the same current-analysis lease.
+    const edited = $documentSession.get().pair!
+    receiveDocumentAnalysis(
+      await analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: 'scope-after-body-edit',
+          workflowId: edited.workflowId,
+          pairGeneration: edited.generation,
+          definition: edited.definition,
+          companion: edited.companion,
+          profile: additionalContract.profile,
+          contractDigest: additionalContract.contract_digest,
+          reason: 'edit',
+        },
+        additionalContract,
+      ),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('article', { name: 'bash node publish in loop group repeat' })).not.toHaveClass('stale'),
+    )
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+    expect(historyStore.get().undo).toHaveLength(1)
+    await fireEvent(
+      screen.getByRole('region', { name: 'Workflow graph' }),
+      new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'repeat', target: 'tail' } }),
+    )
+    await waitFor(() => expect(historyStore.get().undo).toHaveLength(2))
+    expect(parse($documentSession.get().pair!.definition.text)).toMatchObject({
+      nodes: [
+        { id: 'repeat', loop_group: { nodes: [{ id: 'child' }, { id: 'publish', depends_on: ['child'] }] } },
+        { id: 'tail', depends_on: ['repeat'] },
+      ],
+    })
+    rendered.unmount()
   })
 
   it('adds, connects, and duplicates through the production YAML transaction path', async () => {

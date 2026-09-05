@@ -109,6 +109,68 @@ describe('GraphCanvas', () => {
     clearCanvasState()
   })
 
+  it('opens a compound loop group from its button, double-click, and focused-node Enter only', async () => {
+    const onOpenLoopGroup = vi.fn()
+    const groupProjection: ProjectedGraph = {
+      ...projection,
+      nodes: [{ ...projection.nodes[0]!, id: 'repeat', kind: 'loop_group', value: { nodes: [], max_iterations: 3 } }],
+      edges: [],
+      definitionOrder: ['repeat'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+    const { container } = renderCanvas({
+      projection: groupProjection,
+      layout: { ...layout, nodePositions: { repeat: { x: 0, y: 0 } } },
+      groupSummaries: {
+        repeat: {
+          bodyNodeCount: 2,
+          maxIterations: 3,
+          primarySinkId: 'publish',
+          errorCount: 1,
+          requiredIssueCount: 1,
+        },
+      },
+      onOpenLoopGroup,
+    })
+    const node = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="repeat"]')!
+
+    expect(screen.getByRole('article', { name: /loop group repeat/i })).toBeVisible()
+    expect(screen.getByText('2 body nodes')).toBeVisible()
+    expect(screen.getByText('Maximum 3 iterations')).toBeVisible()
+    expect(screen.getByText('Group output: publish')).toBeVisible()
+    expect(screen.getByText('1 required')).toBeVisible()
+    expect(screen.getByText('1 error')).toBeVisible()
+    expect(container.querySelector('[data-port="input"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-port="output"]')).toBeInTheDocument()
+
+    const open = screen.getByRole('button', { name: 'Open loop body' })
+    await fireEvent.click(open)
+    await fireEvent.dblClick(node)
+    node.focus()
+    await fireEvent.keyDown(node, { key: 'Enter' })
+    await fireEvent.keyDown(open, { key: 'Enter' })
+
+    expect(onOpenLoopGroup).toHaveBeenCalledTimes(3)
+    expect(onOpenLoopGroup).toHaveBeenNthCalledWith(1, 'repeat', open)
+    expect(onOpenLoopGroup).toHaveBeenNthCalledWith(2, 'repeat', node)
+    expect(onOpenLoopGroup).toHaveBeenNthCalledWith(3, 'repeat', node)
+  })
+
+  it('reports whether Escape ownership cancelled an edge gesture or a real selection', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    expect(rendered.component.cancel()).toBe(false)
+
+    setCanvasSelection(['collect'])
+    await tick()
+    expect(rendered.component.cancel()).toBe(true)
+    expect($canvasSelection.get()).toEqual([])
+
+    setCanvasSelection(['collect'])
+    rendered.component.requestEdge()
+    expect(rendered.component.cancel()).toBe(true)
+    expect($canvasSelection.get()).toEqual(['collect'])
+  })
+
   it('keeps pointer panning enabled on the rendered flow pane', () => {
     const { container } = renderCanvas({ projection, layout })
     const flow = container.querySelector<HTMLElement>('.svelte-flow')

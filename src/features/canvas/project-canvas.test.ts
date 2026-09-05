@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import { layoutGraph } from './layout-graph'
-import { projectCanvas } from './project-canvas'
+import { loopGroupSummariesForProjection, projectCanvas } from './project-canvas'
+import type { WorkflowProjection } from '$src/lib/projection/types'
 
 const projection: ProjectedGraph = deepFreeze({
   scope: { key: 'root', kind: 'root', workflow: { name: 'Release', profile: 'hermes-legacy' } },
@@ -44,6 +45,167 @@ const savedLayout: ScopeLayoutV1 = {
 }
 
 describe('projectCanvas', () => {
+  it('derives compound summaries from the owning node and body projection without canvas-position input', () => {
+    const group = { ...projection.nodes[0]!, id: 'repeat', kind: 'loop_group', value: { max_iterations: 4, nodes: [] } }
+    const root: ProjectedGraph = {
+      ...projection,
+      nodes: [group],
+      edges: [],
+      definitionOrder: ['repeat'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+    const body: ProjectedGraph = {
+      ...projection,
+      scope: {
+        key: 'loop-group:repeat',
+        kind: 'loop-group',
+        groupId: 'repeat',
+        workflow: projection.scope.workflow,
+      },
+      nodes: [projection.nodes[1]!, projection.nodes[0]!],
+      edges: [],
+      definitionOrder: ['review', 'collect'],
+      primarySinkId: 'review',
+      capacity: { status: 'visual', nodeCount: 2, edgeCount: 0 },
+    }
+    const workflow: WorkflowProjection = {
+      name: 'Release',
+      profile: 'hermes-legacy',
+      graphs: [root, body],
+      definition: {},
+    }
+
+    expect(
+      loopGroupSummariesForProjection(workflow, [
+        {
+          code: 'schema_required',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Until is required.',
+          document: 'definition',
+          scopeKey: 'loop-group:repeat',
+          groupId: 'repeat',
+          nodeId: 'repeat',
+        },
+      ]),
+    ).toEqual({
+      repeat: {
+        bodyNodeCount: 2,
+        maxIterations: 4,
+        primarySinkId: 'review',
+        errorCount: 1,
+        requiredIssueCount: 1,
+      },
+    })
+  })
+
+  it('projects a root loop group as a scoped compound node with definition-order output and scoped issues', () => {
+    const groupProjection: ProjectedGraph = {
+      ...projection,
+      nodes: [
+        {
+          ...projection.nodes[0]!,
+          id: 'repeat',
+          kind: 'loop_group',
+          value: { nodes: [], max_iterations: 7 },
+        },
+      ],
+      edges: [],
+      definitionOrder: ['repeat'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+
+    const canvas = projectCanvas(groupProjection, savedLayout, {
+      groupSummaries: {
+        repeat: {
+          bodyNodeCount: 2,
+          maxIterations: 7,
+          primarySinkId: 'publish',
+          errorCount: 2,
+          requiredIssueCount: 1,
+        },
+      },
+      issues: [
+        {
+          code: 'unrelated',
+          layer: 'semantic',
+          severity: 'error',
+          blocking: true,
+          message: 'A same-named child in another group is invalid.',
+          document: 'definition',
+          scopeKey: 'loop-group:other',
+          groupId: 'other',
+          nodeId: 'repeat',
+        },
+      ],
+    })
+
+    expect(canvas.nodes[0]).toMatchObject({
+      ariaLabel: 'loop group repeat, 2 body nodes, primary output publish, 2 errors, 1 required issue',
+      data: {
+        id: 'repeat',
+        kind: 'loop_group',
+        compound: {
+          bodyNodeCount: 2,
+          maxIterations: 7,
+          primarySinkId: 'publish',
+          errorCount: 2,
+          requiredIssueCount: 1,
+        },
+      },
+    })
+  })
+
+  it('qualifies body node names and diagnostic counts by their loop group', () => {
+    const body: ProjectedGraph = {
+      ...projection,
+      scope: {
+        key: 'loop-group:repeat',
+        kind: 'loop-group',
+        groupId: 'repeat',
+        workflow: projection.scope.workflow,
+      },
+      nodes: [{ ...projection.nodes[0]!, id: 'child' }],
+      edges: [],
+      definitionOrder: ['child'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+    const canvas = projectCanvas(
+      body,
+      { ...savedLayout, nodePositions: { child: { x: 0, y: 0 } } },
+      {
+        issues: [
+          {
+            code: 'body_error',
+            layer: 'semantic',
+            severity: 'error',
+            blocking: true,
+            message: 'Child is invalid.',
+            document: 'definition',
+            scopeKey: 'loop-group:repeat',
+            groupId: 'repeat',
+            nodeId: 'child',
+          },
+          {
+            code: 'other_error',
+            layer: 'semantic',
+            severity: 'error',
+            blocking: true,
+            message: 'Same child id elsewhere.',
+            document: 'definition',
+            scopeKey: 'loop-group:other',
+            groupId: 'other',
+            nodeId: 'child',
+          },
+        ],
+      },
+    )
+
+    expect(canvas.nodes[0]).toMatchObject({ ariaLabel: 'command node child in loop group repeat, 1 errors' })
+    expect(canvas.nodes[0]!.data.errorCount).toBe(1)
+  })
+
   it('derives stable canvas identities, saved positions, and bounded node summaries without mutating YAML projection', () => {
     const before = structuredClone(projection)
     const canvas = projectCanvas(projection, savedLayout, {
