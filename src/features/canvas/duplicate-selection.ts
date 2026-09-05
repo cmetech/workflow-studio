@@ -284,7 +284,7 @@ export async function pasteSelection(
 
   const positions = copiedPositions(clipboard, idMap, context.positions)
   await context.commitPositions(positions)
-  return {
+  const committed: Extract<DuplicateSelectionResult, { status: 'committed' }> = {
     ...result,
     nodeIds: copiedIds.map((id) => idMap.get(id)!),
     positions,
@@ -300,6 +300,8 @@ export async function pasteSelection(
       })),
     },
   }
+  await context.commitIdentityChanges?.(committed.identityChanges, committed.transaction)
+  return committed
 }
 
 function clipboardContains(clipboard: CanvasClipboard, identity: ScopedNodeIdentity): boolean {

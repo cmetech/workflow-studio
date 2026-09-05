@@ -1,6 +1,6 @@
 import { MarkerType, Position } from '@xyflow/svelte'
-import { reconcileLayout } from '$src/lib/layout/place-new-nodes'
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import { reconcileLayout, validPosition } from '$src/lib/layout/place-new-nodes'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import {
   VISUAL_EDGE_CAPACITY,
@@ -33,13 +33,13 @@ export interface CanvasCapacity {
 
 export type ProjectCanvasAdapter = (
   projection: ProjectedGraph,
-  savedLayout: LayoutRecordV1,
+  savedLayout: ScopeLayoutV1,
   options?: ProjectCanvasOptions,
 ) => CanvasProjection
 
 export function createMemoizedCanvasProjector(): ProjectCanvasAdapter {
   let previousProjection: ProjectedGraph | undefined
-  let previousLayout: LayoutRecordV1 | undefined
+  let previousLayout: ScopeLayoutV1 | undefined
   let previousOptions: ProjectCanvasOptions | undefined
   let previousResult: CanvasProjection | undefined
 
@@ -53,7 +53,10 @@ export function createMemoizedCanvasProjector(): ProjectCanvasAdapter {
       return previousResult
     }
     const projected = projectCanvas(projection, savedLayout, options)
-    const result = previousResult ? reuseUnchangedCanvasElements(previousResult, projected) : projected
+    const result =
+      previousResult && previousProjection?.scope.key === projection.scope.key
+        ? reuseUnchangedCanvasElements(previousResult, projected)
+        : projected
     previousProjection = projection
     previousLayout = savedLayout
     previousOptions = options
@@ -156,7 +159,7 @@ export function canvasCapacityForProjection(projection: ProjectedGraph): CanvasC
 
 export function projectCanvas(
   projection: ProjectedGraph,
-  savedLayout: LayoutRecordV1,
+  savedLayout: ScopeLayoutV1,
   options: ProjectCanvasOptions = {},
 ): CanvasProjection {
   const stale = options.stale === true
@@ -255,14 +258,17 @@ export function isWorkflowProjection(value: unknown): value is WorkflowProjectio
 
 function resolvePositions(
   projection: ProjectedGraph,
-  savedLayout: LayoutRecordV1,
+  savedLayout: ScopeLayoutV1,
   options: ProjectCanvasOptions,
 ): Readonly<Record<string, CanvasPosition>> {
   if (options.arrange) return (options.layoutGraph ?? layoutGraph)(projection.nodes, projection.edges)
-  const reconciled = reconcileLayout(projection, savedLayout)
-  return Object.fromEntries(
-    Object.entries(reconciled.nodePositions).map(([id, position]) => [id, clonePosition(position)]),
+  // Accepted analysis preplaces every scope. Rendering a scope needs no placement work.
+  const positions = projection.nodes.every(
+    ({ id }) => Object.hasOwn(savedLayout.nodePositions, id) && validPosition(savedLayout.nodePositions[id]),
   )
+    ? savedLayout.nodePositions
+    : reconcileLayout(projection, savedLayout).nodePositions
+  return Object.fromEntries(Object.entries(positions).map(([id, position]) => [id, clonePosition(position)]))
 }
 
 function boundedSummary(value: unknown): string {

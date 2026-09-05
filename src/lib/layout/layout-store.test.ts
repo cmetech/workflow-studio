@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
-import type { LayoutContentHashes, LayoutRecordV1 } from './types'
+import { emptyScopeLayout, type LayoutContentHashes, type LayoutRecordV1, type LayoutRecordV2 } from './types'
 import { createLayoutStore, LayoutPersistenceController } from './layout-store'
 
 const hashes: LayoutContentHashes = {
@@ -8,7 +8,7 @@ const hashes: LayoutContentHashes = {
   companion: 'b'.repeat(64),
 }
 
-function record(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV1 {
+function legacyRecord(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV1 {
   return {
     schemaVersion: 1,
     workspaceId: 'workspace-1',
@@ -19,6 +19,16 @@ function record(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV1 {
     editorMode: 'visual',
     updatedAt: '2026-07-25T12:00:00.000Z',
     ...overrides,
+  }
+}
+
+function record(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV2 {
+  const { nodePositions, viewport, ...legacy } = legacyRecord(overrides)
+  return {
+    ...legacy,
+    schemaVersion: 2,
+    activeScopeKey: 'root',
+    scopeLayouts: { root: { ...emptyScopeLayout(), nodePositions, viewport } },
   }
 }
 
@@ -34,6 +44,81 @@ function nativeWith(content: string | null = null) {
 }
 
 describe('layout app-data store', () => {
+  it('migrates the complete legacy envelope into root without writing until a save', async () => {
+    const legacy = legacyRecord()
+    const native = nativeWith(JSON.stringify([{ schemaVersion: 1, layout: legacy, savedHashes: hashes }]))
+    const store = createLayoutStore(native)
+    const loaded = await store.loadLayout({ workspaceId: legacy.workspaceId, workflowPath: legacy.workflowPath })
+    expect(loaded).toEqual({
+      schemaVersion: 2,
+      workspaceId: legacy.workspaceId,
+      workflowPath: legacy.workflowPath,
+      panels: legacy.panels,
+      editorMode: legacy.editorMode,
+      updatedAt: legacy.updatedAt,
+      activeScopeKey: 'root',
+      scopeLayouts: {
+        root: {
+          nodePositions: legacy.nodePositions,
+          viewport: legacy.viewport,
+          selectedNodeIds: [],
+          inspector: { tab: 'General', scrollTop: 0 },
+          canvasScroll: { left: 0, top: 0 },
+        },
+      },
+    })
+    expect(native.layoutSave).not.toHaveBeenCalled()
+    await store.renameWorkflowPath(legacy.workspaceId, legacy.workflowPath, 'renamed.yaml')
+    expect(JSON.parse(native.read()!)[0]).toMatchObject({ schemaVersion: 2, savedHashes: hashes })
+  })
+
+  it('round-trips all scope interaction fields through save, exact rename and hash reclaim', async () => {
+    const native = nativeWith()
+    const store = createLayoutStore(native)
+    const layout = record()
+    layout.activeScopeKey = 'loop-group:second'
+    for (const [id, x] of [
+      ['first', 100],
+      ['second', 200],
+    ] as const) {
+      layout.scopeLayouts[`loop-group:${id}`] = {
+        nodePositions: { child: { x, y: x + 1 } },
+        viewport: { x, y: -x, zoom: 1.25 },
+        selectedNodeIds: ['child'],
+        focusTarget: { kind: 'node', nodeId: 'child' },
+        inspector: { tab: 'Advanced', scrollTop: x + 2 },
+        canvasScroll: { left: x + 3, top: x + 4 },
+      }
+    }
+    await store.saveLayout(layout, hashes)
+    const reloaded = createLayoutStore(native)
+    expect(await reloaded.loadLayout(layout)).toEqual(layout)
+    await reloaded.renameWorkflowPath(layout.workspaceId, layout.workflowPath, 'renamed.yaml')
+    expect(await reloaded.loadLayout({ ...layout, workflowPath: 'renamed.yaml' })).toEqual({
+      ...layout,
+      workflowPath: 'renamed.yaml',
+    })
+    expect(
+      await reloaded.loadLayout({
+        ...layout,
+        workflowPath: 'moved.yaml',
+        savedHashes: hashes,
+        missingWorkflowPaths: ['renamed.yaml'],
+      }),
+    ).toEqual({ ...layout, workflowPath: 'moved.yaml' })
+    expect(JSON.parse(native.read()!)[0].savedHashes).toEqual(hashes)
+  })
+
+  it('preserves corrupt and future records when another workflow is saved', async () => {
+    const corrupt = { schemaVersion: 2, layout: { ...record(), scopeLayouts: {} }, savedHashes: hashes }
+    const future = { schemaVersion: 3, opaque: { preserve: true } }
+    const native = nativeWith(JSON.stringify([corrupt, future]))
+    const store = createLayoutStore(native)
+    expect(await store.loadLayout(record())).toBeNull()
+    await store.saveLayout(record({ workflowPath: 'other.yaml' }))
+    expect(JSON.parse(native.read()!).slice(0, 2)).toEqual([corrupt, future])
+  })
+
   it('round-trips through the offline browser native bridge', async () => {
     const store = createLayoutStore(createBrowserBridge())
     await store.saveLayout(record(), hashes)
@@ -51,7 +136,7 @@ describe('layout app-data store', () => {
     await store.saveLayout(layout, hashes)
     const loaded = await store.loadLayout({ workspaceId: 'workspace-1', workflowPath: 'flows/release.yaml' })
 
-    expect(Object.hasOwn(loaded!.nodePositions, '__proto__')).toBe(true)
+    expect(Object.hasOwn(loaded!.scopeLayouts.root.nodePositions, '__proto__')).toBe(true)
   })
 
   it('validates all loaded fields, drops invalid positions, and never interprets a future version', async () => {
@@ -62,12 +147,14 @@ describe('layout app-data store', () => {
         huge: { x: Number.MAX_VALUE, y: 0 },
       },
     })
-    const future = { schemaVersion: 2, opaque: { keep: true } }
-    const native = nativeWith(JSON.stringify([future, { schemaVersion: 1, layout: valid, savedHashes: hashes }]))
+    const future = { schemaVersion: 3, opaque: { keep: true } }
+    const native = nativeWith(JSON.stringify([future, { schemaVersion: 2, layout: valid, savedHashes: hashes }]))
     const store = createLayoutStore(native)
 
     await expect(store.loadLayout({ workspaceId: 'workspace-1', workflowPath: 'flows/release.yaml' })).resolves.toEqual(
-      expect.objectContaining({ nodePositions: { build: { x: 0, y: 0 } } }),
+      expect.objectContaining({
+        scopeLayouts: { root: expect.objectContaining({ nodePositions: { build: { x: 0, y: 0 } } }) },
+      }),
     )
 
     await store.saveLayout(record({ editorMode: 'yaml' }), hashes)
@@ -82,7 +169,7 @@ describe('layout app-data store', () => {
     ['timestamp', { updatedAt: 'not-a-date' }],
   ])('rejects an invalid loaded record: %s', async (_label, override) => {
     const native = nativeWith(
-      JSON.stringify([{ schemaVersion: 1, layout: record(override as Partial<LayoutRecordV1>), savedHashes: hashes }]),
+      JSON.stringify([{ schemaVersion: 2, layout: record(override as Partial<LayoutRecordV1>), savedHashes: hashes }]),
     )
 
     await expect(
@@ -117,7 +204,7 @@ describe('layout app-data store', () => {
     })
 
     expect(reclaimed).toEqual(expect.objectContaining({ workflowPath: 'moved/release.yaml' }))
-    expect(reclaimed?.nodePositions.build).toEqual({ x: 0, y: 0 })
+    expect(reclaimed?.scopeLayouts.root.nodePositions.build).toEqual({ x: 0, y: 0 })
   })
 
   it('never guesses between ambiguous external hash matches', async () => {
@@ -160,7 +247,7 @@ describe('layout persistence scheduling', () => {
   it('waits 500ms for viewport/panels and close flushes the latest pending record after queued writes', async () => {
     let finishFirst: (() => void) | undefined
     const save = vi
-      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .fn<(layout: LayoutRecordV2) => Promise<void>>()
       .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirst = resolve)))
       .mockResolvedValue(undefined)
     const controller = new LayoutPersistenceController(save)
@@ -180,7 +267,7 @@ describe('layout persistence scheduling', () => {
   })
 
   it('flushes for a close attempt without disabling later layout persistence', async () => {
-    const save = vi.fn<(layout: LayoutRecordV1, sequence: number) => Promise<void>>(async () => undefined)
+    const save = vi.fn<(layout: LayoutRecordV2, sequence: number) => Promise<void>>(async () => undefined)
     const controller = new LayoutPersistenceController(save)
     const first = record({ editorMode: 'split' })
     const second = record({ editorMode: 'yaml' })
@@ -198,7 +285,7 @@ describe('layout persistence scheduling', () => {
 
   it('clears an earlier queued persistence failure after flushing a later close record', async () => {
     const save = vi
-      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .fn<(layout: LayoutRecordV2) => Promise<void>>()
       .mockRejectedValueOnce(new Error('disk unavailable'))
       .mockResolvedValue(undefined)
     const controller = new LayoutPersistenceController(save)
@@ -212,7 +299,7 @@ describe('layout persistence scheduling', () => {
   })
 
   it('globally coalesces reversed drag and panel timers to the newest full snapshot', async () => {
-    const save = vi.fn<(layout: LayoutRecordV1, sequence: number) => Promise<void>>(async () => undefined)
+    const save = vi.fn<(layout: LayoutRecordV2, sequence: number) => Promise<void>>(async () => undefined)
     const controller = new LayoutPersistenceController(save)
 
     controller.dragCompleted(record({ editorMode: 'visual' }))
@@ -229,7 +316,7 @@ describe('layout persistence scheduling', () => {
   it('includes a newer event that arrives while close is flushing an older snapshot', async () => {
     let finishFirst: (() => void) | undefined
     const save = vi
-      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .fn<(layout: LayoutRecordV2) => Promise<void>>()
       .mockImplementationOnce(() => new Promise<void>((resolve) => (finishFirst = resolve)))
       .mockResolvedValue(undefined)
     const controller = new LayoutPersistenceController(save)
@@ -246,7 +333,7 @@ describe('layout persistence scheduling', () => {
 
   it('retains the newest failed payload and retries it on close without an unhandled rejection', async () => {
     const save = vi
-      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .fn<(layout: LayoutRecordV2) => Promise<void>>()
       .mockRejectedValueOnce(new Error('temporarily unavailable'))
       .mockResolvedValue(undefined)
     const controller = new LayoutPersistenceController(save)
@@ -262,7 +349,7 @@ describe('layout persistence scheduling', () => {
 
   it('clears an older failure only after a newer full snapshot succeeds', async () => {
     const save = vi
-      .fn<(layout: LayoutRecordV1) => Promise<void>>()
+      .fn<(layout: LayoutRecordV2) => Promise<void>>()
       .mockRejectedValueOnce(new Error('old failed'))
       .mockResolvedValue(undefined)
     const controller = new LayoutPersistenceController(save)

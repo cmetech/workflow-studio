@@ -1,20 +1,17 @@
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
-import type { LayoutProjection, LayoutRecordV1 } from './types'
+import type { LayoutProjection, ScopeLayoutV1 } from './types'
 import { migrateManualYamlNodeRename, migrateVisualNodeRename, reconcileLayout } from './place-new-nodes'
 
-const baseLayout: LayoutRecordV1 = {
-  schemaVersion: 1,
-  workspaceId: 'workspace-1',
-  workflowPath: 'flows/release.yaml',
+const baseLayout: ScopeLayoutV1 = {
+  selectedNodeIds: [],
+  inspector: { tab: 'General', scrollTop: 0 },
+  canvasScroll: { left: 0, top: 0 },
   nodePositions: {
     build: { x: 320, y: 0 },
     removed: { x: 640, y: 0 },
   },
   viewport: { x: 12, y: -4, zoom: 1.25 },
-  panels: { left: 260, right: 320, problems: 180 },
-  editorMode: 'split',
-  updatedAt: '2026-07-25T12:00:00.000Z',
 }
 
 function projection(nodes: readonly Partial<LayoutProjection['nodes'][number]>[]): LayoutProjection {
@@ -176,7 +173,7 @@ describe('layout reconciliation', () => {
 
   it('retains the complete saved layout identity when all 250 projected positions are unchanged', () => {
     const nodes = Array.from({ length: 250 }, (_, index) => ({ id: `node-${index.toString().padStart(3, '0')}` }))
-    const saved: LayoutRecordV1 = {
+    const saved: ScopeLayoutV1 = {
       ...baseLayout,
       nodePositions: Object.fromEntries(
         nodes.map(({ id }, index) => [id, { x: (index % 25) * 320, y: Math.floor(index / 25) * 160 }]),

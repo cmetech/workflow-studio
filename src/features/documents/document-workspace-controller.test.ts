@@ -1,3 +1,6 @@
+import { emptyScopeLayout } from '$src/lib/layout/types'
+import type { WorkflowProjection } from '$src/lib/projection/types'
+import { enterLoopGroup, $activeScopeKey, consumeScopeNavigationEvent } from '$src/stores/canvas-scope'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { DocumentAnalysis } from '$src/lib/documents/types'
@@ -30,6 +33,44 @@ import {
   type DocumentAnalysisClient,
   type DocumentWorkspaceControllerDependencies,
 } from './document-workspace-controller'
+
+function modernProjection(groups: string[] = []): WorkflowProjection {
+  const node = (id: string, kind = 'command') => ({
+    id,
+    kind,
+    value: kind === 'loop_group' ? { nodes: [{ id: 'child', bash: 'echo child' }] } : 'make',
+    dependsOn: [],
+    options: {},
+    source: { path: 'nodes', start: 0, end: 10 },
+  })
+  const common = {
+    edges: [],
+    editorNodePrefix: '',
+    sourcePath: ['nodes'],
+    sourceRange: { start: 0, end: 10 },
+    definitionOrder: [],
+    outerInputs: [],
+    issues: [],
+    capacity: { status: 'visual' as const, nodeCount: 1, edgeCount: 0 },
+  }
+  const workflow = { name: 'flow', profile: 'hermes-legacy' as const }
+  return {
+    ...workflow,
+    definition: {},
+    graphs: [
+      {
+        ...common,
+        scope: { key: 'root', kind: 'root', workflow },
+        nodes: [node('build'), ...groups.map((id) => node(id, 'loop_group'))],
+      },
+      ...groups.map((id) => ({
+        ...common,
+        scope: { key: `loop-group:${id}` as const, kind: 'loop-group' as const, groupId: id, workflow },
+        nodes: [node('child')],
+      })),
+    ],
+  }
+}
 
 const digest = `sha256:${'a'.repeat(64)}` as const
 const contract = {
@@ -129,7 +170,18 @@ function dependencies(overrides: Partial<DocumentWorkspaceControllerDependencies
     recovery: { save: vi.fn(), list: vi.fn(async () => []), discard: vi.fn() },
     recoveryDrafts: { changed: vi.fn(), close: vi.fn(async () => undefined) },
     layout: { loadLayout: vi.fn(async () => null), saveLayout: vi.fn(), renameWorkflowPath: vi.fn() },
-    createLayoutPersistence: vi.fn(() => ({ close: vi.fn(async () => undefined) })),
+    createLayoutPersistence: vi.fn(
+      () =>
+        new LayoutPersistenceController(async (layout) => {
+          const pair = $documentSession.get().pair
+          await deps.layout.saveLayout(
+            layout,
+            pair?.definition.diskHash
+              ? { definition: pair.definition.diskHash, companion: pair.companion?.diskHash ?? null }
+              : undefined,
+          )
+        }),
+    ),
     onWorkspaceChanged: vi.fn(async () => undefined),
     ...overrides,
   }
@@ -1093,24 +1145,111 @@ describe('DocumentWorkspaceController', () => {
       contractDigest: digest,
       issues: [],
       structurallyValid: true,
-      projection: { nodes: [{ id: 'build', kind: 'command', value: 'make', dependsOn: [], options: {} }] },
+      projection: modernProjection(),
     })
     await vi.waitFor(() =>
       expect(deps.layout.saveLayout).toHaveBeenCalledWith(
-        expect.objectContaining({ workflowPath: 'flow.yaml', nodePositions: { build: { x: 0, y: 0 } } }),
+        expect.objectContaining({
+          workflowPath: 'flow.yaml',
+          scopeLayouts: { root: expect.objectContaining({ nodePositions: { build: { x: 0, y: 0 } } }) },
+        }),
         expect.objectContaining({ definition: pair!.definition.diskHash }),
       ),
     )
   })
 
+  it('debounces scope-state persistence and flushes the latest full record on close', async () => {
+    vi.useFakeTimers()
+    const persisted: unknown[] = []
+    const { deps } = dependencies({
+      createLayoutPersistence: () =>
+        new LayoutPersistenceController(async (record) => {
+          persisted.push(record)
+        }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', entry('flow.yaml'), contract)
+    const initial = $activeLayout.get()!
+    controller.layoutChanged(initial)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(persisted).toHaveLength(0)
+    const next = {
+      ...initial,
+      activeScopeKey: 'loop-group:body' as const,
+      scopeLayouts: {
+        ...initial.scopeLayouts,
+        'loop-group:body': { ...emptyScopeLayout(), selectedNodeIds: ['child'] },
+      },
+    }
+    controller.layoutChanged(next)
+    await vi.advanceTimersByTimeAsync(499)
+    expect(persisted).toHaveLength(0)
+    controller.layoutChanged(next)
+    await controller.dispose()
+    expect(persisted).toEqual([next])
+    vi.useRealTimers()
+  })
+
+  it('reconciles every modern scope, follows rename and rejects stale/invalid pruning', async () => {
+    let publish: ((analysis: DocumentAnalysis) => void) | undefined
+    const { deps } = dependencies({
+      createAnalysisClient: vi.fn((onAnalysis) => {
+        publish = onAnalysis
+        return { schedule: vi.fn(), dispose: vi.fn() }
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    let pair = (await controller.activate('workspace', entry('flow.yaml'), contract))!
+    const first = {
+      ...createDocumentRevision(pair, digest),
+      issues: [],
+      structurallyValid: true,
+      projection: modernProjection(['first', 'second']),
+    }
+    publish!(first)
+    expect(Object.keys($activeLayout.get()!.scopeLayouts)).toEqual(['root', 'loop-group:first', 'loop-group:second'])
+    await controller.persistLayoutChanges($activeLayout.get()!)
+    expect(deps.layout.saveLayout).toHaveBeenCalledTimes(1)
+    enterLoopGroup('first')
+    const body = $activeLayout.get()!.scopeLayouts['loop-group:first']
+    const saved = $activeLayout.get()
+    publish!({ ...first, structurallyValid: false, projection: modernProjection() })
+    expect($activeLayout.get()).toBe(saved)
+    publish!({ ...first, definitionRevision: 77, projection: modernProjection() })
+    expect($activeLayout.get()).toBe(saved)
+    publish!({ ...first, definitionPath: 'other.yaml', projection: modernProjection() })
+    expect($activeLayout.get()).toBe(saved)
+    pair = editDocumentText(pair, 'definition', 'name: renamed')
+    controller.changed(pair, 'user')
+    publish!({
+      ...createDocumentRevision(pair, digest),
+      issues: [],
+      structurallyValid: true,
+      projection: modernProjection(['renamed', 'second']),
+    })
+    expect($activeScopeKey.get()).toBe('loop-group:renamed')
+    expect($activeLayout.get()!.scopeLayouts['loop-group:renamed']).toBe(body)
+    pair = editDocumentText(pair, 'definition', 'name: deleted')
+    controller.changed(pair, 'user')
+    publish!({
+      ...createDocumentRevision(pair, digest),
+      issues: [],
+      structurallyValid: true,
+      projection: modernProjection(['second']),
+    })
+    expect($activeScopeKey.get()).toBe('root')
+    expect(consumeScopeNavigationEvent()?.message).toMatch(/no longer/)
+    await controller.dispose()
+  })
+
   it('retains and does not save an active layout whose analyzed projection is unchanged', async () => {
     let publish: ((analysis: DocumentAnalysis) => void) | undefined
     const existingLayout = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       workspaceId: 'workspace',
       workflowPath: 'flow.yaml',
-      nodePositions: { build: { x: 320, y: 160 } },
-      viewport: { x: 0, y: 0, zoom: 1 },
+      activeScopeKey: 'root' as const,
+      scopeLayouts: { root: { ...emptyScopeLayout(), nodePositions: { build: { x: 320, y: 160 } } } },
       panels: { left: 280, right: 320, problems: 180 },
       editorMode: 'visual' as const,
       updatedAt: '2026-08-30T12:00:00.000Z',
@@ -1135,7 +1274,7 @@ describe('DocumentWorkspaceController', () => {
       ...createDocumentRevision(pair!, digest),
       issues: [],
       structurallyValid: true,
-      projection: { nodes: [{ id: 'build', kind: 'command', value: 'make', dependsOn: [], options: {} }] },
+      projection: modernProjection(),
     })
 
     expect($activeLayout.get()).toBe(activeLayout)

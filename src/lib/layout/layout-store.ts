@@ -1,5 +1,7 @@
+import type { GraphScopeKey } from '$src/lib/projection/types'
+import { emptyScopeLayout, type ScopeLayoutV1 } from './types'
 import { validPosition } from './place-new-nodes'
-import type { LayoutContentHashes, LayoutLoadRequest, LayoutRecordV1 } from './types'
+import type { LayoutContentHashes, LayoutLoadRequest, LayoutRecordV2 } from './types'
 
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 8
@@ -11,15 +13,15 @@ export interface LayoutNativePort {
   layoutSave(content: string): Promise<void>
 }
 
-interface StoredLayoutV1 {
-  readonly schemaVersion: 1
-  readonly layout: LayoutRecordV1
+interface StoredLayoutV2 {
+  readonly schemaVersion: 2
+  readonly layout: LayoutRecordV2
   readonly savedHashes: LayoutContentHashes | null
 }
 
 export interface LayoutStore {
-  loadLayout(request: LayoutLoadRequest): Promise<LayoutRecordV1 | null>
-  saveLayout(layout: LayoutRecordV1, savedHashes?: LayoutContentHashes): Promise<void>
+  loadLayout(request: LayoutLoadRequest): Promise<LayoutRecordV2 | null>
+  saveLayout(layout: LayoutRecordV2, savedHashes?: LayoutContentHashes): Promise<void>
   renameWorkflowPath(workspaceId: string, from: string, to: string): Promise<void>
 }
 
@@ -30,7 +32,7 @@ class AppDataLayoutStore implements LayoutStore {
 
   constructor(private readonly native: LayoutNativePort) {}
 
-  loadLayout(request: LayoutLoadRequest): Promise<LayoutRecordV1 | null> {
+  loadLayout(request: LayoutLoadRequest): Promise<LayoutRecordV2 | null> {
     return this.exclusive(async () => {
       await this.ensureLoaded()
       const direct = this.validEntries().filter(
@@ -51,7 +53,7 @@ class AppDataLayoutStore implements LayoutStore {
       if (candidates.length !== 1) return null
 
       const candidate = candidates[0]!
-      const migrated: StoredLayoutV1 = {
+      const migrated: StoredLayoutV2 = {
         ...candidate.value,
         layout: { ...candidate.value.layout, workflowPath: request.workflowPath },
       }
@@ -61,7 +63,7 @@ class AppDataLayoutStore implements LayoutStore {
     })
   }
 
-  saveLayout(layout: LayoutRecordV1, savedHashes?: LayoutContentHashes): Promise<void> {
+  saveLayout(layout: LayoutRecordV2, savedHashes?: LayoutContentHashes): Promise<void> {
     return this.exclusive(async () => {
       await this.ensureLoaded()
       const validated = sanitizeLayoutRecord(layout)
@@ -69,8 +71,8 @@ class AppDataLayoutStore implements LayoutStore {
       if (savedHashes !== undefined && !validHashes(savedHashes)) {
         throw new TypeError('Refusing to persist invalid workflow content hashes.')
       }
-      const next: StoredLayoutV1 = {
-        schemaVersion: 1,
+      const next: StoredLayoutV2 = {
+        schemaVersion: 2,
         layout: validated,
         savedHashes: savedHashes ? { ...savedHashes } : null,
       }
@@ -101,7 +103,7 @@ class AppDataLayoutStore implements LayoutStore {
       this.entries[source.index] = {
         ...source.value,
         layout: { ...source.value.layout, workflowPath: to },
-      } satisfies StoredLayoutV1
+      } satisfies StoredLayoutV2
       await this.persist()
     })
   }
@@ -119,7 +121,7 @@ class AppDataLayoutStore implements LayoutStore {
     }
   }
 
-  private validEntries(): { index: number; value: StoredLayoutV1 }[] {
+  private validEntries(): { index: number; value: StoredLayoutV2 }[] {
     return this.entries.flatMap((entry, index) => {
       const value = parseStoredLayout(entry)
       return value ? [{ index, value }] : []
@@ -144,13 +146,13 @@ export function createLayoutStore(native: LayoutNativePort): LayoutStore {
   return new AppDataLayoutStore(native)
 }
 
-export function loadLayout(store: LayoutStore, request: LayoutLoadRequest): Promise<LayoutRecordV1 | null> {
+export function loadLayout(store: LayoutStore, request: LayoutLoadRequest): Promise<LayoutRecordV2 | null> {
   return store.loadLayout(request)
 }
 
 export function saveLayout(
   store: LayoutStore,
-  layout: LayoutRecordV1,
+  layout: LayoutRecordV2,
   savedHashes?: LayoutContentHashes,
 ): Promise<void> {
   return store.saveLayout(layout, savedHashes)
@@ -158,7 +160,7 @@ export function saveLayout(
 
 interface ScheduledLayout {
   readonly sequence: number
-  readonly layout: LayoutRecordV1
+  readonly layout: LayoutRecordV2
 }
 
 export class LayoutPersistenceController {
@@ -176,18 +178,18 @@ export class LayoutPersistenceController {
   private closing = false
   private closed = false
 
-  constructor(private readonly persist: (layout: LayoutRecordV1, sequence: number) => Promise<void>) {}
+  constructor(private readonly persist: (layout: LayoutRecordV2, sequence: number) => Promise<void>) {}
 
-  pointerMoved(_layout: LayoutRecordV1): void {
+  pointerMoved(_layout: LayoutRecordV2): void {
     void _layout
     // Pointer frames update only canvas state. Persistence begins after drag completion.
   }
 
-  dragCompleted(layout: LayoutRecordV1): void {
+  dragCompleted(layout: LayoutRecordV2): void {
     this.schedule(layout, 300)
   }
 
-  viewportOrPanelsChanged(layout: LayoutRecordV1): void {
+  viewportOrPanelsChanged(layout: LayoutRecordV2): void {
     this.schedule(layout, 500)
   }
 
@@ -216,7 +218,7 @@ export class LayoutPersistenceController {
     return this.closePromise
   }
 
-  private schedule(layout: LayoutRecordV1, delay: number): void {
+  private schedule(layout: LayoutRecordV2, delay: number): void {
     if (this.closed) return
     this.sequence += 1
     this.pending = { sequence: this.sequence, layout: cloneLayout(layout) }
@@ -294,47 +296,121 @@ export class LayoutPersistenceController {
   }
 }
 
-export function sanitizeLayoutRecord(value: unknown): LayoutRecordV1 | null {
-  if (!isRecord(value)) return null
+export function sanitizeLayoutRecord(value: unknown): LayoutRecordV2 | null {
   if (
-    value.schemaVersion !== 1 ||
+    !isRecord(value) ||
+    ![1, 2].includes(value.schemaVersion as number) ||
     !nonEmptyString(value.workspaceId) ||
     !nonEmptyString(value.workflowPath) ||
-    !isRecord(value.nodePositions) ||
-    !validViewport(value.viewport) ||
     !validPanels(value.panels) ||
     !validEditorMode(value.editorMode) ||
     typeof value.updatedAt !== 'string' ||
     !Number.isFinite(Date.parse(value.updatedAt))
-  ) {
+  )
     return null
-  }
-  const validNodePositions: [string, { x: number; y: number }][] = []
-  for (const [id, position] of Object.entries(value.nodePositions)) {
-    if (id.length > 0 && validPosition(position)) validNodePositions.push([id, { ...position }])
+  let scopeLayouts: LayoutRecordV2['scopeLayouts']
+  let activeScopeKey: GraphScopeKey = 'root'
+  if (value.schemaVersion === 1) {
+    const root = sanitizeScopeLayout({
+      ...emptyScopeLayout(),
+      nodePositions: value.nodePositions,
+      viewport: value.viewport,
+    })
+    if (!root) return null
+    scopeLayouts = { root }
+  } else {
+    if (
+      !isRecord(value.scopeLayouts) ||
+      !Object.hasOwn(value.scopeLayouts, 'root') ||
+      !validScopeKey(value.activeScopeKey)
+    )
+      return null
+    const entries: [GraphScopeKey, ScopeLayoutV1][] = []
+    for (const [key, scope] of Object.entries(value.scopeLayouts)) {
+      const parsed = sanitizeScopeLayout(scope)
+      if (!validScopeKey(key) || !parsed) return null
+      entries.push([key, parsed])
+    }
+    scopeLayouts = Object.fromEntries(entries) as LayoutRecordV2['scopeLayouts']
+    // Keep a missing active key until accepted projection reconciliation can explain the fallback.
+    activeScopeKey = value.activeScopeKey
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: value.workspaceId,
     workflowPath: value.workflowPath,
-    nodePositions: Object.fromEntries(validNodePositions),
-    viewport: { x: value.viewport.x as number, y: value.viewport.y as number, zoom: value.viewport.zoom as number },
-    panels: {
-      left: value.panels.left as number,
-      right: value.panels.right as number,
-      problems: value.panels.problems as number,
-    },
+    activeScopeKey,
+    scopeLayouts,
+    panels: { ...value.panels },
     editorMode: value.editorMode,
     updatedAt: value.updatedAt,
   }
 }
 
-function parseStoredLayout(value: unknown): StoredLayoutV1 | null {
-  if (!isRecord(value) || value.schemaVersion !== 1) return null
+function sanitizeScopeLayout(value: unknown): ScopeLayoutV1 | null {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.nodePositions) ||
+    !validViewport(value.viewport) ||
+    !Array.isArray(value.selectedNodeIds) ||
+    !value.selectedNodeIds.every(nonEmptyString) ||
+    !isRecord(value.inspector) ||
+    !nonEmptyString(value.inspector.tab) ||
+    !scrollCoordinate(value.inspector.scrollTop) ||
+    !isRecord(value.canvasScroll) ||
+    !scrollCoordinate(value.canvasScroll.left) ||
+    !scrollCoordinate(value.canvasScroll.top)
+  )
+    return null
+  const focus = value.focusTarget
+  if (
+    focus !== undefined &&
+    (!isRecord(focus) ||
+      !['canvas', 'node', 'scope-heading'].includes(focus.kind as string) ||
+      (focus.kind === 'node' && !nonEmptyString(focus.nodeId)) ||
+      (focus.nodeId !== undefined && !nonEmptyString(focus.nodeId)))
+  )
+    return null
+  return {
+    nodePositions: Object.fromEntries(
+      Object.entries(value.nodePositions)
+        .filter(([id, position]) => id && validPosition(position))
+        .map(([id, position]) => [id, { ...(position as { x: number; y: number }) }]),
+    ),
+    viewport: { ...value.viewport },
+    selectedNodeIds: [...new Set(value.selectedNodeIds as string[])],
+    ...(focus === undefined
+      ? {}
+      : {
+          focusTarget: { ...(focus as unknown as NonNullable<ScopeLayoutV1['focusTarget']>) } as NonNullable<
+            ScopeLayoutV1['focusTarget']
+          >,
+        }),
+    inspector: { tab: value.inspector.tab, scrollTop: value.inspector.scrollTop },
+    canvasScroll: { left: value.canvasScroll.left, top: value.canvasScroll.top },
+  }
+}
+
+function scrollCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function validScopeKey(value: unknown): value is GraphScopeKey {
+  return value === 'root' || (typeof value === 'string' && value.startsWith('loop-group:') && value.length > 11)
+}
+
+function parseStoredLayout(value: unknown): StoredLayoutV2 | null {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    !isRecord(value.layout) ||
+    value.layout.schemaVersion !== value.schemaVersion
+  )
+    return null
   const layout = sanitizeLayoutRecord(value.layout)
   const savedHashes = value.savedHashes === null ? null : parseHashes(value.savedHashes)
   if (!layout || (value.savedHashes !== null && !savedHashes)) return null
-  return { schemaVersion: 1, layout, savedHashes }
+  return { schemaVersion: 2, layout, savedHashes }
 }
 
 function parseHashes(value: unknown): LayoutContentHashes | null {
@@ -380,7 +456,7 @@ function panelSize(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_PANEL_SIZE
 }
 
-function validEditorMode(value: unknown): value is LayoutRecordV1['editorMode'] {
+function validEditorMode(value: unknown): value is LayoutRecordV2['editorMode'] {
   return value === 'visual' || value === 'split' || value === 'yaml'
 }
 
@@ -388,9 +464,9 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
-function latest(entries: readonly { index: number; value: StoredLayoutV1 }[]): {
+function latest(entries: readonly { index: number; value: StoredLayoutV2 }[]): {
   index: number
-  value: StoredLayoutV1
+  value: StoredLayoutV2
 } {
   return [...entries].sort(
     (left, right) =>
@@ -398,15 +474,8 @@ function latest(entries: readonly { index: number; value: StoredLayoutV1 }[]): {
   )[0]!
 }
 
-function cloneLayout(layout: LayoutRecordV1): LayoutRecordV1 {
-  return {
-    ...layout,
-    nodePositions: Object.fromEntries(
-      Object.entries(layout.nodePositions).map(([id, position]) => [id, { ...position }]),
-    ),
-    viewport: { ...layout.viewport },
-    panels: { ...layout.panels },
-  }
+function cloneLayout(layout: LayoutRecordV2): LayoutRecordV2 {
+  return structuredClone(layout)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

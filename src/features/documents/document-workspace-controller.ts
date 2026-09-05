@@ -19,8 +19,10 @@ import type {
 } from '$src/lib/native/types'
 import type { RereadWorkspaceChange } from '$src/lib/native/workspace-api'
 import type { LayoutStore } from '$src/lib/layout/layout-store'
-import { reconcileLayout } from '$src/lib/layout/place-new-nodes'
-import type { LayoutProjection, LayoutRecordV1 } from '$src/lib/layout/types'
+import { emptyScopeLayout, type LayoutRecordV2 } from '$src/lib/layout/types'
+import type { WorkflowProjection } from '$src/lib/projection/types'
+import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
+import { publishCanvasProjection, resetCanvasScopeProjection } from '$src/stores/canvas-scope'
 import type { RecoveryStore } from '$src/lib/recovery/recovery-store'
 import { createRecoveryDraft } from '$src/lib/recovery/recovery-store'
 import type { RecoveryDraft } from '$src/lib/recovery/types'
@@ -64,6 +66,7 @@ export interface RecoveryDraftLifecycle {
 }
 
 export interface LayoutPersistenceLifecycle {
+  viewportOrPanelsChanged?(layout: LayoutRecordV2): void
   flush?(): Promise<void>
   close(): Promise<void>
 }
@@ -80,7 +83,7 @@ export interface DocumentWorkspaceControllerDependencies {
   recovery: RecoveryStore
   recoveryDrafts: RecoveryDraftLifecycle
   layout: LayoutStore
-  createLayoutPersistence(layout: LayoutRecordV1): LayoutPersistenceLifecycle
+  createLayoutPersistence(layout: LayoutRecordV2): LayoutPersistenceLifecycle
   onWorkspaceChanged(): Promise<void>
   validateContractCoverage?(contract: AuthoringContract): readonly { readonly code: string }[]
   activeContractForProfile?(profile: WorkflowProfile): AuthoringContract | undefined
@@ -111,6 +114,8 @@ const emptyState: DocumentWorkspaceState = {
 export const $documentWorkspace = atom<DocumentWorkspaceState>(emptyState)
 
 export class DocumentWorkspaceController {
+  private scheduledLayout: LayoutRecordV2 | undefined
+  private layoutProjection: WorkflowProjection | undefined
   private activationGeneration = 0
   private contractResolutionGeneration = 0
   private documentContract: AuthoringContract | null = null
@@ -194,6 +199,31 @@ export class DocumentWorkspaceController {
       return
     }
     this.reconcileDocumentContract(pair, 'edit')
+  }
+
+  layoutChanged(layout: LayoutRecordV2 | null): void {
+    if (
+      !layout ||
+      layout === this.scheduledLayout ||
+      this.publicationSuppressed() ||
+      layout.workspaceId !== this.activeWorkspaceId ||
+      layout.workflowPath !== $documentSession.get().pair?.definition.path
+    )
+      return
+    this.scheduledLayout = layout
+    this.layoutPersistence?.viewportOrPanelsChanged?.(layout)
+  }
+
+  async persistLayoutChanges(layout: LayoutRecordV2): Promise<boolean> {
+    if (
+      !this.layoutPersistence?.flush ||
+      layout.workspaceId !== this.activeWorkspaceId ||
+      layout.workflowPath !== $documentSession.get().pair?.definition.path
+    )
+      return false
+    this.layoutChanged(layout)
+    await this.layoutPersistence.flush()
+    return true
   }
 
   validateCurrent(): boolean {
@@ -638,14 +668,22 @@ export class DocumentWorkspaceController {
   private reconcileAnalysisLayout(analysis: DocumentAnalysis): void {
     const session = $documentSession.get()
     const layout = $activeLayout.get()
-    if (session.analysis !== analysis || !session.pair || !layout || !isLayoutProjection(analysis.projection)) return
-    const reconciled = reconcileLayout(analysis.projection, layout)
+    if (
+      session.analysis !== analysis ||
+      !session.pair ||
+      !layout ||
+      !analysis.structurallyValid ||
+      !isWorkflowProjection(analysis.projection)
+    )
+      return
+    publishCanvasProjection(session.pair.workflowId, analysis.projection, this.layoutProjection, {
+      definition: session.pair.definition.text,
+      companion: session.pair.companion?.text ?? null,
+    })
+    this.layoutProjection = analysis.projection
+    const reconciled = $activeLayout.get()!
     if (reconciled === layout) return
-    setActiveLayout(reconciled)
-    const hashes = session.pair.definition.diskHash
-      ? { definition: session.pair.definition.diskHash, companion: session.pair.companion?.diskHash ?? null }
-      : undefined
-    void this.dependencies.layout.saveLayout(reconciled, hashes)
+    this.layoutChanged(reconciled)
   }
 
   private analysisMatchesDocumentContract(pair: WorkflowPairText, analysis: DocumentAnalysis): boolean {
@@ -935,6 +973,7 @@ export class DocumentWorkspaceController {
       return true
     const layout = loaded ?? defaultLayout(workspaceId, movedDefinition.relativePath)
     setActiveLayout(layout)
+    this.scheduledLayout = layout
     this.layoutPersistence = this.dependencies.createLayoutPersistence(layout)
     $documentWorkspace.set({ ...$documentWorkspace.get(), missingChange: null })
     this.reconcileDocumentContract(migrated, 'open')
@@ -977,8 +1016,11 @@ export class DocumentWorkspaceController {
         : {}),
     })
     if (this.publicationSuppressed() || $documentSession.get().pair?.workflowId !== pair.workflowId) return
+    this.layoutProjection = undefined
+    resetCanvasScopeProjection()
     const layout = loaded ?? defaultLayout(workspaceId, pair.definition.path)
     setActiveLayout(layout)
+    this.scheduledLayout = layout
     this.layoutPersistence = this.dependencies.createLayoutPersistence(layout)
   }
 
@@ -1055,13 +1097,13 @@ function openedDocument(
   }
 }
 
-function defaultLayout(workspaceId: string, workflowPath: string): LayoutRecordV1 {
+function defaultLayout(workspaceId: string, workflowPath: string): LayoutRecordV2 {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId,
     workflowPath,
-    nodePositions: {},
-    viewport: { x: 0, y: 0, zoom: 1 },
+    activeScopeKey: 'root',
+    scopeLayouts: { root: emptyScopeLayout() },
     panels: { left: 280, right: 320, problems: 180 },
     editorMode: 'visual',
     updatedAt: new Date().toISOString(),
@@ -1117,24 +1159,6 @@ function invalidateMissingDiskIdentity(pair: WorkflowPairText, paths: readonly s
     companion:
       pair.companion && missing.has(pair.companion.path) ? { ...pair.companion, diskHash: null } : pair.companion,
   }
-}
-
-function isLayoutProjection(value: unknown): value is LayoutProjection {
-  if (!value || typeof value !== 'object' || !('nodes' in value) || !Array.isArray(value.nodes)) return false
-  return value.nodes.every(
-    (node) =>
-      node !== null &&
-      typeof node === 'object' &&
-      'id' in node &&
-      typeof node.id === 'string' &&
-      'kind' in node &&
-      typeof node.kind === 'string' &&
-      'dependsOn' in node &&
-      Array.isArray(node.dependsOn) &&
-      'options' in node &&
-      node.options !== null &&
-      typeof node.options === 'object',
-  )
 }
 
 const UNAVAILABLE_CONTRACT_DIGEST = `sha256:${'0'.repeat(64)}` as const

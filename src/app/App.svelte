@@ -66,7 +66,7 @@
     resolveWorkbenchPresentation,
     type WorkbenchPresentation,
   } from '$src/lib/layout/workbench-layout'
-  import type { LayoutRecordV1 } from '$src/lib/layout/types'
+  import type { LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
   import type { WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
   import {
@@ -74,7 +74,20 @@
     $documentSyncOrigins as documentSyncOriginsStore,
     openDocumentSession,
   } from '$src/stores/documents'
-  import { $activeLayout as activeLayoutStore, setActiveLayout } from '$src/stores/layout'
+  import {
+    $activeScopeKey as activeScopeKeyStore,
+    publishCanvasProjection,
+    commitCanvasIdentityChanges,
+    queueCanvasLayoutHistory,
+  } from '$src/stores/canvas-scope'
+  import { canvasInstanceIdentity } from '$src/stores/canvas'
+  import {
+    $activeLayout as activeLayoutStore,
+    $activeScopeLayout as activeScopeLayoutStore,
+    activeScopeLayout,
+    updateScopeLayout,
+    setActiveLayout,
+  } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
@@ -563,7 +576,9 @@
         candidate.profile === canvasProjection?.profile,
     ),
   )
-  const canvasGraph = $derived(canvasProjection?.graphs[0] ?? null)
+  const canvasGraph = $derived(
+    canvasProjection?.graphs.find((graph) => graph.scope.key === $activeScopeKeyStore) ?? null,
+  )
   const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
   const nodesPaletteDisabled = $derived(nodesPaletteDisabledReason())
   const inspectorNodes = $derived((canvasGraph?.nodes ?? []).filter((node) => $canvasSelectionStore.includes(node.id)))
@@ -668,6 +683,7 @@
       return
     }
     historyStore.set(result.history)
+    queueCanvasLayoutHistory(result.transaction, 'undo')
     documentWorkspace.changed(result.pair, 'visual')
   }
 
@@ -680,6 +696,7 @@
       return
     }
     historyStore.set(result.history)
+    queueCanvasLayoutHistory(result.transaction, 'redo')
     documentWorkspace.changed(result.pair, 'visual')
   }
 
@@ -797,7 +814,7 @@
     } else if ((snapshot?.panel === 'workspace' || !snapshot) && $workspacePanelOpen) await closeWorkspaceDrawer()
   }
 
-  async function persistCanvasLayout(next: LayoutRecordV1): Promise<void> {
+  async function persistCanvasLayout(next: LayoutRecordV2): Promise<void> {
     const active = activeLayoutStore.get()
     const pair = documentSessionStore.get().pair
     if (
@@ -807,12 +824,31 @@
     ) {
       setActiveLayout(next)
     }
+    if (await documentWorkspace.persistLayoutChanges(next)) return
     await layoutStore.saveLayout(
       next,
       pair?.definition.path === next.workflowPath && pair.definition.diskHash
         ? { definition: pair.definition.diskHash, companion: pair.companion?.diskHash ?? null }
         : undefined,
     )
+  }
+
+  function captureCanvasLayout(next: Partial<ScopeLayoutV1>, identity: string): void {
+    const pair = documentSessionStore.get().pair
+    const active = activeLayoutStore.get()
+    if (!pair || !active || identity !== canvasInstanceIdentity(pair.workflowId, active.activeScopeKey)) return
+    updateScopeLayout(active.activeScopeKey, (scope) =>
+      Object.entries(next).every(([key, value]) => scope[key as keyof ScopeLayoutV1] === value)
+        ? scope
+        : { ...scope, ...next },
+    )
+  }
+
+  async function persistCanvasScope(_next: ScopeLayoutV1, identity: string): Promise<void> {
+    const pair = documentSessionStore.get().pair
+    const active = activeLayoutStore.get()
+    if (!pair || !active || identity !== canvasInstanceIdentity(pair.workflowId, active.activeScopeKey)) return
+    await persistCanvasLayout({ ...active, updatedAt: new Date().toISOString() })
   }
 
   function surfaceCanvasPersistenceError(error: unknown): void {
@@ -849,8 +885,8 @@
       pair: session.pair,
       revision: session.revision,
       projection,
-      scopeKey: 'root',
-      graph: projection.graphs.find((graph) => graph.scope.key === 'root')!,
+      scopeKey: layout.activeScopeKey,
+      graph: projection.graphs.find((graph) => graph.scope.key === layout.activeScopeKey)!,
       currentAnalysis: session.analysis,
       referenceIndex: session.analysis.referenceIndex,
       contract,
@@ -858,7 +894,11 @@
       getCurrentSnapshot: () => {
         const current = documentSessionStore.get()
         return current.pair && current.revision
-          ? { pair: current.pair, revision: current.revision, scopeKey: 'root' }
+          ? {
+              pair: current.pair,
+              revision: current.revision,
+              scopeKey: activeLayoutStore.get()?.activeScopeKey ?? 'root',
+            }
           : null
       },
       analyzePrepared: analyzePairInWorker,
@@ -867,6 +907,12 @@
       commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
         documentWorkspace.changed(pair, 'visual', analysis)
+      },
+      commitIdentityChanges: async (changes, transaction) => {
+        commitCanvasIdentityChanges(layout, transaction, changes)
+        const next = activeLayoutStore.get()
+        if (next && next.workspaceId === layoutLease.workspaceId && next.workflowPath === layoutLease.definitionPath)
+          await persistCanvasLayout(next)
       },
       commitPositions: async (updates) => {
         const active = activeLayoutStore.get()
@@ -880,12 +926,13 @@
           current.definition.path !== layoutLease.definitionPath
         )
           return
-        const nodePositions = { ...active.nodePositions }
+        const nodePositions = { ...activeScopeLayout(active).nodePositions }
         for (const [id, position] of Object.entries(updates)) {
           if (position) nodePositions[id] = { ...position }
           else delete nodePositions[id]
         }
-        await persistCanvasLayout({ ...active, nodePositions, updatedAt: new Date().toISOString() })
+        const next = updateScopeLayout(active.activeScopeKey, (scope) => ({ ...scope, nodePositions }))!
+        await persistCanvasLayout({ ...next, updatedAt: new Date().toISOString() })
       },
       // The invoking surface owns the single live announcement. GraphCanvas uses
       // its named polite region; dialogs and commands surface their returned result.
@@ -1009,6 +1056,8 @@
             documentWorkspace.changed(pair, 'form', analysis)
           },
           commitPositions: (updates) => (didCommit ? context.commitPositions(updates) : undefined),
+          commitIdentityChanges: (changes, transaction) =>
+            didCommit ? context.commitIdentityChanges?.(changes, transaction) : undefined,
         },
         node.id,
         commit.value,
@@ -1529,7 +1578,7 @@
   })
 
   $effect.pre(() => {
-    activateCanvasWorkflowIdentity($documentSessionStore.pair?.workflowId ?? null)
+    activateCanvasWorkflowIdentity($documentSessionStore.pair?.workflowId ?? null, $activeScopeKeyStore)
   })
 
   $effect(() => {
@@ -1549,10 +1598,20 @@
     canvasStale = synchronized.stale
     canvasReadOnly = synchronized.readOnly
     canvasStaleSource = synchronized.staleSource
+    if (session.pair && session.analysis?.structurallyValid && synchronized.projection && !synchronized.stale) {
+      publishCanvasProjection(session.pair.workflowId, synchronized.projection, undefined, {
+        definition: session.pair.definition.text,
+        companion: session.pair.companion?.text ?? null,
+      })
+    }
   })
 
   $effect(() => {
     if (canvasCapacity && !canvasCapacity.visual && $activeEditorMode !== 'yaml') showEditorMode('yaml')
+  })
+
+  $effect(() => {
+    documentWorkspace.layoutChanged($activeLayoutStore)
   })
 
   $effect(() => {
@@ -2097,8 +2156,11 @@
                   bind:this={graphCanvas}
                   {commandSurface}
                   projection={canvasGraph}
-                  layout={$activeLayoutStore}
-                  workflowIdentity={`${$workspace.id}\0${$documentSessionStore.pair?.workflowId ?? ''}\0${$documentSessionStore.pair?.definition.path ?? ''}`}
+                  layout={$activeScopeLayoutStore!}
+                  workflowIdentity={canvasInstanceIdentity(
+                    $documentSessionStore.pair?.workflowId ?? '',
+                    $activeScopeKeyStore,
+                  )}
                   transitionLocked={canvasTransitionLocked}
                   surfaceActive={!authoringHidden &&
                     !(
@@ -2114,7 +2176,8 @@
                   readOnly={canvasReadOnly ||
                     $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
                       ?.readOnly === true}
-                  onPersistLayout={persistCanvasLayout}
+                  onLayoutChange={captureCanvasLayout}
+                  onPersistLayout={persistCanvasScope}
                   onPersistenceError={surfaceCanvasPersistenceError}
                   onConnect={(source, target) => canvasAuthoring.connect(source, target)}
                   onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}

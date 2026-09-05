@@ -22,6 +22,7 @@ export function reconcileCanvasNodeSelection(
 }
 
 export function createCanvasSelectionReconciler() {
+  let previousIdentity: string | undefined
   let previousProjectedNodes: readonly CanvasNode[] = []
   let previousResult: CanvasSelectionReconciliation | undefined
 
@@ -29,7 +30,13 @@ export function createCanvasSelectionReconciler() {
     projectedNodes: CanvasNode[],
     authoritativeSelection: readonly string[],
     currentNodes?: CanvasNode[],
+    instanceIdentity?: string,
   ): CanvasSelectionReconciliation => {
+    if (instanceIdentity !== previousIdentity) {
+      previousProjectedNodes = []
+      previousResult = undefined
+      previousIdentity = instanceIdentity
+    }
     const availableIds = new Set(projectedNodes.map(({ id }) => id))
     const selection = authoritativeSelection.filter((id) => availableIds.has(id))
     const previousOutputNodes =

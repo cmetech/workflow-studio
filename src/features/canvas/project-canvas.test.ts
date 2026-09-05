@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import { layoutGraph } from './layout-graph'
 import { projectCanvas } from './project-canvas'
@@ -34,15 +34,13 @@ const projection: ProjectedGraph = deepFreeze({
   capacity: { status: 'visual', nodeCount: 2, edgeCount: 1 },
 })
 
-const savedLayout: LayoutRecordV1 = {
-  schemaVersion: 1,
-  workspaceId: 'workspace',
-  workflowPath: 'release.yaml',
+const savedLayout: ScopeLayoutV1 = {
+  selectedNodeIds: [],
+  inspector: { tab: 'General', scrollTop: 0 },
+  canvasScroll: { left: 0, top: 0 },
+
   nodePositions: { collect: { x: 40, y: 80 } },
   viewport: { x: 10, y: 20, zoom: 0.9 },
-  panels: { left: 280, right: 320, problems: 180 },
-  editorMode: 'visual',
-  updatedAt: '2026-07-25T00:00:00.000Z',
 }
 
 describe('projectCanvas', () => {

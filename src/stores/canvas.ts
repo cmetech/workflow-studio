@@ -1,11 +1,17 @@
 import { atom } from 'nanostores'
+import type { GraphScopeKey } from '$src/lib/projection/types'
 import type { CanvasPosition } from '$src/features/canvas/types'
 
 export const $canvasPositions = atom<Readonly<Record<string, CanvasPosition>>>({})
 export const $canvasSelection = atom<readonly string[]>([])
 export const $canvasWorkflowIdentity = atom<string | null>(null)
 
-export function activateCanvasWorkflowIdentity(workflowId: string | null): void {
+export function canvasInstanceIdentity(workflowId: string, scopeKey: GraphScopeKey): string {
+  return JSON.stringify([workflowId, scopeKey])
+}
+
+export function activateCanvasWorkflowIdentity(workflowId: string | null, scopeKey?: GraphScopeKey): void {
+  if (workflowId !== null && scopeKey) workflowId = canvasInstanceIdentity(workflowId, scopeKey)
   if ($canvasWorkflowIdentity.get() === workflowId) return
   $canvasSelection.set([])
   $canvasWorkflowIdentity.set(workflowId)
@@ -28,17 +34,20 @@ export function moveCanvasPositions(
   if (valid.length === 0) return
   const next = { ...$canvasPositions.get() }
   for (const { id, position } of valid) next[id] = { x: position.x, y: position.y }
-  $canvasPositions.set(next)
+  if (!samePositions($canvasPositions.get(), next)) $canvasPositions.set(next)
 }
 
 export function setCanvasSelection(ids: readonly string[]): void {
-  $canvasSelection.set([...new Set(ids.filter(Boolean))])
+  const next = [...new Set(ids.filter(Boolean))]
+  const previous = $canvasSelection.get()
+  if (previous.length === next.length && previous.every((id, index) => id === next[index])) return
+  $canvasSelection.set(next)
 }
 
 export function clearCanvasState(): void {
+  $canvasWorkflowIdentity.set(null)
   $canvasPositions.set({})
   $canvasSelection.set([])
-  $canvasWorkflowIdentity.set(null)
 }
 
 function clonePositions(positions: Readonly<Record<string, CanvasPosition>>): Record<string, CanvasPosition> {

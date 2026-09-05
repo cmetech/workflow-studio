@@ -43,6 +43,10 @@ export interface CanvasActionContext {
     transaction: YamlTransaction,
     analysis?: import('$src/lib/documents/types').DocumentAnalysis,
   ) => void | Promise<void>
+  readonly commitIdentityChanges?: (
+    changes: CanvasIdentityChanges,
+    transaction: YamlTransaction,
+  ) => void | Promise<void>
   readonly commitPositions: (updates: Readonly<Record<string, CanvasPosition | null>>) => void | Promise<void>
   readonly announce: (message: string) => void
 }
@@ -583,7 +587,7 @@ export async function deleteNodes(context: CanvasActionContext, impact: DeleteIm
       : await prepareAndCommitMultipleDeletes(context, selected)
   if (result.status === 'committed') {
     await context.commitPositions(Object.fromEntries(selected.map((id) => [id, null])))
-    return {
+    const committed = {
       ...result,
       identityChanges: {
         ...emptyIdentityChanges(),
@@ -596,6 +600,8 @@ export async function deleteNodes(context: CanvasActionContext, impact: DeleteIm
             : [],
       },
     }
+    await context.commitIdentityChanges?.(committed.identityChanges, committed.transaction)
+    return committed
   }
   return result
 }
@@ -613,21 +619,22 @@ export async function renameNode(context: CanvasActionContext, from: string, to:
   if (result.status === 'committed' && context.positions[from]) {
     await context.commitPositions({ [from]: null, [to]: context.positions[from] })
   }
-  return result.status === 'committed'
-    ? {
-        ...result,
-        nodeId: to,
-        identityChanges: {
-          ...emptyIdentityChanges(),
-          nodeRenames: [{ scopeKey: context.scopeKey, from, to }],
-          scopeRenames:
-            context.scopeKey === 'root' &&
-            context.projection.graphs.some((graph) => graph.scope.key === `loop-group:${from}`)
-              ? [{ from: `loop-group:${from}`, to: `loop-group:${to}` }]
-              : [],
-        },
-      }
-    : result
+  if (result.status !== 'committed') return result
+  const committed: Extract<CanvasActionResult, { status: 'committed' }> = {
+    ...result,
+    nodeId: to,
+    identityChanges: {
+      ...emptyIdentityChanges(),
+      nodeRenames: [{ scopeKey: context.scopeKey, from, to }],
+      scopeRenames:
+        context.scopeKey === 'root' &&
+        context.projection.graphs.some((graph) => graph.scope.key === `loop-group:${from}`)
+          ? [{ from: `loop-group:${from}`, to: `loop-group:${to}` }]
+          : [],
+    },
+  }
+  await context.commitIdentityChanges?.(committed.identityChanges, committed.transaction)
+  return committed
 }
 
 export async function commitMutation(

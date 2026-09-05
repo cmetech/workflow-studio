@@ -6,7 +6,7 @@
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand, type ResolvedCommand } from '$src/lib/commands/surface'
   import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
-  import type { LayoutRecordV1 } from '$src/lib/layout/types'
+  import type { ScopeLayoutV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import type { ProjectedGraph } from '$src/lib/projection/types'
@@ -51,7 +51,7 @@
   interface Props {
     commandSurface: CommandSurface
     projection: ProjectedGraph
-    layout: LayoutRecordV1
+    layout: ScopeLayoutV1
     workflowIdentity?: string
     transitionLocked?: boolean
     surfaceActive?: boolean
@@ -61,7 +61,8 @@
     readOnly?: boolean
     inspectorControls?: string
     inspectorExpanded?: boolean
-    onPersistLayout?: (layout: LayoutRecordV1) => void | Promise<void>
+    onPersistLayout?: (layout: ScopeLayoutV1, identity: string) => void | Promise<void>
+    onLayoutChange?: (layout: Partial<ScopeLayoutV1>, identity: string) => void
     onPersistenceError?: (error: unknown) => void
     onConnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
     onDisconnect?: (sourceId: string, targetId: string) => CanvasAuthoringFeedback | Promise<CanvasAuthoringFeedback>
@@ -85,7 +86,7 @@
     commandSurface,
     projection,
     layout,
-    workflowIdentity = `${layout.workspaceId}\0${layout.workflowPath}`,
+    workflowIdentity = JSON.stringify([projection.scope.workflow.name, projection.scope.key]),
     transitionLocked = false,
     surfaceActive = true,
     issues = [],
@@ -95,6 +96,7 @@
     inspectorControls,
     inspectorExpanded = false,
     onPersistLayout = () => undefined,
+    onLayoutChange = () => undefined,
     onPersistenceError = () => undefined,
     onConnect,
     onDisconnect,
@@ -138,7 +140,7 @@
   let root: HTMLElement
   let viewportElement: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
-  let pendingLayout: LayoutRecordV1 | null = null
+  let pendingLayout: { scope: ScopeLayoutV1; identity: string } | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
   let pendingSelection: readonly string[] | null = null
   let pendingKeyboardSelectionGesture: KeyboardSelectionGesture | null = null
@@ -245,6 +247,10 @@
     if (workflowIdentity === restoredWorkflowIdentity) return
     restoredWorkflowIdentity = workflowIdentity
     flowViewport = { ...layout.viewport }
+    if (viewportElement) {
+      viewportElement.scrollLeft = layout.canvasScroll.left
+      viewportElement.scrollTop = layout.canvasScroll.top
+    }
   })
 
   function handleDrag(detail: CanvasDragDetail): void {
@@ -291,7 +297,7 @@
 
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
     const currentSelection = canvasSelectionStore.get()
-    const reconciled = reconcileSelection(nodes, currentSelection, currentNodes)
+    const reconciled = reconcileSelection(nodes, currentSelection, currentNodes, workflowIdentity)
     if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)
     return reconciled.nodes
   }
@@ -498,6 +504,7 @@
     }
     setCanvasSelection(ids)
     selection = [...ids]
+    onLayoutChange({ selectedNodeIds: canvasSelectionStore.get() }, workflowIdentity)
   }
 
   function restoreSurfaceSelection(): void {
@@ -718,18 +725,24 @@
     return false
   }
 
-  function layoutWithPositions(): LayoutRecordV1 {
+  function layoutWithPositions(): ScopeLayoutV1 {
     return {
       ...layout,
       nodePositions: Object.fromEntries(
         Object.entries(canvasPositionsStore.get()).map(([id, position]) => [id, { ...position }]),
       ),
-      updatedAt: new Date().toISOString(),
+      viewport: { ...flowViewport },
+      selectedNodeIds: canvasSelectionStore.get(),
+      canvasScroll: {
+        left: viewportElement?.scrollLeft ?? layout.canvasScroll.left,
+        top: viewportElement?.scrollTop ?? layout.canvasScroll.top,
+      },
     }
   }
 
-  function schedulePersist(next: LayoutRecordV1): void {
-    pendingLayout = structuredClone(next)
+  function schedulePersist(next: ScopeLayoutV1): void {
+    onLayoutChange(next, workflowIdentity)
+    pendingLayout = { scope: structuredClone(next), identity: workflowIdentity }
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       void flushPersistence().catch(onPersistenceError)
@@ -746,7 +759,7 @@
       .catch(() => undefined)
       .then(() => {
         recordEditorMetric('layoutSaves')
-        return onPersistLayout(next)
+        return onPersistLayout(next.scope, next.identity)
       })
     persistenceQueue = operation
     return operation

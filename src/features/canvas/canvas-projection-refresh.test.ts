@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } from './canvas-projection-refresh'
 
 const projection = {} as ProjectedGraph
 const issues: readonly ValidationIssue[] = []
-const positions: LayoutRecordV1['nodePositions'] = {
+const positions: ScopeLayoutV1['nodePositions'] = {
   collect: { x: 100, y: 200 },
   review: { x: 320, y: 0 },
 }

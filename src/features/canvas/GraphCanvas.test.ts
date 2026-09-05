@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import {
   CommandDisabledError,
@@ -58,15 +58,13 @@ const projection: ProjectedGraph = Object.freeze({
   capacity: Object.freeze({ status: 'visual', nodeCount: 2, edgeCount: 1 }),
 })
 
-const layout: LayoutRecordV1 = {
-  schemaVersion: 1,
-  workspaceId: 'workspace',
-  workflowPath: 'release.yaml',
+const layout: ScopeLayoutV1 = {
+  selectedNodeIds: [],
+  inspector: { tab: 'General', scrollTop: 0 },
+  canvasScroll: { left: 0, top: 0 },
+
   nodePositions: { collect: { x: 0, y: 0 }, review: { x: 320, y: 0 } },
   viewport: { x: 0, y: 0, zoom: 1 },
-  panels: { left: 280, right: 320, problems: 180 },
-  editorMode: 'visual',
-  updatedAt: '2026-07-25T00:00:00.000Z',
 }
 
 describe('GraphCanvas', () => {
@@ -116,7 +114,7 @@ describe('GraphCanvas', () => {
 
   it('isolates 100 drag moves to position state and persists one layout only after drag-stop debounce', async () => {
     vi.useFakeTimers()
-    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     const before = structuredClone(projection)
     const { container } = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
@@ -149,13 +147,14 @@ describe('GraphCanvas', () => {
     expect(persistLayout).toHaveBeenCalledTimes(1)
     expect(persistLayout).toHaveBeenCalledWith(
       expect.objectContaining({ nodePositions: { collect: { x: 100, y: 200 }, review: { x: 320, y: 0 } } }),
+      expect.any(String),
     )
   })
 
   it('applies every selected node in one drag payload, persists once, and restores both positions on reopen', async () => {
     vi.useFakeTimers()
-    let persisted: LayoutRecordV1 | undefined
-    const persistLayout = vi.fn(async (next: LayoutRecordV1) => {
+    let persisted: ScopeLayoutV1 | undefined
+    const persistLayout = vi.fn(async (next: ScopeLayoutV1) => {
       persisted = structuredClone(next)
     })
     let rendered = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
@@ -191,7 +190,7 @@ describe('GraphCanvas', () => {
     await rendered.rerender({
       commandSurface: commandRegistry,
       projection,
-      layout: { ...layout, updatedAt: '2026-08-30T12:00:00.000Z' },
+      layout: { ...layout },
     })
     await tick()
 
@@ -375,7 +374,7 @@ describe('GraphCanvas', () => {
   })
 
   it('renders read-only stale affordances with viewport commands and explicit Arrange in normal-flow chrome', async () => {
-    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     renderCanvas({ projection, layout, stale: true, readOnly: true, onPersistLayout: persistLayout })
 
     expect(screen.getByText(/last valid graph.*read-only/i)).toBeVisible()
@@ -397,7 +396,7 @@ describe('GraphCanvas', () => {
 
   it('suppresses graph callbacks, palette drops, drag state, and layout persistence while stale', async () => {
     vi.useFakeTimers()
-    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     const onConnect = vi.fn()
     const onDisconnect = vi.fn()
     const onRequestAdd = vi.fn()
@@ -456,7 +455,7 @@ describe('GraphCanvas', () => {
 
   it('suppresses synthetic drag, selection, and Arrange mutations while an activation transition is locked', async () => {
     vi.useFakeTimers()
-    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     const { container } = renderCanvas({
       projection,
       layout,
@@ -660,7 +659,7 @@ describe('GraphCanvas', () => {
 
   it('flushes a pending drag-stop persistence before the canvas closes', async () => {
     vi.useFakeTimers()
-    const persistLayout = vi.fn<(next: LayoutRecordV1) => Promise<void>>().mockResolvedValue(undefined)
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     const { component, container, unmount } = renderCanvas({
       projection,
       layout,
@@ -680,6 +679,7 @@ describe('GraphCanvas', () => {
     expect(persistLayout).toHaveBeenCalledTimes(1)
     expect(persistLayout).toHaveBeenCalledWith(
       expect.objectContaining({ nodePositions: expect.objectContaining({ collect: { x: 88, y: 99 } }) }),
+      expect.any(String),
     )
     unmount()
     await vi.advanceTimersByTimeAsync(300)
@@ -687,14 +687,13 @@ describe('GraphCanvas', () => {
   })
 
   it('restores the saved viewport when switching between workflow identities without arranging', async () => {
-    const firstLayout: LayoutRecordV1 = {
+    const firstLayout: ScopeLayoutV1 = {
       ...layout,
       viewport: { x: 12, y: 34, zoom: 0.8 },
     }
-    const secondLayout: LayoutRecordV1 = {
+    const secondLayout: ScopeLayoutV1 = {
       ...layout,
-      workspaceId: 'other-workspace',
-      workflowPath: 'deploy.yaml',
+
       viewport: { x: 210, y: 120, zoom: 1.4 },
     }
     const { container, rerender } = renderCanvas({
@@ -721,9 +720,9 @@ describe('GraphCanvas', () => {
 
   it('persists one pending A drag before an open-draft transition and one B drag under the new identity', async () => {
     vi.useFakeTimers()
-    const persisted: LayoutRecordV1[] = []
-    const persistLayout = vi.fn(async (next: LayoutRecordV1) => {
-      persisted.push(structuredClone(next))
+    const persisted: { scope: ScopeLayoutV1; identity: string }[] = []
+    const persistLayout = vi.fn(async (next: ScopeLayoutV1, identity: string) => {
+      persisted.push({ scope: structuredClone(next), identity })
     })
     const { component, container, rerender } = renderCanvas({
       projection,
@@ -740,10 +739,9 @@ describe('GraphCanvas', () => {
         detail: { id: 'collect', position: { x: 88, y: 99 } },
       }),
     )
-    const secondLayout: LayoutRecordV1 = {
+    const secondLayout: ScopeLayoutV1 = {
       ...layout,
-      workspaceId: 'workspace-b',
-      workflowPath: 'deploy.yaml',
+
       nodePositions: { collect: { x: 5, y: 6 }, review: { x: 320, y: 0 } },
     }
     const barrier = createCanvasActivationBarrier({
@@ -770,15 +768,9 @@ describe('GraphCanvas', () => {
     await vi.advanceTimersByTimeAsync(300)
 
     expect(persisted).toHaveLength(2)
-    expect(
-      persisted.map(({ workspaceId, workflowPath, nodePositions }) => ({
-        workspaceId,
-        workflowPath,
-        collect: nodePositions.collect,
-      })),
-    ).toEqual([
-      { workspaceId: 'workspace', workflowPath: 'release.yaml', collect: { x: 88, y: 99 } },
-      { workspaceId: 'workspace-b', workflowPath: 'deploy.yaml', collect: { x: 44, y: 55 } },
+    expect(persisted.map(({ scope, identity }) => ({ identity, collect: scope.nodePositions.collect }))).toEqual([
+      { identity: 'workspace\0workflow:workspace:release.yaml', collect: { x: 88, y: 99 } },
+      { identity: 'workspace-b\0workflow:workspace-b:deploy.yaml', collect: { x: 44, y: 55 } },
     ])
   })
 

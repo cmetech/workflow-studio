@@ -12,6 +12,17 @@ import {
 describe('canvas workflow identity', () => {
   afterEach(() => clearCanvasState())
 
+  it('does not republish unchanged selection or positions', () => {
+    setCanvasSelection(['child'])
+    moveCanvasPositions([{ id: 'child', position: { x: 10, y: 20 } }])
+    const selection = $canvasSelection.get()
+    const positions = $canvasPositions.get()
+    setCanvasSelection(['child', 'child'])
+    moveCanvasPositions([{ id: 'child', position: { x: 10, y: 20 } }])
+    expect($canvasSelection.get()).toBe(selection)
+    expect($canvasPositions.get()).toBe(positions)
+  })
+
   it('clears selection before publishing a different successful workflow identity', () => {
     activateCanvasWorkflowIdentity('workflow-a')
     setCanvasSelection(['shared-node'])

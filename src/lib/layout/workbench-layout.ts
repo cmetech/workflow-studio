@@ -1,4 +1,4 @@
-import type { LayoutRecordV1 } from './types'
+import type { PanelLayout } from './types'
 
 export const DOCKED_WORKBENCH_MIN_WIDTH = 1280
 export const SIDE_BY_SIDE_MIN_EDITOR_WIDTH = 721
@@ -15,7 +15,7 @@ export interface WorkbenchPresentation {
   readonly split: 'side-by-side' | 'tabs'
 }
 
-type PanelPreferences = LayoutRecordV1['panels']
+type PanelPreferences = PanelLayout
 
 export interface OverlayPanelPreferences {
   readonly left: number

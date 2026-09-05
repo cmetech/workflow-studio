@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { commandRegistry } from '$src/lib/commands/registry'
 import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 
 vi.mock('@xyflow/svelte', async (importOriginal) => {
@@ -33,15 +33,13 @@ const projection: ProjectedGraph = Object.freeze({
   capacity: Object.freeze({ status: 'visual', nodeCount: 0, edgeCount: 0 }),
 })
 
-const layout: LayoutRecordV1 = {
-  schemaVersion: 1,
-  workspaceId: 'workspace',
-  workflowPath: 'boundary.yaml',
+const layout: ScopeLayoutV1 = {
+  selectedNodeIds: [],
+  inspector: { tab: 'General', scrollTop: 0 },
+  canvasScroll: { left: 0, top: 0 },
+
   nodePositions: {},
   viewport: { x: 0, y: 0, zoom: 1 },
-  panels: { left: 280, right: 320, problems: 180 },
-  editorMode: 'visual',
-  updatedAt: '2026-09-02T00:00:00.000Z',
 }
 
 describe('GraphCanvas Svelte Flow boundary', () => {

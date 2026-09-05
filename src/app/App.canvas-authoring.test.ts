@@ -1,3 +1,12 @@
+import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
+import archonContractJson from '../../contracts/archon-2026-07-v6.json'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+import * as placement from '$src/lib/layout/place-new-nodes'
+import { enterLoopGroup, returnToRoot } from '$src/stores/canvas-scope'
+import { updateScopeLayout } from '$src/stores/layout'
+import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import type { WorkflowProjection } from '$src/lib/projection/types'
+import { emptyScopeLayout } from '$src/lib/layout/types'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { parse } from 'yaml'
 import { tick } from 'svelte'
@@ -205,8 +214,10 @@ const contract: AuthoringContract = {
   extensions: {},
 }
 
+let additionalContract: AuthoringContract | undefined
 vi.mock('$src/lib/contract/bundled-contracts', () => ({
-  loadBundledAuthoringContracts: () => Promise.resolve([contract]),
+  loadBundledAuthoringContracts: () =>
+    Promise.resolve(additionalContract ? [contract, additionalContract] : [contract]),
 }))
 
 import { createCommandRegistry, executeCommand, listCommands, type CommandRegistry } from '$src/lib/commands/registry'
@@ -276,6 +287,7 @@ nodes:
 interface AuthoringAppOptions {
   readonly text?: string
   readonly companionText?: string
+  readonly scopeContract?: AuthoringContract
   readonly readOnly?: boolean
   readonly missingEntry?: boolean
   readonly commandSurface?: CommandRegistry
@@ -370,10 +382,28 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
           }
         : null,
     },
-    digest,
+    options.scopeContract?.contract_digest ?? digest,
   )
   const revision = $documentSession.get().revision!
-  const currentProjection = projection(text)
+  const scopedPair = $documentSession.get().pair!
+  const scopedAnalysis = options.scopeContract
+    ? await analyzeWorkflowPair(
+        {
+          type: 'analyze',
+          requestId: 'scope-fixture',
+          workflowId: scopedPair.workflowId,
+          pairGeneration: scopedPair.generation,
+          definition: scopedPair.definition,
+          companion: scopedPair.companion,
+          profile: options.scopeContract.profile,
+          contractDigest: options.scopeContract.contract_digest,
+          reason: 'open',
+        },
+        options.scopeContract,
+      )
+    : undefined
+  if (scopedAnalysis) expect(scopedAnalysis.structurallyValid, JSON.stringify(scopedAnalysis.issues)).toBe(true)
+  const currentProjection = scopedAnalysis ? (scopedAnalysis.projection as WorkflowProjection) : projection(text)
   receiveDocumentAnalysis({ ...revision, structurallyValid: true, issues: [], projection: currentProjection })
   if (options.missingEntry) {
     $documentWorkspace.set({
@@ -382,13 +412,19 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
     })
   }
   setActiveLayout({
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: 'workspace',
     workflowPath: 'flow.yaml',
-    nodePositions: Object.fromEntries(
-      currentProjection.graphs[0]!.nodes.map(({ id }, index) => [id, { x: index * 320, y: 0 }]),
-    ),
-    viewport: { x: 0, y: 0, zoom: 1 },
+    activeScopeKey: 'root',
+    scopeLayouts: {
+      root: {
+        ...emptyScopeLayout(),
+        nodePositions: Object.fromEntries(
+          currentProjection.graphs[0]!.nodes.map(({ id }, index) => [id, { x: index * 320, y: 0 }]),
+        ),
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    },
     panels: { left: 280, right: 320, problems: 180 },
     editorMode: 'visual',
     updatedAt: '2026-07-25T00:00:00.000Z',
@@ -442,6 +478,8 @@ describe('App canvas authoring composition', () => {
   })
 
   afterEach(() => {
+    additionalContract = undefined
+    vi.restoreAllMocks()
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     setNativeBridgeForTest(undefined)
     vi.clearAllMocks()
@@ -462,6 +500,64 @@ describe('App canvas authoring composition', () => {
       analysisError: null,
       missingChange: null,
     })
+  })
+
+  it('restores a body canvas through root navigation and a Settings page without heavy scope-switch work', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: 'name: Scoped\ndescription: Scope restoration\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo child\n',
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    updateScopeLayout('loop-group:repeat', (scope) => ({
+      ...scope,
+      viewport: { x: 27, y: -13, zoom: 1.4 },
+      selectedNodeIds: ['child'],
+      focusTarget: { kind: 'node', nodeId: 'child' },
+      inspector: { tab: 'Advanced', scrollTop: 42 },
+      canvasScroll: { left: 11, top: 22 },
+    }))
+    const body = activeLayoutStore.get()!.scopeLayouts['loop-group:repeat']
+    const pair = $documentSession.get().pair
+    const layoutWork = vi.spyOn(placement, 'reconcileLayout')
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    try {
+      expect(enterLoopGroup('repeat')).toBe(true)
+      await tick()
+      await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="child"]')).toBeVisible())
+      expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toBeNull()
+      expect($canvasSelection.get()).toEqual(['child'])
+      expect(layoutWork).not.toHaveBeenCalled()
+      expect(metrics.snapshot()).toMatchObject({
+        parseRequests: 0,
+        validationPasses: 0,
+        layouts: 0,
+        yamlTransactions: 0,
+        nativeCalls: 0,
+        gitCalls: 0,
+        layoutSaves: 0,
+      })
+      showActivity('settings')
+      await screen.findByRole('region', { name: 'Settings' })
+      await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
+      expect($canvasSelection.get()).toEqual(['child'])
+      expect(activeLayoutStore.get()!.scopeLayouts['loop-group:repeat']).toEqual(body)
+      returnToRoot()
+      await tick()
+      enterLoopGroup('repeat')
+      await tick()
+      expect(activeLayoutStore.get()!.scopeLayouts['loop-group:repeat']).toEqual(body)
+      expect($documentSession.get().pair).toBe(pair)
+    } finally {
+      restoreMetrics()
+      rendered.unmount()
+    }
   })
 
   it('adds, connects, and duplicates through the production YAML transaction path', async () => {
@@ -546,11 +642,17 @@ describe('App canvas authoring composition', () => {
       companion: null,
     }
     const replacementLayout = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       workspaceId: 'workspace',
       workflowPath: 'other.yaml',
-      nodePositions: { collect: { x: 40, y: 40 }, review: { x: 360, y: 40 } },
-      viewport: { x: 10, y: 20, zoom: 0.9 },
+      activeScopeKey: 'root' as const,
+      scopeLayouts: {
+        root: {
+          ...emptyScopeLayout(),
+          nodePositions: { collect: { x: 40, y: 40 }, review: { x: 360, y: 40 } },
+          viewport: { x: 10, y: 20, zoom: 0.9 },
+        },
+      },
       panels: { left: 240, right: 300, problems: 160 },
       editorMode: 'visual' as const,
       updatedAt: '2026-08-30T00:00:00.000Z',
@@ -574,7 +676,7 @@ describe('App canvas authoring composition', () => {
 
       expect($documentSession.get().pair).toBe(replacementPair)
       expect(activeLayoutStore.get()).toEqual(replacementLayout)
-      expect(activeLayoutStore.get()?.nodePositions.command).toBeUndefined()
+      expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.command).toBeUndefined()
     } finally {
       unsubscribe()
       rendered.unmount()
@@ -623,11 +725,17 @@ describe('App canvas authoring composition', () => {
     const rendered = await renderAuthoringApp()
     await ControlledDocumentWorker.releaseAll()
     const concurrentLayout = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       workspaceId: 'workspace',
       workflowPath: 'flow.yaml',
-      nodePositions: { collect: { x: 42, y: 84 }, review: { x: 512, y: 160 } },
-      viewport: { x: 73, y: -41, zoom: 1.35 },
+      activeScopeKey: 'root' as const,
+      scopeLayouts: {
+        root: {
+          ...emptyScopeLayout(),
+          nodePositions: { collect: { x: 42, y: 84 }, review: { x: 512, y: 160 } },
+          viewport: { x: 73, y: -41, zoom: 1.35 },
+        },
+      },
       panels: { left: 333, right: 377, problems: 211 },
       editorMode: 'split' as const,
       updatedAt: '2026-08-30T20:00:00.000Z',
@@ -642,15 +750,17 @@ describe('App canvas authoring composition', () => {
 
       await ControlledDocumentWorker.releaseAll()
       await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
-      await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.command).toEqual({ x: 0, y: 0 }))
+      await waitFor(() =>
+        expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.command).toEqual({ x: 0, y: 0 }),
+      )
 
       const active = activeLayoutStore.get()!
-      expect(active.nodePositions).toEqual({
+      expect(active.scopeLayouts.root.nodePositions).toEqual({
         collect: { x: 42, y: 84 },
         review: { x: 512, y: 160 },
         command: { x: 0, y: 0 },
       })
-      expect(active.viewport).toEqual({ x: 73, y: -41, zoom: 1.35 })
+      expect(active.scopeLayouts.root.viewport).toEqual({ x: 73, y: -41, zoom: 1.35 })
       expect(active.panels).toEqual({ left: 333, right: 377, problems: 211 })
       expect(active.editorMode).toBe('split')
 
@@ -822,7 +932,9 @@ describe('App canvas authoring composition', () => {
 
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
     expect(historyStore.get().undo).toHaveLength(1)
-    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.command).toEqual({ x: 400, y: 300 }))
+    await waitFor(() =>
+      expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.command).toEqual({ x: 400, y: 300 }),
+    )
     rendered.unmount()
   })
 
@@ -988,7 +1100,9 @@ describe('App canvas authoring composition', () => {
     await fireEvent.keyDown(canvas, { key: 'ArrowDown', shiftKey: true })
     expect($canvasPositions.get().collect).toEqual({ x: 5, y: 20 })
     expect($canvasPositions.get().review).toEqual({ x: 320, y: 20 })
-    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.collect).toEqual({ x: 5, y: 20 }))
+    await waitFor(() =>
+      expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.collect).toEqual({ x: 5, y: 20 }),
+    )
     expect(canvas.querySelector('.svelte-flow__node[data-id="collect"]')).toBe(collectNode)
     expect(canvas.querySelector('.svelte-flow__node[data-id="review"]')).toBe(reviewNode)
     expect(collectNode.style.transform).toContain('translate(5px, 20px)')
@@ -1322,8 +1436,10 @@ describe('App canvas authoring composition', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Apply Node ID' }))
 
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: reviewed'))
-    await waitFor(() => expect(activeLayoutStore.get()?.nodePositions.reviewed).toEqual({ x: 320, y: 0 }))
-    expect(activeLayoutStore.get()?.nodePositions.review).toBeUndefined()
+    await waitFor(() =>
+      expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.reviewed).toEqual({ x: 320, y: 0 }),
+    )
+    expect(activeLayoutStore.get()?.scopeLayouts.root.nodePositions.review).toBeUndefined()
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()
   })

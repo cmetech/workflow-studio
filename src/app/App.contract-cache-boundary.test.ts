@@ -1,3 +1,4 @@
+import { emptyScopeLayout } from '$src/lib/layout/types'
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { parse } from 'yaml'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -96,11 +97,17 @@ function openExistingSession(contract: AuthoringContract): void {
     projection: projection(),
   })
   setActiveLayout({
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaceId: 'workspace',
     workflowPath: 'cache-boundary.yaml',
-    nodePositions: { collect: { x: 0, y: 0 }, review: { x: 320, y: 0 } },
-    viewport: { x: 0, y: 0, zoom: 1 },
+    activeScopeKey: 'root',
+    scopeLayouts: {
+      root: {
+        ...emptyScopeLayout(),
+        nodePositions: { collect: { x: 0, y: 0 }, review: { x: 320, y: 0 } },
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    },
     panels: { left: 280, right: 320, problems: 180 },
     editorMode: 'visual',
     updatedAt: '2026-07-25T00:00:00.000Z',

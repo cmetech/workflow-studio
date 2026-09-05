@@ -960,6 +960,19 @@ async function scopedContext(
 }
 
 describe('scoped indexed canvas actions', () => {
+  it('publishes identity changes only after a successful scoped mutation commit', async () => {
+    const fixture = await scopedContext()
+    const changed = vi.fn()
+    const context = { ...fixture.context, commitIdentityChanges: changed }
+    const rejected = await renameNode(context, 'child', 'child')
+    expect(rejected.status).toBe('rejected')
+    expect(changed).not.toHaveBeenCalled()
+    const result = await renameNode(context, 'child', 'renamed')
+    expect(result.status).toBe('committed')
+    if (result.status === 'committed')
+      expect(changed).toHaveBeenCalledExactlyOnceWith(result.identityChanges, result.transaction)
+  })
+
   it('renames only the resolved body producer, previous tokens, group control and companion identity atomically', async () => {
     const fixture = await scopedContext()
     const result = await renameNode(fixture.context, 'child', 'renamed')

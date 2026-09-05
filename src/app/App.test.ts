@@ -1,3 +1,4 @@
+import { emptyScopeLayout } from '$src/lib/layout/types'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { undo } from '@codemirror/commands'
 import { EditorView } from '@codemirror/view'
@@ -1466,11 +1467,17 @@ nodes:
       },
     })
     setActiveLayout({
-      schemaVersion: 1,
+      schemaVersion: 2,
       workspaceId: 'workspace',
       workflowPath: 'flow.yaml',
-      nodePositions: { collect: { x: 20, y: 30 } },
-      viewport: { x: 0, y: 0, zoom: 1 },
+      activeScopeKey: 'root',
+      scopeLayouts: {
+        root: {
+          ...emptyScopeLayout(),
+          nodePositions: { collect: { x: 20, y: 30 } },
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      },
       panels: { left: 280, right: 320, problems: 180 },
       editorMode: 'visual',
       updatedAt: '2026-07-25T00:00:00.000Z',
@@ -1579,11 +1586,17 @@ nodes:
       },
     })
     setActiveLayout({
-      schemaVersion: 1,
+      schemaVersion: 2,
       workspaceId: 'workspace',
       workflowPath: 'flow.yaml',
-      nodePositions: { collect: { x: 20, y: 30 } },
-      viewport: { x: 0, y: 0, zoom: 1 },
+      activeScopeKey: 'root',
+      scopeLayouts: {
+        root: {
+          ...emptyScopeLayout(),
+          nodePositions: { collect: { x: 20, y: 30 } },
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      },
       panels: { left: 280, right: 320, problems: 180 },
       editorMode: 'visual',
       updatedAt: '2026-07-25T00:00:00.000Z',
@@ -1666,11 +1679,11 @@ nodes:
       `sha256:${'1'.repeat(64)}`,
     )
     setActiveLayout({
-      schemaVersion: 1,
+      schemaVersion: 2,
       workspaceId: 'workspace',
       workflowPath: 'flow.yaml',
-      nodePositions: {},
-      viewport: { x: 0, y: 0, zoom: 1 },
+      activeScopeKey: 'root',
+      scopeLayouts: { root: { ...emptyScopeLayout(), nodePositions: {}, viewport: { x: 0, y: 0, zoom: 1 } } },
       panels: { left: 280, right: 320, problems: 5000 },
       editorMode: 'visual',
       updatedAt: '2026-07-25T00:00:00.000Z',

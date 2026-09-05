@@ -1,4 +1,4 @@
-import type { LayoutRecordV1 } from '$src/lib/layout/types'
+import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 
 export const LARGE_WORKFLOW_NODE_COUNT = 250
@@ -7,7 +7,7 @@ export const LARGE_WORKFLOW_SEED = 0x24c0ffee
 
 export interface LargeWorkflowFixture {
   readonly projection: ProjectedGraph
-  readonly layout: LayoutRecordV1
+  readonly layout: ScopeLayoutV1
   readonly yaml: string
 }
 
@@ -79,17 +79,15 @@ export function createLargeWorkflowFixture(seed = LARGE_WORKFLOW_SEED): LargeWor
     issues: Object.freeze([]),
     capacity: Object.freeze({ status: 'visual', nodeCount: nodes.length, edgeCount: edges.length }),
   })
-  const layout: LayoutRecordV1 = {
-    schemaVersion: 1,
-    workspaceId: 'task-9-performance',
-    workflowPath: 'fixed-250-node-workflow.yaml',
+  const layout: ScopeLayoutV1 = {
+    selectedNodeIds: [],
+    inspector: { tab: 'General', scrollTop: 0 },
+    canvasScroll: { left: 0, top: 0 },
+
     nodePositions: Object.fromEntries(
       ids.map((id, index) => [id, { x: (index % 25) * 280, y: Math.floor(index / 25) * 150 }]),
     ),
     viewport: { x: 0, y: 0, zoom: 0.2 },
-    panels: { left: 280, right: 320, problems: 180 },
-    editorMode: 'visual',
-    updatedAt: '2026-07-25T00:00:00.000Z',
   }
   const yaml = [
     `name: ${definition.name}`,

@@ -1,4 +1,6 @@
-import type { LayoutNodeProjection, LayoutProjection, LayoutRecordV1 } from './types'
+import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
+import { emptyScopeLayout, type LayoutRecordV2 } from './types'
+import type { LayoutNodeProjection, LayoutProjection, ScopeLayoutV1 } from './types'
 
 export const LAYOUT_COLUMN_WIDTH = 320
 export const LAYOUT_ROW_HEIGHT = 160
@@ -8,7 +10,7 @@ interface Position {
   y: number
 }
 
-export function reconcileLayout(projection: LayoutProjection, saved: LayoutRecordV1): LayoutRecordV1 {
+export function reconcileLayout(projection: LayoutProjection, saved: ScopeLayoutV1): ScopeLayoutV1 {
   const nodes = [...projection.nodes].sort((left, right) => compareText(left.id, right.id))
   const nodeIds = new Set(nodes.map(({ id }) => id))
   const positions = new Map<string, Position>()
@@ -30,7 +32,18 @@ export function reconcileLayout(projection: LayoutProjection, saved: LayoutRecor
   }
 
   const nodePositions = Object.fromEntries(positions)
-  return samePositionRecords(saved.nodePositions, nodePositions) ? saved : { ...saved, nodePositions }
+  const positionsUnchanged = samePositionRecords(saved.nodePositions, nodePositions)
+  const selection = saved.selectedNodeIds.filter((id) => nodeIds.has(id))
+  const selectionUnchanged = selection.length === saved.selectedNodeIds.length
+  const staleFocus = saved.focusTarget?.nodeId !== undefined && !nodeIds.has(saved.focusTarget.nodeId)
+  if (positionsUnchanged && selectionUnchanged && !staleFocus) return saved
+  const result = {
+    ...saved,
+    nodePositions: positionsUnchanged ? saved.nodePositions : nodePositions,
+    selectedNodeIds: selectionUnchanged ? saved.selectedNodeIds : selection,
+  }
+  if (staleFocus) delete result.focusTarget
+  return result
 }
 
 function samePositionRecords(
@@ -45,7 +58,7 @@ function samePositionRecords(
   )
 }
 
-export function migrateVisualNodeRename(saved: LayoutRecordV1, from: string, to: string): LayoutRecordV1 {
+export function migrateVisualNodeRename(saved: ScopeLayoutV1, from: string, to: string): ScopeLayoutV1 {
   if (from === to || !Object.hasOwn(saved.nodePositions, from) || Object.hasOwn(saved.nodePositions, to)) {
     return saved
   }
@@ -54,14 +67,21 @@ export function migrateVisualNodeRename(saved: LayoutRecordV1, from: string, to:
       .filter(([id]) => id !== from)
       .concat([[to, { ...saved.nodePositions[from]! }]]),
   )
-  return { ...saved, nodePositions }
+  return {
+    ...saved,
+    nodePositions,
+    selectedNodeIds: saved.selectedNodeIds.includes(from)
+      ? saved.selectedNodeIds.map((id) => (id === from ? to : id))
+      : saved.selectedNodeIds,
+    ...(saved.focusTarget?.nodeId === from ? { focusTarget: { ...saved.focusTarget, nodeId: to } } : {}),
+  }
 }
 
 export function migrateManualYamlNodeRename(
-  saved: LayoutRecordV1,
+  saved: ScopeLayoutV1,
   before: LayoutProjection,
   after: LayoutProjection,
-): LayoutRecordV1 {
+): ScopeLayoutV1 {
   const beforeIds = new Set(before.nodes.map(({ id }) => id))
   const afterIds = new Set(after.nodes.map(({ id }) => id))
   const removed = before.nodes.filter(({ id }) => !afterIds.has(id))
@@ -74,6 +94,72 @@ export function migrateManualYamlNodeRename(
       : []
   const migrated = matches.length === 1 ? migrateVisualNodeRename(saved, matches[0]!.from, matches[0]!.to) : saved
   return reconcileLayout(after, migrated)
+}
+
+/** Reconcile accepted workflow projections, never pointer frames or scope navigation. */
+export function reconcileWorkflowLayout(
+  after: WorkflowProjection,
+  saved: LayoutRecordV2,
+  before?: WorkflowProjection,
+): LayoutRecordV2 {
+  let source = saved
+  const previousScopes = new Map(before?.graphs.map((graph) => [graph.scope.key, graph]))
+  const nextScopes = new Map(after.graphs.map((graph) => [graph.scope.key, graph]))
+  const removed = [...previousScopes.values()].filter(
+    (graph) => graph.scope.key !== 'root' && !nextScopes.has(graph.scope.key),
+  )
+  const added = after.graphs.filter((graph) => graph.scope.key !== 'root' && !previousScopes.has(graph.scope.key))
+  let renamed: { from: GraphScopeKey; to: GraphScopeKey } | undefined
+  if (removed.length === 1 && added.length === 1) {
+    const oldGraph = removed[0]!,
+      newGraph = added[0]!
+    const oldOwner = before?.graphs
+      .find((g) => g.scope.key === 'root')
+      ?.nodes.find((n) => n.id === oldGraph.scope.groupId)
+    const newOwner = after.graphs
+      .find((g) => g.scope.key === 'root')
+      ?.nodes.find((n) => n.id === newGraph.scope.groupId)
+    if (
+      oldOwner &&
+      newOwner &&
+      sameNodeShapeAfterRename(oldOwner, newOwner, oldOwner.id, newOwner.id) &&
+      stableValue(oldGraph.nodes.map(semanticNode)) === stableValue(newGraph.nodes.map(semanticNode))
+    ) {
+      renamed = { from: oldGraph.scope.key, to: newGraph.scope.key }
+      const scope = saved.scopeLayouts[renamed.from]
+      if (scope && !saved.scopeLayouts[renamed.to]) {
+        const scopeLayouts: LayoutRecordV2['scopeLayouts'] = { ...saved.scopeLayouts, [renamed.to]: scope }
+        delete scopeLayouts[renamed.from]
+        source = {
+          ...saved,
+          scopeLayouts,
+          activeScopeKey: saved.activeScopeKey === renamed.from ? renamed.to : saved.activeScopeKey,
+        }
+      }
+    }
+  }
+  let changed = source !== saved
+  const entries: [GraphScopeKey, ScopeLayoutV1][] = []
+  for (const graph of after.graphs) {
+    const key = graph.scope.key
+    const scope = source.scopeLayouts[key] ?? emptyScopeLayout()
+    const oldGraph = previousScopes.get(key === renamed?.to ? renamed.from : key)
+    const next = oldGraph ? migrateManualYamlNodeRename(scope, oldGraph, graph) : reconcileLayout(graph, scope)
+    changed ||= next !== source.scopeLayouts[key]
+    entries.push([key, next])
+  }
+  // Root is a record invariant even if a defensive caller supplies no root graph.
+  if (!nextScopes.has('root')) entries.unshift(['root', source.scopeLayouts.root])
+  changed ||= entries.length !== Object.keys(source.scopeLayouts).length
+  const activeScopeKey = nextScopes.has(source.activeScopeKey) ? source.activeScopeKey : 'root'
+  changed ||= activeScopeKey !== source.activeScopeKey
+  return changed
+    ? { ...source, scopeLayouts: Object.fromEntries(entries) as LayoutRecordV2['scopeLayouts'], activeScopeKey }
+    : saved
+}
+
+function semanticNode(node: LayoutNodeProjection) {
+  return { id: node.id, kind: node.kind, value: node.value, options: node.options, dependsOn: node.dependsOn }
 }
 
 function placeNode(node: LayoutNodeProjection, positions: ReadonlyMap<string, Position>): Position {

@@ -706,7 +706,7 @@ export async function installRuntimeBootstrap(): Promise<void> {
       const session = $documentSession.get()
       const projection = session.analysis?.projection
       const workflow = isWorkflowProjection(projection) ? projection : null
-      const position = $activeLayout.get()?.nodePositions[nodeId]
+      const position = $activeLayout.get()?.scopeLayouts[$activeLayout.get()!.activeScopeKey]?.nodePositions[nodeId]
       return {
         definitionRevision: session.pair?.definition.revision ?? 0,
         analysisRevision: session.analysis?.definitionRevision ?? null,
