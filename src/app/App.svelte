@@ -76,6 +76,7 @@
   } from '$src/stores/documents'
   import {
     $activeScopeKey as activeScopeKeyStore,
+    $canvasScopeRestoration as canvasScopeRestorationStore,
     publishCanvasProjection,
     commitCanvasIdentityChanges,
     queueCanvasLayoutHistory,
@@ -2157,6 +2158,7 @@
                   {commandSurface}
                   projection={canvasGraph}
                   layout={$activeScopeLayoutStore!}
+                  restoreRequest={$canvasScopeRestorationStore}
                   workflowIdentity={canvasInstanceIdentity(
                     $documentSessionStore.pair?.workflowId ?? '',
                     $activeScopeKeyStore,

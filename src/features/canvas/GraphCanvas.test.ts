@@ -1,9 +1,13 @@
+import { emptyIdentityChanges } from './canvas-actions'
+import type { YamlTransaction } from '$src/lib/documents/transactions'
+import { $activeLayout, activeScopeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
+import * as canvasScope from '$src/stores/canvas-scope'
 import { fireEvent, render, screen, within } from '@testing-library/svelte'
 import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ScopeLayoutV1 } from '$src/lib/layout/types'
-import type { ProjectedGraph } from '$src/lib/projection/types'
+import type { LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
+import type { ProjectedGraph, WorkflowProjection } from '$src/lib/projection/types'
 import {
   CommandDisabledError,
   commandRegistry,
@@ -684,6 +688,80 @@ describe('GraphCanvas', () => {
     unmount()
     await vi.advanceTimersByTimeAsync(300)
     expect(persistLayout).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores mounted same-scope viewport and scroll once for undo and redo', async () => {
+    vi.useFakeTimers()
+    const before: LayoutRecordV2 = {
+      schemaVersion: 2,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      activeScopeKey: 'root',
+      editorMode: 'visual',
+      panels: { left: 280, right: 320, problems: 180 },
+      updatedAt: 'now',
+      scopeLayouts: { root: { ...layout, viewport: { x: 12, y: 34, zoom: 0.8 }, canvasScroll: { left: 5, top: 15 } } },
+    }
+    const after: LayoutRecordV2 = {
+      ...before,
+      scopeLayouts: {
+        root: {
+          ...layout,
+          viewport: { x: 210, y: 120, zoom: 1.4 },
+          canvasScroll: { left: 25, top: 35 },
+        },
+      },
+    }
+    const workflow: WorkflowProjection = { ...projection.scope.workflow, definition: {}, graphs: [projection] }
+    const transaction = {
+      workflowId: 'workflow',
+      before: { definition: 'before', companion: null },
+      after: { definition: 'after', companion: null },
+    } as YamlTransaction
+    setActiveLayout(after)
+    canvasScope.publishCanvasProjection('workflow', workflow)
+    canvasScope.commitCanvasIdentityChanges(before, transaction, emptyIdentityChanges())
+    const props = () => ({
+      projection,
+      layout: activeScopeLayout($activeLayout.get()!),
+      workflowIdentity: JSON.stringify(['workflow', 'root']),
+      restoreRequest: canvasScope.$canvasScopeRestoration.get(),
+    })
+    const persist = vi.fn()
+    const changed = vi.fn()
+    const { container, rerender } = renderCanvas({ ...props(), onPersistLayout: persist, onLayoutChange: changed })
+    const view = container.querySelector<HTMLElement>('.svelte-flow__viewport')!
+    const scroll = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')!
+    await tick()
+    expect(view.style.transform).toContain('translate(210px, 120px) scale(1.4)')
+    expect(canvasScope.queueCanvasLayoutHistory(transaction, 'undo')).toBe(true)
+    canvasScope.publishCanvasProjection('workflow', workflow, workflow, transaction.before)
+    await rerender(props())
+    await tick()
+    expect(view.style.transform).toContain('translate(12px, 34px) scale(0.8)')
+    expect([scroll.scrollLeft, scroll.scrollTop]).toEqual([5, 15])
+    expect(canvasScope.queueCanvasLayoutHistory(transaction, 'redo')).toBe(true)
+    canvasScope.publishCanvasProjection('workflow', workflow, workflow, transaction.after)
+    await rerender(props())
+    await tick()
+    expect(view.style.transform).toContain('translate(210px, 120px) scale(1.4)')
+    expect([scroll.scrollLeft, scroll.scrollTop]).toEqual([25, 35])
+    // Ordinary layout publications must not continually overwrite the live view.
+    await rerender({ ...props(), layout: before.scopeLayouts.root })
+    await tick()
+    expect(view.style.transform).toContain('translate(210px, 120px) scale(1.4)')
+    expect([scroll.scrollLeft, scroll.scrollTop]).toEqual([25, 35])
+    await rerender({
+      ...props(),
+      layout: before.scopeLayouts.root,
+      restoreRequest: { identity: JSON.stringify(['other-workflow', 'root']), version: 999999 },
+    })
+    await tick()
+    expect(view.style.transform).toContain('translate(210px, 120px) scale(1.4)')
+    await vi.advanceTimersByTimeAsync(550)
+    expect(changed).not.toHaveBeenCalled()
+    expect(persist).not.toHaveBeenCalled()
+    clearActiveLayout()
   })
 
   it('restores the saved viewport when switching between workflow identities without arranging', async () => {

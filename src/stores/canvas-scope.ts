@@ -5,7 +5,13 @@ import { atom, computed } from 'nanostores'
 import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
 import type { LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
 import { reconcileWorkflowLayout } from '$src/lib/layout/place-new-nodes'
-import { $activeLayout, activeScopeLayout, setActiveLayout, updateScopeLayout } from './layout'
+import {
+  $activeLayout,
+  activeScopeLayout,
+  setActiveLayout,
+  updateScopeLayout,
+  type LayoutPublicationOrigin,
+} from './layout'
 import {
   $canvasPositions,
   $canvasSelection,
@@ -17,6 +23,13 @@ import {
 } from './canvas'
 
 export const $activeScopeKey = computed($activeLayout, (record): GraphScopeKey => record?.activeScopeKey ?? 'root')
+export interface CanvasScopeRestoration {
+  readonly identity: string
+  readonly version: number
+}
+// A single transient request; history and navigation restore the mounted view once.
+export const $canvasScopeRestoration = atom<CanvasScopeRestoration | null>(null)
+let restorationVersion = 0
 export interface ScopeNavigationEvent {
   readonly scopeKey: GraphScopeKey
   readonly message: string
@@ -27,6 +40,7 @@ let available:
 
 export function resetCanvasScopeProjection(): void {
   available = undefined
+  $canvasScopeRestoration.set(null)
   pendingHistory = undefined
   layoutHistory.length = 0
 }
@@ -57,7 +71,7 @@ $canvasSelection.listen((selectedNodeIds) => {
 })
 
 /** Capture only ephemeral canvas state. Other interaction fields are narrow scope patches. */
-export function captureActiveScope(patch: Partial<ScopeLayoutV1> = {}): void {
+export function captureActiveScope(patch: Partial<ScopeLayoutV1> = {}, origin: LayoutPublicationOrigin = 'edit'): void {
   const record = $activeLayout.get()
   if (
     !record ||
@@ -67,27 +81,31 @@ export function captureActiveScope(patch: Partial<ScopeLayoutV1> = {}): void {
     $canvasWorkflowIdentity.get() !== canvasInstanceIdentity(available.workflowId, record.activeScopeKey)
   )
     return
-  updateScopeLayout(record.activeScopeKey, (scope) => {
-    const positions = $canvasPositions.get()
-    const selectedNodeIds = $canvasSelection.get()
-    const samePositions = positions === scope.nodePositions || equalPositions(positions, scope.nodePositions)
-    const sameSelection =
-      selectedNodeIds === scope.selectedNodeIds ||
-      (selectedNodeIds.length === scope.selectedNodeIds.length &&
-        selectedNodeIds.every((id, i) => id === scope.selectedNodeIds[i]))
-    if (
-      samePositions &&
-      sameSelection &&
-      Object.entries(patch).every(([key, value]) => scope[key as keyof ScopeLayoutV1] === value)
-    )
-      return scope
-    return {
-      ...scope,
-      nodePositions: samePositions ? scope.nodePositions : positions,
-      selectedNodeIds: sameSelection ? scope.selectedNodeIds : selectedNodeIds,
-      ...patch,
-    }
-  })
+  updateScopeLayout(
+    record.activeScopeKey,
+    (scope) => {
+      const positions = $canvasPositions.get()
+      const selectedNodeIds = $canvasSelection.get()
+      const samePositions = positions === scope.nodePositions || equalPositions(positions, scope.nodePositions)
+      const sameSelection =
+        selectedNodeIds === scope.selectedNodeIds ||
+        (selectedNodeIds.length === scope.selectedNodeIds.length &&
+          selectedNodeIds.every((id, i) => id === scope.selectedNodeIds[i]))
+      if (
+        samePositions &&
+        sameSelection &&
+        Object.entries(patch).every(([key, value]) => scope[key as keyof ScopeLayoutV1] === value)
+      )
+        return scope
+      return {
+        ...scope,
+        nodePositions: samePositions ? scope.nodePositions : positions,
+        selectedNodeIds: sameSelection ? scope.selectedNodeIds : selectedNodeIds,
+        ...patch,
+      }
+    },
+    origin,
+  )
 }
 
 export function enterLoopGroup(groupId: string): boolean {
@@ -109,8 +127,8 @@ function switchScope(scopeKey: GraphScopeKey): boolean {
   )
     return false
   if (record.activeScopeKey === scopeKey) return true
-  captureActiveScope()
-  setActiveLayout({ ...$activeLayout.get()!, activeScopeKey: scopeKey })
+  captureActiveScope({}, 'navigation')
+  setActiveLayout({ ...$activeLayout.get()!, activeScopeKey: scopeKey }, 'navigation')
   restoreScope()
   return true
 }
@@ -141,6 +159,7 @@ export function publishCanvasProjection(
   )
     captureActiveScope()
   let captured = $activeLayout.get()!
+  let restoredHistory = false
   if (pendingHistory) {
     if (
       pendingHistory.workflowId === workflowId &&
@@ -149,6 +168,7 @@ export function publishCanvasProjection(
       currentTexts?.definition === pendingHistory.texts.definition &&
       currentTexts.companion === pendingHistory.texts.companion
     ) {
+      restoredHistory = true
       captured = {
         ...captured,
         scopeLayouts: pendingHistory.layout.scopeLayouts,
@@ -166,17 +186,20 @@ export function publishCanvasProjection(
       message: 'The open loop group no longer exists. Returned to the root graph.',
     })
   }
-  restoreScope()
+  restoreScope(restoredHistory)
 }
 
-function restoreScope(): void {
+function restoreScope(forceViewRestore = false): void {
   const record = $activeLayout.get()
   if (!record || !available || !available.projection.graphs.some((graph) => graph.scope.key === record.activeScopeKey))
     return
   const scope = activeScopeLayout(record)
+  const identity = canvasInstanceIdentity(available.workflowId, record.activeScopeKey)
+  const identityChanged = $canvasWorkflowIdentity.get() !== identity
   activateCanvasWorkflowIdentity(available.workflowId, record.activeScopeKey)
   replaceCanvasPositions(scope.nodePositions)
   setCanvasSelection(scope.selectedNodeIds)
+  if (identityChanged || forceViewRestore) $canvasScopeRestoration.set({ identity, version: ++restorationVersion })
 }
 
 export function consumeScopeNavigationEvent(): ScopeNavigationEvent | null {
@@ -233,7 +256,10 @@ export function commitCanvasIdentityChanges(
       $scopeNavigationEvent.set(null)
     }
   }
-  for (const { from, to } of changes.scopeCopies) {
+  const localCopy =
+    changes.copySource?.workflowId === transaction.workflowId &&
+    changes.copySource.definitionPath === before.workflowPath
+  for (const { from, to } of localCopy ? changes.scopeCopies : []) {
     const source = before.scopeLayouts[from]
     if (source) setScope(to, source)
   }
@@ -252,7 +278,7 @@ export function commitCanvasIdentityChanges(
       ...(renamed.focusTarget ? { focusTarget: renamed.focusTarget } : {}),
     })
   }
-  for (const { from, to } of changes.nodeCopies) {
+  for (const { from, to } of localCopy ? changes.nodeCopies : []) {
     const source = before.scopeLayouts[from.scopeKey]?.nodePositions[from.nodeId]
     const scope = scopeLayouts[to.scopeKey]
     // Placement supplied by the action wins over a source coordinate.

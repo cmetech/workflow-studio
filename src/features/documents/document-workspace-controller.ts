@@ -39,7 +39,7 @@ import {
   isDocumentPairDirty,
   type DocumentSyncOrigin,
 } from '$src/stores/documents'
-import { $activeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
+import { $activeLayout, clearActiveLayout, setActiveLayout, isNavigationLayoutPublication } from '$src/stores/layout'
 import {
   handleExternalChange,
   resolveExternalChange,
@@ -205,6 +205,7 @@ export class DocumentWorkspaceController {
     if (
       !layout ||
       layout === this.scheduledLayout ||
+      isNavigationLayoutPublication(layout) ||
       this.publicationSuppressed() ||
       layout.workspaceId !== this.activeWorkspaceId ||
       layout.workflowPath !== $documentSession.get().pair?.definition.path

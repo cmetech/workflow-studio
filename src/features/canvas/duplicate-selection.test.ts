@@ -1,3 +1,11 @@
+import { emptyScopeLayout } from '$src/lib/layout/types'
+import { setActiveLayout, $activeLayout, updateScopeLayout, clearActiveLayout } from '$src/stores/layout'
+import {
+  publishCanvasProjection,
+  commitCanvasIdentityChanges,
+  queueCanvasLayoutHistory,
+} from '$src/stores/canvas-scope'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import { parse } from 'yaml'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
@@ -458,6 +466,7 @@ describe('duplicate/copy/paste YAML transforms', () => {
 async function scopedClipboardContext(
   scopeKey: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:first',
   rewriteSource: (text: string) => string = (text) => text,
+  workflowId?: string,
 ) {
   const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
   const { analyzeWorkflowPair } = await import('$src/lib/validation/analyze-workflow')
@@ -500,6 +509,7 @@ nodes:
   const text = rewriteSource(originalSource)
   const currentPair = {
     ...pair(text, activeContract.profile),
+    ...(workflowId ? { workflowId } : {}),
     companion: {
       ...pair(text, activeContract.profile).definition,
       id: 'companion',
@@ -606,6 +616,89 @@ describe('indexed scoped clipboard', () => {
     expect(result.pair.definition.text).toContain('echo unrelated')
     expect(destination.commit).toHaveBeenCalledOnce()
   })
+
+  it.each([false, true])(
+    'keeps copy layout provenance across whole-group paste and undo/redo (external=%s)',
+    async (external) => {
+      const source = await scopedClipboardContext('root', (text) => text, 'source-workflow')
+      const destination = external
+        ? await scopedClipboardContext(
+            'root',
+            (text) => text.replaceAll('producer', 'different'),
+            'destination-workflow',
+          )
+        : source
+      setActiveLayout({
+        schemaVersion: 2,
+        workspaceId: 'workspace',
+        workflowPath: destination.pair.definition.path,
+        activeScopeKey: 'root',
+        scopeLayouts: { root: emptyScopeLayout() },
+        panels: { left: 280, right: 320, problems: 180 },
+        editorMode: 'visual',
+        updatedAt: '2026-09-05T00:00:00.000Z',
+      })
+      try {
+        publishCanvasProjection(destination.pair.workflowId, destination.projection)
+        updateScopeLayout('loop-group:first', (scope) => ({
+          ...scope,
+          nodePositions: { ...scope.nodePositions, [external ? 'different' : 'producer']: { x: 777, y: 888 } },
+          viewport: { x: 201, y: 202, zoom: 1.4 },
+          selectedNodeIds: [external ? 'different' : 'producer'],
+        }))
+        const before = $activeLayout.get()!
+        const result = await pasteSelection(destination, copySelection(source, ['first']))
+        expect(result.status).toBe('committed')
+        if (result.status !== 'committed') return
+        const analysis = await analyzeWorkflowPair(
+          {
+            type: 'analyze',
+            requestId: 'pasted',
+            workflowId: result.pair.workflowId,
+            pairGeneration: result.pair.generation,
+            definition: result.pair.definition,
+            companion: result.pair.companion,
+            profile: destination.contract.profile,
+            contractDigest: destination.contract.contract_digest,
+            reason: 'edit',
+          },
+          destination.contract,
+        )
+        expect(analysis.structurallyValid).toBe(true)
+        const projection = analysis.projection as WorkflowProjection
+        publishCanvasProjection(destination.pair.workflowId, projection, destination.projection)
+        const newlyPlaced = $activeLayout.get()!.scopeLayouts['loop-group:first-2']!
+        commitCanvasIdentityChanges(before, result.transaction, result.identityChanges)
+        const copied = $activeLayout.get()!.scopeLayouts['loop-group:first-2']!
+        if (external) {
+          expect(copied).toBe(newlyPlaced)
+          expect(copied.nodePositions.producer).toBeDefined()
+          expect(copied.nodePositions.different).toBeUndefined()
+          expect(copied.selectedNodeIds).toEqual([])
+          expect(copied.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
+        } else expect(copied).toBe(before.scopeLayouts['loop-group:first'])
+        queueCanvasLayoutHistory(result.transaction, 'undo')
+        publishCanvasProjection(
+          destination.pair.workflowId,
+          destination.projection,
+          projection,
+          result.transaction.before,
+        )
+        expect($activeLayout.get()!.scopeLayouts['loop-group:first-2']).toBeUndefined()
+        expect($activeLayout.get()!.scopeLayouts['loop-group:first']).toBe(before.scopeLayouts['loop-group:first'])
+        queueCanvasLayoutHistory(result.transaction, 'redo')
+        publishCanvasProjection(
+          destination.pair.workflowId,
+          projection,
+          destination.projection,
+          result.transaction.after,
+        )
+        expect($activeLayout.get()!.scopeLayouts['loop-group:first-2']).toBe(copied)
+      } finally {
+        clearActiveLayout()
+      }
+    },
+  )
 
   it('duplicates a whole group with unchanged complete body and an explicit scope copy mapping', async () => {
     const fixture = await scopedClipboardContext('root')

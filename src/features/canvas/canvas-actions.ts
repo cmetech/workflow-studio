@@ -130,6 +130,7 @@ export interface CanvasActionLease {
 }
 
 export interface CanvasIdentityChanges {
+  readonly copySource?: { readonly workflowId: string; readonly definitionPath: string }
   readonly nodeRenames: readonly { scopeKey: GraphScopeKey; from: string; to: string }[]
   readonly scopeRenames: readonly { from: GraphScopeKey; to: GraphScopeKey }[]
   readonly nodeCopies: readonly { from: ScopedNodeIdentity; to: ScopedNodeIdentity }[]

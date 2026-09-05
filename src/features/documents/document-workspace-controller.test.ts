@@ -1,6 +1,12 @@
 import { emptyScopeLayout } from '$src/lib/layout/types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
-import { enterLoopGroup, $activeScopeKey, consumeScopeNavigationEvent } from '$src/stores/canvas-scope'
+import {
+  enterLoopGroup,
+  returnToRoot,
+  publishCanvasProjection,
+  $activeScopeKey,
+  consumeScopeNavigationEvent,
+} from '$src/stores/canvas-scope'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { DocumentAnalysis } from '$src/lib/documents/types'
@@ -12,7 +18,7 @@ import { LayoutPersistenceController } from '$src/lib/layout/layout-store'
 import { createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
 import { createHistoryState, historyStore, recordTransaction, undoTransaction } from '$src/stores/history'
-import { $activeLayout } from '$src/stores/layout'
+import { $activeLayout, updateScopeLayout } from '$src/stores/layout'
 import { DocumentClient, type DocumentWorkerEndpoint } from '$src/workers/document-client'
 import {
   analysisIdentity,
@@ -1156,6 +1162,41 @@ describe('DocumentWorkspaceController', () => {
         expect.objectContaining({ definition: pair!.definition.diskHash }),
       ),
     )
+  })
+
+  it('does not schedule persistence for navigation publications, including captured positions', async () => {
+    vi.useFakeTimers()
+    const persist = vi.fn<(record: unknown) => Promise<void>>(async () => undefined)
+    const { deps } = dependencies({
+      createLayoutPersistence: () => new LayoutPersistenceController(persist),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const pair = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const stop = $activeLayout.listen((record) => controller.layoutChanged(record))
+    try {
+      publishCanvasProjection(pair!.workflowId, modernProjection(['first']))
+      await controller.persistLayoutChanges($activeLayout.get()!)
+      persist.mockClear()
+      const { replaceCanvasPositions } = await import('$src/stores/canvas')
+      replaceCanvasPositions({ build: { x: 123, y: 456 }, first: { x: 500, y: 100 } })
+      expect(enterLoopGroup('first')).toBe(true)
+      await vi.advanceTimersByTimeAsync(550)
+      expect(persist).not.toHaveBeenCalled()
+      expect(returnToRoot()).toBe(true)
+      await vi.advanceTimersByTimeAsync(550)
+      expect(persist).not.toHaveBeenCalled()
+      expect(enterLoopGroup('first')).toBe(true)
+      updateScopeLayout('loop-group:first', (scope) => ({ ...scope, viewport: { x: 10, y: 20, zoom: 2 } }))
+      await vi.advanceTimersByTimeAsync(550)
+      expect(persist).toHaveBeenCalledTimes(1)
+      expect(persist.mock.calls[0]![0]).toEqual($activeLayout.get())
+      expect($activeLayout.get()!.activeScopeKey).toBe('loop-group:first')
+      expect($activeLayout.get()!.scopeLayouts.root.nodePositions.build).toEqual({ x: 123, y: 456 })
+    } finally {
+      stop()
+      await controller.dispose()
+      vi.useRealTimers()
+    }
   })
 
   it('debounces scope-state persistence and flushes the latest full record on close', async () => {

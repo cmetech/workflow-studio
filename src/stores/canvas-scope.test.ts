@@ -224,6 +224,7 @@ describe('scope canvas state', () => {
     publishCanvasProjection('workflow', copied, initial)
     commitCanvasIdentityChanges(before, tx, {
       ...emptyIdentityChanges(),
+      copySource: { workflowId: 'workflow', definitionPath: 'flow.yaml' },
       scopeCopies: [{ from: 'loop-group:first', to: 'loop-group:copy' }],
     })
     expect($activeLayout.get()!.scopeLayouts['loop-group:copy']).toEqual(before.scopeLayouts['loop-group:first'])

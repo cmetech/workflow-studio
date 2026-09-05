@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { CanvasScopeRestoration } from '$src/stores/canvas-scope'
   import { onDestroy, onMount, setContext, untrack } from 'svelte'
   import { Background, BackgroundVariant, SelectionMode, SvelteFlow, type Viewport } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
@@ -53,6 +54,7 @@
     projection: ProjectedGraph
     layout: ScopeLayoutV1
     workflowIdentity?: string
+    restoreRequest?: CanvasScopeRestoration | null
     transitionLocked?: boolean
     surfaceActive?: boolean
     issues?: readonly ValidationIssue[]
@@ -87,6 +89,7 @@
     projection,
     layout,
     workflowIdentity = JSON.stringify([projection.scope.workflow.name, projection.scope.key]),
+    restoreRequest = null,
     transitionLocked = false,
     surfaceActive = true,
     issues = [],
@@ -131,6 +134,7 @@
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
+  let restoredVersion = $state(0)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
   let edgeSelectionState = emptyEdgeSelectionState()
   let authoringFeedback = $state('')
@@ -244,8 +248,10 @@
   })
 
   $effect(() => {
-    if (workflowIdentity === restoredWorkflowIdentity) return
+    const version = restoreRequest?.identity === workflowIdentity ? restoreRequest.version : 0
+    if (workflowIdentity === restoredWorkflowIdentity && version <= restoredVersion) return
     restoredWorkflowIdentity = workflowIdentity
+    restoredVersion = version
     flowViewport = { ...layout.viewport }
     if (viewportElement) {
       viewportElement.scrollLeft = layout.canvasScroll.left

@@ -9,13 +9,23 @@ export function activeScopeLayout(record: LayoutRecordV2): ScopeLayoutV1 {
   return record.scopeLayouts[record.activeScopeKey] ?? record.scopeLayouts.root
 }
 
-export function setActiveLayout(layout: LayoutRecordV2): void {
-  if ($activeLayout.get() !== layout) $activeLayout.set(layout)
+export type LayoutPublicationOrigin = 'edit' | 'navigation'
+// Transient publication metadata, never another layout authority or persisted field.
+const navigationPublications = new WeakSet<LayoutRecordV2>()
+export function isNavigationLayoutPublication(layout: LayoutRecordV2): boolean {
+  return navigationPublications.has(layout)
+}
+export function setActiveLayout(layout: LayoutRecordV2, origin: LayoutPublicationOrigin = 'edit'): void {
+  if ($activeLayout.get() === layout) return
+  if (origin === 'navigation') navigationPublications.add(layout)
+  else navigationPublications.delete(layout)
+  $activeLayout.set(layout)
 }
 
 export function updateScopeLayout(
   scopeKey: GraphScopeKey,
   update: (scope: ScopeLayoutV1) => ScopeLayoutV1,
+  origin: LayoutPublicationOrigin = 'edit',
 ): LayoutRecordV2 | null {
   const record = $activeLayout.get()
   const scope = record?.scopeLayouts[scopeKey]
@@ -23,7 +33,7 @@ export function updateScopeLayout(
   const next = update(scope)
   if (next === scope) return record
   const updated = { ...record, scopeLayouts: { ...record.scopeLayouts, [scopeKey]: next } }
-  setActiveLayout(updated)
+  setActiveLayout(updated, origin)
   return updated
 }
 

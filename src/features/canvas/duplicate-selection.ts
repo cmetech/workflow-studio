@@ -290,6 +290,7 @@ export async function pasteSelection(
     positions,
     identityChanges: {
       ...emptyIdentityChanges(),
+      copySource: { workflowId: clipboard.sourceWorkflowId, definitionPath: clipboard.sourceDefinitionPath },
       nodeCopies: copiedIds.map((id) => ({
         from: nodeIdentity(clipboard.sourceScopeKey, id),
         to: nodeIdentity(context.scopeKey, idMap.get(id)!),
