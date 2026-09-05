@@ -153,7 +153,7 @@ describe('workflow YAML transactions', () => {
       boundaryChannel.port2.postMessage(undefined)
       const operation = applyWorkflowMutation(
         pair(),
-        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
         observedContract,
       )
 
@@ -193,7 +193,7 @@ describe('workflow YAML transactions', () => {
     try {
       const result = await applyWorkflowMutation(
         pair(),
-        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
         observedContract,
       )
 
@@ -230,7 +230,7 @@ describe('workflow YAML transactions', () => {
     try {
       const result = await applyWorkflowMutation(
         pair(),
-        { type: 'rename-node', from: 'prepare', to: 'setup' },
+        { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
         observedContract,
         async (proposedPair) => {
           events.push('analyze')
@@ -260,7 +260,7 @@ describe('workflow YAML transactions', () => {
     const current = pair()
     const result = await applyWorkflowMutation(
       current,
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       mutationContract,
     )
 
@@ -279,7 +279,11 @@ describe('workflow YAML transactions', () => {
   })
 
   it('rejects a delete that leaves recognized textual references for explicit user resolution', async () => {
-    const result = await applyWorkflowMutation(pair(), { type: 'delete-node', nodeId: 'prepare' }, mutationContract)
+    const result = await applyWorkflowMutation(
+      pair(),
+      { type: 'delete-node', scopeKey: 'root', nodeId: 'prepare' },
+      mutationContract,
+    )
 
     expect(result).toEqual(
       expect.objectContaining({
@@ -307,12 +311,12 @@ describe('workflow YAML transactions', () => {
 
     const commandResult = await applyWorkflowMutation(
       pair(),
-      { type: 'add-node', node: { id: 'draft', command: '' } },
+      { type: 'add-node', scopeKey: 'root', node: { id: 'draft', command: '' } },
       strictContract,
     )
     const promptResult = await applyWorkflowMutation(
       pair(),
-      { type: 'add-node', node: { id: 'draft', prompt: '' } },
+      { type: 'add-node', scopeKey: 'root', node: { id: 'draft', prompt: '' } },
       strictContract,
     )
 
@@ -358,12 +362,12 @@ nodes:
     )
     const graphMutation = await applyWorkflowMutation(
       withProfile,
-      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['loop'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'approval', dependsOn: ['loop'] },
       productionContract,
     )
     const unresolved = await applyWorkflowMutation(
       withProfile,
-      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['missing'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'approval', dependsOn: ['missing'] },
       productionContract,
     )
     const cyclePair = {
@@ -375,7 +379,7 @@ nodes:
     }
     const cycle = await applyWorkflowMutation(
       cyclePair,
-      { type: 'set-dependencies', nodeId: 'approval', dependsOn: ['loop'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'approval', dependsOn: ['loop'] },
       productionContract,
     )
     const duplicate = await applyWorkflowMutation(
@@ -385,7 +389,7 @@ nodes:
     )
     const missingKind = await applyWorkflowMutation(
       withProfile,
-      { type: 'add-node', node: { id: 'missing-kind' } },
+      { type: 'add-node', scopeKey: 'root', node: { id: 'missing-kind' } },
       productionContract,
     )
 
@@ -402,7 +406,7 @@ nodes:
     const source = validSource.replace('    prompt: "Use $prepare.output"', '    prompt: consume')
     const result = await applyWorkflowMutation(
       pair(source),
-      { type: 'delete-node', nodeId: 'prepare' },
+      { type: 'delete-node', scopeKey: 'root', nodeId: 'prepare' },
       mutationContract,
     )
 
@@ -415,7 +419,7 @@ nodes:
   it('rejects dependency mutations that would create an invalid DAG', async () => {
     const result = await applyWorkflowMutation(
       pair(),
-      { type: 'set-dependencies', nodeId: 'prepare', dependsOn: ['consume'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'prepare', dependsOn: ['consume'] },
       mutationContract,
     )
 
@@ -426,7 +430,7 @@ nodes:
   })
 
   it.each([
-    ['add-node', { type: 'add-node', node: { id: 'incomplete' } } as const, 'missing_node_kind'],
+    ['add-node', { type: 'add-node', scopeKey: 'root', node: { id: 'incomplete' } } as const, 'missing_node_kind'],
     [
       'set-field',
       {
@@ -472,7 +476,7 @@ nodes:
 `
     const result = await applyWorkflowMutation(
       pair(source),
-      { type: 'delete-node', nodeId: 'prepare' },
+      { type: 'delete-node', scopeKey: 'root', nodeId: 'prepare' },
       mutationContract,
     )
 
@@ -499,7 +503,7 @@ nodes:
     const source = validSource.replace('Use $prepare.output', 'prepare-prefix:$prepare.output')
     const result = await applyWorkflowMutation(
       pair(source),
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       patternContract,
     )
 
@@ -525,7 +529,7 @@ nodes:
     }
     const result = await applyWorkflowMutation(
       pair(),
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       invalidCaptureContract,
     )
 
@@ -535,7 +539,7 @@ nodes:
   it('supports exact undo/redo, clears redo on a new command, and detects revision conflicts', async () => {
     const first = await applyWorkflowMutation(
       pair(),
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       mutationContract,
     )
     expect(first).toMatchObject({ ok: true })
@@ -636,4 +640,127 @@ nodes:
     expect(Object.isFrozen(retained)).toBe(true)
     expect(Object.isFrozen(retained.mutation)).toBe(true)
   })
+})
+
+describe('scoped atomic YAML transactions', () => {
+  const definition =
+    'name: Scopes\ndescription: Scoped transactions\nnodes:\n  - id: outer\n    bash: echo\n  - id: repeat\n    loop_group:\n      until: done\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo\n'
+  async function setup(source = definition) {
+    const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+    const current = pair(source)
+    return {
+      contract,
+      current: {
+        ...current,
+        companion: {
+          ...current.companion!,
+          text: 'language_compatibility: archon-2026-07\noutward_action_nodes: ["repeat/child"] # keep\n',
+        },
+      },
+    }
+  }
+  it('renames both YAML documents with one analysis and one reversible history record', async () => {
+    const { contract, current } = await setup()
+    const result = await applyWorkflowMutation(
+      current,
+      { type: 'rename-node', scopeKey: 'loop-group:repeat', from: 'child', to: 'work' },
+      contract,
+    )
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    expect(result.pair.companion?.text).toBe(current.companion.text.replace('repeat/child', 'repeat/work'))
+    expect(result.transaction.before).toEqual({
+      definition: current.definition.text,
+      companion: current.companion.text,
+    })
+    expect(result.transaction.after.definition).toContain('id: work')
+    expect(result.analysis?.structurallyValid).toBe(true)
+  })
+  it('repairs an exact nodes-only group draft through each required control and first child, then deletes the last child', async () => {
+    const { contract, current } = await setup(
+      'name: Draft\ndescription: Draft progression\nnodes: [{id: outer, bash: echo}]\n',
+    )
+    let active = { ...current, companion: { ...current.companion, text: 'language_compatibility: archon-2026-07\n' } }
+    const mutations: import('$src/lib/yaml/mutations').WorkflowMutation[] = [
+      { type: 'add-node', scopeKey: 'root', node: { id: 'repeat', loop_group: { nodes: [] } } },
+      { type: 'set-field', document: 'definition', path: ['nodes', 1, 'loop_group', 'until'], value: 'done' },
+      { type: 'set-field', document: 'definition', path: ['nodes', 1, 'loop_group', 'max_iterations'], value: 2 },
+      { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', bash: 'echo' } },
+      { type: 'delete-node', scopeKey: 'loop-group:repeat', nodeId: 'child' },
+    ]
+    for (const [index, mutation] of mutations.entries()) {
+      const result = await applyWorkflowMutation(active, mutation, contract)
+      expect(result, `step ${index}`).toMatchObject({ ok: true })
+      if (!result.ok) return
+      expect(result.analysis?.structurallyValid).toBe(index === 3)
+      if (index !== 3) expect(result.analysis?.visuallyAuthorable).toBe(true)
+      active = result.pair as typeof active
+    }
+  })
+  it.each([
+    { type: 'set-dependencies', scopeKey: 'loop-group:repeat', nodeId: 'child', dependsOn: ['outer'] },
+    { type: 'set-dependencies', scopeKey: 'loop-group:repeat', nodeId: 'child', dependsOn: ['child'] },
+    { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', bash: 'echo' } },
+    { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'nested', loop_group: { nodes: [] } } },
+  ] as const)('rolls back forbidden scoped operation $type', async (mutation) => {
+    const { contract, current } = await setup()
+    const before = structuredClone(current)
+    expect(await applyWorkflowMutation(current, mutation, contract)).toMatchObject({ ok: false })
+    expect(current).toEqual(before)
+  })
+})
+
+it.each([
+  { type: 'set-field', document: 'definition', path: ['nodes', 0, 'loop_group', 'max_iterations'], value: 0 },
+  { type: 'set-field', document: 'definition', path: ['nodes', 0, 'loop_group', 'unknown'], value: 'bad' },
+  {
+    type: 'set-field',
+    document: 'definition',
+    path: ['nodes', 0, 'loop_group', 'until_bash'],
+    value: 'echo $missing.output',
+  },
+  { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', bash: 'echo', unknown: true } },
+  { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', bash: 'echo', depends_on: ['child'] } },
+  { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', loop_group: { nodes: [] } } },
+] as const)('does not let missing draft controls conceal invalid $type values', async (mutation) => {
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const current = pair(
+    'name: Draft\ndescription: Draft validity\nnodes:\n  - id: repeat\n    loop_group:\n      nodes: []\n',
+  )
+  current.companion!.text = 'language_compatibility: archon-2026-07\n'
+  const before = structuredClone(current)
+  expect(await applyWorkflowMutation(current, mutation, contract)).toMatchObject({ ok: false })
+  expect(current).toEqual(before)
+})
+
+it('adds a valid first child before either control is configured', async () => {
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const current = pair(
+    'name: Draft\ndescription: First child\nnodes:\n  - id: repeat\n    loop_group:\n      nodes: []\n',
+  )
+  current.companion!.text = 'language_compatibility: archon-2026-07\n'
+  const result = await applyWorkflowMutation(
+    current,
+    { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'child', bash: 'echo' } },
+    contract,
+  )
+  expect(result).toMatchObject({ ok: true, analysis: { structurallyValid: false, visuallyAuthorable: true } })
+})
+
+it('returns a configured group with outer dependencies and optional settings to an empty repairable draft', async () => {
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const current = pair(
+    'name: Draft\ndescription: Last child\nnodes:\n  - id: outer\n    bash: echo\n  - id: repeat\n    depends_on: [outer]\n    loop_group:\n      until: done\n      max_iterations: 2\n      fresh_context: true\n      nodes:\n        - id: child\n          bash: echo\n',
+  )
+  current.companion!.text = 'language_compatibility: archon-2026-07\n'
+  const result = await applyWorkflowMutation(
+    current,
+    { type: 'delete-node', scopeKey: 'loop-group:repeat', nodeId: 'child' },
+    contract,
+  )
+  expect(result).toMatchObject({ ok: true, analysis: { structurallyValid: false, visuallyAuthorable: true } })
+  if (result.ok) {
+    expect(result.pair.definition.text).toContain('    depends_on: [outer]\n')
+    expect(result.pair.definition.text).toContain('      fresh_context: true\n')
+  }
 })

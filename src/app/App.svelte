@@ -855,7 +855,8 @@
         const current = documentSessionStore.get()
         return current.pair && current.revision ? { pair: current.pair, revision: current.revision } : null
       },
-      applyMutation: (pair, mutation, contract) => applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker),
+      applyMutation: (pair, mutation, contract) =>
+        applyWorkflowMutation(pair, mutation, contract, analyzePairInWorker, session.analysis ?? undefined),
       commit: (pair, transaction, analysis) => {
         historyStore.set(recordTransaction(historyStore.get(), transaction))
         documentWorkspace.changed(pair, 'visual', analysis)
@@ -1017,7 +1018,7 @@
 
     let mutation: WorkflowMutation
     if (node && graphFields === 'depends_on' && !commit.remove && Array.isArray(commit.value)) {
-      mutation = { type: 'set-dependencies', nodeId: node.id, dependsOn: commit.value.map(String) }
+      mutation = { type: 'set-dependencies', scopeKey: 'root', nodeId: node.id, dependsOn: commit.value.map(String) }
     } else if (commit.remove) {
       mutation = { type: 'delete-field', document: commit.field.document, path }
     } else {
@@ -1048,7 +1049,13 @@
 
     let result: ApplyWorkflowMutationResult
     try {
-      result = await applyWorkflowMutation(session.pair, mutation, mutationContract, analyzePairInWorker)
+      result = await applyWorkflowMutation(
+        session.pair,
+        mutation,
+        mutationContract,
+        analyzePairInWorker,
+        session.analysis ?? undefined,
+      )
     } catch (error) {
       workspaceError =
         error instanceof Error ? error.message : 'Document analysis failed before the Inspector edit could be applied.'

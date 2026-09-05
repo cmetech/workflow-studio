@@ -474,6 +474,7 @@ describe('canvas YAML actions', () => {
     expect(fixture.apply).toHaveBeenCalledOnce()
     expect(fixture.apply.mock.calls[0]?.[1]).toEqual({
       type: 'set-dependencies',
+      scopeKey: 'root',
       nodeId: 'leaf',
       dependsOn: ['middle', 'root'],
     })

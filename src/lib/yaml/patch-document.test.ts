@@ -245,6 +245,7 @@ unknown: {keep: "exact", spacing: [one,  two]}
       richDefinition,
       {
         type: 'add-node',
+        scopeKey: 'root',
         afterNodeId: 'prepare',
         node: { id: 'middle', depends_on: ['prepare'], command: 'middle' },
       },
@@ -258,7 +259,11 @@ unknown: {keep: "exact", spacing: [one,  two]}
     expectUntouched(richDefinition, added.text, '    depends_on: ["prepare"]\n')
     expectUntouched(richDefinition, added.text, '# workflow footer\n')
 
-    const deleted = patchWorkflowDocument(added.text, { type: 'delete-node', nodeId: 'middle' }, mutationContract)
+    const deleted = patchWorkflowDocument(
+      added.text,
+      { type: 'delete-node', scopeKey: 'root', nodeId: 'middle' },
+      mutationContract,
+    )
     expect(deleted).toMatchObject({ ok: true })
     if (!deleted.ok) return
     expect(parse(deleted.text).nodes.map((node: { id: string }) => node.id)).toEqual(['prepare', 'consume'])
@@ -273,7 +278,7 @@ unknown: {keep: "exact", spacing: [one,  two]}
     )
     const result = patchWorkflowDocument(
       source,
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       mutationContract,
     )
     expect(result).toMatchObject({ ok: true })
@@ -306,7 +311,11 @@ unknown: {keep: "exact", spacing: [one,  two]}
     }
     const source = `name: Unicode\ndescription: Rename Unicode IDs\nnodes:\n  - id: café\n    command: prepare\n  - id: consume\n    depends_on: [café]\n    prompt: "Use $café.output"\n`
 
-    const result = patchWorkflowDocument(source, { type: 'rename-node', from: 'café', to: 'résumé' }, unicodeContract)
+    const result = patchWorkflowDocument(
+      source,
+      { type: 'rename-node', scopeKey: 'root', from: 'café', to: 'résumé' },
+      unicodeContract,
+    )
 
     expect(result).toMatchObject({ ok: true })
     if (!result.ok) return
@@ -401,7 +410,7 @@ unknown: {keep: "exact", spacing: [one,  two]}
   it('refuses graph mutations when the node sequence is alias-derived and ambiguous', () => {
     const result = patchWorkflowDocument(
       ambiguousNodesAlias,
-      { type: 'rename-node', from: 'prepare', to: 'setup' },
+      { type: 'rename-node', scopeKey: 'root', from: 'prepare', to: 'setup' },
       mutationContract,
     )
 
@@ -458,14 +467,14 @@ unknown: {keep: "exact", spacing: [one,  two]}
           ].join('\n')
           const added = patchWorkflowDocument(
             source,
-            { type: 'add-node', node: { id: candidate, command: `run ${candidate}` } },
+            { type: 'add-node', scopeKey: 'root', node: { id: candidate, command: `run ${candidate}` } },
             mutationContract,
           )
           expect(added).toMatchObject({ ok: true })
           if (!added.ok) return
           const deleted = patchWorkflowDocument(
             added.text,
-            { type: 'delete-node', nodeId: candidate },
+            { type: 'delete-node', scopeKey: 'root', nodeId: candidate },
             mutationContract,
           )
           expect(deleted).toMatchObject({ ok: true })
@@ -487,3 +496,157 @@ function expectProductionValue(source: string): Record<string, unknown> {
   expect(parsed.parsed).not.toBeNull()
   return (parsed.parsed?.document.toJS({ maxAliasCount: 1_000 }) ?? {}) as Record<string, unknown>
 }
+
+describe('stable scoped source patches', () => {
+  it('renames only resolved body/current/previous/control references with Unicode prefixes', async () => {
+    const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+    const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+    const source = (await import('../../../tests/fixtures/yaml/patch-golden/loop-group-rich.yaml?raw')).default
+    const result = patchWorkflowDocument(
+      source,
+      { type: 'rename-node', scopeKey: 'loop-group:repeat', from: 'child', to: 'renamed' },
+      contract,
+    )
+    const expected = source
+      .replace("id: 'child'", "id: 'renamed'")
+      .replace('["child"]', '["renamed"]')
+      .replace('test "$child.output"', 'test "$renamed.output"')
+      .replace('😀 é $child.output / $LOOP_PREV.child.output', '😀 é $renamed.output / $LOOP_PREV.renamed.output')
+    expect(result).toEqual({ ok: true, text: expected })
+  })
+  it('adds and deletes a child in a flow body without normalizing sibling items', async () => {
+    const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+    const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+    const source = 'nodes: [{id: repeat, loop_group: {nodes: [{id: child, bash: "echo", unknown: [a,  b]}]}}]\n'
+    const added = patchWorkflowDocument(
+      source,
+      { type: 'add-node', scopeKey: 'loop-group:repeat', node: { id: 'next', bash: 'echo' } },
+      contract,
+    )
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    expect(added.text).toContain('{id: child, bash: "echo", unknown: [a,  b]}')
+    expect(
+      patchWorkflowDocument(
+        added.text,
+        { type: 'delete-node', scopeKey: 'loop-group:repeat', nodeId: 'next' },
+        contract,
+      ),
+    ).toEqual({ ok: true, text: source })
+  })
+})
+
+it('preserves unrelated flow mapping fields when adding and removing group settings', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source = 'nodes: [{id: repeat, loop_group: {nodes: [], unknown: [a,  b]}}]\n'
+  const result = patchWorkflowDocument(
+    source,
+    { type: 'set-field', document: 'definition', path: ['nodes', 0, 'loop_group', 'until'], value: 'done' },
+    contract,
+  )
+  expect(result.ok).toBe(true)
+  if (!result.ok) return
+  expect(result.text).toContain('nodes: [], unknown: [a,  b]')
+  expect(
+    patchWorkflowDocument(
+      result.text,
+      { type: 'delete-field', document: 'definition', path: ['nodes', 0, 'loop_group', 'until'] },
+      contract,
+    ),
+  ).toEqual({ ok: true, text: source })
+})
+
+it('renames indexed Bash references while preserving comments, escaped/doubled dollars and literal resource names', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source =
+    'name: Bash\ndescription: Bash references\nnodes:\n  - id: repeat\n    loop_group:\n      until: done\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo\n        - id: consumer\n          depends_on: [child]\n          bash: |-\n            echo "😀 $child.output"\n            # $child.output\n            echo $$child.output \\$child.output\n        - id: resource\n          command: "$child.output"\n'
+  const result = patchWorkflowDocument(
+    source,
+    { type: 'rename-node', scopeKey: 'loop-group:repeat', from: 'child', to: 'work' },
+    contract,
+  )
+  expect(result).toEqual({
+    ok: true,
+    text: source
+      .replace('id: child', 'id: work')
+      .replace('[child]', '[work]')
+      .replace('😀 $child.output', '😀 $work.output'),
+  })
+})
+
+it('emits the exact nodes-only block draft without invented group defaults', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source = 'name: Draft\ndescription: Exact draft\nnodes:\n  - id: outer\n    bash: echo\n'
+  expect(
+    patchWorkflowDocument(
+      source,
+      { type: 'add-node', scopeKey: 'root', node: { id: 'repeat_work', loop_group: { nodes: [] } } },
+      contract,
+    ),
+  ).toEqual({ ok: true, text: source + '  - id: repeat_work\n    loop_group:\n      nodes: []\n' })
+})
+
+it('keeps sibling shadowing when a root producer is renamed', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source =
+    'name: Shadowing\ndescription: Root scope\nnodes:\n  - id: child\n    bash: echo\n  - id: repeat\n    depends_on: [child]\n    loop_group:\n      until: done\n      max_iterations: 2\n      nodes:\n        - id: child\n          bash: echo\n        - id: consumer\n          depends_on: [child]\n          prompt: "$child.output"\n  - id: root_consumer\n    depends_on: [child]\n    prompt: "$child.output"\n'
+  const expected = source
+    .replace('  - id: child', '  - id: outer')
+    .replace('    depends_on: [child]', '    depends_on: [outer]')
+    .replace(
+      '  - id: root_consumer\n    depends_on: [child]\n    prompt: "$child.output"',
+      '  - id: root_consumer\n    depends_on: [outer]\n    prompt: "$outer.output"',
+    )
+  expect(
+    patchWorkflowDocument(source, { type: 'rename-node', scopeKey: 'root', from: 'child', to: 'outer' }, contract),
+  ).toEqual({ ok: true, text: expected })
+})
+
+it('retains quoted dependency scalars and their comments when connecting another node', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source =
+    'nodes:\n  - id: repeat\n    loop_group:\n      nodes:\n        - id: a\n          bash: echo\n        - id: b\n          bash: echo\n        - id: c\n          bash: echo\n          depends_on:\n            - "a" # retained dependency\n'
+  const result = patchWorkflowDocument(
+    source,
+    { type: 'set-dependencies', scopeKey: 'loop-group:repeat', nodeId: 'c', dependsOn: ['a', 'b'] },
+    contract,
+  )
+  expect(result.ok).toBe(true)
+  if (result.ok) expect(result.text).toContain('            - "a" # retained dependency\n')
+})
+
+it('returns a rejection if current reference discovery encounters an unresolved YAML alias', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  expect(
+    patchWorkflowDocument(
+      'unknown: *missing\nnodes: [{id: child, bash: echo}]\n',
+      { type: 'rename-node', scopeKey: 'root', from: 'child', to: 'work' },
+      contract,
+    ),
+  ).toMatchObject({ ok: false })
+})
+
+it('refuses a generic graph field edit through an anchored body shared by an alias', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source =
+    'nodes:\n  - id: repeat\n    loop_group:\n      nodes: &body [{id: child, bash: echo}]\n  - id: sibling\n    loop_group:\n      nodes: *body\n'
+  expect(
+    patchWorkflowDocument(
+      source,
+      {
+        type: 'set-field',
+        document: 'definition',
+        path: ['nodes', 0, 'loop_group', 'nodes', 0, 'bash'],
+        value: 'changed',
+      },
+      contract,
+    ),
+  ).toMatchObject({ ok: false, code: 'mutation_ambiguous_alias' })
+})

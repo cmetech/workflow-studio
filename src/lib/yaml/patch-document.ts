@@ -1,6 +1,12 @@
-import { isAlias, isMap, isScalar, isSeq, Scalar, stringify, type Document, type YAMLMap, type YAMLSeq } from 'yaml'
+import { isAlias, isMap, isScalar, isSeq, Scalar, stringify, Document, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { DocumentKind } from '$src/lib/documents/types'
+import { projectWorkflow } from '$src/lib/projection/project-workflow'
+import { buildReferenceIndex, prepareReferenceContract, type ReferenceIndex } from '$src/lib/references/reference-index'
+import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
+import { expandFieldPath } from '$src/lib/validation/scoped-dag-validator'
+import { codePointToEditorOffset } from '$src/lib/references/unicode'
+import { graphFields, resolveGraphScope, type GraphFields } from './graph-scope'
 import { parseWorkflowYaml } from './parse-document'
 import type { WorkflowMutation } from './mutations'
 
@@ -27,14 +33,9 @@ export type PatchWorkflowDocumentResult =
         | 'mutation_duplicate_node_id'
         | 'mutation_ambiguous_alias'
         | 'mutation_contract_invalid'
+        | 'mutation_stale_scope'
       message: string
     }
-
-interface GraphFields {
-  nodesPath: readonly string[]
-  idPath: readonly string[]
-  dependenciesPath: readonly string[]
-}
 
 /**
  * Patch strategy: retained `yaml` Document nodes identify exact CST source ranges.
@@ -49,6 +50,7 @@ export function patchWorkflowDocument(
   source: string,
   mutation: Exclude<WorkflowMutation, { type: 'replace-document' }>,
   contract: AuthoringContract,
+  referenceIndex?: ReferenceIndex,
 ): PatchWorkflowDocumentResult {
   const documentKind: DocumentKind = 'document' in mutation ? mutation.document : 'definition'
   const parsed = parseWorkflowYaml(source, {
@@ -61,6 +63,12 @@ export function patchWorkflowDocument(
 
   const document = parsed.parsed.document
   if (mutation.type === 'set-field' || mutation.type === 'delete-field') {
+    if (
+      documentKind === 'definition' &&
+      graphMutationPath(mutation.path, contract) &&
+      pathCrossesSharedNode(document, mutation.path)
+    )
+      return ambiguousAlias()
     const aliasCrossing = aliasCrossingPath(document, mutation.path)
     if (aliasCrossing) {
       if (
@@ -78,9 +86,11 @@ export function patchWorkflowDocument(
         const parent = document.getIn(parentPath, true)
         if (isMap(parent) && typeof key === 'string') {
           if (parent.flow) {
-            const working = document.clone() as Document.Parsed
-            working.setIn(mutation.path, mutation.value)
-            return patchClonedPaths(source, document, working, [parentPath], contract, documentKind)
+            return verifiedPatch(
+              applySourceEdits(source, [flowMappingInsertion(parent, key, mutation.value)]),
+              contract,
+              documentKind,
+            )
           }
           return verifiedPatch(
             applySourceEdits(source, [mappingEntryInsertion(source, parent, key, mutation.value)]),
@@ -107,7 +117,11 @@ export function patchWorkflowDocument(
     }
     const parentPath = mutation.path.slice(0, -1)
     const parent = document.getIn(parentPath, true)
-    if ((isMap(parent) && parent.flow) || isSeq(parent)) {
+    if (isMap(parent) && parent.flow) {
+      const edit = flowMappingDeletion(source, parent, mutation.path.at(-1))
+      return edit ? verifiedPatch(applySourceEdits(source, [edit]), contract, documentKind) : ambiguousAlias()
+    }
+    if (isSeq(parent)) {
       const working = document.clone() as Document.Parsed
       working.deleteIn(mutation.path)
       return patchClonedPaths(source, document, working, [parentPath], contract, documentKind)
@@ -118,20 +132,29 @@ export function patchWorkflowDocument(
       : { ok: false, code: 'mutation_path_missing', message: 'The requested mapping field cannot be deleted.' }
   }
 
-  const fields = graphFields(contract)
-  if (!fields) {
-    return {
-      ok: false,
-      code: 'mutation_contract_invalid',
-      message: 'The active contract does not publish usable graph field paths.',
+  const scope = resolveGraphScope(document, mutation.scopeKey, contract)
+  if (!scope.ok) return scope
+  const { fields, nodes } = scope
+  if (
+    contract.contract_reader_version === 3 &&
+    (mutation.type === 'rename-node' || mutation.type === 'delete-node') &&
+    !referenceIndex
+  ) {
+    let prepared
+    try {
+      prepared = prepareReferenceContract(contract)
+    } catch {
+      return { ok: false, code: 'mutation_contract_invalid', message: 'Reference capabilities are unavailable.' }
+    }
+    if (!prepared)
+      return { ok: false, code: 'mutation_contract_invalid', message: 'Reference capabilities are unavailable.' }
+    try {
+      const projection = projectWorkflow(parsed.parsed, null, contract.profile, contract).projection
+      referenceIndex = buildReferenceIndex(projection.definition, projection, prepared)
+    } catch {
+      return ambiguousAlias()
     }
   }
-  const nodes = document.getIn(fields.nodesPath, true)
-  if (isAlias(nodes)) return ambiguousAlias()
-  if (!isSeq(nodes)) {
-    return { ok: false, code: 'mutation_path_missing', message: 'The contract node sequence does not exist.' }
-  }
-  if (nodes.items.some(isAlias)) return ambiguousAlias()
 
   if (mutation.type === 'add-node') {
     if (nodeIndex(nodes, fields.idPath, String(valueAtObjectPath(mutation.node, fields.idPath) ?? '')) !== -1) {
@@ -145,11 +168,11 @@ export function patchWorkflowDocument(
       return { ok: false, code: 'mutation_node_missing', message: 'The requested insertion node does not exist.' }
     }
     if (nodes.flow) {
-      const working = document.clone() as Document.Parsed
-      const workingNodes = working.getIn(fields.nodesPath, true)
-      if (!isSeq(workingNodes)) return ambiguousAlias()
-      workingNodes.items.splice(afterIndex + 1, 0, working.createNode(mutation.node))
-      return patchClonedPaths(source, document, working, [fields.nodesPath], contract, 'definition')
+      return verifiedPatch(
+        applySourceEdits(source, [flowItemInsertion(nodes, afterIndex, mutation.node)]),
+        contract,
+        'definition',
+      )
     }
     const insertion = sequenceItemInsertion(source, nodes, afterIndex, mutation.node)
     return verifiedPatch(applySourceEdits(source, [insertion]), contract, 'definition')
@@ -176,19 +199,39 @@ export function patchWorkflowDocument(
       if (isScalar(workingDependency)) workingDependency.value = mutation.to
       paths.push(dependency)
     }
-    for (const reference of referenceScalarNodes(document, nodes, fields, contract)) {
-      const rewritten = rewriteReferences(reference.scalar.value, reference.rule, mutation.from, mutation.to)
-      if (rewritten === null) {
-        return {
-          ok: false,
-          code: 'mutation_contract_invalid',
-          message: `Reference rule "${reference.rule.id}" does not expose a safe node-ID capture span.`,
-        }
+    if (referenceIndex) {
+      for (const occurrence of referenceIndex.occurrences) {
+        const tokens = occurrence.references.filter(
+          (token) =>
+            token.resolvedProducer?.scopeKey === mutation.scopeKey && token.resolvedProducer.nodeId === mutation.from,
+        )
+        if (!tokens.length) continue
+        if (pathCrossesSharedNode(document, occurrence.valuePath)) return ambiguousAlias()
+        const scalar = document.getIn(occurrence.valuePath, true)
+        if (!isScalar(scalar) || scalar.anchor || scalar.value !== occurrence.authoredText) return ambiguousAlias()
+        const edits = tokens.map((token) => {
+          const prefix = token.kind === 'previous' ? '$LOOP_PREV.' : '$'
+          const start = codePointToEditorOffset(occurrence.authoredText, token.start + Array.from(prefix).length)
+          return { start, end: start + token.producerId.length, text: mutation.to }
+        })
+        setPreservingScalarStyle(working, occurrence.valuePath, applySourceEdits(occurrence.authoredText, edits))
+        paths.push(occurrence.valuePath)
       }
-      if (rewritten === reference.scalar.value) continue
-      const workingReference = working.getIn(reference.documentPath, true)
-      if (isScalar(workingReference)) workingReference.value = rewritten
-      paths.push(reference.documentPath)
+    } else {
+      for (const reference of referenceScalarNodes(document, nodes, fields, contract)) {
+        const rewritten = rewriteReferences(reference.scalar.value, reference.rule, mutation.from, mutation.to)
+        if (rewritten === null) {
+          return {
+            ok: false,
+            code: 'mutation_contract_invalid',
+            message: `Reference rule "${reference.rule.id}" does not expose a safe node-ID capture span.`,
+          }
+        }
+        if (rewritten === reference.scalar.value) continue
+        const workingReference = working.getIn(reference.documentPath, true)
+        if (isScalar(workingReference)) workingReference.value = rewritten
+        paths.push(reference.documentPath)
+      }
     }
     return patchClonedPaths(source, document, working, paths, contract, 'definition')
   }
@@ -197,12 +240,28 @@ export function patchWorkflowDocument(
     const index = nodeIndex(nodes, fields.idPath, mutation.nodeId)
     if (index === -1) return missingNode(mutation.nodeId)
     if (hasGraphAlias(document, nodes, fields, contract)) return ambiguousAlias()
-    const references = referenceScalarNodes(document, nodes, fields, contract)
-      .filter(
-        ({ nodeId, scalar, rule }) =>
-          nodeId !== mutation.nodeId && findReferences(scalar.value, rule).includes(mutation.nodeId),
-      )
-      .map(({ nodeId, fieldPath, scalar }) => ({ nodeId, fieldPath, value: scalar.value }))
+    const references = referenceIndex
+      ? referenceIndex.occurrences
+          .filter(
+            (occurrence) =>
+              !(occurrence.scopeKey === mutation.scopeKey && occurrence.consumerId === mutation.nodeId) &&
+              occurrence.references.some(
+                (token) =>
+                  token.resolvedProducer?.scopeKey === mutation.scopeKey &&
+                  token.resolvedProducer.nodeId === mutation.nodeId,
+              ),
+          )
+          .map((occurrence) => ({
+            nodeId: occurrence.consumerId,
+            fieldPath: occurrence.valuePath,
+            value: occurrence.authoredText,
+          }))
+      : referenceScalarNodes(document, nodes, fields, contract)
+          .filter(
+            ({ nodeId, scalar, rule }) =>
+              nodeId !== mutation.nodeId && findReferences(scalar.value, rule).includes(mutation.nodeId),
+          )
+          .map(({ nodeId, fieldPath, scalar }) => ({ nodeId, fieldPath, value: scalar.value }))
     if (references.length > 0) {
       return {
         ok: false,
@@ -221,7 +280,7 @@ export function patchWorkflowDocument(
         )
       }
     }
-    if (nodes.items.length === 1) {
+    if (nodes.items.length === 1 && !nodes.flow) {
       const workingNodes = working.getIn(fields.nodesPath, true)
       if (!isSeq(workingNodes)) return ambiguousAlias()
       workingNodes.items = []
@@ -229,21 +288,24 @@ export function patchWorkflowDocument(
     }
     const dependencyEdits = clonedPathEdits(source, document, working, dependencyPaths, contract, 'definition')
     if (!dependencyEdits) return ambiguousAlias()
-    const nodeEdit = sequenceItemDeletion(source, nodes, index)
+    const nodeEdit = nodes.flow ? flowItemDeletion(source, nodes, index) : sequenceItemDeletion(source, nodes, index)
     return verifiedPatch(applySourceEdits(source, [...dependencyEdits, nodeEdit]), contract, 'definition')
   }
 
   const index = nodeIndex(nodes, fields.idPath, mutation.nodeId)
   if (index === -1) return missingNode(mutation.nodeId)
   const path = [...fields.nodesPath, index, ...fields.dependenciesPath]
-  if (pathCrossesAlias(document, path.slice(0, -1))) return ambiguousAlias()
+  if (pathCrossesSharedNode(document, path.slice(0, -1))) return ambiguousAlias()
   const existing = document.getIn(path, true)
   if (isAlias(existing)) return ambiguousAlias()
   const working = document.clone() as Document.Parsed
   const workingExisting = working.getIn(path, true)
   if (isSeq(existing)) {
     if (!isSeq(workingExisting)) return ambiguousAlias()
-    workingExisting.items = mutation.dependsOn.map((dependency) => working.createNode(dependency))
+    const authored = new Map(workingExisting.items.filter(isScalar).map((scalar) => [scalar.value, scalar]))
+    workingExisting.items = mutation.dependsOn.map(
+      (dependency) => authored.get(dependency) ?? working.createNode(dependency),
+    )
     return patchClonedPaths(source, document, working, [path], contract, 'definition')
   }
   if (fields.dependenciesPath.length !== 1) {
@@ -257,11 +319,84 @@ export function patchWorkflowDocument(
   if (!isMap(node)) return ambiguousAlias()
   return verifiedPatch(
     applySourceEdits(source, [
-      mappingEntryInsertion(source, node, fields.dependenciesPath[0] ?? '', mutation.dependsOn),
+      node.flow
+        ? flowMappingInsertion(node, fields.dependenciesPath[0] ?? '', mutation.dependsOn)
+        : mappingEntryInsertion(source, node, fields.dependenciesPath[0] ?? '', mutation.dependsOn),
     ]),
     contract,
     'definition',
   )
+}
+
+export interface WorkflowPairSources {
+  readonly definition: string
+  readonly companion: string | null
+}
+
+/** Prepare both texts before the transaction performs its single proposed-pair analysis. */
+export function patchWorkflowPair(
+  sources: WorkflowPairSources,
+  mutation: Exclude<WorkflowMutation, { type: 'replace-document' }>,
+  contract: AuthoringContract,
+  referenceIndex?: ReferenceIndex,
+): { ok: true; texts: WorkflowPairSources } | Exclude<PatchWorkflowDocumentResult, { ok: true }> {
+  const kind = 'document' in mutation ? mutation.document : 'definition'
+  const source = sources[kind]
+  if (source === null) return { ok: false, code: 'mutation_path_missing', message: 'The requested document is absent.' }
+  const result = patchWorkflowDocument(source, mutation, contract, referenceIndex)
+  if (!result.ok) return result
+  let companion = kind === 'companion' ? result.text : sources.companion
+  if (
+    companion !== null &&
+    (mutation.type === 'rename-node' || mutation.type === 'delete-node') &&
+    contract.contract_reader_version === 3
+  ) {
+    const parsed = parseWorkflowYaml(companion, { document: 'companion', maxBytes: contract.limits.max_document_bytes })
+    if (!parsed.parsed)
+      return { ok: false, code: 'mutation_invalid_yaml', message: 'The companion YAML cannot be patched safely.' }
+    const capabilities = readScopedDagCapabilities(contract)
+    const descriptor = capabilities.referenceSemantics.companionNodePaths
+    if (descriptor.format !== 'group/child')
+      return { ok: false, code: 'mutation_contract_invalid', message: 'Unsupported companion node path format.' }
+    const from = mutation.type === 'rename-node' ? mutation.from : mutation.nodeId
+    const group = mutation.scopeKey === 'root' ? null : mutation.scopeKey.slice('loop-group:'.length)
+    let value: unknown
+    try {
+      value = parsed.parsed.document.toJS({ maxAliasCount: 1_000 }) as unknown
+    } catch {
+      return ambiguousAlias()
+    }
+    for (const declared of descriptor.fieldPaths) {
+      for (const occurrence of expandFieldPath(value, declared.startsWith('sidecar.') ? declared.slice(8) : declared)) {
+        if (typeof occurrence.value !== 'string') continue
+        const matches =
+          group === null
+            ? occurrence.value === from || occurrence.value.startsWith(`${from}/`)
+            : occurrence.value === `${group}/${from}`
+        if (!matches) continue
+        if (mutation.type === 'delete-node')
+          return {
+            ok: false,
+            code: 'mutation_requires_resolution',
+            message: 'Companion node references must be resolved before deleting this node.',
+            references: [{ nodeId: from, fieldPath: occurrence.path, value: occurrence.value }],
+          }
+        if (pathCrossesSharedNode(parsed.parsed.document, occurrence.path)) return ambiguousAlias()
+        const scalar = parsed.parsed.document.getIn(occurrence.path, true)
+        if (!isScalar(scalar) || scalar.anchor) return ambiguousAlias()
+        const replacement =
+          group === null ? mutation.to + occurrence.value.slice(from.length) : `${group}/${mutation.to}`
+        const patch = patchWorkflowDocument(
+          companion,
+          { type: 'set-field', document: 'companion', path: occurrence.path, value: replacement },
+          contract,
+        )
+        if (!patch.ok) return patch
+        companion = patch.text
+      }
+    }
+  }
+  return { ok: true, texts: { definition: kind === 'definition' ? result.text : sources.definition, companion } }
 }
 
 interface SourceEdit {
@@ -382,7 +517,9 @@ function clonedPathEdits(
     const before = nodeRange(original.getIn(path, true))
     const after = nodeRange(reparsed.parsed.document.getIn(path, true))
     if (!before || !after) return null
-    edits.push({ start: before[0], end: before[1], text: serialized.slice(after[0], after[1]) })
+    let replacement = serialized.slice(after[0], after[1])
+    if (source.slice(before[0], before[1]).endsWith('\n') && !replacement.endsWith('\n')) replacement += '\n'
+    edits.push({ start: before[0], end: before[1], text: replacement })
   }
   return edits
 }
@@ -418,6 +555,47 @@ function mappingEntryInsertion(source: string, map: YAMLMap, key: string, value:
   const indentation = prefix.includes('-') ? ' '.repeat(prefix.length) : prefix
   const rendered = indentLines(stringify({ [key]: value }), indentation)
   return { start: mapRange[2], end: mapRange[2], text: rendered }
+}
+
+function flowMappingInsertion(map: YAMLMap, key: string, value: unknown): SourceEdit {
+  const document = new Document({ [key]: value })
+  if (isMap(document.contents)) document.contents.flow = true
+  const text = document.toString({ lineWidth: 0 }).trim().slice(1, -1).trim()
+  const previous = nodeRange(map.items.at(-1)?.value) ?? nodeRange(map.items.at(-1)?.key)
+  const start = previous?.[1] ?? nodeRange(map)![0] + 1
+  return { start, end: start, text: previous ? `, ${text}` : text }
+}
+
+function flowMappingDeletion(source: string, map: YAMLMap, key: unknown): SourceEdit | null {
+  const index = map.items.findIndex((pair) => isScalar(pair.key) && pair.key.value === key)
+  const pair = map.items[index]
+  const start = nodeRange(pair?.key)
+  const end = nodeRange(pair?.value) ?? start
+  if (!start || !end) return null
+  const previous = nodeRange(map.items[index - 1]?.value) ?? nodeRange(map.items[index - 1]?.key)
+  const next = nodeRange(map.items[index + 1]?.key)
+  return {
+    start: previous ? source.indexOf(',', previous[1]) : start[0],
+    end: previous || !next ? end[1] : next[0],
+    text: '',
+  }
+}
+
+function flowItemInsertion(sequence: YAMLSeq, afterIndex: number, value: unknown): SourceEdit {
+  const item = new Document(value)
+  if (isMap(item.contents) || isSeq(item.contents)) item.contents.flow = true
+  const text = item.toString({ lineWidth: 0 }).trimEnd()
+  const previous = nodeRange(sequence.items[afterIndex])
+  const start = previous?.[1] ?? nodeRange(sequence)![0] + 1
+  return { start, end: start, text: previous ? `, ${text}` : text }
+}
+
+function flowItemDeletion(source: string, sequence: YAMLSeq, index: number): SourceEdit {
+  const range = nodeRange(sequence.items[index])!
+  const previous = nodeRange(sequence.items[index - 1])
+  const next = nodeRange(sequence.items[index + 1])
+  if (previous) return { start: source.indexOf(',', previous[1]), end: range[1], text: '' }
+  return { start: range[0], end: next ? next[0] : range[1], text: '' }
 }
 
 function sequenceItemInsertion(source: string, sequence: YAMLSeq, afterIndex: number, value: unknown): SourceEdit {
@@ -548,35 +726,6 @@ function containsAlias(node: unknown): boolean {
   return false
 }
 
-function graphFields(contract: AuthoringContract): GraphFields | null {
-  const rule = contract.semantic_rules.find(
-    (candidate) =>
-      candidate.status !== 'deferred' &&
-      candidate.applicability.profiles.includes(contract.profile) &&
-      candidate.applicability.documents.includes('definition') &&
-      typeof candidate.parameters.nodes_path === 'string' &&
-      typeof candidate.parameters.id_field === 'string' &&
-      typeof candidate.parameters.dependencies_field === 'string',
-  )
-  if (!rule) return null
-  const nodesPath = parseFieldPath(rule.parameters.nodes_path)
-  const idPath = parseFieldPath(rule.parameters.id_field)
-  const dependenciesPath = parseFieldPath(rule.parameters.dependencies_field)
-  return nodesPath && idPath && dependenciesPath ? { nodesPath, idPath, dependenciesPath } : null
-}
-
-function parseFieldPath(value: unknown): string[] | null {
-  if (typeof value !== 'string' || value.length === 0) return null
-  if (value.startsWith('/')) {
-    return value
-      .slice(1)
-      .split('/')
-      .filter(Boolean)
-      .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
-  }
-  return value.replaceAll('[]', '').replaceAll('[*]', '').split('.').filter(Boolean)
-}
-
 function nodeIndex(nodes: YAMLSeq, idPath: readonly string[], id: string): number {
   return nodes.items.findIndex((node) => isMap(node) && nodeValueAtPath(node, idPath) === id)
 }
@@ -616,8 +765,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function pathCrossesAlias(document: Document.Parsed, path: readonly (string | number)[]): boolean {
-  return aliasCrossingPath(document, path) !== null
+function pathCrossesSharedNode(document: Document.Parsed, path: readonly (string | number)[]): boolean {
+  for (let length = 1; length <= path.length; length++) {
+    const node = document.getIn(path.slice(0, length), true)
+    if (isAlias(node) || ((isMap(node) || isSeq(node) || isScalar(node)) && node.anchor)) return true
+  }
+  return false
 }
 
 interface AliasCrossing {
@@ -757,7 +910,7 @@ function referenceRuleApplies(rule: SemanticRuleDescriptor, profile: AuthoringCo
   )
 }
 
-function relativeNodePath(fieldPath: string, nodesPath: readonly string[]): string[] | null {
+function relativeNodePath(fieldPath: string, nodesPath: readonly (string | number)[]): string[] | null {
   const tokens = fieldPath.replaceAll('[]', '').replaceAll('[*]', '').split('.').filter(Boolean)
   if (tokens.length <= nodesPath.length || !nodesPath.every((segment, index) => tokens[index] === segment)) return null
   return tokens.slice(nodesPath.length)
@@ -850,7 +1003,7 @@ function missingNode(id: string): PatchWorkflowDocumentResult {
   return { ok: false, code: 'mutation_node_missing', message: `Node "${id}" does not exist.` }
 }
 
-function ambiguousAlias(): PatchWorkflowDocumentResult {
+function ambiguousAlias(): Exclude<PatchWorkflowDocumentResult, { ok: true }> {
   return {
     ok: false,
     code: 'mutation_ambiguous_alias',

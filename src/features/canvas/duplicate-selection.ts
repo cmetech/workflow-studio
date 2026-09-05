@@ -126,7 +126,7 @@ export async function pasteSelection(
   for (const node of copiedNodes) {
     const patched = patchWorkflowDocument(
       preparedText,
-      { type: 'add-node', node, ...(afterNodeId ? { afterNodeId } : {}) },
+      { type: 'add-node', scopeKey: 'root', node, ...(afterNodeId ? { afterNodeId } : {}) },
       context.contract,
     )
     if (!patched.ok) {

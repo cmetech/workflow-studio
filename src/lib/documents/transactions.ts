@@ -1,10 +1,11 @@
+import type { GraphScopeKey } from '$src/lib/projection/types'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue, WorkflowPairText } from './types'
 import { editDocumentText } from './revisions'
 import type { WorkflowMutation } from '$src/lib/yaml/mutations'
-import { patchWorkflowDocument, type MutationReference } from '$src/lib/yaml/patch-document'
+import { patchWorkflowPair, type MutationReference } from '$src/lib/yaml/patch-document'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 
 export interface TransactionTexts {
@@ -20,6 +21,7 @@ export interface TransactionRevisions {
 export interface TransactionSelectionHint {
   readonly document: 'definition' | 'companion'
   readonly nodeId?: string
+  readonly scopeKey?: GraphScopeKey
   readonly path?: readonly (string | number)[]
 }
 
@@ -59,6 +61,7 @@ export type ApplyWorkflowMutationResult =
         | 'mutation_duplicate_node_id'
         | 'mutation_ambiguous_alias'
         | 'mutation_contract_invalid'
+        | 'mutation_stale_scope'
       message: string
     }
 
@@ -69,6 +72,7 @@ export async function applyWorkflowMutation(
   mutation: WorkflowMutation,
   contract: AuthoringContract,
   analyze: MutationAnalyzer = analyzeMutationLocally,
+  currentAnalysis?: DocumentAnalysis,
 ): Promise<ApplyWorkflowMutationResult> {
   const documentKind = 'document' in mutation ? mutation.document : 'definition'
   const currentDocument = documentKind === 'definition' ? pair.definition : pair.companion
@@ -82,16 +86,28 @@ export async function applyWorkflowMutation(
 
   if (requiresStructuralValidation(mutation)) await yieldBeforeStructuralValidation()
 
-  let proposedText: string
+  let proposedPair: WorkflowPairText
   if (mutation.type === 'replace-document') {
-    proposedText = mutation.text
+    proposedPair = editDocumentText(pair, documentKind, mutation.text)
   } else {
-    const patched = patchWorkflowDocument(currentDocument.text, mutation, contract)
+    const currentIndex =
+      currentAnalysis &&
+      currentAnalysis.workflowId === pair.workflowId &&
+      currentAnalysis.pairGeneration === pair.generation &&
+      currentAnalysis.definitionPath === pair.definition.path &&
+      currentAnalysis.companionPath === (pair.companion?.path ?? null) &&
+      currentAnalysis.definitionRevision === pair.definition.revision &&
+      currentAnalysis.companionRevision === (pair.companion?.revision ?? null) &&
+      currentAnalysis.contractDigest === contract.contract_digest
+        ? currentAnalysis.referenceIndex
+        : undefined
+    const patched = patchWorkflowPair(pairTexts(pair), mutation, contract, currentIndex)
     if (!patched.ok) return patched
-    proposedText = patched.text
+    proposedPair = editDocumentText(pair, 'definition', patched.texts.definition)
+    if (patched.texts.companion !== null && proposedPair.companion)
+      proposedPair = editDocumentText(proposedPair, 'companion', patched.texts.companion)
   }
 
-  const proposedPair = editDocumentText(pair, documentKind, proposedText)
   let structuralAnalysis: DocumentAnalysis | undefined
   if (requiresStructuralValidation(mutation)) {
     await yieldBeforeStructuralValidation()
@@ -137,7 +153,12 @@ function isBundledV6RootDraft(
   analysis: DocumentAnalysis,
   contract: AuthoringContract,
 ): boolean {
-  if (mutation.type !== 'add-node' || contract.contract_digest !== bundledArchonV6Digest) return false
+  if (
+    mutation.type !== 'add-node' ||
+    mutation.scopeKey !== 'root' ||
+    contract.contract_digest !== bundledArchonV6Digest
+  )
+    return false
   try {
     readScopedDagCapabilities(contract)
   } catch {
@@ -227,7 +248,7 @@ async function yieldBeforeStructuralValidation(): Promise<void> {
 }
 
 function progressiveDraftMutation(mutation: WorkflowMutation, contract: AuthoringContract): boolean {
-  if (mutation.type === 'add-node') return true
+  if (mutation.type === 'add-node' || (mutation.type === 'delete-node' && mutation.scopeKey !== 'root')) return true
   if (mutation.type !== 'set-field' && mutation.type !== 'delete-field') return false
   if (mutation.document !== 'definition') return true
   const dagRule = contract.semantic_rules.find(({ id }) => id === 'workflow-dag-v1')
@@ -278,13 +299,17 @@ function selectionHint(mutation: WorkflowMutation): TransactionSelectionHint {
     case 'delete-field':
       return { document: mutation.document, path: mutation.path }
     case 'add-node':
-      return { document: 'definition', ...(typeof mutation.node.id === 'string' ? { nodeId: mutation.node.id } : {}) }
+      return {
+        document: 'definition',
+        scopeKey: mutation.scopeKey,
+        ...(typeof mutation.node.id === 'string' ? { nodeId: mutation.node.id } : {}),
+      }
     case 'delete-node':
-      return { document: 'definition' }
+      return { document: 'definition', scopeKey: mutation.scopeKey }
     case 'rename-node':
-      return { document: 'definition', nodeId: mutation.to }
+      return { document: 'definition', scopeKey: mutation.scopeKey, nodeId: mutation.to }
     case 'set-dependencies':
-      return { document: 'definition', nodeId: mutation.nodeId, path: ['depends_on'] }
+      return { document: 'definition', scopeKey: mutation.scopeKey, nodeId: mutation.nodeId, path: ['depends_on'] }
     case 'replace-document':
       return { document: mutation.document }
   }

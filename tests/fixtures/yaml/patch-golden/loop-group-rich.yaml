@@ -1,0 +1,29 @@
+# scoped workflow
+name: Scopes
+description: Exact preservation
+# prettier-ignore
+metadata: &metadata {keep: [one,  two]}
+inherited: *metadata
+# prettier-ignore
+nodes:
+  - id: child
+    bash: echo outer
+  - id: repeat
+    loop_group:
+      max_iterations: 3
+      until_bash: 'test "$child.output" = done'
+      unknown: {keep: "style", spacing: [a,  b]}
+      nodes:
+        - id: 'child' # identity
+          bash: |-
+            echo unchanged
+        - id: consumer
+          depends_on: ["child"] # dependency
+          prompt: "😀 é $child.output / $LOOP_PREV.child.output"
+          bash_unknown: '$child.output'
+  - id: sibling
+    loop_group:
+      max_iterations: 2
+      until_bash: 'true'
+      nodes: [{id: child, bash: echo sibling}]
+# final comment

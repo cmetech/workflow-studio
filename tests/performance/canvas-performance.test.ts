@@ -364,7 +364,7 @@ describe('250-node canvas performance contract', () => {
 
     const disconnected = patchWorkflowDocument(
       fixture.yaml,
-      { type: 'set-dependencies', nodeId: 'node-028', dependsOn: ['node-018'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'node-028', dependsOn: ['node-018'] },
       contract,
     )
     expect(disconnected).toMatchObject({ ok: true })
@@ -372,7 +372,7 @@ describe('250-node canvas performance contract', () => {
 
     const connected = patchWorkflowDocument(
       disconnected.text,
-      { type: 'set-dependencies', nodeId: 'node-028', dependsOn: ['node-018', 'node-027'] },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'node-028', dependsOn: ['node-018', 'node-027'] },
       contract,
     )
     expect(connected).toMatchObject({ ok: true })

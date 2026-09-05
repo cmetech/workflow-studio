@@ -658,7 +658,7 @@ interface FieldOccurrence {
   readonly path: readonly (string | number)[]
 }
 
-function expandFieldPath(value: unknown, fieldPath: string): readonly FieldOccurrence[] {
+export function expandFieldPath(value: unknown, fieldPath: string): readonly FieldOccurrence[] {
   const segments = fieldPath.split('.').filter(Boolean)
   const results: FieldOccurrence[] = []
   const visit = (current: unknown, index: number, path: readonly (string | number)[]): void => {

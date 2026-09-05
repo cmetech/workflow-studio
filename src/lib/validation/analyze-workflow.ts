@@ -11,7 +11,12 @@ import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import { validateDag } from './dag-validator'
 import { validateIndexedConditionNormalization, validateScopedDag } from './scoped-dag-validator'
-import { isContractSchemaSelfConsistent, resolveContractSchema, validateContractDocument } from './schema-validator'
+import {
+  compileContractValidators,
+  isContractSchemaSelfConsistent,
+  resolveContractSchema,
+  validateContractDocument,
+} from './schema-validator'
 
 export async function analyzeWorkflowPair(
   request: AnalyzeDocumentRequest,
@@ -137,7 +142,7 @@ export async function analyzeWorkflowPair(
   const visuallyAuthorable =
     !structurallyValid &&
     (draftIssuesAreVisuallyAuthorable(combined, definition, contract) ||
-      explicitEmptyScopedDraft(combined, projected.projection, definition, contract))
+      explicitScopedRepairDraft(combined, projected.projection, definition, contract))
   const validatedProjection = projectionWithScopedIssues(projected.projection, scoped.issues)
   return {
     ...identity,
@@ -325,7 +330,7 @@ function reconcileScopedIssues(
   ]
 }
 
-function explicitEmptyScopedDraft(
+function explicitScopedRepairDraft(
   issues: readonly ValidationIssue[],
   projection: WorkflowProjection,
   definition: unknown,
@@ -346,26 +351,36 @@ function explicitEmptyScopedDraft(
     ({ scope }) => scope.kind === 'loop-group' && scope.groupId && draftGroupIds.has(scope.groupId),
   )
   if (draftGraphs.length !== draftGroupIds.size) return false
-  return draftGraphs.every((graph) => {
-    const body = valueAtOwnPath(definition, graph.sourcePath)
-    const groupNode = valueAtOwnPath(definition, graph.sourcePath.slice(0, -capabilities.bodyPath.length))
+  const candidate = structuredClone(definition)
+  for (const graph of draftGraphs) {
+    const groupPath = graph.sourcePath.slice(0, -capabilities.bodyPath.length)
+    const groupNode = valueAtOwnPath(candidate, groupPath)
     const payload = isRecord(groupNode) ? valueAtOwnPath(groupNode, [capabilities.groupKind]) : undefined
-    const bodyField = capabilities.bodyPath.at(-1)
-    const payloadKeys = isRecord(payload) ? Object.keys(payload) : null
-    const explicitBody =
+    if (!isRecord(groupNode) || !isRecord(payload)) return false
+    if (capabilities.topology.forbidden_group_fields.some((field) => Object.hasOwn(groupNode, field))) return false
+    const bodyField = capabilities.bodyPath.at(-1)!
+    const body = payload[bodyField]
+    if (Object.keys(payload).length !== 0 && !Array.isArray(body)) return false
+    if (
       Array.isArray(body) &&
-      body.length === 0 &&
-      payloadKeys?.length === 1 &&
-      typeof bodyField === 'string' &&
-      isRecord(payload) &&
-      Object.hasOwn(payload, bodyField)
-    return (
-      isRecord(groupNode) &&
-      Object.keys(groupNode).every((key) => key === capabilities.nodeIdField || key === capabilities.groupKind) &&
-      isRecord(payload) &&
-      (payloadKeys?.length === 0 || explicitBody)
+      body.some((node) => capabilities.forbiddenNodeKinds.some((kind) => isRecord(node) && Object.hasOwn(node, kind)))
     )
-  })
+      return false
+    // Only fill absent required pieces in a throwaway value using published schema
+    // examples. The strict validator still checks every authored value and field.
+    const descriptor = contract.node_kinds.find(({ id }) => id === capabilities.groupKind)
+    const tokens = descriptor ? descriptorPath(descriptor.field_path)?.schemaTokens : undefined
+    const schema = tokens ? schemaAtPath(contract.definition_schema, tokens) : null
+    const example = Array.isArray(schema?.examples) ? schema.examples.find(isRecord) : undefined
+    if (!isRecord(example)) return false
+    for (const field of capabilities.topology.required_group_fields) {
+      if (!Object.hasOwn(payload, field) || (field === bodyField && Array.isArray(body) && body.length === 0)) {
+        if (!Object.hasOwn(example, field)) return false
+        payload[field] = structuredClone(example[field])
+      }
+    }
+  }
+  return compileContractValidators(contract).definition(candidate)
 }
 
 function projectionWithScopedIssues(

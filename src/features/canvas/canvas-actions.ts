@@ -120,6 +120,7 @@ export async function connectNodes(
   }
   return commitMutation(context, {
     type: 'set-dependencies',
+    scopeKey: 'root',
     nodeId: targetId,
     dependsOn: [...target.dependsOn, sourceId],
   })
@@ -139,6 +140,7 @@ export async function disconnectNodes(
   }
   return commitMutation(context, {
     type: 'set-dependencies',
+    scopeKey: 'root',
     nodeId: targetId,
     dependsOn: target.dependsOn.filter((dependency) => dependency !== sourceId),
   })
@@ -175,6 +177,7 @@ export async function addNode(
 
   const result = await commitMutation(context, {
     type: 'add-node',
+    scopeKey: 'root',
     node,
     ...(after ? { afterNodeId: after.id } : {}),
   })
@@ -276,7 +279,7 @@ export async function deleteNodes(
 
   const mutation: WorkflowMutation =
     selected.length === 1
-      ? { type: 'delete-node', nodeId: selected[0]! }
+      ? { type: 'delete-node', scopeKey: 'root', nodeId: selected[0]! }
       : { type: 'replace-document', document: 'definition', text: context.pair.definition.text }
   const result =
     selected.length === 1
@@ -295,7 +298,7 @@ export async function renameNode(context: CanvasActionContext, from: string, to:
   if (rootGraph(context.projection).nodes.some(({ id }) => id === to)) {
     return reject(context, 'node_id_duplicate', `Node ${to} already exists.`)
   }
-  const result = await commitMutation(context, { type: 'rename-node', from, to })
+  const result = await commitMutation(context, { type: 'rename-node', scopeKey: 'root', from, to })
   if (result.status === 'committed' && context.positions[from]) {
     await context.commitPositions({ [from]: null, [to]: context.positions[from] })
   }
@@ -441,7 +444,7 @@ async function prepareAndCommitMultipleDeletes(
   while (pending.size > 0) {
     let removed = false
     for (const nodeId of pending) {
-      const patched = patchWorkflowDocument(text, { type: 'delete-node', nodeId }, deletionContract)
+      const patched = patchWorkflowDocument(text, { type: 'delete-node', scopeKey: 'root', nodeId }, deletionContract)
       if (patched.ok) {
         text = patched.text
         pending.delete(nodeId)
