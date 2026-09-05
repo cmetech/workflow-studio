@@ -603,7 +603,10 @@ function insertCopiedNode(
   const index = nodeIndex(scope.nodes, scope.fields.idPath, captured.nodeId)
   const original = scope.nodes.items[index]
   if (!isMap(original) || containsSharedNode(original)) return ambiguousAlias()
-  if (hasCopiedFlowBoundaryComments(scope.nodes, index) || hasCopiedFlowBoundaryComments(nodes, afterIndex)) {
+  if (
+    hasCopiedFlowBoundaryComments(scope.nodes, index, captured.text) ||
+    hasCopiedFlowBoundaryComments(nodes, afterIndex, destination)
+  ) {
     return {
       ok: false,
       code: 'mutation_stale_scope',
@@ -732,8 +735,26 @@ function insertCopiedNode(
 
 /** Trivia around a flow item may belong to either neighbor. Do not move it
  * implicitly: a safe exact copy needs a boundary with no attached comments. */
-function hasCopiedFlowBoundaryComments(sequence: YAMLSeq, index: number): boolean {
-  if (!sequence.flow || index < 0 || sequence.srcToken?.type !== 'flow-collection') return false
+function hasCopiedFlowBoundaryComments(sequence: YAMLSeq, index: number, source: string): boolean {
+  if (index < 0) return false
+  const node = sequence.items[index]
+  if (!sequence.flow) {
+    if (!isMap(node) || !node.flow) return false
+    if (node.commentBefore || node.comment) return true
+    if (sequence.srcToken?.type !== 'block-seq') return false
+    // YAML also assigns `nodes: # parent comment` to sequence.commentBefore.
+    // Only a standalone line at the item's indentation belongs to its boundary.
+    if (index === 0 && sequence.commentBefore) {
+      const preceding = source.slice(0, lineStart(source, sequence.srcToken.offset)).trimEnd()
+      const commentIndent = preceding.slice(lineStart(preceding, preceding.length)).match(/^[ \t]*#/)
+      if (commentIndent && commentIndent[0].length - 1 >= sequence.srcToken.indent) return true
+    }
+    const item = sequence.srcToken.items[index]
+    const value = item?.value
+    const ending = value && 'end' in value ? value.end : undefined
+    return [...(item?.start ?? []), ...(ending ?? [])].some((token) => token.type === 'comment')
+  }
+  if (sequence.srcToken?.type !== 'flow-collection') return false
   const token = sequence.srcToken
   const item = token.items[index]
   const value = item?.value ?? item?.key

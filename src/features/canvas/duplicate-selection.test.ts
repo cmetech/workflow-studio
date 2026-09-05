@@ -918,3 +918,60 @@ it('preserves CRLF blank lines and scalar values while reindenting a root copy i
     parse(source.pair.definition.text).nodes[0].bash,
   )
 })
+
+it.each([
+  ['leading', '  # node lead\n  - { id: producer, command: exact }\n'],
+  ['trailing', '  - { id: producer, command: exact } # node tail, comma\n'],
+  ['both', '  # node lead\n  - { id: producer, command: exact } # node tail, comma\n'],
+])(
+  'rejects %s comments on a flow mapping inside a block sequence without changing either destination style',
+  async (_name, item) => {
+    for (const newline of ['\n', '\r\n']) {
+      const source = context(('name: Copy\ndescription: Mixed source\nnodes:\n' + item).replaceAll('\n', newline))
+      const clipboard = copySelection(source, ['producer'])
+      for (const nodes of ['nodes: [{ id: other, command: keep }]\n', 'nodes:\n  - id: other\n    command: keep\n']) {
+        const destination = context(('name: Destination\ndescription: Preserve\n' + nodes).replaceAll('\n', newline))
+        const before = structuredClone(destination.pair)
+        expect(await pasteSelection(destination, clipboard)).toMatchObject({
+          status: 'rejected',
+          code: 'mutation_stale_scope',
+          message: expect.stringContaining('flow-item comments'),
+        })
+        expect(destination.pair).toEqual(before)
+        expect(destination.commit).not.toHaveBeenCalled()
+        expect(destination.commitPositions).not.toHaveBeenCalled()
+      }
+    }
+  },
+)
+
+it('copies a comment-free flow mapping inside a block sequence into either destination style', async () => {
+  const source = context(
+    'name: Copy\ndescription: Mixed source\nnodes:\n  - { id: producer, command: "exact", x-unknown: [1,  2] }\n',
+  )
+  const clipboard = copySelection(source, ['producer'])
+  for (const nodes of ['nodes: [{ id: other, command: keep }]\n', 'nodes:\n  - id: other\n    command: keep\n']) {
+    const destination = context('name: Destination\ndescription: Preserve\n' + nodes)
+    const result = await pasteSelection(destination, clipboard)
+    expect(result.status).toBe('committed')
+    if (result.status === 'committed')
+      expect(result.pair.definition.text).toContain('{ id: producer, command: "exact", x-unknown: [1,  2] }')
+  }
+})
+
+it.each([
+  '# parent key\nnodes:\n  - { id: producer, command: exact }\n',
+  'nodes: # parent key\n  - { id: producer, command: exact }\n',
+  'nodes:\n  - { id: previous, command: keep } # previous item\n  - { id: producer, command: exact }\n',
+])('copies an inline mapping without claiming unrelated comments: %s', async (nodes) => {
+  const source = context('name: Copy\ndescription: Mixed source\n' + nodes)
+  const clipboard = copySelection(source, ['producer'])
+  const destination = context('name: Destination\ndescription: Preserve\nnodes: [{ id: other, command: keep }]\n')
+  const result = await pasteSelection(destination, clipboard)
+  expect(result.status).toBe('committed')
+  if (result.status === 'committed') {
+    expect(result.pair.definition.text).toContain('{ id: producer, command: exact }')
+    expect(result.pair.definition.text).not.toContain('# parent key')
+    expect(result.pair.definition.text).not.toContain('# previous item')
+  }
+})
