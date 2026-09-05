@@ -24,6 +24,31 @@ export interface ScopedDagValidationResult {
   readonly issues: readonly ValidationIssue[]
 }
 
+export function validateIndexedConditionNormalization(
+  projection: WorkflowProjection,
+  definitionDocument: ParsedYamlDocument,
+  contract: AuthoringContract,
+  prepared: PreparedReferenceContract,
+  referenceIndex: ReferenceIndex,
+): ScopedDagValidationResult {
+  const root = projection.graphs.find(({ scope }) => scope.key === 'root')
+  if (!root) return Object.freeze({ issues: [] })
+  const documentationId = scopedDocumentationId(contract, prepared.capabilities)
+  const context: ValidationContext = {
+    projection,
+    definitionDocument,
+    companionDocument: null,
+    contract,
+    capabilities: prepared.capabilities,
+    root,
+    impreciseOutputSchemaOwners: new Set(),
+    ...(documentationId ? { documentationId } : {}),
+  }
+  const issues: ValidationIssue[] = []
+  validateConditionPhase(context, referenceIndex, issues)
+  return Object.freeze({ issues: Object.freeze(issues) })
+}
+
 export function validateScopedDag(
   projection: WorkflowProjection,
   definitionDocument: ParsedYamlDocument,
@@ -32,6 +57,7 @@ export function validateScopedDag(
   suppliedPrepared?: PreparedReferenceContract | null,
   suppliedReferenceIndex?: ReferenceIndex | null,
   impreciseOutputSchemaOwners: ReadonlySet<string> = new Set(),
+  conditionNormalizationComplete = false,
 ): ScopedDagValidationResult {
   if (!requiresScopedDagCapabilities(contract, projection.profile, 'definition')) return Object.freeze({ issues: [] })
   let capabilities: ScopedDagCapabilities
@@ -60,6 +86,8 @@ export function validateScopedDag(
     impreciseOutputSchemaOwners,
     ...(documentationId ? { documentationId } : {}),
   }
+  if (!conditionNormalizationComplete && referenceIndex && validateConditionPhase(context, referenceIndex, issues))
+    return Object.freeze({ issues: Object.freeze(issues) })
   if (root.capacity.status === 'yaml-only') {
     issues.push(
       scopedIssue(context, root, {
@@ -235,8 +263,6 @@ function invalidShapePath(
 }
 
 function validateIndexedReferences(context: ValidationContext, index: ReferenceIndex, issues: ValidationIssue[]): void {
-  if (validateConditionPhase(context, index, issues)) return
-
   const rootPhase = index.occurrences.filter(
     (occurrence) =>
       occurrence.scope === 'root' ||
@@ -273,6 +299,18 @@ function validateConditionPhase(context: ValidationContext, index: ReferenceInde
     malformed.scopeKey === 'root'
       ? context.root
       : (context.projection.graphs.find(({ scope }) => scope.key === malformed.scopeKey) ?? context.root)
+  if (malformed.scope === 'body') {
+    issues.push(
+      indexedIssue(
+        context,
+        graph,
+        malformed,
+        'loop_group_shape_invalid',
+        'A loop-group body condition is statically malformed.',
+      ),
+    )
+    return true
+  }
   const referenceCause = error.cause?.name === 'WorkflowReferenceSyntaxError' ? error.cause.code : undefined
   issues.push(
     indexedIssue(

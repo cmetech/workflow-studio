@@ -10,7 +10,7 @@ import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { ParsedYamlDocument } from '$src/lib/yaml/types'
 import type { AnalyzeDocumentRequest } from '$src/workers/document-worker-protocol'
 import { validateDag } from './dag-validator'
-import { validateScopedDag } from './scoped-dag-validator'
+import { validateIndexedConditionNormalization, validateScopedDag } from './scoped-dag-validator'
 import { isContractSchemaSelfConsistent, resolveContractSchema, validateContractDocument } from './schema-validator'
 
 export async function analyzeWorkflowPair(
@@ -98,23 +98,38 @@ export async function analyzeWorkflowPair(
   const referenceIndex = preparedReferences
     ? buildReferenceIndex(definition, projected.projection, preparedReferences)
     : null
+  const conditionNormalization =
+    preparedReferences && referenceIndex
+      ? validateIndexedConditionNormalization(
+          projected.projection,
+          definitionResult.parsed,
+          contract,
+          preparedReferences,
+          referenceIndex,
+        )
+      : { issues: [] }
+  combined.push(...conditionNormalization.issues)
+  const conditionNormalizationFailed = conditionNormalization.issues.some(({ blocking }) => blocking)
   const rootGraph = projected.projection.graphs.find(({ scope }) => scope.key === 'root')
-  if (rootGraph)
+  if (!conditionNormalizationFailed && rootGraph)
     combined.push(
       ...validateDag(rootGraph, contract.semantic_rules, {
         references: referenceIndex === null,
         conditions: referenceIndex === null,
       }).issues,
     )
-  const scoped = validateScopedDag(
-    projected.projection,
-    definitionResult.parsed,
-    companionResult?.parsed ?? null,
-    contract,
-    preparedReferences,
-    referenceIndex,
-    integerPrecision.schemaOwnerPaths,
-  )
+  const scoped = conditionNormalizationFailed
+    ? { issues: [] }
+    : validateScopedDag(
+        projected.projection,
+        definitionResult.parsed,
+        companionResult?.parsed ?? null,
+        contract,
+        preparedReferences,
+        referenceIndex,
+        integerPrecision.schemaOwnerPaths,
+        true,
+      )
   combined = reconcileScopedIssues(combined, scoped.issues, projected.projection, contract)
   combined = deduplicateAnalysisIssues(combined)
 

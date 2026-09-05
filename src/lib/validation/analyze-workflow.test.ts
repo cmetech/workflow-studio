@@ -605,7 +605,7 @@ describe('workflow pair analysis', () => {
     )
 
     expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
-      { code: 'malformed_condition', path: '/nodes/1/loop_group/nodes/1/when' },
+      { code: 'loop_group_shape_invalid', path: '/nodes/1/loop_group/nodes/1/when' },
     ])
   })
 
@@ -649,9 +649,38 @@ describe('workflow pair analysis', () => {
 
     expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
       {
-        code: 'output_reference_path_unsupported',
+        code: scope === 'root' ? 'output_reference_path_unsupported' : 'loop_group_shape_invalid',
         path: scope === 'root' ? '/nodes/1/when' : '/nodes/0/loop_group/nodes/1/when',
       },
+    ])
+  })
+
+  it('validates condition normalization before root topology', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Condition before topology',
+      'description: Normalization stops before DAG validation.',
+      'nodes:',
+      '  - id: first',
+      '    depends_on: [missing]',
+      '    prompt: fine',
+      '  - id: second',
+      '    prompt: fine',
+      '    when: $first.output ==',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis.issues.filter(({ blocking }) => blocking).map(({ code, path }) => ({ code, path }))).toEqual([
+      { code: 'malformed_condition', path: '/nodes/1/when' },
     ])
   })
 
