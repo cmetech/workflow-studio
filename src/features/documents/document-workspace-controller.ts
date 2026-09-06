@@ -31,6 +31,7 @@ import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { createHistoryState, historyStore, migrateHistoryWorkflowIdentity } from '$src/stores/history'
 import {
   $documentSession,
+  $documentSyncOrigins,
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
@@ -371,24 +372,33 @@ export class DocumentWorkspaceController {
       !activeSession.pair ||
       !activeSession.revision ||
       activeSession.revision.contractDigest !== session.revision.contractDigest ||
-      !samePairRevision(activeSession.pair, pair)
+      !samePairSavedBaseline(activeSession.pair, pair)
     )
       return 'unavailable'
 
-    const changedDisk =
-      definition.sha256 !== pair.definition.diskHash
-        ? definition
-        : companion && companion.sha256 !== pair.companion?.diskHash
-          ? companion
-          : null
-    if (changedDisk) {
-      const external = handleExternalChange(pair, changedDisk)
+    const changedDisks = [
+      ...(definition.sha256 !== pair.definition.diskHash ? [definition] : []),
+      ...(companion && companion.sha256 !== pair.companion?.diskHash ? [companion] : []),
+    ]
+    let reloadedPair = pair
+    let conflictingDisk: WorkspaceReadResult | null = null
+    for (const disk of changedDisks) {
+      const external = handleExternalChange(reloadedPair, disk)
+      if (external.status === 'reloaded') reloadedPair = external.pair
+      else if (external.status === 'conflict' && !conflictingDisk) conflictingDisk = disk
+    }
+    if (reloadedPair !== pair) {
+      updateDocumentSession(reloadedPair, session.revision.contractDigest, 'disk')
+      this.reconcileDocumentContract(reloadedPair, 'open')
+    }
+    if (conflictingDisk) {
+      const external = handleExternalChange(reloadedPair, conflictingDisk)
       if (external.status === 'conflict') {
         $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: external.conflict })
         return 'conflict'
       }
-      return 'unavailable'
     }
+    if (changedDisks.length > 0) return 'unavailable'
 
     const definitionRevision = pair.definition.revision + 1
     const companionRevision = pair.companion ? pair.companion.revision + 1 : null
@@ -413,18 +423,42 @@ export class DocumentWorkspaceController {
             }
           : pair.companion,
     }
+    const historyBeforeRevert = historyStore.get()
+    const syncOriginsBeforeRevert = $documentSyncOrigins.get()
     historyStore.set(createHistoryState())
     updateDocumentSession(reverted, session.revision.contractDigest, 'disk')
     this.dependencies.recoveryDrafts.changed(reverted)
-    await this.dependencies.recovery.discard(reverted.workflowId)
-    const activeAfterDiscard = $documentSession.get()
+    try {
+      await this.flushRecoveryForClose()
+    } catch (error: unknown) {
+      const activeAfterFailure = $documentSession.get()
+      if (
+        !this.publicationSuppressed() &&
+        activationGeneration === this.activationGeneration &&
+        activeAfterFailure.pair &&
+        activeAfterFailure.revision &&
+        samePairSavedBaseline(activeAfterFailure.pair, reverted)
+      ) {
+        historyStore.set(historyBeforeRevert)
+        updateDocumentSession(
+          pair,
+          activeAfterFailure.revision.contractDigest,
+          'unknown',
+          session.analysis ?? undefined,
+        )
+        $documentSyncOrigins.set(syncOriginsBeforeRevert)
+        this.dependencies.recoveryDrafts.changed(pair)
+      }
+      throw error
+    }
+    const activeAfterCleanup = $documentSession.get()
     if (
       this.publicationSuppressed() ||
       activationGeneration !== this.activationGeneration ||
-      !activeAfterDiscard.pair ||
-      !activeAfterDiscard.revision ||
-      activeAfterDiscard.revision.contractDigest !== session.revision.contractDigest ||
-      !samePairRevision(activeAfterDiscard.pair, reverted)
+      !activeAfterCleanup.pair ||
+      !activeAfterCleanup.revision ||
+      activeAfterCleanup.revision.contractDigest !== session.revision.contractDigest ||
+      !samePairSavedBaseline(activeAfterCleanup.pair, reverted)
     )
       return 'unavailable'
     $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: null, saveOutcome: null })
@@ -1225,6 +1259,17 @@ function samePairRevision(left: WorkflowPairText, right: WorkflowPairText): bool
     left.generation === right.generation &&
     left.definition.revision === right.definition.revision &&
     (left.companion?.revision ?? null) === (right.companion?.revision ?? null)
+  )
+}
+
+function samePairSavedBaseline(left: WorkflowPairText, right: WorkflowPairText): boolean {
+  return (
+    samePairRevision(left, right) &&
+    left.savedGeneration === right.savedGeneration &&
+    left.definition.savedRevision === right.definition.savedRevision &&
+    left.definition.diskHash === right.definition.diskHash &&
+    (left.companion?.savedRevision ?? null) === (right.companion?.savedRevision ?? null) &&
+    (left.companion?.diskHash ?? null) === (right.companion?.diskHash ?? null)
   )
 }
 

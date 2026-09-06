@@ -12,10 +12,11 @@ import type { AuthoringContract } from '$src/lib/contract/types'
 import type { DocumentAnalysis } from '$src/lib/documents/types'
 import type { WorkspaceReadResult, WorkspaceWriteResult } from '$src/lib/native/types'
 import type { RereadWorkspaceChange } from '$src/lib/native/workspace-api'
-import { createDocumentRevision } from '$src/lib/documents/revisions'
+import { confirmDocumentSaved, createDocumentRevision } from '$src/lib/documents/revisions'
 import { editDocumentText } from '$src/lib/documents/revisions'
 import { LayoutPersistenceController } from '$src/lib/layout/layout-store'
 import { createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
+import type { RecoveryDraft } from '$src/lib/recovery/types'
 import type { WorkflowPairEntry } from '$src/lib/workspace/types'
 import { createHistoryState, historyStore, recordTransaction, undoTransaction } from '$src/stores/history'
 import { $activeLayout, updateScopeLayout } from '$src/stores/layout'
@@ -28,6 +29,7 @@ import {
 } from '$src/workers/document-worker-protocol'
 import {
   $documentSession,
+  $documentSyncOrigins,
   closeDocumentSession,
   isDocumentPairDirty,
   openDocumentSession,
@@ -265,7 +267,8 @@ describe('DocumentWorkspaceController', () => {
     expect(isDocumentPairDirty(reverted)).toBe(false)
     expect(historyStore.get()).toEqual(createHistoryState())
     expect(deps.recoveryDrafts.changed).toHaveBeenLastCalledWith(reverted)
-    expect(deps.recovery.discard).toHaveBeenCalledWith(opened!.workflowId)
+    expect(deps.recoveryDrafts.close).toHaveBeenCalledOnce()
+    expect(deps.recovery.discard).not.toHaveBeenCalled()
     expect($documentWorkspace.get()).toMatchObject({ conflict: null, saveOutcome: null })
     expect(client.schedule).toHaveBeenCalledWith(reverted, contract, 'open')
   })
@@ -286,6 +289,54 @@ describe('DocumentWorkspaceController', () => {
     expect($documentWorkspace.get().conflict?.disk.text).toBe('name: changed elsewhere\n')
     expect(deps.recovery.discard).not.toHaveBeenCalled()
     expect(client.schedule).not.toHaveBeenCalled()
+  })
+
+  it('publishes a clean definition reload before exposing a dirty companion conflict', async () => {
+    const initialDefinition = read('flow.yaml', 'name: saved\n')
+    const initialCompanion = read('flow.hermes.yaml', 'language_compatibility: hermes-legacy\ntags: [saved]\n')
+    let diskByPath = new Map([
+      [initialDefinition.relativePath, initialDefinition],
+      [initialCompanion.relativePath, initialCompanion],
+    ])
+    const { deps, client } = dependencies({ read: vi.fn(async (path: string) => diskByPath.get(path)!) })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'companion', 'language_compatibility: hermes-legacy\ntags: [mine]\n')
+    controller.changed(edited)
+    const changedDefinition = {
+      ...read('flow.yaml', 'name: changed definition\n'),
+      sha256: 'changed-definition'.padEnd(64, 'd'),
+    }
+    const changedCompanion = {
+      ...read('flow.hermes.yaml', 'language_compatibility: hermes-legacy\ntags: [theirs]\n'),
+      sha256: 'changed-companion'.padEnd(64, 'c'),
+    }
+    diskByPath = new Map([
+      [changedDefinition.relativePath, changedDefinition],
+      [changedCompanion.relativePath, changedCompanion],
+    ])
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.revertToSaved()).resolves.toBe('conflict')
+
+    const active = $documentSession.get().pair!
+    expect(active.definition).toMatchObject({
+      text: 'name: changed definition\n',
+      revision: opened!.definition.revision + 1,
+      savedRevision: opened!.definition.savedRevision + 1,
+      diskHash: changedDefinition.sha256,
+    })
+    expect(active.companion).toMatchObject({
+      text: 'language_compatibility: hermes-legacy\ntags: [mine]\n',
+      diskHash: initialCompanion.sha256,
+    })
+    expect($documentWorkspace.get().conflict).toMatchObject({
+      pair: active,
+      document: 'companion',
+      disk: changedCompanion,
+    })
+    expect(client.schedule).toHaveBeenCalledOnce()
+    expect(client.schedule).toHaveBeenCalledWith(active, contract, 'open')
   })
 
   it('does not publish a revert whose asynchronous read loses the activation generation', async () => {
@@ -320,6 +371,70 @@ describe('DocumentWorkspaceController', () => {
     )
   })
 
+  it('does not publish against a disk baseline replaced by keep-mine while reads are pending', async () => {
+    let finishRead: ((value: WorkspaceReadResult) => void) | undefined
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'definition', 'name: mine\n')
+    controller.changed(edited)
+    vi.mocked(deps.read).mockImplementationOnce(
+      () =>
+        new Promise<WorkspaceReadResult>((resolve) => {
+          finishRead = resolve
+        }),
+    )
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    const reverting = controller.revertToSaved()
+    await vi.waitFor(() => expect(finishRead).toBeDefined())
+    const advancedBaseline = {
+      ...edited,
+      definition: { ...edited.definition, diskHash: 'keep-mine'.padEnd(64, 'k') },
+    }
+    updateDocumentSession(advancedBaseline, digest)
+    finishRead?.({ ...read('flow.yaml', opened!.definition.text), sha256: opened!.definition.diskHash! })
+
+    await expect(reverting).resolves.toBe('unavailable')
+    expect($documentSession.get().pair).toBe(advancedBaseline)
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect(client.schedule).not.toHaveBeenCalled()
+    expect($documentWorkspace.get().conflict).toBeNull()
+  })
+
+  it('does not publish against saved revisions advanced by a concurrent save', async () => {
+    let finishRead: ((value: WorkspaceReadResult) => void) | undefined
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'definition', 'name: mine\n')
+    controller.changed(edited)
+    vi.mocked(deps.read).mockImplementationOnce(
+      () =>
+        new Promise<WorkspaceReadResult>((resolve) => {
+          finishRead = resolve
+        }),
+    )
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    const reverting = controller.revertToSaved()
+    await vi.waitFor(() => expect(finishRead).toBeDefined())
+    const concurrentlySaved = confirmDocumentSaved(edited, 'definition', {
+      revision: edited.definition.revision,
+      diskHash: 'concurrent-save'.padEnd(64, 's'),
+    })
+    updateDocumentSession(concurrentlySaved, digest)
+    finishRead?.({ ...read('flow.yaml', opened!.definition.text), sha256: opened!.definition.diskHash! })
+
+    await expect(reverting).resolves.toBe('unavailable')
+    expect($documentSession.get().pair).toBe(concurrentlySaved)
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect(client.schedule).not.toHaveBeenCalled()
+    expect($documentWorkspace.get().conflict).toBeNull()
+  })
+
   it('returns unavailable without reading or publishing when the pair has no saved disk hash', async () => {
     const { deps, client } = dependencies()
     const controller = new DocumentWorkspaceController(deps)
@@ -349,6 +464,107 @@ describe('DocumentWorkspaceController', () => {
     expect(deps.read).not.toHaveBeenCalled()
     expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
     expect(deps.recovery.discard).not.toHaveBeenCalled()
+    expect(client.schedule).not.toHaveBeenCalled()
+  })
+
+  it('serializes revert cleanup before a newer dirty recovery save so the newer draft survives', async () => {
+    vi.useFakeTimers()
+    let releaseFirstDiscard: (() => void) | undefined
+    let persistedDefinition = 'previous dirty recovery'
+    let discardCalls = 0
+    const saveRecovery = vi.fn(async (draft: RecoveryDraft) => {
+      persistedDefinition = draft.definition.text
+    })
+    const discardRecovery = vi.fn(async () => {
+      discardCalls += 1
+      if (discardCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstDiscard = resolve
+        })
+      }
+      persistedDefinition = ''
+    })
+    const recovery = {
+      save: saveRecovery,
+      list: vi.fn(async () => []),
+      discard: discardRecovery,
+    }
+    const recoveryDrafts = new RecoveryDraftController(recovery, () => '2026-09-06T15:00:00.000Z')
+    const { deps } = dependencies({ recovery, recoveryDrafts })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: first dirty\n'))
+
+    const reverting = controller.revertToSaved()
+    await vi.waitFor(() => expect(releaseFirstDiscard).toBeDefined())
+    const newest = editDocumentText($documentSession.get().pair!, 'definition', 'name: newest dirty\n')
+    controller.changed(newest)
+    await vi.advanceTimersByTimeAsync(750)
+    releaseFirstDiscard?.()
+
+    await expect(reverting).resolves.toBe('unavailable')
+    await recoveryDrafts.flush()
+    expect(discardRecovery).toHaveBeenCalledOnce()
+    expect(saveRecovery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ definition: expect.objectContaining({ text: 'name: newest dirty\n' }) }),
+    )
+    expect(persistedDefinition).toBe('name: newest dirty\n')
+    expect($documentSession.get().pair?.definition.text).toBe('name: newest dirty\n')
+  })
+
+  it('leaves document, history, and outcomes untouched when serialized recovery cleanup rejects', async () => {
+    const cleanupError = new Error('recovery cleanup failed')
+    const recoveryDrafts = {
+      changed: vi.fn(),
+      flush: vi.fn(async () => Promise.reject(cleanupError)),
+      close: vi.fn(async () => undefined),
+    }
+    const { deps, client } = dependencies({
+      recovery: {
+        save: vi.fn(),
+        list: vi.fn(async () => []),
+        discard: vi.fn(async () => Promise.reject(cleanupError)),
+      },
+      recoveryDrafts,
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'definition', 'name: mine\n')
+    controller.changed(edited)
+    const history = recordTransaction(createHistoryState(), {
+      mutation: { type: 'replace-document', document: 'definition', text: edited.definition.text },
+      label: 'Edit before failed revert',
+      workflowId: opened!.workflowId,
+      pairGeneration: opened!.generation,
+      before: { definition: opened!.definition.text, companion: null },
+      after: { definition: edited.definition.text, companion: null },
+      beforeRevisions: { definition: opened!.definition.revision, companion: null },
+      afterRevisions: { definition: edited.definition.revision, companion: null },
+      selection: { document: 'definition' },
+    })
+    historyStore.set(history)
+    const syncOrigins = $documentSyncOrigins.get()
+    const workspaceState = {
+      ...$documentWorkspace.get(),
+      saveOutcome: {
+        status: 'blocked' as const,
+        pair: edited,
+        issues: [],
+        reason: 'analysis_missing_or_stale' as const,
+      },
+    }
+    $documentWorkspace.set(workspaceState)
+    vi.mocked(recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.revertToSaved()).rejects.toThrow('recovery cleanup failed')
+
+    expect($documentSession.get().pair).toBe(edited)
+    expect($documentSyncOrigins.get()).toBe(syncOrigins)
+    expect(historyStore.get()).toBe(history)
+    expect($documentWorkspace.get()).toBe(workspaceState)
+    expect(recoveryDrafts.changed).toHaveBeenCalledTimes(2)
+    expect(recoveryDrafts.changed).toHaveBeenLastCalledWith(edited)
     expect(client.schedule).not.toHaveBeenCalled()
   })
 
