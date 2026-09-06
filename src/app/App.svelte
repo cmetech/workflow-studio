@@ -190,6 +190,10 @@
   import ModalShell from './ModalShell.svelte'
   import ApplicationNotice from './ApplicationNotice.svelte'
   import X from 'lucide-svelte/icons/x'
+  import PanelLeftClose from 'lucide-svelte/icons/panel-left-close'
+  import PanelLeftOpen from 'lucide-svelte/icons/panel-left-open'
+  import PanelRightClose from 'lucide-svelte/icons/panel-right-close'
+  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
@@ -389,6 +393,8 @@
   let workbenchHeight = $state(700)
   let editorWidth = $state(720)
   let compactPanelViewport = $state(false)
+  let dockedWorkspacePanelOpen = $state(true)
+  let dockedInspectorPanelOpen = $state(true)
   let compactSplitPane = $state<'canvas' | 'yaml'>('canvas')
   let workspacePanelOpener = $state<HTMLElement | undefined>()
   let pageOpener = $state<HTMLElement | undefined>()
@@ -546,10 +552,10 @@
     explorerCatalogOperation.phase === 'error' ? explorerCatalogOperation.message : undefined,
   )
   const workspacePanelHidden = $derived(
-    authoringHidden || (workbenchPresentation.panels === 'drawers' && !$workspacePanelOpen),
+    authoringHidden || (workbenchPresentation.panels === 'drawers' ? !$workspacePanelOpen : !dockedWorkspacePanelOpen),
   )
   const inspectorPanelHidden = $derived(
-    authoringHidden || (workbenchPresentation.panels === 'drawers' && !$inspectorPanelOpen),
+    authoringHidden || (workbenchPresentation.panels === 'drawers' ? !$inspectorPanelOpen : !dockedInspectorPanelOpen),
   )
   let authoringWasHidden = false
   let authoringScrollSnapshot: readonly {
@@ -602,14 +608,17 @@
     if (panelPresentationChanged && panelPresentation === 'docked') {
       workspacePanelOpener = undefined
       inspectorDrawerOwner = undefined
+      workspacePanelOpen.set(dockedWorkspacePanelOpen)
+      inspectorPanelOpen.set(dockedInspectorPanelOpen)
     }
 
     if (panelPresentationChanged && panelPresentation === 'drawers' && focused) {
       if (workspacePanelHost?.contains(focused)) workspacePanelOpen.set(true)
-      else if (inspectorPanelHost?.contains(focused)) {
+      else workspacePanelOpen.set(false)
+      if (inspectorPanelHost?.contains(focused)) {
         inspectorDrawerOwner = { kind: 'resize' }
         inspectorPanelOpen.set(true)
-      }
+      } else inspectorPanelOpen.set(false)
     }
     if (
       splitPresentationMeasured &&
@@ -861,6 +870,7 @@
 
   async function focusInspectorIfCurrent(invoker: HTMLElement | undefined, current: () => boolean): Promise<boolean> {
     if (!current()) return false
+    if (workbenchPresentation.panels === 'docked') dockedInspectorPanelOpen = true
     inspectorDrawerOwner =
       workbenchPresentation.panels === 'drawers'
         ? {
@@ -903,7 +913,10 @@
 
   function rememberActivityOpener(opener: HTMLElement, activity: ActivityId): void {
     if (isPageActivity(activity)) routePageNavigation(activity, opener)
-    else workspacePanelOpener = opener
+    else {
+      workspacePanelOpener = opener
+      if (workbenchPresentation.panels === 'docked') dockedWorkspacePanelOpen = true
+    }
   }
 
   function routePageNavigation(activity: ActivityId, opener: HTMLElement | undefined, activate = false): boolean {
@@ -941,6 +954,7 @@
       ? workspacePanelOpener
       : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
     workspacePanelOpen.set(false)
+    if (workbenchPresentation.panels === 'docked') dockedWorkspacePanelOpen = false
     await tick()
     target?.focus()
     workspacePanelOpener = undefined
@@ -953,9 +967,20 @@
         ? inspectorDrawerOwner.opener
         : currentInspectorRestorationTarget()
     inspectorPanelOpen.set(false)
+    if (workbenchPresentation.panels === 'docked') dockedInspectorPanelOpen = false
     await tick()
     if (document.activeElement !== target) target?.focus()
     inspectorDrawerOwner = undefined
+  }
+
+  function toggleDockedWorkspacePanel(): void {
+    dockedWorkspacePanelOpen = !dockedWorkspacePanelOpen
+    workspacePanelOpen.set(dockedWorkspacePanelOpen)
+  }
+
+  function toggleDockedInspectorPanel(): void {
+    dockedInspectorPanelOpen = !dockedInspectorPanelOpen
+    inspectorPanelOpen.set(dockedInspectorPanelOpen)
   }
 
   async function closeOpenDrawer(snapshot?: DrawerEscapeSnapshot): Promise<void> {
@@ -2460,11 +2485,13 @@
     data-scroll-owner="workbench"
     data-panel-presentation={workbenchPresentation.panels}
     data-split-presentation={workbenchPresentation.split}
-    style={`--docked-left-panel-width: ${clampedPanels.left}px; --docked-right-panel-width: ${clampedPanels.right}px; --overlay-left-panel-width: ${overlayPanels.left}px; --overlay-right-panel-width: ${overlayPanels.right}px; --problems-height: ${problemsHeight}px`}
+    style={`--docked-left-panel-width: ${dockedWorkspacePanelOpen ? clampedPanels.left : 0}px; --docked-right-panel-width: ${dockedInspectorPanelOpen ? clampedPanels.right : 0}px; --overlay-left-panel-width: ${overlayPanels.left}px; --overlay-right-panel-width: ${overlayPanels.right}px; --problems-height: ${problemsHeight}px`}
   >
     <ActivityRail
       {commandSurface}
-      workspacePanelExpanded={workbenchPresentation.panels === 'docked' || $workspacePanelOpen}
+      workspacePanelExpanded={workbenchPresentation.panels === 'docked'
+        ? dockedWorkspacePanelOpen
+        : $workspacePanelOpen}
       authoringSurfaceActive={workbenchSurface === 'authoring'}
       onActivityInvoke={rememberActivityOpener}
     />
@@ -2541,6 +2568,23 @@
       aria-hidden={authoringHidden ? 'true' : undefined}
     >
       <div class="editor-tabs" role="group" aria-label="Editor mode">
+        {#if workbenchPresentation.panels === 'docked'}
+          <button
+            type="button"
+            class="docked-panel-toggle"
+            data-variant="ghost"
+            aria-label={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
+            title={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
+            aria-pressed={!dockedWorkspacePanelOpen}
+            onclick={toggleDockedWorkspacePanel}
+          >
+            {#if dockedWorkspacePanelOpen}
+              <PanelLeftClose size={17} aria-hidden="true" />
+            {:else}
+              <PanelLeftOpen size={17} aria-hidden="true" />
+            {/if}
+          </button>
+        {/if}
         {#each editorModes as mode (mode)}
           {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
           {#if command}
@@ -2574,6 +2618,23 @@
               onclick={() => (compactSplitPane = 'yaml')}>YAML</button
             >
           </div>
+        {/if}
+        {#if workbenchPresentation.panels === 'docked'}
+          <button
+            type="button"
+            class="docked-panel-toggle right"
+            data-variant="ghost"
+            aria-label={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
+            title={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
+            aria-pressed={!dockedInspectorPanelOpen}
+            onclick={toggleDockedInspectorPanel}
+          >
+            {#if dockedInspectorPanelOpen}
+              <PanelRightClose size={17} aria-hidden="true" />
+            {:else}
+              <PanelRightOpen size={17} aria-hidden="true" />
+            {/if}
+          </button>
         {/if}
       </div>
       <section
@@ -2650,7 +2711,9 @@
                   onRequestDelete={requestCanvasDelete}
                   onOpenInspector={focusInspector}
                   onToggleInspector={(expanded, invoker) =>
-                    expanded ? focusInspector(invoker) : closeInspectorDrawer(invoker)}
+                    expanded || workbenchPresentation.panels === 'docked'
+                      ? focusInspector(invoker)
+                      : closeInspectorDrawer(invoker)}
                   onDropNodeKind={dropPaletteNode}
                   groupSummaries={loopGroupSummaries}
                   onOpenLoopGroup={(groupId) => openLoopGroup(groupId)}
@@ -3331,6 +3394,24 @@
     min-height: var(--control-sm);
     border-radius: var(--radius-sm);
     cursor: pointer;
+  }
+
+  .editor-tabs .docked-panel-toggle {
+    display: grid;
+    width: var(--control-sm);
+    min-width: var(--control-sm);
+    height: var(--control-sm);
+    min-height: var(--control-sm);
+    padding: 0;
+    place-items: center;
+  }
+
+  .editor-tabs .docked-panel-toggle.right {
+    margin-left: auto;
+  }
+
+  .workbench[data-panel-presentation='docked'] .split-pane-tabs {
+    margin-left: 0;
   }
 
   .title-actions button {

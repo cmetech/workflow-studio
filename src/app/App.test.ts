@@ -238,6 +238,52 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it('shows docked panel controls and returns collapsed panel width to the editor', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [])
+    const { container } = render(App)
+    await waitForSetupReady()
+
+    const workbench = container.querySelector<HTMLElement>('.workbench')!
+    const editor = screen.getByRole('region', { name: 'Workflow workspace' })
+    await publishCompactPanelMedia(false)
+    await publishResize(workbench, 1440)
+    await publishResize(editor, 840)
+    await tick()
+
+    const workspacePanel = container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+    const inspectorPanel = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
+    expect(workbench).toHaveAttribute('data-panel-presentation', 'docked')
+
+    const collapseWorkspace = screen.getByRole('button', { name: 'Collapse workspace panel' })
+    const collapseInspector = screen.getByRole('button', { name: 'Collapse inspector panel' })
+    expect(collapseWorkspace).toBeVisible()
+    expect(collapseWorkspace.querySelector('svg')).not.toBeNull()
+    expect(collapseInspector).toBeVisible()
+    expect(collapseInspector.querySelector('svg')).not.toBeNull()
+
+    collapseWorkspace.focus()
+    await fireEvent.click(collapseWorkspace)
+    expect(workspacePanel).toHaveAttribute('inert')
+    expect(workspacePanel).toHaveAttribute('aria-hidden', 'true')
+    expect(workbench.getAttribute('style')).toContain('--docked-left-panel-width: 0px')
+    const expandWorkspace = screen.getByRole('button', { name: 'Expand workspace panel' })
+    expect(expandWorkspace).toHaveFocus()
+    await fireEvent.click(expandWorkspace)
+    expect(workspacePanel).not.toHaveAttribute('inert')
+    expect(workspacePanel).not.toHaveAttribute('aria-hidden')
+
+    collapseInspector.focus()
+    await fireEvent.click(collapseInspector)
+    expect(inspectorPanel).toHaveAttribute('inert')
+    expect(inspectorPanel).toHaveAttribute('aria-hidden', 'true')
+    expect(workbench.getAttribute('style')).toContain('--docked-right-panel-width: 0px')
+    const expandInspector = screen.getByRole('button', { name: 'Expand inspector panel' })
+    expect(expandInspector).toHaveFocus()
+    await fireEvent.click(expandInspector)
+    expect(inspectorPanel).not.toHaveAttribute('inert')
+    expect(inspectorPanel).not.toHaveAttribute('aria-hidden')
+  })
+
   it('keeps compact drawers mounted, inert when closed, and restores keyboard and activity invokers on close', async () => {
     closeTransientPanels()
     loadWorkspaceEntries('workspace', 'Workspace', [])

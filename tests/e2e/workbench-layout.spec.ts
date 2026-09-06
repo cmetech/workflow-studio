@@ -76,6 +76,40 @@ for (const viewport of [
   })
 }
 
+test('docked panel icons collapse both sides and give their width to the canvas', async ({ page }) => {
+  await openPairAt(page, 1440, 900)
+
+  const editor = page.getByRole('region', { name: 'Workflow workspace' })
+  const workspacePanel = page.locator('aside[aria-label="Workspace panel"]')
+  const inspectorPanel = page.locator('aside[aria-label="Inspector"]')
+  const initialWidth = (await editor.boundingBox())!.width
+
+  const collapseWorkspace = page.getByRole('button', { name: 'Collapse workspace panel' })
+  const collapseInspector = page.getByRole('button', { name: 'Collapse inspector panel' })
+  await expect(collapseWorkspace.locator('svg')).toHaveCount(1)
+  await expect(collapseInspector.locator('svg')).toHaveCount(1)
+
+  await collapseWorkspace.focus()
+  await collapseWorkspace.press('Enter')
+  await expect(workspacePanel).toHaveAttribute('inert', '')
+  await expect(page.getByRole('button', { name: 'Expand workspace panel' })).toBeFocused()
+  const withoutWorkspace = (await editor.boundingBox())!.width
+  expect(withoutWorkspace).toBeGreaterThan(initialWidth + 200)
+
+  await collapseInspector.focus()
+  await collapseInspector.press('Enter')
+  await expect(inspectorPanel).toHaveAttribute('inert', '')
+  await expect(page.getByRole('button', { name: 'Expand inspector panel' })).toBeFocused()
+  const canvasOnlyWidth = (await editor.boundingBox())!.width
+  expect(canvasOnlyWidth).toBeGreaterThan(withoutWorkspace + 250)
+
+  await page.getByRole('button', { name: 'Expand workspace panel' }).click()
+  await page.getByRole('button', { name: 'Expand inspector panel' }).click()
+  await expect(workspacePanel).not.toHaveAttribute('inert')
+  await expect(inspectorPanel).not.toHaveAttribute('inert')
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeCloseTo(initialWidth, 0)
+})
+
 test('effective 200% reflow keeps authoring, status, and compact Split inside the viewport', async ({ page }) => {
   await openPairAt(page, 512, 350)
   await page.getByRole('button', { name: 'Split', exact: true }).click()
