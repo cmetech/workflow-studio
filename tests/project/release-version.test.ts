@@ -217,9 +217,18 @@ describe('version two release metadata', () => {
 
   it('requires a local worktree preflight before creating a release tag', () => {
     const releasing = readFileSync('docs/releasing.md', 'utf8')
+    const preflightIndex = releasing.indexOf('## Local worktree preflight')
+    const tagInstructionIndex = releasing.indexOf(
+      '4. Create an annotated `v2.0.0` tag on a commit contained in `origin/base`, then push that exact tag.',
+    )
 
+    expect(preflightIndex).toBeGreaterThanOrEqual(0)
+    expect(tagInstructionIndex).toBeGreaterThan(preflightIndex)
     expect(releasing).toContain('git worktree list --porcelain')
     expect(releasing).toContain('git -C "$WORKTREE_PATH" status --short --branch')
+    expect(releasing).toContain('Run the status command for every worktree listed by `git worktree list --porcelain`.')
+    expect(releasing).toContain('Unrelated dirty work may remain untouched.')
     expect(releasing).toMatch(/Stop before tagging when a dirty worktree contains intended release work\./)
+    expect(releasing).toContain('Record the disposition of every listed worktree in the version acceptance document.')
   })
 })

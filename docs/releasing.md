@@ -7,7 +7,6 @@ Releases are native, updater-signed, and manually published. The GitHub Actions 
 1. Begin with a clean checkout on `base` and pull the intended public repository state.
 2. Set the same semantic version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
 3. Complete the v2.0.0 local verification record and prepare the macOS/Windows clean-machine acceptance record for post-publication follow-up.
-4. Create an annotated `v2.0.0` tag on a commit contained in `origin/base`, then push that exact tag.
 
 Manual workflow dispatch accepts only an existing version tag. The workflow resolves the tag to a commit, confirms it is an ancestor of `origin/base`, and confirms the tag matches the Tauri configuration. Branch names, arbitrary SHAs, invalid tags, and previously published releases are rejected.
 
@@ -22,6 +21,8 @@ git -C "$WORKTREE_PATH" status --short --branch
 ```
 
 Run the status command for every worktree listed by `git worktree list --porcelain`. Unrelated dirty work may remain untouched. Stop before tagging when a dirty worktree contains intended release work. Record the disposition of every listed worktree in the version acceptance document.
+
+4. Create an annotated `v2.0.0` tag on a commit contained in `origin/base`, then push that exact tag.
 
 ## Native build matrix
 
