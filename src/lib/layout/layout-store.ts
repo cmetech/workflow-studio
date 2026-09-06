@@ -389,6 +389,10 @@ function sanitizeScopeLayout(value: unknown): ScopeLayoutV1 | null {
     inspector: { tab: value.inspector.tab, scrollTop: value.inspector.scrollTop },
     canvasScroll: { left: value.canvasScroll.left, top: value.canvasScroll.top },
     problemsScroll: scrollCoordinate(value.problemsScroll) ? value.problemsScroll : 0,
+    ...(value.auxiliaryTab === 'problems' || value.auxiliaryTab === 'references'
+      ? { auxiliaryTab: value.auxiliaryTab }
+      : {}),
+    referencesScroll: scrollCoordinate(value.referencesScroll) ? value.referencesScroll : 0,
   }
 }
 

@@ -238,6 +238,102 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it.each([false, true])(
+    'defaults a loop tab once with blockers=%s and restores its explicit choice',
+    async (blocking) => {
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'flow.hermes.yaml': 'language_compatibility: archon-2026-07\n',
+          'flow.yaml': `name: References test
+description: Loop panel navigation.
+nodes:
+  - id: refine
+    loop_group:
+      nodes:
+        - id: draft
+          prompt: Draft text
+      until: done
+      max_iterations: 2
+`,
+        },
+      })
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      const originalWorker = globalThis.Worker
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
+      try {
+        const { container } = render(App)
+        await waitForSetupReady()
+        await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+        const open = await screen.findByRole('button', { name: 'Open loop body' })
+        const analysis = $documentSession.get().analysis!
+        const issue = {
+          code: 'test_required',
+          layer: 'contract' as const,
+          severity: 'error' as const,
+          blocking: true,
+          message: 'Required value is missing.',
+          document: 'definition' as const,
+        }
+        receiveDocumentAnalysis({ ...analysis, issues: blocking ? [issue] : [] })
+        await fireEvent.click(open)
+        const problemsTab = screen.getByRole('tab', { name: 'Problems' })
+        const referencesTab = screen.getByRole('tab', { name: 'References' })
+        expect(blocking ? problemsTab : referencesTab).toHaveAttribute('aria-selected', 'true')
+        expect(screen.queryByRole('region', { name: 'Problems' })).not.toBeInTheDocument()
+        receiveDocumentAnalysis({ ...analysis, issues: blocking ? [] : [issue] })
+        await tick()
+        expect(blocking ? problemsTab : referencesTab).toHaveAttribute('aria-selected', 'true')
+        receiveDocumentAnalysis({ ...analysis, issues: blocking ? [issue] : [] })
+        expect(container.querySelector('[data-testid="graph-scope-header"]')?.nextElementSibling).toHaveClass(
+          'editor-surfaces',
+        )
+        expect(screen.getByRole('region', { name: 'Workflow editor' }).querySelector('.scope-bar')).toBeNull()
+        await fireEvent.click(referencesTab)
+        expect(screen.getByRole('region', { name: 'References for refine' })).toBeVisible()
+        expect(screen.getByText(blocking ? '1 problem, 1 blocking' : '0 problems, 0 blocking')).toBeVisible()
+        expect(screen.queryByRole('region', { name: 'Problems' })).not.toBeInTheDocument()
+        if (!blocking) {
+          setCanvasSelection(['draft'])
+          await tick()
+          await fireEvent.click(screen.getByRole('button', { name: 'Inspector for draft' }))
+          await fireEvent.click(screen.getByRole('tab', { name: 'General' }))
+          const prompt = await screen.findByRole('textbox', { name: /Prompt.*Required/i })
+          prompt.focus()
+          await fireEvent.focusIn(prompt)
+          await waitFor(() => expect(screen.getByText(/Insert target: draft \/ .*Prompt/)).toBeVisible())
+          expect(screen.getByRole('button', { name: 'Insert $LOOP_PREV.draft.output' })).toBeEnabled()
+          setCanvasSelection([])
+          await tick()
+          expect(screen.queryByText(/Insert target: draft \/ .*Prompt/)).not.toBeInTheDocument()
+          expect(screen.getByRole('button', { name: 'Insert $LOOP_PREV.draft.output' })).toBeDisabled()
+        }
+
+        const referencePanel = screen.getByRole('tabpanel', { name: 'References' })
+        referencePanel.scrollTop = 73
+        await fireEvent.scroll(referencePanel)
+        expect(activeLayoutStore.get()?.scopeLayouts['loop-group:refine']?.referencesScroll).toBe(73)
+        await fireEvent.click(problemsTab)
+        setCanvasSelection(['draft'])
+        receiveDocumentAnalysis({ ...analysis, issues: blocking ? [] : [issue] })
+        await tick()
+        expect(screen.getByRole('tab', { name: 'Problems' })).toHaveAttribute('aria-selected', 'true')
+        await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+        expect(screen.queryByRole('tab', { name: 'References' })).not.toBeInTheDocument()
+        await fireEvent.click(await screen.findByRole('button', { name: 'Open loop body' }))
+        expect(screen.getByRole('tab', { name: 'Problems' })).toHaveAttribute('aria-selected', 'true')
+        await fireEvent.click(screen.getByRole('tab', { name: 'References' }))
+        expect(screen.getByRole('tabpanel', { name: 'References' }).scrollTop).toBe(73)
+        receiveDocumentAnalysis({ ...analysis, issues: [issue] })
+        await tick()
+        expect(screen.getByRole('tab', { name: 'References' })).toHaveAttribute('aria-selected', 'true')
+      } finally {
+        if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+        else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+      }
+    },
+  )
+
   it('shows docked panel controls and returns collapsed panel width to the editor', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [])
     const { container } = render(App)

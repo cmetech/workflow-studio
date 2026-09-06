@@ -65,12 +65,28 @@ describe('layout app-data store', () => {
           inspector: { tab: 'General', scrollTop: 0 },
           canvasScroll: { left: 0, top: 0 },
           problemsScroll: 0,
+          referencesScroll: 0,
         },
       },
     })
     expect(native.layoutSave).not.toHaveBeenCalled()
     await store.renameWorkflowPath(legacy.workspaceId, legacy.workflowPath, 'renamed.yaml')
     expect(JSON.parse(native.read()!)[0]).toMatchObject({ schemaVersion: 2, savedHashes: hashes })
+  })
+
+  it('defaults old and malformed auxiliary fields without marking a scope visited', async () => {
+    const old = record()
+    old.scopeLayouts['loop-group:first'] = { ...emptyScopeLayout() }
+    const raw = JSON.parse(JSON.stringify(old))
+    delete raw.scopeLayouts.root.referencesScroll
+    raw.scopeLayouts['loop-group:first'].auxiliaryTab = 'unknown'
+    raw.scopeLayouts['loop-group:first'].referencesScroll = -1
+    const native = nativeWith(JSON.stringify([{ schemaVersion: 2, layout: raw, savedHashes: hashes }]))
+    const loaded = await createLayoutStore(native).loadLayout(old)
+    expect(loaded?.scopeLayouts.root.referencesScroll).toBe(0)
+    expect(loaded?.scopeLayouts.root.auxiliaryTab).toBeUndefined()
+    expect(loaded?.scopeLayouts['loop-group:first']?.referencesScroll).toBe(0)
+    expect(loaded?.scopeLayouts['loop-group:first']?.auxiliaryTab).toBeUndefined()
   })
 
   it('round-trips all scope interaction fields through save, exact rename and hash reclaim', async () => {
@@ -90,6 +106,8 @@ describe('layout app-data store', () => {
         inspector: { tab: 'Advanced', scrollTop: x + 2 },
         canvasScroll: { left: x + 3, top: x + 4 },
         problemsScroll: x + 5,
+        auxiliaryTab: id === 'first' ? 'problems' : 'references',
+        referencesScroll: x + 6,
       }
     }
     await store.saveLayout(layout, hashes)

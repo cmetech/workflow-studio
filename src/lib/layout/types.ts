@@ -54,6 +54,7 @@ export interface InspectorLayout {
   tab: string
   scrollTop: number
 }
+export type AuxiliaryTab = 'problems' | 'references'
 export interface ScopeLayoutV1 {
   nodePositions: Record<string, { x: number; y: number }>
   viewport: CanvasViewport
@@ -63,6 +64,9 @@ export interface ScopeLayoutV1 {
   canvasScroll: { left: number; top: number }
   /** Added compatibly to v2 records; readers default an omitted value to zero. */
   problemsScroll?: number
+  /** Omitted until the first visit chooses a tab from current blocking issues. */
+  auxiliaryTab?: AuxiliaryTab
+  referencesScroll?: number
 }
 export interface LayoutRecordV2 {
   schemaVersion: 2
@@ -83,5 +87,6 @@ export function emptyScopeLayout(): ScopeLayoutV1 {
     inspector: { tab: 'General', scrollTop: 0 },
     canvasScroll: { left: 0, top: 0 },
     problemsScroll: 0,
+    referencesScroll: 0,
   }
 }

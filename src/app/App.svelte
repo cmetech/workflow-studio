@@ -122,6 +122,7 @@
   import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
   import NewWorkflowDialog from '$src/features/workspace/NewWorkflowDialog.svelte'
   import ImportExportDialog from '$src/features/workspace/ImportExportDialog.svelte'
+  import AuxiliaryPanel from '$src/features/documents/AuxiliaryPanel.svelte'
   import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import { runProblemFocusCoordinator } from '$src/features/documents/problem-focus-coordinator'
   import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
@@ -645,6 +646,25 @@
   const canvasGraph = $derived(
     canvasProjection?.graphs.find((graph) => graph.scope.key === $activeScopeKeyStore) ?? null,
   )
+  const auxiliaryBlockingCount = $derived(
+    ($documentSessionStore.analysis?.issues ?? []).filter((issue) => issue.blocking).length,
+  )
+  const auxiliaryTab = $derived(
+    canvasGraph?.scope.kind === 'loop-group'
+      ? ($activeScopeLayoutStore?.auxiliaryTab ?? (auxiliaryBlockingCount > 0 ? 'problems' : 'references'))
+      : 'problems',
+  )
+  $effect(() => {
+    const scopeKey = canvasGraph?.scope.key
+    if (!scopeKey || scopeKey === 'root' || $activeScopeLayoutStore?.auxiliaryTab !== undefined) return
+    const analysis = $documentSessionStore.analysis
+    const revision = $documentSessionStore.revision
+    if (!revision || !analysis || !isAnalysisCurrent(revision, analysis)) return
+    const initialTab = auxiliaryBlockingCount > 0 ? 'problems' : 'references'
+    updateScopeLayout(scopeKey, (scope) =>
+      scope.auxiliaryTab === undefined ? { ...scope, auxiliaryTab: initialTab } : scope,
+    )
+  })
   const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
   const canvasRepairableDraft = $derived(
     Boolean(
@@ -1400,6 +1420,23 @@
       canonicalFieldPath: currentField.fieldPath,
     }
   }
+
+  const referenceInsertionTargetLabel = $derived.by(() => {
+    const current = currentReferenceTargetIdentity()
+    const prepared = preparedReferences
+    if (
+      !current ||
+      !prepared ||
+      !(['current', 'outer', 'previous'] as const).some((namespace) =>
+        referenceTargetOwner.accepts(namespace, current, prepared),
+      )
+    )
+      return undefined
+    const field = inspectorFields.find((candidate) => candidate.fieldPath === current.canonicalFieldPath)
+    if (!field) return undefined
+    const owner = inspectorTarget.kind === 'node' ? inspectorTarget.nodeId : canvasGraph?.scope.groupId
+    return `${owner ? `${owner} / ` : ''}${field.label}`
+  })
 
   function canInsertLoopGroupReference(suggestion: LoopGroupReferenceSuggestion): boolean {
     const current = currentReferenceTargetIdentity()
@@ -2650,15 +2687,6 @@
               onBack={leaveLoopGroup}
               onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
             />
-            <LoopGroupScopeBar
-              groupId={canvasGraph.scope.groupId}
-              suggestions={loopGroupReferenceSuggestions}
-              status={referenceStatus}
-              onCopy={copyLoopGroupReference}
-              canInsert={canInsertLoopGroupReference}
-              onInsert={insertLoopGroupReference}
-              onAddDependency={addOuterGroupDependency}
-            />
           {/if}
           <div
             class="editor-surfaces"
@@ -2760,27 +2788,56 @@
         {/if}
       </section>
       {#if $documentSessionStore.pair}
-        <ProblemsPanel
-          issues={$documentSessionStore.analysis?.issues ?? []}
-          workflowName={canvasProjection?.name}
-          paths={{
-            definition: $documentSessionStore.pair.definition.path,
-            companion: $documentSessionStore.pair.companion?.path ?? null,
-          }}
-          scrollTop={$activeScopeLayoutStore?.problemsScroll ?? 0}
-          onScroll={(problemsScroll) =>
+        {#snippet problemsContent()}
+          <ProblemsPanel
+            hosted
+            issues={$documentSessionStore.analysis?.issues ?? []}
+            workflowName={canvasProjection?.name}
+            paths={{
+              definition: $documentSessionStore.pair?.definition.path ?? null,
+              companion: $documentSessionStore.pair?.companion?.path ?? null,
+            }}
+            onDocumentation={(id, opener) => {
+              exampleDocumentationProfile = undefined
+              documentationNavigationSequence += 1
+              const topicId = activeDocumentDocumentationIndex?.byId.has(id)
+                ? id
+                : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
+                  ? `contract:${id}`
+                  : id
+              documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
+              routePageNavigation('documentation', opener, true)
+            }}
+          />
+        {/snippet}
+        {#snippet referencesContent()}
+          {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
+            <LoopGroupScopeBar
+              groupId={canvasGraph.scope.groupId}
+              suggestions={loopGroupReferenceSuggestions}
+              status={referenceStatus}
+              {...referenceInsertionTargetLabel ? { insertionTargetLabel: referenceInsertionTargetLabel } : {}}
+              onCopy={copyLoopGroupReference}
+              canInsert={canInsertLoopGroupReference}
+              onInsert={insertLoopGroupReference}
+              onAddDependency={addOuterGroupDependency}
+            />
+          {/if}
+        {/snippet}
+        <AuxiliaryPanel
+          problems={problemsContent}
+          references={canvasGraph?.scope.kind === 'loop-group' ? referencesContent : undefined}
+          issueCount={$documentSessionStore.analysis?.issues.length ?? 0}
+          blockingCount={auxiliaryBlockingCount}
+          activeTab={auxiliaryTab}
+          onTabChange={(auxiliaryTab) =>
+            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab }))}
+          problemsScroll={$activeScopeLayoutStore?.problemsScroll ?? 0}
+          referencesScroll={$activeScopeLayoutStore?.referencesScroll ?? 0}
+          onProblemsScroll={(problemsScroll) =>
             updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll }))}
-          onDocumentation={(id, opener) => {
-            exampleDocumentationProfile = undefined
-            documentationNavigationSequence += 1
-            const topicId = activeDocumentDocumentationIndex?.byId.has(id)
-              ? id
-              : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
-                ? `contract:${id}`
-                : id
-            documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
-            routePageNavigation('documentation', opener, true)
-          }}
+          onReferencesScroll={(referencesScroll) =>
+            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, referencesScroll }))}
         />
         {#if $documentWorkspaceState.analysisError}
           <div class="document-outcome">
@@ -3608,7 +3665,7 @@
   }
 
   .editor-region.scoped-canvas {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .editor-surfaces,

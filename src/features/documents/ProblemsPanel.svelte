@@ -8,6 +8,7 @@
   interface Props {
     issues: readonly ValidationIssue[]
     paths: Readonly<Record<DocumentKind, string | null>>
+    hosted?: boolean
     workflowName?: string | undefined
     execute?: CommandSurface['executeCommand']
     onDocumentation?: ((id: string, opener: HTMLButtonElement) => void) | undefined
@@ -25,6 +26,7 @@
     issues,
     paths,
     workflowName,
+    hosted = false,
     execute = executeCommand,
     onDocumentation,
     scrollTop = 0,
@@ -87,21 +89,29 @@
   }
 </script>
 
-<section class="problems" aria-labelledby="problems-heading" data-scroll-frame="problems">
-  <header>
-    <h2 id="problems-heading">Problems</h2>
-    <p class="summary" aria-live="polite">
-      {issues.length}
-      {issues.length === 1 ? 'problem' : 'problems'}, {blockingCount} blocking
-    </p>
-  </header>
+<svelte:element
+  this={hosted ? 'div' : 'section'}
+  class="problems"
+  class:hosted
+  aria-labelledby={hosted ? undefined : 'problems-heading'}
+  data-scroll-frame={hosted ? undefined : 'problems'}
+>
+  {#if !hosted}
+    <header>
+      <h2 id="problems-heading">Problems</h2>
+      <p class="summary" aria-live="polite">
+        {issues.length}
+        {issues.length === 1 ? 'problem' : 'problems'}, {blockingCount} blocking
+      </p>
+    </header>
+  {/if}
 
   {#if groups.length === 0}
     <p class="empty">No problems found.</p>
   {:else}
     <div
       class="groups"
-      data-scroll-owner="problems"
+      data-scroll-owner={hosted ? undefined : 'problems'}
       bind:this={scrollOwner}
       onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
     >
@@ -143,7 +153,7 @@
       {/each}
     </div>
   {/if}
-</section>
+</svelte:element>
 
 <style>
   .problems {
@@ -154,6 +164,16 @@
     overflow: hidden;
     color: var(--color-text);
     background: var(--color-surface);
+  }
+
+  .problems.hosted {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  .hosted .groups {
+    overflow: visible;
   }
 
   header {
