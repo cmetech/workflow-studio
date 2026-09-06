@@ -129,6 +129,7 @@ function guideTopic(contract: AuthoringContract, guide: DocumentationGuide): Doc
 function assignRelatedGuides(topics: readonly DocumentationTopic[]): readonly DocumentationTopic[] {
   const knownTopicIds = new Set(topics.map(({ id }) => id))
   const guides = topics.filter(({ kind }) => kind === 'guide').sort(compareGuideTopics)
+  const nodeChooserId = knownTopicIds.has('guide:node-types') ? 'guide:node-types' : null
   const guideIdsByTarget = new Map<string, string[]>()
   for (const guide of guides) {
     for (const targetId of exactTopicAnchors(guide.body)) {
@@ -139,7 +140,11 @@ function assignRelatedGuides(topics: readonly DocumentationTopic[]): readonly Do
     }
   }
   return topics.map((topic) => {
-    const guideIds = guideIdsByTarget.get(topic.id)
+    const anchoredGuideIds = guideIdsByTarget.get(topic.id) ?? []
+    const guideIds =
+      topic.kind === 'node' && nodeChooserId
+        ? [nodeChooserId, ...anchoredGuideIds.filter((id) => id !== nodeChooserId)]
+        : anchoredGuideIds
     if (!guideIds?.length) return topic
     const existing = topic.relatedTopicIds ?? []
     return { ...topic, relatedTopicIds: [...guideIds, ...existing.filter((id) => !guideIds.includes(id))] }

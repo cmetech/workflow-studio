@@ -13,11 +13,13 @@ nodes:
 
 ## Ordinary loops
 
-An ordinary [Loop](#node:loop) repeats one `prompt` or one `command`. The loop object requires `until`, `max_iterations`, and exactly one of those two work fields. The current contract bounds `max_iterations` from 1 through 100. When `interactive: true`, add a non-empty `gate_message`.
+An ordinary [Loop](#node:loop) repeats bounded work. Both bundled profiles require `until` and `max_iterations`, bounded from 1 through 100. When `interactive: true`, add a non-empty `gate_message`.
 
-```yaml
+In `hermes-legacy`, the loop also requires `prompt` and does not accept `command`. This is the Legacy form:
+
+```yaml profile=hermes-legacy
 name: bounded-revision
-description: Revise a draft no more than three times.
+description: Revise a draft with a Legacy prompt loop.
 nodes:
   - id: revise
     loop:
@@ -26,7 +28,36 @@ nodes:
       max_iterations: 3
 ```
 
-A [Loop group](#node:loop_group) repeats a child DAG instead of one prompt or command. Its `nodes`, `until`, and `max_iterations` fields are required. Open the body canvas to author its children, then use [Loop groups](#guide:loop-groups) for scoped dependencies and current, outer, or previous-iteration output references.
+In `archon-2026-07`, an ordinary loop requires exactly one of `prompt` or `command`. This command-loop form is not valid Legacy YAML:
+
+```yaml profile=archon-2026-07 invalid-in=hermes-legacy
+name: command-revision
+description: Run a bounded Archon command loop.
+nodes:
+  - id: revise
+    loop:
+      command: /revise
+      until: done
+      max_iterations: 3
+```
+
+Archon also supplies **Loop group**, which repeats a child DAG instead of one prompt or command. Loop group is absent from the Legacy contract and therefore has no Legacy node-reference topic. Its `nodes`, `until`, and `max_iterations` fields are required. Open the body canvas to author its children, then use [Loop groups](#guide:loop-groups) for scoped dependencies and current, outer, or previous-iteration output references.
+
+```yaml profile=archon-2026-07 invalid-in=hermes-legacy
+name: grouped-revision
+description: Repeat a two-step child DAG in Archon.
+nodes:
+  - id: revise
+    loop_group:
+      until: done
+      max_iterations: 3
+      nodes:
+        - id: draft
+          prompt: Draft the revision.
+        - id: review
+          prompt: Review the draft.
+          depends_on: [draft]
+```
 
 ## Approval and rejection
 

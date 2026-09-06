@@ -20,7 +20,9 @@ Use a [Script](#node:script) for script text with an explicit `runtime`. The bun
 
 ## Loop
 
-Use a [Loop](#node:loop) to repeat one prompt or one command until a bounded condition is met. It requires `until`, `max_iterations`, and exactly one work field. Use a [Loop group](#node:loop_group) when each iteration needs a child DAG with multiple steps. Read [Loops and approvals](#guide:loops-and-approvals) for loop shape and [Loop groups](#guide:loop-groups) for body scopes and references.
+Use a [Loop](#node:loop) for bounded repeated work. In `hermes-legacy`, a loop requires a `prompt`; command loops are not part of that profile. In `archon-2026-07`, a loop requires exactly one of `prompt` or `command`. Both profiles also require `until` and `max_iterations`.
+
+Archon also supplies the **Loop group** node kind when each iteration needs a child DAG with multiple steps. Loop groups are absent from the Legacy node inventory, so Legacy has no `node:loop_group` reference topic. Read [Loops and approvals](#guide:loops-and-approvals) for profile-specific loop shapes and [Loop groups](#guide:loop-groups) for Archon body scopes and references.
 
 ## Approval
 
@@ -32,11 +34,11 @@ Use [Cancel](#node:cancel) to describe an explicit runtime cancellation with a n
 
 ## Valid node examples
 
-This definition shows each current node kind in valid literal YAML. The loop-group kind is included because it is supplied by the active contract alongside the single-work loop kind.
+This Archon definition shows every node kind supplied by `archon-2026-07`, including its Loop group.
 
-```yaml
+```yaml profile=archon-2026-07 invalid-in=hermes-legacy
 name: node-kind-catalog
-description: Valid structural examples for every current node kind.
+description: Valid structural examples for every Archon node kind.
 nodes:
   - id: command-step
     command: /review
@@ -64,6 +66,22 @@ nodes:
       nodes:
         - id: child-step
           prompt: Produce one iteration result.
+```
+
+This Legacy definition uses its prompt-only ordinary loop and does not include a Loop group.
+
+```yaml profile=hermes-legacy
+name: legacy-node-kinds
+description: Valid Legacy prompt-loop structure.
+nodes:
+  - id: prepare
+    bash: "printf 'ready\\n'"
+  - id: revise
+    loop:
+      prompt: Revise the prepared result.
+      until: done
+      max_iterations: 3
+    depends_on: [prepare]
 ```
 
 ## Shared fields and authoring boundary

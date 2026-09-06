@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildDocumentationIndex, searchDocumentation } from './build-index'
-import type { AuthoringContract } from '$src/lib/contract/types'
+import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
 import { collectContractFields, resolveWidget } from '$src/lib/forms/widget-registry'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
@@ -109,6 +109,11 @@ const contextCollisionContract = {
 
 function bundledGuideFixtures() {
   return createDocumentationGuides(guideSources)
+}
+
+function exampleProfile(value: string | undefined): WorkflowProfile {
+  if (value === 'archon-2026-07' || value === 'hermes-legacy') return value
+  throw new Error(`Unknown guide example profile: ${String(value)}`)
 }
 
 describe('buildDocumentationIndex', () => {
@@ -312,6 +317,96 @@ describe('buildDocumentationIndex', () => {
         )
       }
     }
+  })
+
+  it('keeps every node link in shared guides resolvable for each bundled profile', async () => {
+    const guides = bundledGuideFixtures()
+    for (const activeContract of await loadBundledAuthoringContracts()) {
+      const index = buildDocumentationIndex(activeContract, guides)
+      for (const guide of guides) {
+        for (const [, topicId] of guide.body.matchAll(/\]\(#(node:[^)\s]+)\)/g)) {
+          expect(index.byId.has(topicId!), `${activeContract.profile}:${guide.id}:${topicId}`).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('validates profile-qualified guide examples and their declared incompatibilities', async () => {
+    const contracts = new Map((await loadBundledAuthoringContracts()).map((activeContract) => [activeContract.profile, activeContract]))
+    const coveredProfiles = new Set<WorkflowProfile>()
+    let incompatibleExampleCount = 0
+
+    for (const [path, guide] of Object.entries(guideSources)) {
+      for (const match of guide.matchAll(
+        /```yaml profile=(archon-2026-07|hermes-legacy)(?: invalid-in=(archon-2026-07|hermes-legacy))?\n([\s\S]*?)```/g,
+      )) {
+        const profile = exampleProfile(match[1])
+        const invalidProfile = match[2] ? exampleProfile(match[2]) : undefined
+        const definition = match[3]
+        const activeContract = contracts.get(profile)!
+        coveredProfiles.add(profile)
+        const analysis = await analyzeWorkflowPair(
+          {
+            type: 'analyze', requestId: `${path}:${profile}`, workflowId: path, pairGeneration: 0,
+            profile: activeContract.profile, reason: 'explicit-validate', contractDigest: activeContract.contract_digest,
+            definition: { path: `${path}.yaml`, text: definition!, revision: 0 },
+            companion: {
+              path: `${path}.hermes.yaml`, text: `language_compatibility: ${profile}\n`, revision: 0,
+            },
+          },
+          activeContract,
+        )
+        expect(analysis.structurallyValid, `${path}:${profile}`).toBe(true)
+
+        if (invalidProfile) {
+          incompatibleExampleCount += 1
+          const incompatibleContract = contracts.get(invalidProfile)!
+          const incompatibleAnalysis = await analyzeWorkflowPair(
+            {
+              type: 'analyze', requestId: `${path}:${invalidProfile}`, workflowId: path, pairGeneration: 0,
+              profile: incompatibleContract.profile, reason: 'explicit-validate',
+              contractDigest: incompatibleContract.contract_digest,
+              definition: { path: `${path}.yaml`, text: definition!, revision: 0 },
+              companion: {
+                path: `${path}.hermes.yaml`, text: `language_compatibility: ${invalidProfile}\n`, revision: 0,
+              },
+            },
+            incompatibleContract,
+          )
+          expect(incompatibleAnalysis.structurallyValid, `${path}:${profile}:invalid-in:${invalidProfile}`).toBe(false)
+        }
+      }
+    }
+
+    expect(coveredProfiles).toEqual(new Set(['archon-2026-07', 'hermes-legacy']))
+    expect(incompatibleExampleCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('derives retry and loop profile differences from bundled contract metadata', async () => {
+    const contracts = new Map((await loadBundledAuthoringContracts()).map((activeContract) => [activeContract.profile, activeContract]))
+    const archon = contracts.get('archon-2026-07')!
+    const legacy = contracts.get('hermes-legacy')!
+    const archonRetry = collectContractFields(archon).find(({ id }) => id === 'prompt.retry.max_attempts')!
+    const legacyRetry = collectContractFields(legacy).find(({ id }) => id === 'prompt.retry.max_attempts')!
+
+    expect(archonRetry.constraints).toMatchObject({ minimum: 0, maximum: 5 })
+    expect(archonRetry.schema['x-hermes-semantics']).toEqual({
+      counts: 'retries_after_initial',
+      omitted_ai: 2,
+      omitted_deterministic: 0,
+    })
+    expect(legacyRetry).toMatchObject({
+      constraints: { minimum: 1, maximum: 5 },
+      compatibilityCode: 'legacy_retry_total_attempts',
+    })
+    expect(archon.node_kinds.find(({ id }) => id === 'loop')?.fields.some(({ id }) => id === 'loop.loop.command')).toBe(
+      true,
+    )
+    expect(legacy.node_kinds.find(({ id }) => id === 'loop')?.fields.some(({ id }) => id === 'loop.loop.command')).toBe(
+      false,
+    )
+    expect(archon.node_kinds.some(({ id }) => id === 'loop_group')).toBe(true)
+    expect(legacy.node_kinds.some(({ id }) => id === 'loop_group')).toBe(false)
   })
 
   it('validates every bundled definition guide fence through the production contract and DAG analyzer', async () => {
