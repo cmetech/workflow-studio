@@ -63,6 +63,20 @@ describe('ProblemsPanel', () => {
     expect(within(layerTabs).getByRole('tab', { name: 'Semantic 0' })).toBeVisible()
     expect(within(layerTabs).getByRole('tab', { name: 'Compatibility 0' })).toBeVisible()
     expect(within(layerTabs).getByRole('tab', { name: 'Operational 1' })).toBeVisible()
+    for (const tab of within(layerTabs).getAllByRole('tab')) {
+      const controlled = document.getElementById(tab.getAttribute('aria-controls')!)
+      expect(controlled).not.toBeNull()
+      expect(controlled).toHaveAttribute('role', 'tabpanel')
+    }
+    const activePanel = screen.getByRole('tabpanel', { name: 'Contract 1' })
+    expect(activePanel).toHaveAttribute(
+      'id',
+      within(layerTabs).getByRole('tab', { name: 'Contract 1' }).getAttribute('aria-controls'),
+    )
+    expect(activePanel).toHaveAttribute(
+      'aria-labelledby',
+      within(layerTabs).getByRole('tab', { name: 'Contract 1' }).id,
+    )
     expect(screen.getByRole('heading', { name: 'flows/release.yaml' })).toBeVisible()
     expect(screen.getByText('Blocks save and export')).toBeVisible()
     expect(screen.queryByText('Provider is not configured.')).not.toBeInTheDocument()
@@ -93,7 +107,7 @@ describe('ProblemsPanel', () => {
     ['Home', 'Contract 1', 'Syntax 0'],
     ['End', 'Contract 1', 'Operational 1'],
   ])('moves layer selection and focus with %s', async (key, from, to) => {
-    render(ProblemsPanel, {
+    const { rerender } = render(ProblemsPanel, {
       issues,
       paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
     })
@@ -104,18 +118,23 @@ describe('ProblemsPanel', () => {
 
     expect(screen.getByRole('tab', { name: to })).toHaveFocus()
     expect(screen.getByRole('tab', { name: to })).toHaveAttribute('aria-selected', 'true')
+
+    await rerender({ issues: [], paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' } })
+    expect(screen.getByRole('tab', { name: `${to.replace(/ \d+$/, '')} 0` })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('updates the default layer as analysis arrives but preserves an explicit selection', async () => {
+  it('tracks the first populated layer until explicit selection and resets at a new owner', async () => {
     const { rerender } = render(ProblemsPanel, {
       issues: [],
       paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      selectionOwner: 'workflow:flow:root',
     })
 
     expect(screen.getByRole('tab', { name: 'Syntax 0' })).toHaveAttribute('aria-selected', 'true')
     await rerender({
       issues: [issues[1]!],
       paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      selectionOwner: 'workflow:flow:root',
     })
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Operational 1' })).toHaveAttribute('aria-selected', 'true'),
@@ -124,18 +143,28 @@ describe('ProblemsPanel', () => {
     await rerender({
       issues: [issues[0]!],
       paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      selectionOwner: 'workflow:flow:root',
     })
-    expect(screen.getByRole('tab', { name: 'Operational 0' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('No operational problems.')).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('A required node field is missing.')).toBeVisible()
 
     await fireEvent.click(screen.getByRole('tab', { name: 'Syntax 0' }))
     await rerender({
       issues: [issues[1]!],
       paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      selectionOwner: 'workflow:flow:root',
     })
     expect(screen.getByRole('tab', { name: 'Syntax 0' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('No syntax problems.')).toBeVisible()
     expect(screen.queryByText('Provider is not configured.')).not.toBeInTheDocument()
+
+    await rerender({
+      issues: [issues[1]!],
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      selectionOwner: 'workflow:flow:loop-group:release',
+    })
+    expect(screen.getByRole('tab', { name: 'Operational 1' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Provider is not configured.')).toBeVisible()
   })
 
   it('focuses the main row even with documentation and exposes Docs as a separate action', async () => {
@@ -202,6 +231,24 @@ describe('ProblemsPanel', () => {
     expect(screen.getAllByRole('button', { name: /Duplicate node identifier/i })).toHaveLength(2)
     expect(container.querySelector('.problems')).toHaveAttribute('data-scroll-frame', 'problems')
     expect(container.querySelector('.groups')).toHaveAttribute('data-scroll-owner', 'problems')
+  })
+
+  it('makes the standalone scroll owner the constrained content track', () => {
+    const { container } = render(ProblemsPanel, {
+      issues: Array.from({ length: 20 }, (_, index) => ({
+        ...issues[0]!,
+        code: `required_${index}`,
+        message: `Required value ${index}.`,
+      })),
+      paths: { definition: 'flow.yaml', companion: null },
+    })
+
+    const frame = container.querySelector<HTMLElement>('[data-scroll-frame="problems"]')!
+    const owner = container.querySelector<HTMLElement>('[data-scroll-owner="problems"]')!
+    expect(owner).toHaveClass('layer-panel')
+    expect(owner).toHaveAttribute('role', 'tabpanel')
+    expect(owner.parentElement).toBe(frame)
+    expect(frame.lastElementChild).toBe(owner)
   })
 
   it('leaves summary and scrolling to its host without losing scoped identity or duplicate ordinals', () => {

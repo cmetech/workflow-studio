@@ -42,11 +42,17 @@
   const selected = $derived(references ? activeTab : 'problems')
   const tabs = $derived<AuxiliaryTab[]>(references ? ['problems', 'references'] : ['problems'])
   let tablist = $state<HTMLDivElement>()
-  let scrollOwner = $state<HTMLDivElement>()
+  let problemsScrollOwner = $state<HTMLDivElement>()
+  let referencesScrollOwner = $state<HTMLDivElement>()
 
   $effect(() => {
-    const scrollTop = selected === 'problems' ? problemsScroll : referencesScroll
-    if (scrollOwner && scrollOwner.scrollTop !== scrollTop) scrollOwner.scrollTop = scrollTop
+    if (problemsScrollOwner && problemsScrollOwner.scrollTop !== problemsScroll)
+      problemsScrollOwner.scrollTop = problemsScroll
+  })
+
+  $effect(() => {
+    if (referencesScrollOwner && referencesScrollOwner.scrollTop !== referencesScroll)
+      referencesScrollOwner.scrollTop = referencesScroll
   })
 
   function navigate(event: KeyboardEvent, tab: AuxiliaryTab): void {
@@ -98,25 +104,34 @@
     </div>
     <p aria-live="polite">{issueCount} {issueCount === 1 ? 'problem' : 'problems'}, {blockingCount} blocking</p>
   </header>
-  {#key selected}
+  <div
+    class="tab-content"
+    role="tabpanel"
+    id={`${id}-problems-panel`}
+    aria-labelledby={`${id}-problems-tab`}
+    tabindex={selected === 'problems' ? 0 : -1}
+    data-scroll-owner="problems"
+    hidden={selected !== 'problems'}
+    bind:this={problemsScrollOwner}
+    onscroll={(event) => onProblemsScroll?.(event.currentTarget.scrollTop)}
+  >
+    {@render problems()}
+  </div>
+  {#if references}
     <div
       class="tab-content"
       role="tabpanel"
-      id={`${id}-${selected}-panel`}
-      aria-labelledby={`${id}-${selected}-tab`}
-      tabindex="0"
-      data-scroll-owner={selected}
-      bind:this={scrollOwner}
-      onscroll={(event) =>
-        (selected === 'problems' ? onProblemsScroll : onReferencesScroll)?.(event.currentTarget.scrollTop)}
+      id={`${id}-references-panel`}
+      aria-labelledby={`${id}-references-tab`}
+      tabindex={selected === 'references' ? 0 : -1}
+      data-scroll-owner="references"
+      hidden={selected !== 'references'}
+      bind:this={referencesScrollOwner}
+      onscroll={(event) => onReferencesScroll?.(event.currentTarget.scrollTop)}
     >
-      {#if selected === 'references' && references}
-        {@render references()}
-      {:else}
-        {@render problems()}
-      {/if}
+      {@render references()}
     </div>
-  {/key}
+  {/if}
 </div>
 
 <style>

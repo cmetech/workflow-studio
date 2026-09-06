@@ -968,6 +968,8 @@ for (const viewport of [
     await page.keyboard.press('End')
     await expect(operational).toBeFocused()
     await expect(operational).toHaveAttribute('aria-selected', 'true')
+    await syntax.click()
+    await expect(syntax).toHaveAttribute('aria-selected', 'true')
     await references.click()
     await expect(references).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('tabpanel', { name: 'References', exact: true })).toBeVisible()
@@ -1011,6 +1013,8 @@ for (const viewport of [
     await problems.focus()
     await page.keyboard.press('Enter')
     await expect(problems).toHaveAttribute('aria-selected', 'true')
+    await expect(syntax).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByText('No syntax problems.')).toBeVisible()
     await expect(page.getByRole('alert')).toHaveCount(0)
     await references.focus()
     await page.keyboard.press('Space')
@@ -1058,4 +1062,38 @@ test('the workflow details panel grows by pointer and supports keyboard height b
   await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(96)
   await page.keyboard.press('End')
   await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(Math.round(maximumHeight))
+})
+
+test('standalone Problems constrains its issue list to the layer scroll owner', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 })
+  await page.goto('/tests/e2e/fixtures/problems-panel.html')
+
+  const frame = page.locator('[data-scroll-frame="problems"]')
+  const owner = page.locator('[data-scroll-owner="problems"]')
+  await expect(frame).toBeVisible()
+  await expect(owner).toBeVisible()
+  const geometry = await owner.evaluate((element) => {
+    const frame = element.parentElement!
+    const ownerBounds = element.getBoundingClientRect()
+    const frameBounds = frame.getBoundingClientRect()
+    return {
+      directChild: element.parentElement === frame,
+      frameHeight: frameBounds.height,
+      ownerHeight: ownerBounds.height,
+      ownerBottom: ownerBounds.bottom,
+      frameBottom: frameBounds.bottom,
+      ownerClientHeight: element.clientHeight,
+      ownerScrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }
+  })
+  expect(geometry.directChild).toBe(true)
+  expect(geometry.frameHeight).toBe(180)
+  expect(geometry.ownerHeight).toBeLessThan(geometry.frameHeight)
+  expect(geometry.ownerBottom).toBeLessThanOrEqual(geometry.frameBottom)
+  expect(geometry.ownerScrollHeight).toBeGreaterThan(geometry.ownerClientHeight)
+  expect(geometry.overflowY).toBe('auto')
+
+  await owner.evaluate((element) => (element.scrollTop = 120))
+  expect(await owner.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 })

@@ -10,6 +10,7 @@
     paths: Readonly<Record<DocumentKind, string | null>>
     hosted?: boolean
     workflowName?: string | undefined
+    selectionOwner?: string | undefined
     execute?: CommandSurface['executeCommand']
     onDocumentation?: ((id: string, opener: HTMLButtonElement) => void) | undefined
     scrollTop?: number | undefined
@@ -28,6 +29,7 @@
     issues,
     paths,
     workflowName,
+    selectionOwner,
     hosted = false,
     execute = executeCommand,
     onDocumentation,
@@ -36,9 +38,11 @@
   }: Props = $props()
   const id = $props.id()
   let layerTablist = $state<HTMLDivElement>()
-  let activeLayer = $state<IssueLayer>('syntax')
-  let layerSelectionInitialized = $state(false)
+  let explicitlySelectedLayer = $state<IssueLayer>()
+  let previousSelectionOwner = $state<string | undefined>()
   let scrollOwner = $state<HTMLElement>()
+  const automaticLayer = $derived(layers.find((layer) => issues.some((issue) => issue.layer === layer)) ?? 'syntax')
+  const activeLayer = $derived(explicitlySelectedLayer ?? automaticLayer)
   const groups = $derived(
     groupIssues(
       issues.filter((issue) => issue.layer === activeLayer),
@@ -53,11 +57,10 @@
   })
 
   $effect(() => {
-    if (layerSelectionInitialized) return
-    const firstPopulatedLayer = layers.find((layer) => issues.some((issue) => issue.layer === layer))
-    if (!firstPopulatedLayer) return
-    activeLayer = firstPopulatedLayer
-    layerSelectionInitialized = true
+    const owner = selectionOwner
+    if (owner === previousSelectionOwner) return
+    previousSelectionOwner = owner
+    explicitlySelectedLayer = undefined
   })
 
   function groupIssues(
@@ -87,8 +90,7 @@
   }
 
   function selectLayer(layer: IssueLayer): void {
-    activeLayer = layer
-    layerSelectionInitialized = true
+    explicitlySelectedLayer = layer
   }
 
   function navigateLayers(event: KeyboardEvent, layer: IssueLayer): void {
@@ -159,7 +161,7 @@
         type="button"
         role="tab"
         id={`${id}-${layer}-tab`}
-        aria-controls={`${id}-${layer}-panel`}
+        aria-controls={`${id}-layer-panel`}
         aria-selected={activeLayer === layer}
         tabindex={activeLayer === layer ? 0 : -1}
         onclick={() => selectLayer(layer)}
@@ -172,53 +174,49 @@
   </div>
 
   <div
-    class="layer-panel"
+    class="layer-panel groups"
     role="tabpanel"
-    id={`${id}-${activeLayer}-panel`}
+    id={`${id}-layer-panel`}
     aria-labelledby={`${id}-${activeLayer}-tab`}
     tabindex="0"
+    data-scroll-owner={hosted ? undefined : 'problems'}
+    bind:this={scrollOwner}
+    onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
   >
     {#if groups.length === 0}
       <p class="empty">No {activeLayer} problems.</p>
     {:else}
-      <div
-        class="groups"
-        data-scroll-owner={hosted ? undefined : 'problems'}
-        bind:this={scrollOwner}
-        onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
-      >
-        {#each groups as group (group.document)}
-          <section class="file-group" aria-labelledby={`${id}-${activeLayer}-${group.document}`}>
-            <h3 id={`${id}-${activeLayer}-${group.document}`}>{group.path}</h3>
-            <ul>
-              {#each group.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(group.issues, occurrence)))}
-                {@const ordinal = duplicateOrdinal(group.issues, occurrence)}
-                <li data-issue-key={issueViewKey(issue, ordinal)}>
+      {#each groups as group (group.document)}
+        <section class="file-group" aria-labelledby={`${id}-${activeLayer}-${group.document}`}>
+          <h3 id={`${id}-${activeLayer}-${group.document}`}>{group.path}</h3>
+          <ul>
+            {#each group.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(group.issues, occurrence)))}
+              {@const ordinal = duplicateOrdinal(group.issues, occurrence)}
+              <li data-issue-key={issueViewKey(issue, ordinal)}>
+                <button
+                  type="button"
+                  aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
+                  onclick={() => focusIssue(issue)}
+                >
+                  <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
+                  <span class="issue-copy">
+                    <strong>{issue.message}</strong>
+                    <span>{issue.blocking ? 'Blocks save and export' : 'Advisory'}</span>
+                  </span>
+                </button>
+                {#if issue.documentationId}
                   <button
                     type="button"
-                    aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
-                    onclick={() => focusIssue(issue)}
+                    class="docs-action"
+                    aria-label={`Open documentation for ${issue.message}`}
+                    onclick={(event) => onDocumentation?.(issue.documentationId!, event.currentTarget)}>Docs</button
                   >
-                    <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
-                    <span class="issue-copy">
-                      <strong>{issue.message}</strong>
-                      <span>{issue.blocking ? 'Blocks save and export' : 'Advisory'}</span>
-                    </span>
-                  </button>
-                  {#if issue.documentationId}
-                    <button
-                      type="button"
-                      class="docs-action"
-                      aria-label={`Open documentation for ${issue.message}`}
-                      onclick={(event) => onDocumentation?.(issue.documentationId!, event.currentTarget)}>Docs</button
-                    >
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/each}
-      </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/each}
     {/if}
   </div>
 </svelte:element>
@@ -315,11 +313,6 @@
   }
 
   .layer-panel {
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .groups {
     min-height: 0;
     padding: 0.75rem;
     overflow: auto;

@@ -352,11 +352,20 @@ nodes:
           expect(screen.getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
           expect(screen.getByRole('tablist', { name: 'Validation layers' })).toBeVisible()
           expect(screen.queryByText('Required value is missing.')).toBeInTheDocument()
+          await fireEvent.click(screen.getByRole('tab', { name: 'Syntax 0' }))
+          await fireEvent.click(referencesTab)
+          await fireEvent.click(problemsTab)
+          expect(screen.getByRole('tab', { name: 'Syntax 0' })).toHaveAttribute('aria-selected', 'true')
+          expect(screen.getByText('No syntax problems.')).toBeVisible()
         }
         await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
         expect(screen.queryByRole('tab', { name: 'References' })).not.toBeInTheDocument()
         await fireEvent.click(await screen.findByRole('button', { name: 'Open loop body' }))
         expect(screen.getByRole('tab', { name: 'Problems' })).toHaveAttribute('aria-selected', 'true')
+        if (!blocking) {
+          expect(screen.getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
+          expect(screen.getByText('Required value is missing.')).toBeVisible()
+        }
         await fireEvent.click(screen.getByRole('tab', { name: 'References' }))
         expect(screen.getByRole('tabpanel', { name: 'References' }).scrollTop).toBe(73)
         receiveDocumentAnalysis({ ...analysis, issues: [issue] })

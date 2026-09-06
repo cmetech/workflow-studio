@@ -707,6 +707,9 @@
       ? ($activeScopeLayoutStore?.auxiliaryTab ?? (auxiliaryBlockingCount > 0 ? 'problems' : 'references'))
       : 'problems',
   )
+  const problemsSelectionOwner = $derived(
+    $documentSessionStore.pair ? `${$documentSessionStore.pair.workflowId}:${$activeScopeKeyStore}` : undefined,
+  )
   $effect(() => {
     const scopeKey = canvasGraph?.scope.key
     if (!scopeKey || scopeKey === 'root' || $activeScopeLayoutStore?.auxiliaryTab !== undefined) return
@@ -2993,6 +2996,7 @@
             hosted
             issues={$documentSessionStore.analysis?.issues ?? []}
             workflowName={canvasProjection?.name}
+            selectionOwner={problemsSelectionOwner}
             paths={{
               definition: $documentSessionStore.pair?.definition.path ?? null,
               companion: $documentSessionStore.pair?.companion?.path ?? null,

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Standalone Problems fixture</title>
+    <style>
+      :root {
+        --color-border: #d0d5dd;
+        --color-error: #b42318;
+        --color-focus: #5145cd;
+        --color-node: #eef0ff;
+        --color-surface: #ffffff;
+        --color-text: #101828;
+        --color-text-muted: #475467;
+        --color-warning: #b54708;
+        --font-mono: ui-monospace, monospace;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      #fixture {
+        width: 640px;
+        height: 180px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="fixture"></div>
+    <script type="module">
+      import { mount } from 'svelte'
+      import ProblemsPanel from '/src/features/documents/ProblemsPanel.svelte'
+
+      const issues = Array.from({ length: 36 }, (_, index) => ({
+        code: `fixture_required_${index}`,
+        layer: 'contract',
+        severity: 'error',
+        blocking: true,
+        message: `Required fixture value ${index + 1}.`,
+        document: 'definition',
+        path: `/nodes/${index}/prompt`,
+        nodeId: `node-${index}`,
+      }))
+
+      mount(ProblemsPanel, {
+        target: document.querySelector('#fixture'),
+        props: {
+          issues,
+          paths: { definition: 'fixture.yaml', companion: null },
+          selectionOwner: 'fixture:root',
+        },
+      })
+    </script>
+  </body>
+</html>

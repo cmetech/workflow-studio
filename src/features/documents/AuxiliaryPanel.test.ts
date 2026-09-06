@@ -24,10 +24,12 @@ describe('AuxiliaryPanel', () => {
     expect(problemsTab).toHaveAttribute('aria-selected', 'true')
     expect(problemsTab).toHaveAttribute('tabindex', '0')
     expect(referencesTab).toHaveAttribute('tabindex', '-1')
+    expect(document.getElementById(problemsTab.getAttribute('aria-controls')!)).not.toBeNull()
+    expect(document.getElementById(referencesTab.getAttribute('aria-controls')!)).not.toBeNull()
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', problemsTab.getAttribute('aria-controls'))
     expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', problemsTab.id)
     expect(screen.getByText('Problem details')).toBeVisible()
-    expect(screen.queryByText('Reference suggestions')).not.toBeInTheDocument()
+    expect(screen.getByText('Reference suggestions')).not.toBeVisible()
     await fireEvent.click(referencesTab)
     expect(onTabChange).toHaveBeenLastCalledWith('references')
     await rerender({ ...props, onTabChange, activeTab: 'references' })
@@ -35,7 +37,7 @@ describe('AuxiliaryPanel', () => {
     expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', referencesTab.id)
     expect(screen.getByText('Reference suggestions')).toBeVisible()
     expect(screen.getByText('3 problems, 1 blocking')).toBeVisible()
-    expect(screen.queryByText('Problem details')).not.toBeInTheDocument()
+    expect(screen.getByText('Problem details')).not.toBeVisible()
   })
 
   it.each([
