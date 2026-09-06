@@ -872,8 +872,8 @@ for (const modifier of ['Meta', 'Control'] as const) {
       await publish.press('Control+Space')
     } else await publish.click({ modifiers: [modifier] })
     await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(2)
-    // Flush the existing viewport/layout debounce before measuring menu-only work.
-    await page.waitForTimeout(400)
+    // Drain pending viewport/layout writes before measuring menu-only work.
+    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
     await resetEditorMetrics(page)
     await prepare.click({ button: 'right' })
     const menu = page.getByRole('menu', { name: 'Node actions' })
