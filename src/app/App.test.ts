@@ -1475,6 +1475,142 @@ nodes:
     }
   })
 
+  it('does not start a Mod+S save behind an open revert confirmation', async () => {
+    const savedText = `name: Revert operation\ndescription: Keep modal operations exclusive.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    const saveGate = deferred<void>()
+    const workspaceWrite = vi.fn(async (request: Parameters<typeof backing.workspaceWrite>[0]) => {
+      await saveGate.promise
+      return backing.workspaceWrite(request)
+    })
+    setNativeBridgeForTest({ ...backing, workspaceWrite })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const restoreWorker = installRealDocumentWorker()
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+
+      const dirty = editDocumentText(
+        $documentSession.get().pair!,
+        'definition',
+        savedText.replace('Keep modal operations exclusive.', 'Keep this unsaved edit.'),
+      )
+      updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
+      publishCurrentAnalysis(true)
+      await tick()
+      await fireEvent.click(screen.getByRole('button', { name: 'Revert to saved YAML' }))
+
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 's',
+          metaKey: /mac/i.test(navigator.platform),
+          ctrlKey: !/mac/i.test(navigator.platform),
+          bubbles: true,
+        }),
+      )
+      await tick()
+
+      expect(screen.getByRole('dialog', { name: 'Revert to saved YAML?' })).toBeVisible()
+      expect(workspaceWrite).not.toHaveBeenCalled()
+      expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Unsaved changes')
+    } finally {
+      saveGate.resolve()
+      restoreWorker()
+    }
+  })
+
+  it('disables a revert confirmation when its exact pair revision is no longer current', async () => {
+    const savedText = `name: Stale confirmation\ndescription: Bind confirmation to this revision.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    const savedDisk = await backing.workspaceRead('flow.yaml')
+    const workspaceRead = vi.fn(backing.workspaceRead)
+    setNativeBridgeForTest({ ...backing, workspaceRead })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    openDocumentSession(
+      {
+        workflowId: 'workflow:browser-workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:browser-workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: savedText.replace('Bind confirmation to this revision.', 'First unsaved edit.'),
+          revision: 1,
+          savedRevision: 0,
+          diskHash: savedDisk.sha256,
+        },
+        companion: null,
+      },
+      `sha256:${'0'.repeat(64)}`,
+    )
+    publishCurrentAnalysis(true)
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Revert to saved YAML' }))
+
+    const next = editDocumentText(
+      $documentSession.get().pair!,
+      'definition',
+      savedText.replace('Bind confirmation to this revision.', 'Second unsaved edit.'),
+    )
+    updateDocumentSession(next, $documentSession.get().revision!.contractDigest, 'user')
+    await tick()
+
+    const confirmation = screen.getByRole('dialog', { name: 'Revert to saved YAML?' })
+    expect(within(confirmation).getByRole('button', { name: 'Revert changes' })).toBeDisabled()
+    await fireEvent.click(within(confirmation).getByRole('button', { name: 'Revert changes' }))
+    expect(workspaceRead).not.toHaveBeenCalled()
+    expect($documentSession.get().pair?.definition.text).toContain('Second unsaved edit.')
+  })
+
+  it('surfaces a button save rejection without leaking an unhandled promise', async () => {
+    const savedText = `name: Save rejection\ndescription: Surface write failures.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    let rejectRecovery = false
+    const workspaceWrite = vi.fn(async () => {
+      throw new Error('The workflow disk is unavailable.')
+    })
+    const recoveryWrite = vi.fn(async (request: Parameters<typeof backing.recoveryWrite>[0]) => {
+      if (rejectRecovery) throw new Error('The workflow disk is unavailable.')
+      return backing.recoveryWrite(request)
+    })
+    setNativeBridgeForTest({ ...backing, workspaceWrite, recoveryWrite })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const restoreWorker = installRealDocumentWorker()
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+      const dirty = editDocumentText(
+        $documentSession.get().pair!,
+        'definition',
+        savedText.replace('Surface write failures.', 'Keep this edit after failure.'),
+      )
+      updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
+      publishCurrentAnalysis(true)
+      await tick()
+
+      rejectRecovery = true
+      await fireEvent.click(screen.getByRole('button', { name: 'Save workflow' }))
+
+      expect(
+        await screen.findByRole('alert', undefined, {
+          timeout: 1_000,
+        }),
+      ).toHaveTextContent('The workflow disk is unavailable.')
+      expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Unsaved changes')
+      expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
+      expect(workspaceWrite).toHaveBeenCalledOnce()
+    } finally {
+      rejectRecovery = false
+      restoreWorker()
+    }
+  })
+
   it('restores exact saved text and delegates changed-disk reverts to the existing conflict dialog', async () => {
     const savedText = `name: Revert controls\ndescription: Restore exact text.\nnodes:\n  - id: draft\n    prompt: Draft\n`
     const changedDiskText = savedText.replace('Restore exact text.', 'Changed outside the app.')

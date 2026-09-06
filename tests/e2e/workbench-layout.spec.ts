@@ -110,11 +110,56 @@ test('docked panel icons collapse both sides and give their width to the canvas'
   await expect.poll(async () => (await editor.boundingBox())!.width).toBeCloseTo(initialWidth, 0)
 })
 
-test('effective 200% reflow keeps authoring, status, and compact Split inside the viewport', async ({ page }) => {
+test('effective 200% reflow keeps dirty document controls in YAML and compact Split inside the viewport', async ({
+  page,
+}) => {
   await openPairAt(page, 512, 350)
+  await replaceDefinitionYaml(page, UNSAVED_YAML)
+
+  const expectDocumentControlsContained = async (): Promise<void> => {
+    const controls = [
+      page.getByRole('status', { name: 'Document save status' }),
+      page.getByRole('button', { name: 'Revert to saved YAML' }),
+      page.getByRole('button', { name: 'Save workflow' }),
+    ]
+    for (const control of controls) await expect(control).toBeVisible()
+
+    const geometry = await page.evaluate(() => {
+      const toolbar = document.querySelector<HTMLElement>('.editor-tabs')!.getBoundingClientRect()
+      const selectors = [
+        '[role="status"][aria-label="Document save status"]',
+        'button[aria-label="Revert to saved YAML"]',
+        'button[aria-label="Save workflow"]',
+      ]
+      return {
+        toolbar: { left: toolbar.left, right: toolbar.right, top: toolbar.top, bottom: toolbar.bottom },
+        controls: selectors.map((selector) => {
+          const bounds = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect()
+          return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom }
+        }),
+        innerWidth,
+        innerHeight,
+      }
+    })
+    for (const control of geometry.controls) {
+      expect(control.left).toBeGreaterThanOrEqual(geometry.toolbar.left)
+      expect(control.right).toBeLessThanOrEqual(geometry.toolbar.right)
+      expect(control.top).toBeGreaterThanOrEqual(geometry.toolbar.top)
+      expect(control.bottom).toBeLessThanOrEqual(geometry.toolbar.bottom)
+      expect(control.left).toBeGreaterThanOrEqual(0)
+      expect(control.right).toBeLessThanOrEqual(geometry.innerWidth)
+      expect(control.top).toBeGreaterThanOrEqual(0)
+      expect(control.bottom).toBeLessThanOrEqual(geometry.innerHeight)
+    }
+  }
+
+  await page.getByRole('button', { name: 'YAML', exact: true }).click()
+  await expectDocumentControlsContained()
+
   await page.getByRole('button', { name: 'Split', exact: true }).click()
   await expect(page.locator('.workbench')).toHaveAttribute('data-split-presentation', 'tabs')
   await expect(page.getByRole('group', { name: 'Split pane' })).toBeVisible()
+  await expectDocumentControlsContained()
 
   const geometry = await page.evaluate(() => {
     const root = document.documentElement

@@ -115,7 +115,7 @@
   import { installApplicationReadiness } from '$runtime-bootstrap'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
-  import type { DocumentAnalysis, DocumentKind, WorkflowPairText } from '$src/lib/documents/types'
+  import type { DocumentAnalysis, DocumentKind, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
   import { isAnalysisCurrent } from '$src/lib/documents/revisions'
   import {
     $documentWorkspace as documentWorkspaceState,
@@ -381,7 +381,7 @@
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
   let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
   let documentationNavigationSequence = 0
-  let documentSavePending = $state(false)
+  let documentOperation = $state<'idle' | 'saving' | 'reverting'>('idle')
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
@@ -432,7 +432,11 @@
     opener: HTMLElement | undefined
   } | null>(null)
   let deleteRequest = $state<{ impact: DeleteImpact; opener: HTMLElement | undefined } | null>(null)
-  let revertRequest = $state<{ opener: HTMLElement | undefined } | null>(null)
+  let revertRequest = $state.raw<{
+    pair: WorkflowPairText
+    revision: DocumentRevision
+    opener: HTMLElement | undefined
+  } | null>(null)
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
@@ -588,6 +592,16 @@
       pair.generation === pair.savedGeneration &&
       pair.definition.diskHash &&
       (pair.companion === null || pair.companion.diskHash),
+    )
+  })
+  const revertConfirmationCurrent = $derived.by(() => {
+    const request = revertRequest
+    const session = $documentSessionStore
+    return Boolean(
+      request &&
+      session.pair === request.pair &&
+      session.revision &&
+      isAnalysisCurrent(session.revision, request.revision),
     )
   })
   const workspacePanelHidden = $derived(
@@ -860,22 +874,44 @@
   }
 
   async function saveCurrentDocument(): Promise<void> {
-    if (documentSavePending || !documentSaveAvailable) return
-    documentSavePending = true
+    if (documentOperation !== 'idle' || revertRequest || !documentSaveAvailable) return
+    documentOperation = 'saving'
     try {
       await documentWorkspace.save()
+    } catch (error: unknown) {
+      workspaceError = error instanceof Error ? error.message : 'The workflow could not be saved.'
     } finally {
-      documentSavePending = false
+      documentOperation = 'idle'
     }
   }
 
+  function requestRevertToSaved(opener: HTMLElement | undefined): void {
+    const session = documentSessionStore.get()
+    if (documentOperation !== 'idle' || !documentRevertAvailable || !session.pair || !session.revision) return
+    revertRequest = { pair: session.pair, revision: session.revision, opener }
+  }
+
   async function confirmRevertToSaved(): Promise<void> {
+    const request = revertRequest
+    const session = documentSessionStore.get()
+    if (!request || documentOperation !== 'idle') return
+    if (session.pair !== request.pair || !session.revision || !isAnalysisCurrent(session.revision, request.revision)) {
+      revertRequest = null
+      workspaceError = 'The workflow changed after Revert was opened. Review the current YAML and try again.'
+      return
+    }
+    documentOperation = 'reverting'
     try {
       const outcome = await documentWorkspace.revertToSaved()
       if (outcome === 'reverted' || outcome === 'conflict') revertRequest = null
-      else workspaceError = 'Revert is unavailable because the saved disk version could not be verified.'
+      else {
+        revertRequest = null
+        workspaceError = 'Revert is unavailable because the saved disk version could not be verified.'
+      }
     } catch (error: unknown) {
       workspaceError = error instanceof Error ? error.message : 'The saved YAML could not be reloaded.'
+    } finally {
+      documentOperation = 'idle'
     }
   }
 
@@ -2742,7 +2778,8 @@
               class="document-save-status"
               role="status"
               aria-label="Document save status"
-              aria-live="polite">{documentSavePending ? 'Saving…' : documentDirty ? 'Unsaved changes' : 'Saved'}</span
+              aria-live="polite"
+              >{documentOperation === 'saving' ? 'Saving…' : documentDirty ? 'Unsaved changes' : 'Saved'}</span
             >
             {#if documentDirty}
               <button
@@ -2751,11 +2788,9 @@
                 data-variant="ghost"
                 aria-label="Revert to saved YAML"
                 title="Discard unsaved changes and reload the verified disk YAML"
-                disabled={!documentRevertAvailable || documentSavePending}
+                disabled={!documentRevertAvailable || documentOperation !== 'idle' || revertRequest !== null}
                 onclick={(event) =>
-                  (revertRequest = {
-                    opener: event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined,
-                  })}
+                  requestRevertToSaved(event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined)}
               >
                 <RotateCcw size={15} aria-hidden="true" />
                 <span>Revert</span>
@@ -2767,7 +2802,7 @@
               data-variant={documentDirty ? 'primary' : 'secondary'}
               aria-label="Save workflow"
               title={documentReadOnly ? 'This workflow is read-only.' : 'Save workflow — Mod+S'}
-              disabled={!documentSaveAvailable || documentSavePending}
+              disabled={!documentSaveAvailable || documentOperation !== 'idle' || revertRequest !== null}
               onclick={() => void saveCurrentDocument()}
             >
               <Save size={15} aria-hidden="true" />
@@ -3437,19 +3472,31 @@
   {#if revertRequest}
     <ModalShell
       titleId="revert-saved-title"
+      busy={documentOperation === 'reverting'}
+      dismissible={documentOperation !== 'reverting'}
       initialFocusSelector="[data-revert-primary]"
       opener={revertRequest.opener ?? null}
       onCancel={() => {
-        revertRequest = null
+        if (documentOperation === 'idle') revertRequest = null
       }}
     >
       <h2 id="revert-saved-title">Revert to saved YAML?</h2>
       <p>This will discard all unsaved YAML changes and reload the exact version currently saved on disk.</p>
       <p>If a file changed outside Workflow Studio, the existing conflict choices will open instead.</p>
       {#snippet actions()}
-        <button type="button" data-variant="ghost" onclick={() => (revertRequest = null)}>Cancel</button>
-        <button type="button" data-revert-primary data-variant="danger" onclick={() => void confirmRevertToSaved()}
-          >Revert changes</button
+        <button
+          type="button"
+          data-variant="ghost"
+          disabled={documentOperation !== 'idle'}
+          onclick={() => (revertRequest = null)}>Cancel</button
+        >
+        <button
+          type="button"
+          data-revert-primary
+          data-variant="danger"
+          disabled={documentOperation !== 'idle' || !revertConfirmationCurrent}
+          onclick={() => void confirmRevertToSaved()}
+          >{documentOperation === 'reverting' ? 'Reverting…' : 'Revert changes'}</button
         >
       {/snippet}
     </ModalShell>
@@ -3999,6 +4046,40 @@
       right: 0;
       width: var(--overlay-right-panel-width);
       transform: translateX(100%);
+    }
+  }
+
+  @media (max-width: 42rem) {
+    .editor-tabs {
+      padding-inline: var(--space-1);
+    }
+
+    .editor-tabs button {
+      padding-inline: var(--space-1);
+    }
+
+    .document-save-control {
+      gap: var(--space-1);
+    }
+
+    .document-save-button span,
+    .document-revert-button span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .editor-tabs .document-save-button,
+    .editor-tabs .document-revert-button {
+      justify-content: center;
+      width: var(--control-sm);
+      min-width: var(--control-sm);
+      padding: 0;
     }
   }
 
