@@ -532,10 +532,26 @@ function clonedPathEdits(
     const key = JSON.stringify(path)
     if (seen.has(key)) continue
     seen.add(key)
-    const before = nodeRange(original.getIn(path, true))
-    const after = nodeRange(reparsed.parsed.document.getIn(path, true))
+    const originalNode = original.getIn(path, true)
+    const replacementNode = reparsed.parsed.document.getIn(path, true)
+    const before = nodeRange(originalNode)
+    const after = nodeRange(replacementNode)
     if (!before || !after) return null
     let replacement = serialized.slice(after[0], after[1])
+    // A block sequence may legally align its dash with its mapping key. Its
+    // empty flow replacement must instead be indented beneath that key.
+    if (isSeq(originalNode) && !originalNode.flow && isSeq(replacementNode) && replacementNode.items.length === 0) {
+      const parent = original.getIn(path.slice(0, -1), true)
+      const entry = isMap(parent)
+        ? parent.items.find((pair) => isScalar(pair.key) && pair.key.value === path.at(-1))
+        : undefined
+      const keyRange = nodeRange(entry?.key)
+      if (keyRange && lineStart(source, keyRange[0]) !== lineStart(source, before[0])) {
+        const keyColumn = keyRange[0] - lineStart(source, keyRange[0])
+        const valueColumn = before[0] - lineStart(source, before[0])
+        if (valueColumn <= keyColumn) replacement = ' '.repeat(keyColumn + 2 - valueColumn) + replacement
+      }
+    }
     if (source.slice(before[0], before[1]).endsWith('\n') && !replacement.endsWith('\n')) replacement += '\n'
     edits.push({ start: before[0], end: before[1], text: replacement })
   }

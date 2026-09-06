@@ -7,6 +7,7 @@ export interface CommandContext {
   setupReady?: boolean
   canMutate: boolean
   canRepair?: boolean
+  canAddNode?: boolean
   canValidate?: boolean
   hasSelection: boolean
   selectionCount?: number

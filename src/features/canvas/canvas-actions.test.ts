@@ -1315,3 +1315,18 @@ it('progressively deletes an incomplete root node while another remains, then re
   })
   expect(parsedNodes(blank.current().definition.text)).toEqual([{ id: 'prompt', prompt: '' }])
 })
+
+it.each(['kept', '""'])('deletes an indentless root selection (%s) as one prevalidated transaction', async (value) => {
+  const prefix = '# retained\nname: "Repair"\ndescription: Keep\nnodes:\n'
+  const text = prefix + '- id: a\n  prompt: ' + value + '\n- id: b\n  prompt: ' + value + '\n'
+  const fixture = await scopedContext('root', text, 'language_compatibility: archon-2026-07\n', value === 'kept')
+  expect(await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['a', 'b']))).toMatchObject({
+    status: 'committed',
+  })
+  expect(fixture.current().definition.text).toBe(prefix + '  []\n')
+  expect(fixture.context.commit).toHaveBeenCalledOnce()
+  expect(vi.mocked(fixture.context.commit).mock.calls[0]?.[2]).toMatchObject({
+    structurallyValid: false,
+    visuallyAuthorable: true,
+  })
+})

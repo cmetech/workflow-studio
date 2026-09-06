@@ -951,7 +951,12 @@
     return {
       surface,
       setupReady,
-      canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
+      canMutate:
+        surface === 'canvas'
+          ? !canvasBlankDraft && Boolean(canvasContext && !('unavailable' in canvasContext))
+          : documentCanMutate,
+      canAddNode:
+        surface === 'canvas' && canvasBlankDraft && Boolean(canvasContext && !('unavailable' in canvasContext)),
       canRepair: surface === 'canvas' && canvasRepairMode && !('unavailable' in canvasAuthoringContext(true)),
       canValidate: Boolean(pair),
       hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,

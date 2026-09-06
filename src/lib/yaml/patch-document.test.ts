@@ -750,3 +750,35 @@ it('removes an actual trailing comma with the final flow mapping entry and retai
     ),
   ).toEqual({ ok: true, text: 'group: { # final, comment\n }\n' })
 })
+
+it.each(['kept', '""'])(
+  'deletes an indentless final root node (%s) without changing surrounding CST bytes',
+  (value) => {
+    for (const newline of ['\n', '']) {
+      const prefix = '# header\nname: "Repair"\ndescription: Keep\nnodes: # graph\n'
+      const suffix = '# footer\ntags: [one,  two]' + newline
+      const source = prefix + '- id: a\n  prompt: ' + value + '\n' + suffix
+      const result = patchWorkflowDocument(
+        source,
+        { type: 'delete-node', scopeKey: 'root', nodeId: 'a' },
+        mutationContract,
+      )
+      expect(result).toEqual({ ok: true, text: prefix + '  []\n' + suffix })
+      if (result.ok) expect(parse(result.text).nodes).toEqual([])
+    }
+  },
+)
+
+it('retains valid nesting when the last indentless scoped child is deleted', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+  const prefix =
+    'name: Scope\ndescription: Keep\nnodes:\n- id: repeat\n  loop_group:\n    until: complete\n    max_iterations: 2\n    nodes:\n'
+  const source = prefix + '    - id: child\n      prompt: kept\n'
+  const result = patchWorkflowDocument(
+    source,
+    { type: 'delete-node', scopeKey: 'loop-group:repeat', nodeId: 'child' },
+    contract,
+  )
+  expect(result).toEqual({ ok: true, text: prefix + '      []\n' })
+})

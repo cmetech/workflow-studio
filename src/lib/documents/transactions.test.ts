@@ -810,3 +810,19 @@ it('deletes the last root node as an undoable save-blocked draft preserving exac
   expect(restored.ok).toBe(true)
   if (restored.ok) expect(restored.pair.definition.text).toBe(withProfile.definition.text)
 })
+
+it.each(['kept', '""'])('deletes an indentless final root node (%s) into one undoable blank draft', async (value) => {
+  const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+  const text = '# retained\nname: "Repair"\ndescription: Keep\nnodes:\n- id: a\n  prompt: ' + value
+  const before = {
+    ...pair(text),
+    companion: { ...pair().companion!, text: 'language_compatibility: archon-2026-07\n' },
+  }
+  const result = await applyWorkflowMutation(before, { type: 'delete-node', scopeKey: 'root', nodeId: 'a' }, contract)
+  expect(result).toMatchObject({ ok: true, analysis: { structurallyValid: false, visuallyAuthorable: true } })
+  if (!result.ok) return
+  expect(result.pair.definition.text).toBe('# retained\nname: "Repair"\ndescription: Keep\nnodes:\n  []')
+  const restored = undoTransaction(recordTransaction(createHistoryState(), result.transaction), result.pair)
+  expect(restored.ok).toBe(true)
+  if (restored.ok) expect(restored.pair.definition.text).toBe(text)
+})

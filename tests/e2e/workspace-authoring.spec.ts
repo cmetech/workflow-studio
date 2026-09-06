@@ -759,6 +759,13 @@ test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and r
   await deleteAll()
   const blank = SEEDED_YAML.slice(0, SEEDED_YAML.indexOf('  - id:')) + '  []\n'
   await expectAuthoritativeYaml(page, blank)
+  await page.getByRole('button', { name: 'Add Node' }).press('F1')
+  const palette = page.getByRole('dialog', { name: 'Command palette' })
+  for (const name of ['Arrange Graph', 'Paste Selection', 'Duplicate Selection', 'Create Edge']) {
+    await expect(palette.getByRole('option', { name: new RegExp(name) })).toBeDisabled()
+  }
+  await expect(palette.getByRole('option', { name: /^Add Node N\b/ })).toBeEnabled()
+  await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Save workflow' }).click()
   await expect(page.getByRole('alert').filter({ hasText: /Save blocked/i })).toBeVisible()
   await page.keyboard.press(`${modifier}+z`)

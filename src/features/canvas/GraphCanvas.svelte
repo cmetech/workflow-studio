@@ -178,12 +178,12 @@
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
     canMutate: canAuthor(),
+    canAddNode: canAdd(),
     canRepair: repairMode && !readOnly && !transitionLocked,
     hasSelection: selection.length > 0,
     selectionCount: selection.length,
   }))
-  const addCommandContext = $derived({ ...canvasCommandContext, canMutate: canAdd() })
-  const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', addCommandContext))
+  const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', canvasCommandContext))
   const edgeCommand = $derived(resolveCommand(commandSurface, 'canvas.create-edge', canvasCommandContext))
   const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
   const deleteCommand = $derived(resolveCommand(commandSurface, 'canvas.delete-selection', canvasCommandContext))
@@ -210,10 +210,7 @@
     command: { readonly id: string; readonly enabled: boolean } | undefined,
   ): Promise<CommandExecutionResult> | undefined {
     if (!command?.enabled) return undefined
-    return commandSurface.executeCommand(
-      command.id,
-      command.id === 'canvas.add-node' ? addCommandContext : canvasCommandContext,
-    )
+    return commandSurface.executeCommand(command.id, canvasCommandContext)
   }
 
   function executeToolbarId(id: string): Promise<CommandExecutionResult> | undefined {

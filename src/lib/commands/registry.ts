@@ -289,7 +289,10 @@ function canvasCommand(
       context.surface === 'canvas' &&
       (!options.selection || context.hasSelection) &&
       (!options.singleSelection || context.selectionCount === undefined || context.selectionCount === 1) &&
-      (!options.mutating || context.canMutate || (action === 'deleteSelection' && context.canRepair === true)),
+      (!options.mutating ||
+        context.canMutate ||
+        (action === 'deleteSelection' && context.canRepair === true) ||
+        (action === 'addNode' && context.canAddNode === true)),
     run: () => (canvasCommandHandlers?.[action] as (() => void | Promise<void>) | undefined)?.(),
   }
 }

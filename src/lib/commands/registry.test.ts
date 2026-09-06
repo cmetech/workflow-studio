@@ -358,3 +358,21 @@ it('enables only deletion as a mutation in a repair-only canvas command context'
     commands.find(({ id }) => id === 'canvas.delete-selection')!.enabled({ ...context, hasSelection: false }),
   ).toBe(false)
 })
+
+it('allows only Add Node through an explicit blank-root add capability', () => {
+  const context: CommandContext = { surface: 'canvas', canMutate: false, canAddNode: true, hasSelection: true }
+  const commands = listCommands()
+  expect(commands.find(({ id }) => id === 'canvas.add-node')!.enabled(context)).toBe(true)
+  for (const id of [
+    'canvas.add-after-selection',
+    'canvas.arrange',
+    'canvas.paste-selection',
+    'canvas.duplicate-selection',
+    'canvas.create-edge',
+    'canvas.delete-selection',
+    'canvas.nudge-up',
+  ]) {
+    expect(commands.find((command) => command.id === id)!.enabled(context), id).toBe(false)
+  }
+  expect(commands.find(({ id }) => id === 'canvas.add-node')!.enabled({ ...context, canAddNode: false })).toBe(false)
+})

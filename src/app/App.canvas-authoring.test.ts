@@ -1322,6 +1322,15 @@ describe('App canvas authoring composition', () => {
     await waitFor(() => expect(screen.getByText(/blank workflow draft.*add a node/i)).toBeVisible())
     expect($documentSession.get().analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
     expect(historyStore.get().undo).toHaveLength(1)
+    const addButton = screen.getByRole('button', { name: 'Add Node' })
+    addButton.focus()
+    await fireEvent.keyDown(addButton, { key: 'F1' })
+    const palette = await screen.findByRole('dialog', { name: 'Command palette' })
+    for (const label of ['Arrange Graph', 'Paste Selection', 'Duplicate Selection', 'Create Edge']) {
+      expect(within(palette).getByRole('option', { name: new RegExp(label) }), label).toBeDisabled()
+    }
+    expect(within(palette).getByRole('option', { name: /^Add Node N\b/ })).toBeEnabled()
+    await fireEvent.keyDown(within(palette).getByRole('combobox', { name: 'Search commands' }), { key: 'Escape' })
     expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled()
     await fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toBe(original))
