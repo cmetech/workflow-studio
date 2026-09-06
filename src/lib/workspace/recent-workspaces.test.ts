@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createRecentWorkspaceStore } from './recent-workspaces'
 
 describe('recent workspace storage', () => {
@@ -81,6 +81,81 @@ describe('recent workspace storage', () => {
     expect(JSON.parse(persisted)).toEqual([
       { rootPath: '/newest', lastOpenedAt: '2026-07-25T14:00:00.000Z' },
       { rootPath: '/oldest', lastOpenedAt: '2026-07-25T12:00:00.000Z' },
+    ])
+  })
+
+  it.each([
+    [
+      'record',
+      (store: ReturnType<typeof createRecentWorkspaceStore>) => store.record('/new', '2026-07-25T14:00:00.000Z'),
+    ],
+    ['remove', (store: ReturnType<typeof createRecentWorkspaceStore>) => store.remove('/remove')],
+    ['clear unavailable', (store: ReturnType<typeof createRecentWorkspaceStore>) => store.clearUnavailable()],
+  ])('does not save when %s cannot load the current history', async (_operation, mutate) => {
+    const loadError = new Error('Recent workspace storage is temporarily unavailable.')
+    const save = vi.fn(async () => undefined)
+    const store = createRecentWorkspaceStore({
+      load: async () => Promise.reject(loadError),
+      save,
+      isAvailable: async () => true,
+    })
+
+    await expect(mutate(store)).rejects.toBe(loadError)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('lets later operations proceed after a transient save failure', async () => {
+    let persisted = '[]'
+    let failNextSave = true
+    const store = createRecentWorkspaceStore({
+      load: async () => persisted,
+      save: async (content) => {
+        if (failNextSave) {
+          failNextSave = false
+          throw new Error('Recent workspace storage is temporarily unavailable.')
+        }
+        persisted = content
+      },
+      isAvailable: async () => true,
+    })
+
+    await expect(store.record('/first', '2026-07-25T13:00:00.000Z')).rejects.toThrow(
+      'Recent workspace storage is temporarily unavailable.',
+    )
+    await expect(store.record('/second', '2026-07-25T14:00:00.000Z')).resolves.toBeUndefined()
+    await expect(store.list()).resolves.toEqual([
+      { rootPath: '/second', lastOpenedAt: '2026-07-25T14:00:00.000Z', available: true },
+    ])
+  })
+
+  it('lets a later mutation and list proceed after a transient availability failure', async () => {
+    let persisted = JSON.stringify([
+      { rootPath: '/keep', lastOpenedAt: '2026-07-25T14:00:00.000Z' },
+      { rootPath: '/remove', lastOpenedAt: '2026-07-25T13:00:00.000Z' },
+    ])
+    let failNextAvailability = true
+    let saveCalls = 0
+    const store = createRecentWorkspaceStore({
+      load: async () => persisted,
+      save: async (content) => {
+        saveCalls += 1
+        persisted = content
+      },
+      isAvailable: async () => {
+        if (failNextAvailability) {
+          failNextAvailability = false
+          throw new Error('Workspace availability is temporarily unavailable.')
+        }
+        return true
+      },
+    })
+
+    await expect(store.clearUnavailable()).rejects.toThrow('Workspace availability is temporarily unavailable.')
+    expect(saveCalls).toBe(0)
+    await expect(store.remove('/remove')).resolves.toBeUndefined()
+    expect(saveCalls).toBe(1)
+    await expect(store.list()).resolves.toEqual([
+      { rootPath: '/keep', lastOpenedAt: '2026-07-25T14:00:00.000Z', available: true },
     ])
   })
 })

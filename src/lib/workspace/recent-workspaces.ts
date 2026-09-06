@@ -23,12 +23,22 @@ export interface RecentWorkspaceStore {
 const MAX_RECENT_WORKSPACES = 20
 
 export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWorkspaceStore {
-  let queue = Promise.resolve()
+  let queue: Promise<void> = Promise.resolve()
+
+  function exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = queue.catch(() => undefined).then(operation)
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
 
   async function records(): Promise<RecentWorkspaceRecord[]> {
+    const content = await port.load()
     let value: unknown
     try {
-      value = JSON.parse(await port.load()) as unknown
+      value = JSON.parse(content) as unknown
     } catch {
       return []
     }
@@ -45,43 +55,41 @@ export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWor
   }
 
   return {
-    async list() {
-      await queue
-      const current = await records()
-      return Promise.all(
-        current.map(async (record) => ({ ...record, available: await port.isAvailable(record.rootPath) })),
-      )
+    list() {
+      return exclusive(async () => {
+        const current = await records()
+        return Promise.all(
+          current.map(async (record) => ({ ...record, available: await port.isAvailable(record.rootPath) })),
+        )
+      })
     },
     record(rootPath, openedAt) {
       if (!nonEmpty(rootPath) || !validTimestamp(openedAt)) {
         return Promise.reject(new TypeError('A recent workspace requires a root path and ISO timestamp.'))
       }
-      queue = queue.then(async () => {
+      return exclusive(async () => {
         const current = await records()
         const next = [{ rootPath, lastOpenedAt: openedAt }, ...current.filter((entry) => entry.rootPath !== rootPath)]
           .sort(newestFirst)
           .slice(0, MAX_RECENT_WORKSPACES)
         await port.save(JSON.stringify(next))
       })
-      return queue
     },
     remove(rootPath) {
       if (!nonEmpty(rootPath)) {
         return Promise.reject(new TypeError('A recent workspace requires a root path.'))
       }
-      queue = queue.then(async () => {
+      return exclusive(async () => {
         const current = await records()
         await port.save(JSON.stringify(current.filter((entry) => entry.rootPath !== rootPath)))
       })
-      return queue
     },
     clearUnavailable() {
-      queue = queue.then(async () => {
+      return exclusive(async () => {
         const current = await records()
         const availability = await Promise.all(current.map((entry) => port.isAvailable(entry.rootPath)))
         await port.save(JSON.stringify(current.filter((_, index) => availability[index])))
       })
-      return queue
     },
   }
 }
