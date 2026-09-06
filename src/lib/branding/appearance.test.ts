@@ -1,5 +1,7 @@
+import { stringify } from 'yaml'
 import { describe, expect, it } from 'vitest'
 import { loadBundledBrand } from './load-brand'
+import { contrastRatio, validateBrandPack } from './validate-theme'
 import {
   APPEARANCE_STORAGE_KEY,
   applyAppearanceTheme,
@@ -19,6 +21,28 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem'> {
   setItem(key: string, value: string): void {
     this.values.set(key, value)
   }
+}
+
+const SVG_BYTES = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')
+
+function validatedImportedBrand(surfaceElevated: string) {
+  const source = structuredClone(loadBundledBrand()) as unknown as {
+    id: string
+    displayName: string
+    themes: { dark: Record<string, string> }
+  }
+  source.id = 'transparent-surfaces'
+  source.displayName = 'Transparent Surfaces'
+  for (const token of ['background', 'surface', 'canvas', 'node', 'yaml-gutter']) {
+    source.themes.dark[token] = '#000000'
+  }
+  source.themes.dark['surface-elevated'] = surfaceElevated
+  const validated = validateBrandPack(stringify(source), {
+    'logo.svg': SVG_BYTES,
+    'mark.svg': SVG_BYTES,
+  })
+  expect(validated.canActivate).toBe(true)
+  return validated.manifest
 }
 
 describe('appearance preferences', () => {
@@ -129,6 +153,22 @@ describe('appearance preferences', () => {
 
     expect(root.style.getPropertyValue('--color-accent')).toBe(accent)
     expect(root.style.getPropertyValue('--color-focus')).toBe(accent)
+  })
+
+  it.each([
+    ['transparent hex', '#FFFFFF00', '#000000'],
+    ['translucent rgba', 'rgba(255, 255, 255, 0.1)', '#1A1A1A'],
+  ])('composites an imported %s focus surface against its semantic backdrop', (_case, surface, effectiveSurface) => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand(surface)
+
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+
+    const focus = root.style.getPropertyValue('--color-focus')
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#FFFFFF')
+    expect(focus).toBe('#FFFFFF')
+    expect(contrastRatio(focus, effectiveSurface)).toBeGreaterThanOrEqual(3)
+    expect(contrastRatio(focus, '#000000')).toBeGreaterThanOrEqual(3)
   })
 
   it('saves and loads one normalized preference record', () => {

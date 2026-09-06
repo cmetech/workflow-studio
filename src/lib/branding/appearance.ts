@@ -43,6 +43,12 @@ const THEME_PREFERENCES = new Set<ThemePreference>(['system', 'light', 'dark'])
 const MIN_FOCUS_CONTRAST = 3
 
 type Rgb = readonly [red: number, green: number, blue: number]
+interface Rgba {
+  readonly red: number
+  readonly green: number
+  readonly blue: number
+  readonly alpha: number
+}
 
 export function normalizeAccent(value: string): string | null {
   const match = ACCENT_PATTERN.exec(value.trim())
@@ -76,6 +82,41 @@ export function toNativeColorValue(value: string): string {
   return '#000000'
 }
 
+function alphaChannel(value: string | undefined): number | null {
+  if (value === undefined) return 1
+  const percentage = value.endsWith('%')
+  const parsed = Number.parseFloat(percentage ? value.slice(0, -1) : value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, Math.min(1, percentage ? parsed / 100 : parsed))
+}
+
+function renderedColor(value: string): Rgba | null {
+  const trimmed = value.trim()
+  const hex = /^#([\dA-F]{3,4}|[\dA-F]{6}|[\dA-F]{8})$/i.exec(trimmed)?.[1]
+  if (hex) {
+    const expanded = hex.length <= 4 ? [...hex].map((channel) => channel.repeat(2)).join('') : hex
+    return {
+      red: Number.parseInt(expanded.slice(0, 2), 16),
+      green: Number.parseInt(expanded.slice(2, 4), 16),
+      blue: Number.parseInt(expanded.slice(4, 6), 16),
+      alpha: expanded.length === 8 ? Number.parseInt(expanded.slice(6, 8), 16) / 255 : 1,
+    }
+  }
+
+  const rgb = /^rgba?\((.*)\)$/i.exec(trimmed)?.[1]?.trim()
+  if (!rgb) return null
+  const [colorsPart, slashAlpha] = rgb.split('/').map((part) => part.trim())
+  const commaParts = colorsPart?.includes(',') ? colorsPart.split(',').map((part) => part.trim()) : undefined
+  const colorParts = commaParts ?? colorsPart?.split(/\s+/)
+  let alphaPart = slashAlpha
+  if (commaParts?.length === 4) alphaPart = commaParts.pop()
+  if (!colorParts || colorParts.length !== 3) return null
+  const channels = colorParts.map(nativeColorChannel)
+  const alpha = alphaChannel(alphaPart)
+  if (channels.some((channel) => channel === null) || alpha === null) return null
+  return { red: channels[0]!, green: channels[1]!, blue: channels[2]!, alpha }
+}
+
 function parseHex(value: string): Rgb {
   return [
     Number.parseInt(value.slice(1, 3), 16),
@@ -90,6 +131,17 @@ function toHex([red, green, blue]: Rgb): string {
       .toString(16)
       .padStart(2, '0')
   return `#${channel(red)}${channel(green)}${channel(blue)}`.toUpperCase()
+}
+
+function compositeColor(value: string, backdrop: string): string {
+  const color = renderedColor(value)
+  if (!color) return backdrop
+  const background = parseHex(backdrop)
+  return toHex([
+    color.red * color.alpha + background[0] * (1 - color.alpha),
+    color.green * color.alpha + background[1] * (1 - color.alpha),
+    color.blue * color.alpha + background[2] * (1 - color.alpha),
+  ])
 }
 
 function mixHex(from: string, to: string, amount: number): string {
@@ -170,16 +222,15 @@ export function applyAppearanceTheme(
   const contrast = contrastColor(accent)
   const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
   const selectedAmount = mode === 'light' ? 0.14 : 0.24
-  const nodeSelected = mixHex(brand.themes[mode].background, accent, selectedAmount)
-  const focusSurfaces = [
-    brand.themes[mode].background,
-    brand.themes[mode].surface,
-    brand.themes[mode]['surface-elevated'],
-    brand.themes[mode].canvas,
-    brand.themes[mode].node,
-    brand.themes[mode]['yaml-gutter'],
-    nodeSelected,
-  ].map(toNativeColorValue)
+  const theme = brand.themes[mode]
+  const background = compositeColor(theme.background, '#FFFFFF')
+  const surface = compositeColor(theme.surface, background)
+  const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
+  const canvas = compositeColor(theme.canvas, background)
+  const node = compositeColor(theme.node, canvas)
+  const yamlGutter = compositeColor(theme['yaml-gutter'], surface)
+  const nodeSelected = mixHex(background, accent, selectedAmount)
+  const focusSurfaces = [background, surface, surfaceElevated, canvas, node, yamlGutter, nodeSelected]
 
   root.style.setProperty('--color-accent', accent)
   root.style.setProperty('--color-accent-strong', mixHex(accent, strongTarget, 0.18))
