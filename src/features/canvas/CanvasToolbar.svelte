@@ -273,7 +273,8 @@
     }
 
     .more-menu {
-      max-height: 2.5rem;
+      /* Reserve the 2rem trigger, toolbar border, and 2.75rem canvas viewport. */
+      max-height: min(2.5rem, calc(100cqh - 2rem - 1px - 2.75rem));
       margin-top: 0;
       padding: 0.15rem;
     }
