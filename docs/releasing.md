@@ -11,6 +11,18 @@ Releases are native, updater-signed, and manually published. The GitHub Actions 
 
 Manual workflow dispatch accepts only an existing version tag. The workflow resolves the tag to a commit, confirms it is an ancestor of `origin/base`, and confirms the tag matches the Tauri configuration. Branch names, arbitrary SHAs, invalid tags, and previously published releases are rejected.
 
+## Local worktree preflight
+
+Immediately before creating the release tag, review every linked local worktree so unfinished user-facing work is visible:
+
+```bash
+git worktree list --porcelain
+WORKTREE_PATH=/absolute/path/reported/by/the/previous/command
+git -C "$WORKTREE_PATH" status --short --branch
+```
+
+Run the status command for every worktree listed by `git worktree list --porcelain`. Unrelated dirty work may remain untouched. Stop before tagging when a dirty worktree contains intended release work. Record the disposition of every listed worktree in the version acceptance document.
+
 ## Native build matrix
 
 | Runner | Target | Bundle |

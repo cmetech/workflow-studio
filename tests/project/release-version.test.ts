@@ -214,4 +214,12 @@ describe('version two release metadata', () => {
       expect(document).toContain(followUp)
     }
   })
+
+  it('requires a local worktree preflight before creating a release tag', () => {
+    const releasing = readFileSync('docs/releasing.md', 'utf8')
+
+    expect(releasing).toContain('git worktree list --porcelain')
+    expect(releasing).toContain('git -C "$WORKTREE_PATH" status --short --branch')
+    expect(releasing).toMatch(/Stop before tagging when a dirty worktree contains intended release work\./)
+  })
 })
