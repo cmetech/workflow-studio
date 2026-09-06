@@ -3,7 +3,10 @@ import { createRawSnippet } from 'svelte'
 import { describe, expect, it, vi } from 'vitest'
 import AuxiliaryPanel from './AuxiliaryPanel.svelte'
 
-const problems = createRawSnippet(() => ({ render: () => '<p>Problem details</p>' }))
+const problems = createRawSnippet(() => ({
+  render: () =>
+    '<div><div role="tablist" aria-label="Validation layers"><button role="tab" aria-selected="true">Contract 3</button></div><p>Problem details</p></div>',
+}))
 const references = createRawSnippet(() => ({ render: () => '<p>Reference suggestions</p>' }))
 
 const props = { problems, references, issueCount: 3, blockingCount: 1, activeTab: 'problems' as const }
@@ -13,8 +16,11 @@ describe('AuxiliaryPanel', () => {
     const onTabChange = vi.fn()
     const { rerender } = render(AuxiliaryPanel, { ...props, onTabChange })
     const list = screen.getByRole('tablist', { name: 'Workflow details' })
+    const layerList = screen.getByRole('tablist', { name: 'Validation layers' })
     const problemsTab = within(list).getByRole('tab', { name: /Problems/ })
     const referencesTab = within(list).getByRole('tab', { name: 'References' })
+    expect(within(list).queryByRole('tab', { name: 'Contract 3' })).not.toBeInTheDocument()
+    expect(within(layerList).getByRole('tab', { name: 'Contract 3' })).toBeVisible()
     expect(problemsTab).toHaveAttribute('aria-selected', 'true')
     expect(problemsTab).toHaveAttribute('tabindex', '0')
     expect(referencesTab).toHaveAttribute('tabindex', '-1')

@@ -19,8 +19,10 @@
   interface IssueGroup {
     readonly document: DocumentKind
     readonly path: string
-    readonly layers: readonly { readonly layer: IssueLayer; readonly issues: readonly ValidationIssue[] }[]
+    readonly issues: readonly ValidationIssue[]
   }
+
+  const layers: readonly IssueLayer[] = ['syntax', 'contract', 'semantic', 'compatibility', 'operational']
 
   let {
     issues,
@@ -32,8 +34,17 @@
     scrollTop = 0,
     onScroll,
   }: Props = $props()
+  const id = $props.id()
+  let layerTablist = $state<HTMLDivElement>()
+  let activeLayer = $state<IssueLayer>('syntax')
+  let layerSelectionInitialized = $state(false)
   let scrollOwner = $state<HTMLElement>()
-  const groups = $derived(groupIssues(issues, paths))
+  const groups = $derived(
+    groupIssues(
+      issues.filter((issue) => issue.layer === activeLayer),
+      paths,
+    ),
+  )
   const blockingCount = $derived(issues.filter((issue) => issue.blocking).length)
   const focusContext: CommandContext = { surface: 'global', canMutate: false, hasSelection: true }
 
@@ -41,12 +52,19 @@
     if (scrollOwner && scrollOwner.scrollTop !== scrollTop) scrollOwner.scrollTop = scrollTop
   })
 
+  $effect(() => {
+    if (layerSelectionInitialized) return
+    const firstPopulatedLayer = layers.find((layer) => issues.some((issue) => issue.layer === layer))
+    if (!firstPopulatedLayer) return
+    activeLayer = firstPopulatedLayer
+    layerSelectionInitialized = true
+  })
+
   function groupIssues(
     values: readonly ValidationIssue[],
     filePaths: Readonly<Record<DocumentKind, string | null>>,
   ): readonly IssueGroup[] {
     const documents: readonly DocumentKind[] = ['definition', 'companion']
-    const layers: readonly IssueLayer[] = ['syntax', 'contract', 'semantic', 'compatibility', 'operational']
     return documents.flatMap((document) => {
       const documentIssues = values.filter((issue) => issue.document === document)
       if (documentIssues.length === 0) return []
@@ -54,10 +72,7 @@
         {
           document,
           path: filePaths[document] ?? document,
-          layers: layers.flatMap((layer) => {
-            const layerIssues = documentIssues.filter((issue) => issue.layer === layer)
-            return layerIssues.length > 0 ? [{ layer, issues: layerIssues }] : []
-          }),
+          issues: documentIssues,
         },
       ]
     })
@@ -65,6 +80,38 @@
 
   function layerName(layer: IssueLayer): string {
     return layer[0]?.toUpperCase() + layer.slice(1)
+  }
+
+  function layerCount(layer: IssueLayer): number {
+    return issues.filter((issue) => issue.layer === layer).length
+  }
+
+  function selectLayer(layer: IssueLayer): void {
+    activeLayer = layer
+    layerSelectionInitialized = true
+  }
+
+  function navigateLayers(event: KeyboardEvent, layer: IssueLayer): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.stopPropagation()
+      return
+    }
+    const index = layers.indexOf(layer)
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? layers.length - 1
+          : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+            ? (index + 1) % layers.length
+            : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+              ? (index + layers.length - 1) % layers.length
+              : null
+    if (next === null) return
+    event.preventDefault()
+    const nextLayer = layers[next]!
+    selectLayer(nextLayer)
+    layerTablist?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
   }
 
   function focusIssue(issue: ValidationIssue): void {
@@ -106,59 +153,80 @@
     </header>
   {/if}
 
-  {#if groups.length === 0}
-    <p class="empty">No problems found.</p>
-  {:else}
-    <div
-      class="groups"
-      data-scroll-owner={hosted ? undefined : 'problems'}
-      bind:this={scrollOwner}
-      onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
-    >
-      {#each groups as group (group.document)}
-        <section class="file-group" aria-labelledby={`problems-${group.document}`}>
-          <h3 id={`problems-${group.document}`}>{group.path}</h3>
-          {#each group.layers as layer (`${group.document}:${layer.layer}`)}
-            <section class="layer-group" aria-labelledby={`problems-${group.document}-${layer.layer}`}>
-              <h4 id={`problems-${group.document}-${layer.layer}`}>{layerName(layer.layer)}</h4>
-              <ul>
-                {#each layer.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(layer.issues, occurrence)))}
-                  {@const ordinal = duplicateOrdinal(layer.issues, occurrence)}
-                  <li data-issue-key={issueViewKey(issue, ordinal)}>
+  <div class="layer-tabs" role="tablist" aria-label="Validation layers" bind:this={layerTablist}>
+    {#each layers as layer (layer)}
+      <button
+        type="button"
+        role="tab"
+        id={`${id}-${layer}-tab`}
+        aria-controls={`${id}-${layer}-panel`}
+        aria-selected={activeLayer === layer}
+        tabindex={activeLayer === layer ? 0 : -1}
+        onclick={() => selectLayer(layer)}
+        onkeydown={(event) => navigateLayers(event, layer)}
+      >
+        <span>{layerName(layer)}</span>
+        <span class="layer-count">{layerCount(layer)}</span>
+      </button>
+    {/each}
+  </div>
+
+  <div
+    class="layer-panel"
+    role="tabpanel"
+    id={`${id}-${activeLayer}-panel`}
+    aria-labelledby={`${id}-${activeLayer}-tab`}
+    tabindex="0"
+  >
+    {#if groups.length === 0}
+      <p class="empty">No {activeLayer} problems.</p>
+    {:else}
+      <div
+        class="groups"
+        data-scroll-owner={hosted ? undefined : 'problems'}
+        bind:this={scrollOwner}
+        onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
+      >
+        {#each groups as group (group.document)}
+          <section class="file-group" aria-labelledby={`${id}-${activeLayer}-${group.document}`}>
+            <h3 id={`${id}-${activeLayer}-${group.document}`}>{group.path}</h3>
+            <ul>
+              {#each group.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(group.issues, occurrence)))}
+                {@const ordinal = duplicateOrdinal(group.issues, occurrence)}
+                <li data-issue-key={issueViewKey(issue, ordinal)}>
+                  <button
+                    type="button"
+                    aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
+                    onclick={() => focusIssue(issue)}
+                  >
+                    <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
+                    <span class="issue-copy">
+                      <strong>{issue.message}</strong>
+                      <span>{issue.blocking ? 'Blocks save and export' : 'Advisory'}</span>
+                    </span>
+                  </button>
+                  {#if issue.documentationId}
                     <button
                       type="button"
-                      aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
-                      onclick={() => focusIssue(issue)}
+                      class="docs-action"
+                      aria-label={`Open documentation for ${issue.message}`}
+                      onclick={(event) => onDocumentation?.(issue.documentationId!, event.currentTarget)}>Docs</button
                     >
-                      <span class:error={issue.blocking} class="indicator" aria-hidden="true"></span>
-                      <span class="issue-copy">
-                        <strong>{issue.message}</strong>
-                        <span>{issue.blocking ? 'Blocks save and export' : 'Advisory'}</span>
-                      </span>
-                    </button>
-                    {#if issue.documentationId}
-                      <button
-                        type="button"
-                        class="docs-action"
-                        aria-label={`Open documentation for ${issue.message}`}
-                        onclick={(event) => onDocumentation?.(issue.documentationId!, event.currentTarget)}>Docs</button
-                      >
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            </section>
-          {/each}
-        </section>
-      {/each}
-    </div>
-  {/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/each}
+      </div>
+    {/if}
+  </div>
 </svelte:element>
 
 <style>
   .problems {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     overflow: hidden;
@@ -172,6 +240,7 @@
     overflow: visible;
   }
 
+  .hosted .layer-panel,
   .hosted .groups {
     overflow: visible;
   }
@@ -187,14 +256,12 @@
 
   h2,
   h3,
-  h4,
   p,
   ul {
     margin: 0;
   }
 
-  h2,
-  h4 {
+  h2 {
     color: var(--color-text-muted);
     font-size: 0.625rem;
     font-weight: 800;
@@ -205,6 +272,51 @@
   .summary {
     color: var(--color-text-muted);
     font-size: 0.75rem;
+  }
+
+  .layer-tabs {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    padding: 0 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .layer-tabs button {
+    display: inline-flex;
+    gap: 0.375rem;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-height: 2.25rem;
+    padding: 0.375rem 0.5rem;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--color-text-muted);
+    font-size: 0.6875rem;
+  }
+
+  .layer-tabs button[aria-selected='true'] {
+    border-bottom-color: var(--color-focus);
+    color: var(--color-text);
+  }
+
+  .layer-count {
+    min-width: 1.25rem;
+    padding: 0.0625rem 0.3125rem;
+    border-radius: 999px;
+    background: var(--color-node);
+    color: currentColor;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    text-align: center;
+  }
+
+  .layer-panel {
+    min-height: 0;
+    overflow: hidden;
   }
 
   .groups {
@@ -220,10 +332,6 @@
   h3 {
     font-family: var(--font-mono);
     font-size: 0.75rem;
-  }
-
-  h4 {
-    margin-top: 0.625rem;
   }
 
   ul {

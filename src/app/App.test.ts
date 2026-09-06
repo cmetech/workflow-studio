@@ -348,6 +348,11 @@ nodes:
         receiveDocumentAnalysis({ ...analysis, issues: blocking ? [] : [issue] })
         await tick()
         expect(screen.getByRole('tab', { name: 'Problems' })).toHaveAttribute('aria-selected', 'true')
+        if (!blocking) {
+          expect(screen.getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
+          expect(screen.getByRole('tablist', { name: 'Validation layers' })).toBeVisible()
+          expect(screen.queryByText('Required value is missing.')).toBeInTheDocument()
+        }
         await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
         expect(screen.queryByRole('tab', { name: 'References' })).not.toBeInTheDocument()
         await fireEvent.click(await screen.findByRole('button', { name: 'Open loop body' }))

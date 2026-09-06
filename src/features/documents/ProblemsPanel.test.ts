@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import ProblemsPanel from './ProblemsPanel.svelte'
@@ -50,18 +50,22 @@ describe('ProblemsPanel', () => {
     expect(owner.scrollTop).toBe(43)
   })
 
-  it('groups by file and layer, exposes blocking status, and announces only the summary politely', async () => {
+  it('filters counted validation layers while preserving issue actions and the standalone summary', async () => {
     const { container } = render(ProblemsPanel, {
       issues,
       paths: { definition: 'flows/release.yaml', companion: 'flows/release.hermes.yaml' },
     })
 
     expect(screen.getByRole('heading', { name: 'Problems' })).toBeVisible()
+    const layerTabs = screen.getByRole('tablist', { name: 'Validation layers' })
+    expect(within(layerTabs).getByRole('tab', { name: 'Syntax 0' })).toBeVisible()
+    expect(within(layerTabs).getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(layerTabs).getByRole('tab', { name: 'Semantic 0' })).toBeVisible()
+    expect(within(layerTabs).getByRole('tab', { name: 'Compatibility 0' })).toBeVisible()
+    expect(within(layerTabs).getByRole('tab', { name: 'Operational 1' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'flows/release.yaml' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Contract' })).toBeVisible()
     expect(screen.getByText('Blocks save and export')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Operational' })).toBeVisible()
-    expect(screen.getByText('Advisory')).toBeVisible()
+    expect(screen.queryByText('Provider is not configured.')).not.toBeInTheDocument()
     expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1)
     expect(screen.getByText('2 problems, 1 blocking')).toHaveAttribute('aria-live', 'polite')
 
@@ -71,6 +75,67 @@ describe('ProblemsPanel', () => {
       issue: { code: 'required', document: 'definition', nodeId: 'build' },
       requested: true,
     })
+
+    await fireEvent.click(within(layerTabs).getByRole('tab', { name: 'Operational 1' }))
+    expect(screen.queryByText('A required node field is missing.')).not.toBeInTheDocument()
+    expect(screen.getByText('Provider is not configured.')).toBeVisible()
+    expect(screen.getByText('Advisory')).toBeVisible()
+
+    await fireEvent.click(within(layerTabs).getByRole('tab', { name: 'Syntax 0' }))
+    expect(screen.getByText('No syntax problems.')).toBeVisible()
+  })
+
+  it.each([
+    ['ArrowRight', 'Contract 1', 'Semantic 0'],
+    ['ArrowLeft', 'Contract 1', 'Syntax 0'],
+    ['ArrowDown', 'Contract 1', 'Semantic 0'],
+    ['ArrowUp', 'Contract 1', 'Syntax 0'],
+    ['Home', 'Contract 1', 'Syntax 0'],
+    ['End', 'Contract 1', 'Operational 1'],
+  ])('moves layer selection and focus with %s', async (key, from, to) => {
+    render(ProblemsPanel, {
+      issues,
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+    })
+
+    const start = screen.getByRole('tab', { name: from })
+    start.focus()
+    await fireEvent.keyDown(start, { key })
+
+    expect(screen.getByRole('tab', { name: to })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: to })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('updates the default layer as analysis arrives but preserves an explicit selection', async () => {
+    const { rerender } = render(ProblemsPanel, {
+      issues: [],
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+    })
+
+    expect(screen.getByRole('tab', { name: 'Syntax 0' })).toHaveAttribute('aria-selected', 'true')
+    await rerender({
+      issues: [issues[1]!],
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+    })
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: 'Operational 1' })).toHaveAttribute('aria-selected', 'true'),
+    )
+
+    await rerender({
+      issues: [issues[0]!],
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+    })
+    expect(screen.getByRole('tab', { name: 'Operational 0' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('No operational problems.')).toBeVisible()
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Syntax 0' }))
+    await rerender({
+      issues: [issues[1]!],
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+    })
+    expect(screen.getByRole('tab', { name: 'Syntax 0' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('No syntax problems.')).toBeVisible()
+    expect(screen.queryByText('Provider is not configured.')).not.toBeInTheDocument()
   })
 
   it('focuses the main row even with documentation and exposes Docs as a separate action', async () => {
@@ -137,5 +202,32 @@ describe('ProblemsPanel', () => {
     expect(screen.getAllByRole('button', { name: /Duplicate node identifier/i })).toHaveLength(2)
     expect(container.querySelector('.problems')).toHaveAttribute('data-scroll-frame', 'problems')
     expect(container.querySelector('.groups')).toHaveAttribute('data-scroll-owner', 'problems')
+  })
+
+  it('leaves summary and scrolling to its host without losing scoped identity or duplicate ordinals', () => {
+    const duplicate = {
+      ...issues[0]!,
+      code: 'scoped_duplicate',
+      message: 'Scoped duplicate issue.',
+      scopeKey: 'loop-group:release' as const,
+      groupId: 'release',
+      nodeId: 'child',
+    }
+    const { container } = render(ProblemsPanel, {
+      hosted: true,
+      issues: [duplicate, { ...duplicate }],
+      paths: { definition: 'flow.yaml', companion: null },
+      workflowName: 'Hosted flow',
+    })
+
+    expect(screen.queryByRole('heading', { name: 'Problems' })).not.toBeInTheDocument()
+    expect(screen.queryByText('2 problems, 2 blocking')).not.toBeInTheDocument()
+    expect(container.querySelector('.problems')).not.toHaveAttribute('data-scroll-frame')
+    expect(container.querySelector('.groups')).not.toHaveAttribute('data-scroll-owner')
+    expect(screen.getAllByRole('button', { name: /workflow Hosted flow, group release, node child/i })).toHaveLength(2)
+    expect([...container.querySelectorAll('li')].map((item) => item.getAttribute('data-issue-key'))).toEqual([
+      expect.stringMatching(/,0\]$/),
+      expect.stringMatching(/,1\]$/),
+    ])
   })
 })
