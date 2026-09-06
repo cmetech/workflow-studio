@@ -985,7 +985,7 @@
 
   async function focusInspectorIfCurrent(invoker: HTMLElement | undefined, current: () => boolean): Promise<boolean> {
     if (!current()) return false
-    if (workbenchPresentation.panels === 'docked') dockedInspectorPanelOpen = true
+    setDockedPanelOpen('inspector', true)
     inspectorDrawerOwner =
       workbenchPresentation.panels === 'drawers'
         ? {
@@ -1030,7 +1030,7 @@
     if (isPageActivity(activity)) routePageNavigation(activity, opener)
     else {
       workspacePanelOpener = opener
-      if (workbenchPresentation.panels === 'docked') dockedWorkspacePanelOpen = true
+      setDockedPanelOpen('workspace', true)
     }
   }
 
@@ -1069,7 +1069,7 @@
       ? workspacePanelOpener
       : document.querySelector<HTMLElement>(`[data-activity="${$activeActivity}"]`)
     workspacePanelOpen.set(false)
-    if (workbenchPresentation.panels === 'docked') dockedWorkspacePanelOpen = false
+    setDockedPanelOpen('workspace', false)
     await tick()
     target?.focus()
     workspacePanelOpener = undefined
@@ -1082,21 +1082,28 @@
         ? inspectorDrawerOwner.opener
         : currentInspectorRestorationTarget()
     inspectorPanelOpen.set(false)
-    if (workbenchPresentation.panels === 'docked') dockedInspectorPanelOpen = false
+    setDockedPanelOpen('inspector', false)
     await tick()
     if (document.activeElement !== target) target?.focus()
     inspectorDrawerOwner = undefined
   }
 
   function toggleDockedWorkspacePanel(): void {
-    dockedWorkspacePanelOpen = !dockedWorkspacePanelOpen
-    workspacePanelOpen.set(dockedWorkspacePanelOpen)
-    persistDockedPanelState()
+    const open = !dockedWorkspacePanelOpen
+    setDockedPanelOpen('workspace', open)
+    workspacePanelOpen.set(open)
   }
 
   function toggleDockedInspectorPanel(): void {
-    dockedInspectorPanelOpen = !dockedInspectorPanelOpen
-    inspectorPanelOpen.set(dockedInspectorPanelOpen)
+    const open = !dockedInspectorPanelOpen
+    setDockedPanelOpen('inspector', open)
+    inspectorPanelOpen.set(open)
+  }
+
+  function setDockedPanelOpen(panel: 'workspace' | 'inspector', open: boolean): void {
+    if (workbenchPresentation.panels !== 'docked') return
+    if (panel === 'workspace') dockedWorkspacePanelOpen = open
+    else dockedInspectorPanelOpen = open
     persistDockedPanelState()
   }
 

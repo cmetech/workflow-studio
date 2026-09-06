@@ -410,7 +410,7 @@ nodes:
     expect(inspectorPanel).not.toHaveAttribute('aria-hidden')
   })
 
-  it('restores docked panel preferences per workflow without persisting compact drawer transitions', async () => {
+  it('persists alternate docked panel open paths per workflow without persisting the same drawer actions', async () => {
     const restoreWorker = installRealDocumentWorker()
     const backing = createBrowserBridge({
       initialFiles: {
@@ -458,8 +458,12 @@ nodes:
       expect(workspacePanel).toHaveAttribute('inert')
       expect(inspectorPanel).not.toHaveAttribute('inert')
 
-      await fireEvent.click(screen.getByRole('button', { name: 'Expand workspace panel' }))
       await fireEvent.click(screen.getByRole('button', { name: 'Collapse inspector panel' }))
+      const buildNode = screen.getByRole('group', { name: /prompt node build$/i })
+      await fireEvent.click(within(buildNode).getByRole('button', { name: 'Inspector for build' }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
+      expect(workspacePanel).not.toHaveAttribute('inert')
+      expect(inspectorPanel).not.toHaveAttribute('inert')
       await waitFor(() => expect(layoutSave).toHaveBeenCalled(), { timeout: 1_500 })
       expect(
         (
@@ -467,7 +471,7 @@ nodes:
             layout: { workflowPath: string; collapsedPanels?: { left: boolean; right: boolean } }
           }>
         ).find(({ layout }) => layout.workflowPath === 'flow.yaml')?.layout.collapsedPanels,
-      ).toEqual({ left: false, right: true })
+      ).toEqual({ left: false, right: false })
 
       await fireEvent.click(screen.getByRole('treeitem', { name: /other\.yaml/i }))
       await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('other.yaml'))
@@ -478,7 +482,7 @@ nodes:
       await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('flow.yaml'))
       await screen.findByRole('region', { name: 'Workflow graph' })
       expect(workspacePanel).not.toHaveAttribute('inert')
-      expect(inspectorPanel).toHaveAttribute('inert')
+      expect(inspectorPanel).not.toHaveAttribute('inert')
 
       await fireEvent.click(screen.getByRole('group', { name: 'prompt node build' }))
       await new Promise((resolve) => setTimeout(resolve, 1_200))
@@ -492,14 +496,14 @@ nodes:
       await fireEvent.keyDown(window, { key: 'Escape' })
       await new Promise((resolve) => setTimeout(resolve, 600))
 
-      expect(activeLayoutStore.get()?.collapsedPanels).toEqual({ left: false, right: true })
+      expect(activeLayoutStore.get()?.collapsedPanels).toEqual({ left: false, right: false })
       for (const [content] of layoutSave.mock.calls) {
         const saved = (
           JSON.parse(content) as Array<{
             layout: { workflowPath: string; collapsedPanels?: { left: boolean; right: boolean } }
           }>
         ).find(({ layout }) => layout.workflowPath === 'flow.yaml')
-        expect(saved?.layout.collapsedPanels).toEqual({ left: false, right: true })
+        expect(saved?.layout.collapsedPanels).toEqual({ left: false, right: false })
       }
     } finally {
       restoreWorker()
