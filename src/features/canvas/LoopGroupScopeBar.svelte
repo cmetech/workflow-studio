@@ -69,7 +69,10 @@
   <div class="suggestions">
     <section class="reference-group" aria-labelledby="current-references-heading">
       <h2 id="current-references-heading">Earlier nodes in this iteration</h2>
-      <p>Use outputs from direct dependencies of the focused body node.</p>
+      <p>
+        Body-node fields can use outputs from their direct dependencies. Compatible group controls can use outputs from
+        any body node.
+      </p>
       {#if !hasCurrentProducer}
         <p>Earlier nodes become available when the focused body field can use one of its direct dependencies.</p>
       {/if}

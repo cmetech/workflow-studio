@@ -101,6 +101,17 @@ describe('LoopGroupScopeBar', () => {
     )
   })
 
+  it('distinguishes direct body dependencies from compatible group controls in current-output guidance', () => {
+    render(LoopGroupScopeBar, {
+      groupId: 'repeat',
+      suggestions: [],
+    })
+
+    expect(groupFor('Earlier nodes in this iteration')).toHaveTextContent(
+      'Body-node fields can use outputs from their direct dependencies. Compatible group controls can use outputs from any body node.',
+    )
+  })
+
   it('disables Insert unless the remembered target accepts the exact suggestion namespace', () => {
     render(LoopGroupScopeBar, {
       groupId: 'repeat',
