@@ -346,6 +346,92 @@ export class DocumentWorkspaceController {
     return outcome
   }
 
+  async revertToSaved(): Promise<'reverted' | 'conflict' | 'unavailable'> {
+    if (this.publicationSuppressed()) return 'unavailable'
+    const session = $documentSession.get()
+    const pair = session.pair
+    if (
+      !pair ||
+      !session.revision ||
+      !pair.definition.diskHash ||
+      pair.generation !== pair.savedGeneration ||
+      (pair.companion !== null && !pair.companion.diskHash)
+    )
+      return 'unavailable'
+
+    const activationGeneration = this.activationGeneration
+    const [definition, companion] = await Promise.all([
+      this.dependencies.read(pair.definition.path),
+      pair.companion ? this.dependencies.read(pair.companion.path) : Promise.resolve(null),
+    ])
+    const activeSession = $documentSession.get()
+    if (
+      this.publicationSuppressed() ||
+      activationGeneration !== this.activationGeneration ||
+      !activeSession.pair ||
+      !activeSession.revision ||
+      activeSession.revision.contractDigest !== session.revision.contractDigest ||
+      !samePairRevision(activeSession.pair, pair)
+    )
+      return 'unavailable'
+
+    const changedDisk =
+      definition.sha256 !== pair.definition.diskHash
+        ? definition
+        : companion && companion.sha256 !== pair.companion?.diskHash
+          ? companion
+          : null
+    if (changedDisk) {
+      const external = handleExternalChange(pair, changedDisk)
+      if (external.status === 'conflict') {
+        $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: external.conflict })
+        return 'conflict'
+      }
+      return 'unavailable'
+    }
+
+    const definitionRevision = pair.definition.revision + 1
+    const companionRevision = pair.companion ? pair.companion.revision + 1 : null
+    const reverted: WorkflowPairText = {
+      ...pair,
+      savedGeneration: pair.generation,
+      definition: {
+        ...pair.definition,
+        text: definition.text,
+        revision: definitionRevision,
+        savedRevision: definitionRevision,
+        diskHash: definition.sha256,
+      },
+      companion:
+        pair.companion && companion && companionRevision !== null
+          ? {
+              ...pair.companion,
+              text: companion.text,
+              revision: companionRevision,
+              savedRevision: companionRevision,
+              diskHash: companion.sha256,
+            }
+          : pair.companion,
+    }
+    historyStore.set(createHistoryState())
+    updateDocumentSession(reverted, session.revision.contractDigest, 'disk')
+    this.dependencies.recoveryDrafts.changed(reverted)
+    await this.dependencies.recovery.discard(reverted.workflowId)
+    const activeAfterDiscard = $documentSession.get()
+    if (
+      this.publicationSuppressed() ||
+      activationGeneration !== this.activationGeneration ||
+      !activeAfterDiscard.pair ||
+      !activeAfterDiscard.revision ||
+      activeAfterDiscard.revision.contractDigest !== session.revision.contractDigest ||
+      !samePairRevision(activeAfterDiscard.pair, reverted)
+    )
+      return 'unavailable'
+    $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: null, saveOutcome: null })
+    this.reconcileDocumentContract(reverted, 'open')
+    return 'reverted'
+  }
+
   async recreateMissing(): Promise<void> {
     if (this.publicationSuppressed()) return
     const missingChange = $documentWorkspace.get().missingChange

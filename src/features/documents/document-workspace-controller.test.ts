@@ -201,6 +201,157 @@ afterEach(() => {
 })
 
 describe('DocumentWorkspaceController', () => {
+  it('reverts both dirty documents to exact hash-matched disk text and resets their lifecycle state', async () => {
+    const definitionText = 'name: saved\ndescription: Exact disk copy\nnodes:\n  - id: run\n    command: echo ok\n'
+    const companionText = 'language_compatibility: hermes-legacy\ntags: [saved]\n'
+    const { deps, client } = dependencies({
+      read: vi.fn(async (path: string) => read(path, path.endsWith('.hermes.yaml') ? companionText : definitionText)),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    let edited = editDocumentText(opened!, 'definition', `${definitionText}# local definition edit\n`)
+    edited = editDocumentText(edited, 'companion', `${companionText}# local companion edit\n`)
+    controller.changed(edited)
+    historyStore.set(
+      recordTransaction(historyStore.get(), {
+        mutation: { type: 'replace-document', document: 'definition', text: edited.definition.text },
+        label: 'Edit workflow pair',
+        workflowId: opened!.workflowId,
+        pairGeneration: opened!.generation,
+        before: { definition: opened!.definition.text, companion: opened!.companion!.text },
+        after: { definition: edited.definition.text, companion: edited.companion!.text },
+        beforeRevisions: { definition: opened!.definition.revision, companion: opened!.companion!.revision },
+        afterRevisions: { definition: edited.definition.revision, companion: edited.companion!.revision },
+        selection: { document: 'definition' },
+      }),
+    )
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      conflict: {
+        pair: edited,
+        document: 'definition',
+        disk: read('flow.yaml', 'name: prior conflict\n'),
+        choices: ['keep-mine', 'reload-disk', 'compare'],
+        diffViewed: false,
+      },
+      saveOutcome: {
+        status: 'blocked',
+        pair: edited,
+        issues: [],
+        reason: 'analysis_missing_or_stale',
+      },
+    })
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.revertToSaved()).resolves.toBe('reverted')
+
+    const reverted = $documentSession.get().pair!
+    expect(reverted).toMatchObject({
+      generation: opened!.generation,
+      savedGeneration: opened!.generation,
+      definition: {
+        text: definitionText,
+        revision: edited.definition.revision + 1,
+        savedRevision: edited.definition.revision + 1,
+        diskHash: opened!.definition.diskHash,
+      },
+      companion: {
+        text: companionText,
+        revision: edited.companion!.revision + 1,
+        savedRevision: edited.companion!.revision + 1,
+        diskHash: opened!.companion!.diskHash,
+      },
+    })
+    expect(isDocumentPairDirty(reverted)).toBe(false)
+    expect(historyStore.get()).toEqual(createHistoryState())
+    expect(deps.recoveryDrafts.changed).toHaveBeenLastCalledWith(reverted)
+    expect(deps.recovery.discard).toHaveBeenCalledWith(opened!.workflowId)
+    expect($documentWorkspace.get()).toMatchObject({ conflict: null, saveOutcome: null })
+    expect(client.schedule).toHaveBeenCalledWith(reverted, contract, 'open')
+  })
+
+  it('keeps dirty text and publishes the existing conflict when a saved disk hash changed', async () => {
+    let disk = read('flow.yaml', 'name: saved\n')
+    const { deps, client } = dependencies({ read: vi.fn(async () => disk) })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const edited = editDocumentText(opened!, 'definition', 'name: mine\n')
+    controller.changed(edited)
+    disk = { ...read('flow.yaml', 'name: changed elsewhere\n'), sha256: 'external'.padEnd(64, 'b') }
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.revertToSaved()).resolves.toBe('conflict')
+
+    expect($documentSession.get().pair?.definition.text).toBe('name: mine\n')
+    expect($documentWorkspace.get().conflict?.disk.text).toBe('name: changed elsewhere\n')
+    expect(deps.recovery.discard).not.toHaveBeenCalled()
+    expect(client.schedule).not.toHaveBeenCalled()
+  })
+
+  it('does not publish a revert whose asynchronous read loses the activation generation', async () => {
+    let finishRead: ((value: WorkspaceReadResult) => void) | undefined
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('a.yaml'), contract)
+    controller.changed(editDocumentText(opened!, 'definition', 'name: dirty a\n'))
+    vi.mocked(deps.read).mockImplementationOnce(
+      () =>
+        new Promise<WorkspaceReadResult>((resolve) => {
+          finishRead = resolve
+        }),
+    )
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    const reverting = controller.revertToSaved()
+    await vi.waitFor(() => expect(finishRead).toBeDefined())
+    await controller.activate('workspace', entry('b.yaml'), contract)
+    finishRead?.(read('a.yaml'))
+
+    await expect(reverting).resolves.toBe('unavailable')
+    expect($documentSession.get().pair?.definition.path).toBe('b.yaml')
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect(deps.recovery.discard).not.toHaveBeenCalled()
+    expect(client.schedule).toHaveBeenCalledTimes(1)
+    expect(client.schedule).toHaveBeenCalledWith(
+      expect.objectContaining({ definition: expect.objectContaining({ path: 'b.yaml' }) }),
+      contract,
+      'open',
+    )
+  })
+
+  it('returns unavailable without reading or publishing when the pair has no saved disk hash', async () => {
+    const { deps, client } = dependencies()
+    const controller = new DocumentWorkspaceController(deps)
+    const draft = {
+      workflowId: 'draft.yaml',
+      generation: 0,
+      savedGeneration: 0,
+      definition: {
+        id: 'draft.yaml:definition',
+        kind: 'definition' as const,
+        path: 'draft.yaml',
+        text: 'name: draft\n',
+        revision: 1,
+        savedRevision: 0,
+        diskHash: null,
+      },
+      companion: null,
+    }
+    await controller.openDraft('workspace', draft, contract)
+    vi.mocked(deps.read).mockClear()
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    await expect(controller.revertToSaved()).resolves.toBe('unavailable')
+
+    expect($documentSession.get().pair).toBe(draft)
+    expect(deps.read).not.toHaveBeenCalled()
+    expect(deps.recoveryDrafts.changed).not.toHaveBeenCalled()
+    expect(deps.recovery.discard).not.toHaveBeenCalled()
+    expect(client.schedule).not.toHaveBeenCalled()
+  })
+
   it('publishes a prevalidated form edit without invalidating the graph or scheduling duplicate analysis', async () => {
     const { deps, client } = dependencies()
     const controller = new DocumentWorkspaceController(deps)
