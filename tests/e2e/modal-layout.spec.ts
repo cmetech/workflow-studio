@@ -216,7 +216,7 @@ test('real repeated blocking export diagnostics render without page or console e
   await page.getByRole('button', { name: 'Explorer', exact: true }).click()
   const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
   await pair.click()
-  await expect(page.getByRole('region', { name: 'Problems' }).getByRole('button')).toHaveCount(39)
+  await expect(page.getByRole('tabpanel', { name: 'Problems' }).getByRole('button')).toHaveCount(39)
   await pair.click({ button: 'right' })
   await page.getByRole('menuitem', { name: 'Export' }).click()
 

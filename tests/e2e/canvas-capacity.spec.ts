@@ -347,7 +347,7 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   expect(afterInspectorEdit).toContain('    command: /capacity-edited\n')
 
   const problemsPhase = await beginLongTaskPhase(page, browserName)
-  const problems = page.getByRole('region', { name: 'Problems' }).locator('[data-scroll-owner="problems"]')
+  const problems = page.getByRole('tabpanel', { name: 'Problems' })
   await expect.poll(() => problems.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
   await problems.evaluate((element) => (element.scrollTop = element.scrollHeight))
   await expect.poll(() => problems.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)

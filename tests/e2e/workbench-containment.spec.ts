@@ -96,7 +96,7 @@ for (const geometry of EXACT_GEOMETRIES) {
     await page.setViewportSize(geometry.viewport)
     await openPairForGeometry(page, '?scenario=repeated-diagnostics', geometry.viewport.width, false)
     if (geometry.viewport.width < 1280) await page.keyboard.press('Escape')
-    const finalIssue = page.getByRole('region', { name: 'Problems' }).getByRole('button').last()
+    const finalIssue = page.getByRole('tabpanel', { name: 'Problems' }).getByRole('button').last()
     await expectLastControlReachable(page, finalIssue)
   })
 }
@@ -316,9 +316,9 @@ test('Inspector and Problems keep their final controls reachable inside the boun
   await page.goto('/?scenario=repeated-diagnostics')
   await page.getByRole('button', { name: 'Open Folder' }).first().click()
   await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
-  const problems = page.getByRole('region', { name: 'Problems' })
+  const problems = page.getByRole('tabpanel', { name: 'Problems' })
   await expect(problems.getByRole('button')).toHaveCount(39)
-  const problemsGroups = problems.locator('[data-scroll-owner="problems"]')
+  const problemsGroups = problems
   const finalIssue = problems.getByRole('button').last()
   await finalIssue.scrollIntoViewIfNeeded()
   await finalIssue.focus()
