@@ -5,6 +5,9 @@ test('creates an editable copy from every bundled example and opens contextual o
   page,
 }) => {
   await openSeededPair(page)
+  const initialDefinitionCount = ((await e2eSnapshot(page)).workspacePaths as string[]).filter(
+    (path) => path.endsWith('.yaml') && !path.endsWith('.hermes.yaml'),
+  ).length
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
 
   const copyButtons = page.getByRole('button', { name: /^Create Editable Copy:/ })
@@ -19,7 +22,7 @@ test('creates an editable copy from every bundled example and opens contextual o
           (path) => path.endsWith('.yaml') && !path.endsWith('.hermes.yaml'),
         ).length,
     )
-    .toBe(11)
+    .toBe(initialDefinitionCount + total)
   await page
     .getByRole('button', { name: /^Open documentation:/ })
     .first()

@@ -26,6 +26,9 @@ async function transactionState(page: Page): Promise<{ definitionRevision: numbe
 interface SavedLayoutEntry {
   readonly layout?: {
     readonly nodePositions?: Record<string, { readonly x: number; readonly y: number }>
+    readonly scopeLayouts?: Readonly<
+      Record<string, { readonly nodePositions?: Record<string, { readonly x: number; readonly y: number }> }>
+    >
   }
 }
 
@@ -33,7 +36,9 @@ async function layoutPosition(page: Page, nodeId: string): Promise<{ readonly x:
   const serialized = (await e2eSnapshot(page)).layout
   if (typeof serialized !== 'string') throw new Error('Expected a saved layout record.')
   const entries = JSON.parse(serialized) as SavedLayoutEntry[]
-  const position = entries.find((entry) => entry.layout?.nodePositions?.[nodeId])?.layout?.nodePositions?.[nodeId]
+  const position = entries
+    .map((entry) => entry.layout?.nodePositions?.[nodeId] ?? entry.layout?.scopeLayouts?.root?.nodePositions?.[nodeId])
+    .find((candidate) => candidate !== undefined)
   if (!position) throw new Error(`Expected a saved layout position for ${nodeId}.`)
   return position
 }
@@ -313,7 +318,9 @@ test('Escape clears edge-only and mixed selection without projection resurrectio
   await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
 })
 
-test('picker-priority Escape clears mixed selection without projection resurrection', async ({ page }) => {
+test('picker-priority Escape consumes edge mode before mixed selection without projection resurrection', async ({
+  page,
+}) => {
   await openSeededPair(page)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
@@ -334,6 +341,10 @@ test('picker-priority Escape clears mixed selection without projection resurrect
 
   await expect(page.getByText('Create edge from prepare', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText('Edge creation cancelled.')
+  await expect(prepare).toHaveClass(/selected/)
+  await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  await expect(page.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+  await dependency.press('Escape')
   await expect(prepare).not.toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
   await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
@@ -382,7 +393,7 @@ nodes:
   - id: prepare
     command: /prepare
   - id: review
-    prompt: Review $prepare.output.
+    prompt: Review $prepare.output
     depends_on: [prepare]
   - id: finish
     command: /finish
@@ -409,6 +420,7 @@ nodes:
 test('node body remains the real hit target and draggable in the former controls rectangle', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
+  await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
 
   const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   const viewport = page.locator('[data-testid="workflow-canvas-viewport"]')
@@ -525,11 +537,11 @@ nodes:
   await page.getByRole('tab', { name: 'Execution' }).click()
   const whenField = page.getByRole('textbox', { name: 'When', exact: true })
   await expect(whenField).toBeEnabled()
-  await whenField.fill("$prepare-2.output.status == 'ready'")
+  await whenField.fill("$prepare-2.output == 'ready'")
   await page.getByRole('button', { name: 'Apply When' }).click()
   const afterReference = afterEdge.replace(
     '    depends_on:\n      - prepare-2\n',
-    "    depends_on:\n      - prepare-2\n    when: $prepare-2.output.status == 'ready'\n",
+    "    depends_on:\n      - prepare-2\n    when: $prepare-2.output == 'ready'\n",
   )
   await expectAuthoritativeYaml(page, afterReference)
 
@@ -545,7 +557,7 @@ nodes:
   await expect(renamed).toBeVisible()
   const afterRename = afterReference
     .replace('      - prepare-2\n', '      - collect\n')
-    .replace('$prepare-2.output.status', '$collect.output.status')
+    .replace('$prepare-2.output', '$collect.output')
     .replace('  - id: prepare-2\n', '  - id: collect\n')
   await expectAuthoritativeYaml(page, afterRename)
 

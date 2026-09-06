@@ -402,6 +402,13 @@
     edgeTargetIndex = 0
   }
 
+  function captureEdgeEscape(event: KeyboardEvent): void {
+    if (!edgeSourceId || event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    cancelEdge()
+  }
+
   function handleEdgeKeydown(event: KeyboardEvent): void {
     if (!edgeSourceId) return
     const targets = validEdgeTargets(edgeSourceId)
@@ -854,6 +861,7 @@
     root.addEventListener('pointercancel', clearPointerSelectionGesture, true)
     root.addEventListener('click', finishPointerSelectionGesture, true)
     root.addEventListener('keydown', resumeSelectionPublication, true)
+    root.addEventListener('keydown', captureEdgeEscape, true)
     root.addEventListener('keydown', handleEdgeKeydown)
     root.addEventListener('dblclick', openLoopGroupFromEvent)
     root.addEventListener('keydown', openLoopGroupFromEvent)
@@ -874,6 +882,7 @@
       root.removeEventListener('pointercancel', clearPointerSelectionGesture, true)
       root.removeEventListener('click', finishPointerSelectionGesture, true)
       root.removeEventListener('keydown', resumeSelectionPublication, true)
+      root.removeEventListener('keydown', captureEdgeEscape, true)
       root.removeEventListener('keydown', handleEdgeKeydown)
       root.removeEventListener('dblclick', openLoopGroupFromEvent)
       root.removeEventListener('keydown', openLoopGroupFromEvent)

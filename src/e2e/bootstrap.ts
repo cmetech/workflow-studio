@@ -1,4 +1,5 @@
 import loop24ManifestSource from '../../brands/loop24/brand.yaml?raw'
+import archonContractSource from '../../contracts/archon-2026-07-v6.json?raw'
 import { NativeError, type WorkspaceChangedHandler, type WorkspaceNativeBridge } from '$src/lib/native/types'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
@@ -512,22 +513,19 @@ nodes:
     ],
     revision: `e2e-long-settings-brand-${index + 1}`,
   }))
-  const longContractEntries: readonly ContractCacheStoredEntry[] = await Promise.all(
+  const longValidContractEntries: readonly ContractCacheStoredEntry[] = await Promise.all(
     Array.from({ length: 12 }, async (_, index) => {
       const payload = {
-        contract_reader_version: 2,
-        schema_version: 1,
-        normalizer_version: index + 1,
-        profile: index % 2 === 0 ? ('archon-2026-07' as const) : ('hermes-legacy' as const),
-        fixture_identity: `deterministic-contract-${index + 1}-${'bounded-identity-'.repeat(5)}`,
+        ...(JSON.parse(archonContractSource) as Record<string, unknown>),
+        normalizer_version: 100 + index,
       }
       const digest = `sha256:${await sha256(new TextEncoder().encode(canonicalizeContractPayload(payload)))}` as const
       return {
         digest,
-        profile: payload.profile,
-        schemaVersion: payload.schema_version,
-        normalizerVersion: payload.normalizer_version,
-        readerVersion: payload.contract_reader_version,
+        profile: 'archon-2026-07' as const,
+        schemaVersion: 1,
+        normalizerVersion: 100 + index,
+        readerVersion: 3,
         source: {
           kind: 'user' as const,
           identifier: `C:\\contracts\\cached\\${'deeply-nested-contract-directory\\'.repeat(4)}contract-${index + 1}.json`,
@@ -537,6 +535,17 @@ nodes:
       }
     }),
   )
+  const invalidLongContractEntry: ContractCacheStoredEntry = {
+    digest: `sha256:${'f'.repeat(64)}`,
+    profile: 'archon-2026-07',
+    schemaVersion: 1,
+    normalizerVersion: 999,
+    readerVersion: 3,
+    source: { kind: 'user', identifier: 'C:\\contracts\\cached\\invalid-contract.json' },
+    content: '{"contract_reader_version":3}',
+    active: false,
+  }
+  const longContractEntries = [...longValidContractEntries, invalidLongContractEntry]
 
   const emitUpdate = async (event: UpdateEvent): Promise<void> => {
     await Promise.all([...updateHandlers].map((handler) => handler(event)))

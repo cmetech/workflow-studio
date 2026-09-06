@@ -189,6 +189,29 @@ describe('GraphCanvas', () => {
     expect($canvasSelection.get()).toEqual(['collect'])
   })
 
+  it('consumes an active edge-mode Escape before Svelte Flow can clear the selected node', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    setCanvasSelection(['collect'])
+    await tick()
+    rendered.component.requestEdge()
+
+    const flow = rendered.container.querySelector<HTMLElement>('.svelte-flow')!
+    const focusedEdge = document.createElement('div')
+    const flowEscapeHandler = vi.fn(() => setCanvasSelection([]))
+    focusedEdge.className = 'svelte-flow__edge'
+    focusedEdge.tabIndex = 0
+    focusedEdge.addEventListener('keydown', flowEscapeHandler)
+    flow.append(focusedEdge)
+    await fireEvent.keyDown(focusedEdge, { key: 'Escape' })
+
+    expect(screen.queryByText('Create edge from collect')).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
+      'Edge creation cancelled.',
+    )
+    expect(flowEscapeHandler).not.toHaveBeenCalled()
+    expect($canvasSelection.get()).toEqual(['collect'])
+  })
+
   it('keeps pointer panning enabled on the rendered flow pane', () => {
     const { container } = renderCanvas({ projection, layout })
     const flow = container.querySelector<HTMLElement>('.svelte-flow')

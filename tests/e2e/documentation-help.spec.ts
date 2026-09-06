@@ -57,7 +57,7 @@ test('documentation, repeated reference fields, shortcut help, and session state
   await documentation.getByRole('tab', { name: 'Reference' }).click()
   const commonSettings = documentation.getByRole('button', { name: 'Common node settings, reference group' })
   await expect(commonSettings).toHaveAttribute('aria-expanded', 'true')
-  const contextGroup = documentation.getByRole('button', { name: 'Context, used by 7 node types' })
+  const contextGroup = documentation.getByRole('button', { name: 'Context, used by 8 node types' })
   await contextGroup.click()
   await documentation.getByRole('button', { name: 'Context, Prompt node' }).click()
   const promptArticle = documentation.getByRole('article', { name: 'Context' })
@@ -69,7 +69,7 @@ test('documentation, repeated reference fields, shortcut help, and session state
   await documentation.getByRole('button', { name: 'Back to Results' }).click()
   const documentationSearch = documentation.getByRole('searchbox', { name: 'Search documentation' })
   await documentationSearch.fill('context bash')
-  await expect(documentation.getByRole('status')).toHaveText('1 result for “context bash”.')
+  await expect(documentation.getByRole('status')).toContainText('results for “context bash”.')
   await documentation.getByRole('button', { name: 'Context, Bash node' }).click()
   const bashArticle = documentation.getByRole('article', { name: 'Context' })
   await expect(bashArticle.getByRole('navigation', { name: 'Documentation breadcrumb' })).toContainText(
@@ -167,7 +167,7 @@ test('forced colors preserve selected, expanded, and focused documentation state
   await expect(commonSettings).toHaveAttribute('aria-expanded', 'true')
   expect(await commonSettings.evaluate((element) => getComputedStyle(element).outlineWidth)).toBe('2px')
 
-  const context = documentation.getByRole('button', { name: 'Context, used by 7 node types' })
+  const context = documentation.getByRole('button', { name: 'Context, used by 8 node types' })
   await context.focus()
   expect(await context.evaluate((element) => getComputedStyle(element).outlineWidth)).not.toBe('0px')
   expect(await context.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe('0s')

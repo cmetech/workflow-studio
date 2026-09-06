@@ -68,7 +68,16 @@ export async function openSeededPair(page: Page, options?: string | SeededPairOp
   const pair = page.getByRole('treeitem', { name: new RegExp(`${escapeRegExp(pairName)}, paired workflow`, 'i') })
   await expect(pair).toBeVisible()
   await pair.click()
-  await expect(page.getByRole('main')).toBeVisible()
+  await expect
+    .poll(async () => {
+      const snapshot = await e2eSnapshot(page)
+      return (
+        typeof snapshot.definitionRevision === 'number' &&
+        snapshot.analysisDefinitionRevision === snapshot.definitionRevision
+      )
+    })
+    .toBe(true)
+  await expect(page.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
   if (compact) {
     await page.keyboard.press('Escape')
     await expect(page.getByRole('button', { name: 'Explorer', exact: true })).toBeFocused()

@@ -184,6 +184,16 @@ test('keeps a long dismissible application notice action visible at narrow heigh
   await expect(notice).toBeHidden()
 })
 
+test('a visible cache advisory does not intercept Settings navigation at 512x350', async ({ page }) => {
+  await page.setViewportSize({ width: 512, height: 350 })
+  await page.goto('/?scenario=long-settings')
+
+  await expect(page.getByRole('status', { name: 'Contract cache advisory' })).toBeVisible()
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+
+  await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible()
+})
+
 test('Settings has no horizontal overflow at desktop and 512px reflow widths', async ({ page }) => {
   const sizes = [
     { width: 1024, height: 700 },

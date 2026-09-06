@@ -3253,6 +3253,12 @@
     max-height: min(60dvh, 30rem);
     padding: 0;
     overflow: auto;
+    pointer-events: none;
+  }
+
+  .application-notices :global(button),
+  .application-notices :global(a) {
+    pointer-events: auto;
   }
 
   .contract-cache-advisory {
@@ -3269,6 +3275,7 @@
     color: var(--color-text);
     background: var(--color-surface);
     box-shadow: 0 0.5rem 1.5rem var(--color-shadow);
+    pointer-events: none;
   }
 
   .titlebar {
