@@ -24,6 +24,12 @@ export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
     description: 'Create and save a small structurally valid workflow.',
     useWhen: 'Use this when you want to create and save your first workflow.',
   },
+  'node-types': {
+    group: 'getting-started',
+    order: 15,
+    description: 'Choose the node kind that matches the work you want Hermes to perform.',
+    useWhen: 'Use this when you are deciding which node type to add.',
+  },
   'workflow-pairs': {
     group: 'getting-started',
     order: 20,
@@ -101,6 +107,7 @@ export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
 
 export const START_HERE = [
   { topicId: 'guide:quick-start', title: 'Quick Start' },
+  { topicId: 'guide:node-types', title: 'Choose a node type' },
   { topicId: 'guide:workflow-pairs', title: 'Workflow pairs' },
   { topicId: 'guide:dag-dependencies', title: 'DAG dependencies' },
   { topicId: 'guide:problems-and-validation', title: 'Problems and validation' },
@@ -109,6 +116,7 @@ export const START_HERE = [
 
 export const DOCUMENTATION_TASKS: readonly DocumentationTask[] = [
   { id: 'create-workflow', title: 'Create or open a workflow', description: 'Start a workflow in a local folder.', topicId: 'guide:quick-start' },
+  { id: 'choose-node-type', title: 'Choose the right node type', description: 'Match a workflow step to a contract-supported node kind.', topicId: 'guide:node-types' },
   { id: 'add-connect-steps', title: 'Add and connect steps', description: 'Build an acyclic workflow graph.', topicId: 'guide:dag-dependencies' },
   { id: 'conditions-outputs', title: 'Add conditions and use outputs', description: 'Control later steps with earlier results.', topicId: 'guide:conditions-and-outputs' },
   { id: 'retries-triggers', title: 'Configure retries and trigger rules', description: 'Set execution behavior for a node.', topicId: 'guide:retry-and-triggers' },

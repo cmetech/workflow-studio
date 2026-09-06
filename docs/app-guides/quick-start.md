@@ -16,7 +16,7 @@ The definition YAML contains the workflow name, description, nodes, and dependen
 
 ## 4. Add a node in Visual or YAML mode
 
-In **Visual** mode, add a node from the palette and edit known fields in the Inspector. In **YAML** mode, type the definition directly. Both views edit the same authoritative YAML text, so you can switch modes without creating a second graph model.
+In **Visual** mode, add a node from the palette and edit known fields in the Inspector. [Choose a node type](#guide:node-types) explains when to use each kind supplied by the active contract. In **YAML** mode, type the definition directly. Both views edit the same authoritative YAML text, so you can switch modes without creating a second graph model.
 
 This small definition is a structurally valid starting point for the `archon-2026-07` profile:
 
@@ -51,6 +51,6 @@ Save the definition and optional companion only after the blocking Problems are 
 
 Use the **Git** activity to inspect a local diff, history, or create an explicit local commit for the workflow pair. Git integration is local-only in version one; it does not push, pull, or contact a remote.
 
-Continue with [Workflow pairs](#guide:workflow-pairs), [DAG dependencies](#guide:dag-dependencies), [Problems and validation](#guide:problems-and-validation), and [Keyboard shortcuts](#guide:keyboard-shortcuts). To begin from a bundled workflow, open the **Examples** activity.
+Continue with [Choose a node type](#guide:node-types), [Workflow pairs](#guide:workflow-pairs), [DAG dependencies](#guide:dag-dependencies), [Problems and validation](#guide:problems-and-validation), and [Keyboard shortcuts](#guide:keyboard-shortcuts). To begin from a bundled workflow, open the **Examples** activity.
 
 Workflow Studio does not execute this workflow. It cannot verify external tools, providers, services, credentials, or scripts are available.

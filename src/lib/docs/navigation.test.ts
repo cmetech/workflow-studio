@@ -17,6 +17,7 @@ describe('documentation navigation metadata', () => {
   it('keeps the first-use reading path and task destinations available', () => {
     expect(START_HERE.map(({ topicId }) => topicId)).toEqual([
       'guide:quick-start',
+      'guide:node-types',
       'guide:workflow-pairs',
       'guide:dag-dependencies',
       'guide:problems-and-validation',
@@ -25,6 +26,7 @@ describe('documentation navigation metadata', () => {
     expect(DOCUMENTATION_TASKS.map(({ id, topicId }) => ({ id, topicId }))).toEqual(
       expect.arrayContaining([
         { id: 'create-workflow', topicId: 'guide:quick-start' },
+        { id: 'choose-node-type', topicId: 'guide:node-types' },
         { id: 'fix-problem', topicId: 'guide:problems-and-validation' },
         { id: 'keyboard-shortcuts', topicId: 'guide:keyboard-shortcuts' },
       ]),
@@ -63,7 +65,7 @@ describe('documentation navigation metadata', () => {
           .map(([guideId]) => guideId),
       ),
     ).toEqual([
-      ['quick-start', 'workflow-pairs'],
+      ['quick-start', 'node-types', 'workflow-pairs'],
       ['dag-dependencies', 'conditions-and-outputs', 'loops-and-approvals', 'loop-groups'],
       ['retry-and-triggers', 'companion-policies', 'profiles-and-compatibility'],
       ['problems-and-validation', 'git-versions', 'troubleshooting'],

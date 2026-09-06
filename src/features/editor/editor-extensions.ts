@@ -44,6 +44,12 @@ export function createEditorExtensions(onUpdate: (update: ViewUpdate) => void, l
         color: 'var(--color-text)',
         backgroundColor: 'var(--color-surface)',
       },
+      '.cm-content': { caretColor: 'var(--color-focus)' },
+      '.cm-cursor, .cm-dropCursor': {
+        borderLeftColor: 'var(--color-focus)',
+        borderLeftWidth: '2px',
+      },
+      '.cm-fat-cursor': { backgroundColor: 'var(--color-focus)' },
       '.cm-scroller': { fontFamily: 'var(--font-mono)' },
       '.cm-gutters': {
         color: 'var(--color-text-muted)',

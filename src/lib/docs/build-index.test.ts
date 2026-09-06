@@ -176,7 +176,7 @@ describe('buildDocumentationIndex', () => {
     const index = buildDocumentationIndex(contract, bundledGuideFixtures())
 
     expect([...index.guideGroups].map(([group, topics]) => [group, topics.map(({ id }) => id)])).toEqual([
-      ['getting-started', ['guide:quick-start', 'guide:workflow-pairs']],
+      ['getting-started', ['guide:quick-start', 'guide:node-types', 'guide:workflow-pairs']],
       [
         'build-graph',
         ['guide:dag-dependencies', 'guide:conditions-and-outputs', 'guide:loops-and-approvals', 'guide:loop-groups'],
@@ -298,6 +298,18 @@ describe('buildDocumentationIndex', () => {
         expect(topic?.body).toContain('Required:')
         expect(topic?.body).toContain('Default:')
         expect(topic?.body).toContain(`Profile: \`${activeContract.profile}\``)
+      }
+    }
+  })
+
+  it('links every bundled contract node topic to the node-type chooser first', async () => {
+    const guides = bundledGuideFixtures()
+    for (const activeContract of await loadBundledAuthoringContracts()) {
+      const index = buildDocumentationIndex(activeContract, guides)
+      for (const node of activeContract.node_kinds) {
+        expect(index.byId.get(`node:${node.id}`)?.relatedTopicIds?.[0], `${activeContract.profile}:${node.id}`).toBe(
+          'guide:node-types',
+        )
       }
     }
   })

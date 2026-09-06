@@ -13,12 +13,20 @@ describe('DocumentationOverview', () => {
       within(startHere)
         .getAllByRole('button')
         .map((button) => button.textContent?.trim()),
-    ).toEqual(['Quick Start', 'Workflow pairs', 'DAG dependencies', 'Problems and validation', 'Keyboard shortcuts'])
+    ).toEqual([
+      'Quick Start',
+      'Choose a node type',
+      'Workflow pairs',
+      'DAG dependencies',
+      'Problems and validation',
+      'Keyboard shortcuts',
+    ])
+    expect(screen.getByRole('button', { name: /Choose the right node type/i })).toBeVisible()
     expect(screen.getByRole('button', { name: /Fix a validation problem/i })).toBeVisible()
     expect(screen.queryByText('Context', { selector: 'strong' })).not.toBeInTheDocument()
 
-    await fireEvent.click(screen.getByRole('button', { name: /Fix a validation problem/i }))
-    expect(onSelectTopic).toHaveBeenCalledWith('guide:problems-and-validation', expect.any(HTMLElement))
+    await fireEvent.click(screen.getByRole('button', { name: /Choose the right node type/i }))
+    expect(onSelectTopic).toHaveBeenCalledWith('guide:node-types', expect.any(HTMLElement))
   })
 
   it('opens a filtered reference group from each concept-level browse entry point', async () => {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { EditorView } from '@codemirror/view'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { createDocumentRevision } from '$src/lib/documents/revisions'
 import type { DocumentAnalysis, WorkflowPairText } from '$src/lib/documents/types'
@@ -7,6 +8,7 @@ import { DocumentClient, type DocumentWorkerEndpoint } from '$src/workers/docume
 import type { DocumentWorkerRequest } from '$src/workers/document-worker-protocol'
 import {
   applyAuthoritativeEditorText,
+  createEditorExtensions,
   nodeAtCursor,
   rangeForSelectedNode,
   synchronizeEditorProjection,
@@ -39,7 +41,27 @@ function pair(): WorkflowPairText {
 }
 
 describe('authoritative editor synchronization', () => {
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('styles each CodeMirror caret shape with the active focus token', () => {
+    const theme = vi.spyOn(EditorView, 'theme')
+
+    createEditorExtensions(vi.fn(), 'Definition YAML')
+
+    expect(theme).toHaveBeenCalledWith(
+      expect.objectContaining({
+        '.cm-content': { caretColor: 'var(--color-focus)' },
+        '.cm-cursor, .cm-dropCursor': {
+          borderLeftColor: 'var(--color-focus)',
+          borderLeftWidth: '2px',
+        },
+        '.cm-fat-cursor': { backgroundColor: 'var(--color-focus)' },
+      }),
+    )
+  })
 
   it('commits text immediately to only the edited document revision', () => {
     const commit = vi.fn()

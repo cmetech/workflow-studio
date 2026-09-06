@@ -143,6 +143,57 @@ nodes:
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(yaml)
 })
 
+test('keeps the YAML caret aligned with the active focus color across appearance choices', async ({ page }) => {
+  await openSeededPair(page)
+
+  for (const choice of [
+    { palette: 'LOOP24 Indigo', brightness: 'Light' },
+    { palette: 'Ocean Blue', brightness: 'Dark' },
+    { palette: 'Emerald', brightness: 'System' },
+  ]) {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByRole('radio', { name: choice.palette }).click()
+    await page.getByRole('radio', { name: choice.brightness }).click()
+    await page.getByRole('button', { name: 'Back to Workflow' }).click()
+    await page.getByRole('button', { name: 'YAML', exact: true }).click()
+
+    const content = page.locator('[aria-label="Definition YAML"] .cm-content')
+    await content.click()
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const root = document.documentElement
+          const cursor = document.querySelector<HTMLElement>('[aria-label="Definition YAML"] .cm-cursor')
+          if (!cursor) throw new Error('Expected a focused CodeMirror caret.')
+          const focus = getComputedStyle(root).getPropertyValue('--color-focus').trim()
+          return {
+            focus,
+            cursorBorder: getComputedStyle(cursor).borderLeftColor,
+            cursorWidth: getComputedStyle(cursor).borderLeftWidth,
+          }
+        }),
+      )
+      .toMatchObject({
+        cursorBorder: expect.stringMatching(/^rgb\(/),
+        cursorWidth: '2px',
+      })
+
+    const colors = await page.evaluate(() => {
+      const cursor = document.querySelector<HTMLElement>('[aria-label="Definition YAML"] .cm-cursor')!
+      const probe = document.createElement('span')
+      probe.style.color = 'var(--color-focus)'
+      document.body.append(probe)
+      const focus = getComputedStyle(probe).color
+      probe.remove()
+      return {
+        focus,
+        cursorBorder: getComputedStyle(cursor).borderLeftColor,
+      }
+    })
+    expect(colors.cursorBorder).toBe(colors.focus)
+  }
+})
+
 test('canvas menu stays outside the pointer viewport', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
