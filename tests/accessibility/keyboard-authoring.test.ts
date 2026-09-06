@@ -429,6 +429,11 @@ describe('keyboard-only workflow authoring', () => {
 
     const workbench = rendered.container.querySelector<HTMLElement>('.workbench')!
     const editorWorkspace = screen.getByRole('region', { name: 'Workflow workspace' })
+    // jsdom has no measured layout. Establish the docked state before resizing,
+    // with keyboard focus on the canvas so the Explorer may close safely.
+    await publishResize(workbench, 1440)
+    await publishResize(editorWorkspace, 720)
+    await tabTo(user, canvas)
     await publishMediaQuery('(max-width: 1279px)', true)
     await publishResize(workbench, 1024)
     await publishResize(editorWorkspace, 976)
