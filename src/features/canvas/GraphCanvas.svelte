@@ -242,7 +242,10 @@
     clearSelectionGestures()
     pendingSelection = null
     pendingSurfaceSelectionPayload = undefined
-    if (!selection.includes(nodeId)) selectionChanged([nodeId])
+    if (!selection.includes(nodeId)) {
+      clearSurfaceSelection()
+      selectionChanged([nodeId])
+    }
     restoreSurfaceSelection()
     const bounds = root.getBoundingClientRect()
     const anchor = invoker.getBoundingClientRect()
@@ -594,7 +597,10 @@
   }
 
   export function selectAll(): void {
-    if (!transitionLocked) selectionChanged(nodeIds())
+    if (transitionLocked || !surfaceActive) return
+    clearSurfaceSelection()
+    selectionChanged(nodeIds())
+    restoreSurfaceSelection()
   }
 
   export function nudge(larger: boolean, direction: 'up' | 'down' | 'left' | 'right'): void {
@@ -941,6 +947,16 @@
   onMount(() => {
     canvasMounted = true
     root.tabIndex = 0
+    let menuCanvasWidth = root.clientWidth
+    let menuCanvasHeight = root.clientHeight
+    const menuResizeObserver = new ResizeObserver(() => {
+      const width = root.clientWidth
+      const height = root.clientHeight
+      if (width !== menuCanvasWidth || height !== menuCanvasHeight) closeNodeMenu(true)
+      menuCanvasWidth = width
+      menuCanvasHeight = height
+    })
+    menuResizeObserver.observe(root)
     const drag = (event: Event) => handleDrag((event as CustomEvent<CanvasDragDetail>).detail)
     const stop = (event: Event) => handleDragStop((event as CustomEvent<CanvasDragDetail>).detail)
     const connect = (event: Event) => {
@@ -1001,6 +1017,7 @@
     })
     return () => {
       canvasMounted = false
+      menuResizeObserver.disconnect()
       root.removeEventListener('contextmenu', openNodeMenu, true)
       root.removeEventListener('keydown', handleNodeMenuKeydown, true)
       window.removeEventListener('pointerdown', outsideNodeMenu, true)

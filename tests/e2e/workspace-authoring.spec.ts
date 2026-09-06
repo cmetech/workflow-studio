@@ -866,3 +866,51 @@ for (const modifier of ['Meta', 'Control'] as const) {
     await expect(menu).toBeHidden()
   })
 }
+
+for (const targetId of ['prepare', 'publish']) {
+  test(`node actions target ${targetId} after mixed node and edge selection`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openSeededPair(page)
+    const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+    const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+    await prepare.click()
+    await dependency.focus()
+    await dependency.press(process.platform === 'darwin' ? 'Meta+Space' : 'Control+Space')
+    await expect(prepare).toHaveClass(/selected/)
+    await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+    const target = page.locator(`.svelte-flow__node[data-id="${targetId}"]`)
+    await target.click({ button: 'right' })
+    const menu = page.getByRole('menu', { name: 'Node actions' })
+    await expect(menu.getByRole('menuitem', { name: 'Delete Selection', exact: true })).toBeEnabled()
+    await expect(target).toHaveClass(/selected/)
+    await menu.getByRole('menuitem', { name: 'Delete Selection', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
+    await expect(dialog.locator('.node-list code')).toHaveText([targetId])
+    await expectAuthoritativeYaml(page, SEEDED_YAML)
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    if (targetId === 'publish') await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+    else await expect(dependency.locator('path.workflow-edge')).toHaveClass(/selected/)
+  })
+}
+
+test('canvas resize closes node actions and restores focus to their invoking node', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+  const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await node.focus()
+  await node.press('Shift+F10')
+  const menu = page.getByRole('menu', { name: 'Node actions' })
+  await expect(menu).toBeVisible()
+  await page.setViewportSize({ width: 1440, height: 600 })
+  await expect(menu).toBeHidden()
+  await expect(node).toBeFocused()
+  await node.press('Shift+F10')
+  await expect(menu).toBeVisible()
+  // A panel resize changes canvas bounds without changing the window dimensions.
+  await page.getByTestId('workflow-canvas').evaluate((canvas) => {
+    canvas.style.height = '160px'
+  })
+  await expect(menu).toBeHidden()
+  await expect(node).toBeFocused()
+  await expectAuthoritativeYaml(page, SEEDED_YAML)
+})

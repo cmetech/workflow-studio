@@ -191,6 +191,96 @@ describe('GraphCanvas', () => {
     expect(screen.queryByRole('menu', { name: 'Node actions' })).not.toBeInTheDocument()
   })
 
+  it.each(['collect', 'review', 'all'])(
+    'keeps mixed selection authoritative when node actions target %s',
+    async (targetId) => {
+      const previousObserver = globalThis.ResizeObserver
+      const previousMatrix = window.DOMMatrixReadOnly
+      const observers: { callback: ResizeObserverCallback; targets: Element[] }[] = []
+      const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(240)
+      const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100)
+      vi.stubGlobal(
+        'DOMMatrixReadOnly',
+        class {
+          m22 = 1
+        },
+      )
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          targets: Element[] = []
+          constructor(callback: ResizeObserverCallback) {
+            observers.push({ callback, targets: this.targets })
+          }
+          observe(target: Element): void {
+            this.targets.push(target)
+          }
+          unobserve(): void {}
+          disconnect(): void {}
+        },
+      )
+      try {
+        const registry = createCommandRegistry()
+        const deleted: string[][] = []
+        for (const command of listCommands())
+          registry.registerCommand({
+            ...command,
+            ...(command.id === 'canvas.delete-selection'
+              ? {
+                  run: (context) => {
+                    expect(context).toMatchObject({ hasSelection: true, selectionCount: targetId === 'all' ? 2 : 1 })
+                    deleted.push([...$canvasSelection.get()])
+                  },
+                }
+              : {}),
+          })
+        setCanvasSelection(['collect'])
+        const rendered = renderCanvas({ projection, layout, commandSurface: registry })
+        await tick()
+        for (const observer of observers) {
+          observer.callback(
+            observer.targets.map((target) => ({
+              target,
+              contentRect: new DOMRect(0, 0, 240, 100),
+              contentBoxSize: [{ inlineSize: 240, blockSize: 100 }],
+              borderBoxSize: [{ inlineSize: 240, blockSize: 100 }],
+              devicePixelContentBoxSize: [{ inlineSize: 240, blockSize: 100 }],
+            })),
+            {} as ResizeObserver,
+          )
+        }
+        await tick()
+        const edge = rendered.container.querySelector<SVGGElement>('.svelte-flow__edge')!
+        expect(edge).toBeInTheDocument()
+        await fireEvent.keyDown(window, { key: 'Meta', metaKey: true })
+        await fireEvent.keyDown(edge, { key: ' ', metaKey: true })
+        await fireEvent.keyUp(window, { key: 'Meta' })
+        expect(edge.querySelector('path.workflow-edge')).toHaveClass('selected')
+        expect($canvasSelection.get()).toEqual(['collect'])
+        const target = rendered.container.querySelector<HTMLElement>(
+          `.svelte-flow__node[data-id="${targetId === 'all' ? 'collect' : targetId}"]`,
+        )!
+        await fireEvent.contextMenu(target)
+        if (targetId === 'all') await fireEvent.click(screen.getByRole('menuitem', { name: 'Select All Nodes' }))
+        await tick()
+        const expectedIds = targetId === 'all' ? ['collect', 'review'] : [targetId]
+        expect($canvasSelection.get()).toEqual(expectedIds)
+        expect(target).toHaveClass('selected')
+        if (targetId !== 'collect') expect(edge.querySelector('path.workflow-edge')).not.toHaveClass('selected')
+        else expect(edge.querySelector('path.workflow-edge')).toHaveClass('selected')
+        if (targetId === 'all') await fireEvent.contextMenu(target)
+        await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Selection' }))
+        expect(deleted).toEqual([expectedIds])
+        rendered.unmount()
+      } finally {
+        width.mockRestore()
+        height.mockRestore()
+        vi.stubGlobal('ResizeObserver', previousObserver)
+        vi.stubGlobal('DOMMatrixReadOnly', previousMatrix)
+      }
+    },
+  )
+
   it('omits commands absent from the provided surface and keeps Delete All disabled', async () => {
     const { container } = renderCanvas({ projection, layout, commandSurface: createCommandRegistry() })
     await fireEvent.contextMenu(container.querySelector('.svelte-flow__node[data-id="collect"]')!)
