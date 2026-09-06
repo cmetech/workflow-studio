@@ -526,11 +526,19 @@ nodes:
     ).toBe(true)
   })
 
-  it('mounts runtime brand management in Settings', async () => {
+  it('shows Appearance first and keeps runtime brand management in the closed Advanced disclosure', async () => {
     showActivity('settings')
     render(App)
 
-    expect(await screen.findByRole('heading', { name: 'Brand and theme packs' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Appearance' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true')
+    const disclosure = screen.getByText('Advanced brand packs').closest('details')
+    expect(disclosure).not.toHaveAttribute('open')
+    expect(screen.getByRole('button', { name: 'Import brand pack' })).not.toBeVisible()
+
+    await fireEvent.click(screen.getByText('Advanced brand packs'))
+
+    expect(disclosure).toHaveAttribute('open')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Import brand pack' })).toBeEnabled())
   })
 

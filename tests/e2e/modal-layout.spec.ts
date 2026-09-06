@@ -358,6 +358,7 @@ modalAtEveryExactGeometry(
   async (page, geometry) => {
     await openSeededPair(page)
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByText('Advanced brand packs', { exact: true }).click()
     await page
       .getByRole('button', { name: 'Import brand pack' })
       .evaluate((element) => (element as HTMLButtonElement).click())
@@ -382,6 +383,7 @@ modalAtEveryExactGeometry(
   async (page, geometry) => {
     await page.goto('/?scenario=active-brand-removal-modal')
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.getByText('Advanced brand packs', { exact: true }).click()
     await page.getByRole('button', { name: 'Remove Northstar Studio' }).click()
     const dialog = page.getByRole('dialog', { name: 'Revert active brand' })
     await assertRealResponsiveModal(

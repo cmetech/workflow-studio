@@ -25,6 +25,7 @@
   import SettingsPage from '$src/features/settings/SettingsPage.svelte'
   import UpdateSettings from '$src/features/settings/UpdateSettings.svelte'
   import AboutView from '$src/features/settings/AboutView.svelte'
+  import AppearanceSettings from '$src/features/branding/AppearanceSettings.svelte'
   import BrandSettings from '$src/features/branding/BrandSettings.svelte'
   import BrandPreview from '$src/features/branding/BrandPreview.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
@@ -62,7 +63,13 @@
   import { getNativeBridge } from '$src/lib/native/bridge'
   import { createSetupController } from '$src/lib/progress/setup-controller'
   import type { ProgressState } from '$src/lib/progress/types'
-  import { createBrandController, themePreference } from '$src/stores/branding'
+  import {
+    colorTheme,
+    createBrandController,
+    setColorTheme,
+    setThemePreference,
+    themePreference,
+  } from '$src/stores/branding'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
   import type { WorkflowPairEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
@@ -2980,26 +2987,41 @@
       </ActivityPage>
     {:else if workbenchSurface === 'settings'}
       {#snippet appearanceSettings()}
-        <BrandSettings
-          packs={$brandState.packs}
-          reports={$brandState.reports}
-          activeId={$brandState.activeId}
-          pending={$brandState.pending}
-          warning={$brandState.warning}
-          onImport={async () => {
-            await runBrandOperation(() => brandController.importPack())
-          }}
-          onPreview={(id) => {
-            brandPreviewId = id
-            brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-          }}
-          onActivate={async (id) => {
-            await runBrandOperation(() => brandController.activate(id))
-          }}
-          onRemove={async (id, revertActive) => {
-            await runBrandOperation(() => brandController.remove(id, revertActive))
-          }}
-        />
+        <div class="appearance-settings-stack">
+          <AppearanceSettings
+            mode={$themePreference}
+            colorTheme={$colorTheme}
+            onMode={setThemePreference}
+            onColorTheme={setColorTheme}
+          />
+          <details class="advanced-brand-packs">
+            <summary>Advanced brand packs</summary>
+            <p>
+              Brand packs replace product identity assets and the full semantic token set. Most users only need the
+              color themes above.
+            </p>
+            <BrandSettings
+              packs={$brandState.packs}
+              reports={$brandState.reports}
+              activeId={$brandState.activeId}
+              pending={$brandState.pending}
+              warning={$brandState.warning}
+              onImport={async () => {
+                await runBrandOperation(() => brandController.importPack())
+              }}
+              onPreview={(id) => {
+                brandPreviewId = id
+                brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+              }}
+              onActivate={async (id) => {
+                await runBrandOperation(() => brandController.activate(id))
+              }}
+              onRemove={async (id, revertActive) => {
+                await runBrandOperation(() => brandController.remove(id, revertActive))
+              }}
+            />
+          </details>
+        </div>
       {/snippet}
       {#snippet contractSettings()}
         {#if contractsLoaded && appContractCache}
@@ -3345,6 +3367,36 @@
 {/if}
 
 <style>
+  .appearance-settings-stack {
+    display: grid;
+    gap: 1rem;
+    min-width: 0;
+  }
+
+  .advanced-brand-packs {
+    min-width: 0;
+    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    background: var(--color-surface);
+  }
+
+  .advanced-brand-packs summary {
+    cursor: pointer;
+    font-weight: 650;
+  }
+
+  .advanced-brand-packs > p {
+    margin-block: 0.75rem;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .advanced-brand-packs summary:focus-visible {
+    outline: 3px solid var(--color-focus);
+    outline-offset: 3px;
+  }
+
   .application-shell {
     display: grid;
     gap: 0;
