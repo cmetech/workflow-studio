@@ -1787,6 +1787,16 @@
     recent = await actions.recentWorkspaces.list()
   }
 
+  async function removeRecent(rootPath: string): Promise<void> {
+    await actions.recentWorkspaces.remove(rootPath)
+    await refreshRecent()
+  }
+
+  async function clearUnavailableRecent(): Promise<void> {
+    await actions.recentWorkspaces.clearUnavailable()
+    await refreshRecent()
+  }
+
   async function openWorkspace(rootPath?: string): Promise<void> {
     explorerCatalogOperation = { phase: 'loading' }
     try {
@@ -3111,6 +3121,8 @@
           disabled={!setupReady}
           onOpen={(rootPath) => runWorkspaceOperation(openWorkspace(rootPath))}
           onDropPath={(path) => runWorkspaceOperation(handleExternalWorkspacePath(path))}
+          onRemoveRecent={(rootPath) => runWorkspaceOperation(removeRecent(rootPath))}
+          onClearUnavailable={() => runWorkspaceOperation(clearUnavailableRecent())}
         />
       </ActivityPage>
     {:else if workbenchSurface === 'settings'}

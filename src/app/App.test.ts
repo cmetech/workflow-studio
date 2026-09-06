@@ -1030,6 +1030,34 @@ nodes:
     expect(screen.queryByText(/connect to hermes/i)).not.toBeInTheDocument()
   })
 
+  it('runs recent-folder cleanup through workspace operations and refreshes the welcome list', async () => {
+    let recentContent = JSON.stringify([
+      { rootPath: '/available', lastOpenedAt: '2026-07-25T13:00:00.000Z' },
+      { rootPath: '/missing', lastOpenedAt: '2026-07-25T12:00:00.000Z' },
+    ])
+    const recentWorkspacesSave = vi.fn(async (content: string) => {
+      recentContent = content
+    })
+    setNativeBridgeForTest({
+      recentWorkspacesLoad: async () => recentContent,
+      recentWorkspacesSave,
+      pathAvailable: async (rootPath) => rootPath === '/available',
+    })
+    render(App)
+    await waitForSetupReady()
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Remove /available from recent folders' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Remove /available from recent folders' })).not.toBeInTheDocument()
+    })
+    expect(JSON.parse(recentContent)).toEqual([{ rootPath: '/missing', lastOpenedAt: '2026-07-25T12:00:00.000Z' }])
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear unavailable folders' }))
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: 'Recent folders' })).not.toBeInTheDocument())
+    expect(JSON.parse(recentContent)).toEqual([])
+    expect(recentWorkspacesSave).toHaveBeenCalledTimes(2)
+  })
+
   it('mounts contract management from the Settings activity without a workspace', async () => {
     render(App)
     showActivity('settings')

@@ -37,4 +37,50 @@ describe('recent workspace storage', () => {
       { rootPath: '/valid', lastOpenedAt: '2026-07-25T12:00:00.000Z', available: true },
     ])
   })
+
+  it('removes one root through the serialized storage queue and rejects blank paths', async () => {
+    let persisted = JSON.stringify([
+      { rootPath: '/keep', lastOpenedAt: '2026-07-25T13:00:00.000Z' },
+      { rootPath: '/remove', lastOpenedAt: '2026-07-25T12:00:00.000Z' },
+    ])
+    const store = createRecentWorkspaceStore({
+      load: async () => persisted,
+      save: async (content) => {
+        persisted = content
+      },
+      isAvailable: async () => true,
+    })
+
+    await store.remove('/remove')
+
+    expect(JSON.parse(persisted)).toEqual([{ rootPath: '/keep', lastOpenedAt: '2026-07-25T13:00:00.000Z' }])
+    await expect(store.remove('   ')).rejects.toBeInstanceOf(TypeError)
+  })
+
+  it('clears unavailable roots while preserving the current record order', async () => {
+    let persisted = JSON.stringify([
+      { rootPath: '/newest', lastOpenedAt: '2026-07-25T14:00:00.000Z' },
+      { rootPath: '/missing', lastOpenedAt: '2026-07-25T13:00:00.000Z' },
+      { rootPath: '/oldest', lastOpenedAt: '2026-07-25T12:00:00.000Z' },
+    ])
+    const checked: string[] = []
+    const store = createRecentWorkspaceStore({
+      load: async () => persisted,
+      save: async (content) => {
+        persisted = content
+      },
+      isAvailable: async (rootPath) => {
+        checked.push(rootPath)
+        return rootPath !== '/missing'
+      },
+    })
+
+    await store.clearUnavailable()
+
+    expect(checked).toEqual(['/newest', '/missing', '/oldest'])
+    expect(JSON.parse(persisted)).toEqual([
+      { rootPath: '/newest', lastOpenedAt: '2026-07-25T14:00:00.000Z' },
+      { rootPath: '/oldest', lastOpenedAt: '2026-07-25T12:00:00.000Z' },
+    ])
+  })
 })

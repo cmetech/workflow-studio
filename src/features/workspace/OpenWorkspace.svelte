@@ -1,14 +1,17 @@
 <script lang="ts">
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
+  import X from 'lucide-svelte/icons/x'
 
   interface Props {
     recent?: readonly RecentWorkspace[]
     disabled?: boolean
     onOpen?: (rootPath?: string) => void | Promise<void>
     onDropPath?: (path: string) => void | Promise<void>
+    onRemoveRecent?: (rootPath: string) => void | Promise<void>
+    onClearUnavailable?: () => void | Promise<void>
   }
 
-  let { recent = [], disabled = false, onOpen, onDropPath }: Props = $props()
+  let { recent = [], disabled = false, onOpen, onDropPath, onRemoveRecent, onClearUnavailable }: Props = $props()
 
   function droppedPath(event: DragEvent): string | null {
     event.preventDefault()
@@ -38,17 +41,42 @@
 
   {#if recent.length > 0}
     <nav aria-label="Recent folders">
-      <h3>Recent folders</h3>
+      <div class="recent-heading">
+        <h3>Recent folders</h3>
+        {#if recent.some((item) => !item.available)}
+          <button
+            class="clear-unavailable"
+            type="button"
+            data-variant="ghost"
+            {disabled}
+            onclick={() => !disabled && void onClearUnavailable?.()}>Clear unavailable folders</button
+          >
+        {/if}
+      </div>
       {#each recent as item (item.rootPath)}
-        <button
-          type="button"
-          disabled={disabled || !item.available}
-          aria-label={`${item.rootPath}${item.available ? '' : ' unavailable'}`}
-          onclick={() => !disabled && void onOpen?.(item.rootPath)}
-        >
-          <span>{item.rootPath}</span>
-          <small>{item.available ? 'Open' : 'Unavailable'}</small>
-        </button>
+        <div class="recent-row">
+          <button
+            class="recent-open"
+            type="button"
+            disabled={disabled || !item.available}
+            aria-label={`${item.rootPath}${item.available ? '' : ' unavailable'}`}
+            onclick={() => !disabled && void onOpen?.(item.rootPath)}
+          >
+            <span>{item.rootPath}</span>
+            <small>{item.available ? 'Open' : 'Unavailable'}</small>
+          </button>
+          <button
+            class="recent-remove"
+            type="button"
+            data-variant="ghost"
+            {disabled}
+            aria-label={`Remove ${item.rootPath} from recent folders`}
+            title={`Remove ${item.rootPath} from recent folders`}
+            onclick={() => !disabled && void onRemoveRecent?.(item.rootPath)}
+          >
+            <X size={16} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
       {/each}
     </nav>
   {/if}
@@ -89,7 +117,34 @@
     min-width: 0;
   }
 
-  nav button {
+  .recent-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .recent-heading h3 {
+    min-width: 0;
+  }
+
+  .clear-unavailable {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    color: var(--color-accent-strong);
+    background: transparent;
+    font-size: 0.75rem;
+  }
+
+  .recent-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .recent-open {
     display: flex;
     justify-content: space-between;
     width: 100%;
@@ -98,7 +153,7 @@
     background: var(--color-node);
   }
 
-  nav button span {
+  .recent-open span {
     min-width: 0;
     max-width: 100%;
     white-space: normal;
@@ -106,8 +161,15 @@
     text-align: left;
   }
 
-  nav button small {
+  .recent-open small {
     flex: 0 0 auto;
+  }
+
+  .recent-remove {
+    display: inline-grid;
+    place-items: center;
+    padding-inline: 0.625rem;
+    color: var(--color-text-muted);
   }
 
   nav button:disabled {

@@ -32,4 +32,34 @@ describe('OpenWorkspace', () => {
     expect(drop.querySelector('.editor-tabs')).toBeNull()
     expect(drop.querySelector('[aria-label="Inspector"]')).toBeNull()
   })
+
+  it('removes individual recent folders and clears unavailable folders with separate controls', async () => {
+    const onOpen = vi.fn()
+    const onRemoveRecent = vi.fn()
+    const onClearUnavailable = vi.fn()
+    render(OpenWorkspace, {
+      recent: [
+        { rootPath: '/available', lastOpenedAt: '2026-07-25T12:00:00.000Z', available: true },
+        { rootPath: '/missing', lastOpenedAt: '2026-07-24T12:00:00.000Z', available: false },
+      ],
+      onOpen,
+      onRemoveRecent,
+      onClearUnavailable,
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove /available from recent folders' }))
+    expect(onRemoveRecent).toHaveBeenCalledWith('/available')
+    expect(onOpen).not.toHaveBeenCalled()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear unavailable folders' }))
+    expect(onClearUnavailable).toHaveBeenCalledOnce()
+  })
+
+  it('does not offer unavailable cleanup when every recent folder is available', () => {
+    render(OpenWorkspace, {
+      recent: [{ rootPath: '/available', lastOpenedAt: '2026-07-25T12:00:00.000Z', available: true }],
+    })
+
+    expect(screen.queryByRole('button', { name: 'Clear unavailable folders' })).not.toBeInTheDocument()
+  })
 })

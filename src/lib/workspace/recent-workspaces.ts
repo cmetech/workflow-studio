@@ -16,6 +16,8 @@ export interface RecentWorkspacePort {
 export interface RecentWorkspaceStore {
   list(): Promise<readonly RecentWorkspace[]>
   record(rootPath: string, openedAt: string): Promise<void>
+  remove(rootPath: string): Promise<void>
+  clearUnavailable(): Promise<void>
 }
 
 const MAX_RECENT_WORKSPACES = 20
@@ -60,6 +62,24 @@ export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWor
           .sort(newestFirst)
           .slice(0, MAX_RECENT_WORKSPACES)
         await port.save(JSON.stringify(next))
+      })
+      return queue
+    },
+    remove(rootPath) {
+      if (!nonEmpty(rootPath)) {
+        return Promise.reject(new TypeError('A recent workspace requires a root path.'))
+      }
+      queue = queue.then(async () => {
+        const current = await records()
+        await port.save(JSON.stringify(current.filter((entry) => entry.rootPath !== rootPath)))
+      })
+      return queue
+    },
+    clearUnavailable() {
+      queue = queue.then(async () => {
+        const current = await records()
+        const availability = await Promise.all(current.map((entry) => port.isAvailable(entry.rootPath)))
+        await port.save(JSON.stringify(current.filter((_, index) => availability[index])))
       })
       return queue
     },
