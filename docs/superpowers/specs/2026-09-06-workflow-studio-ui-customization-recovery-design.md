@@ -1,9 +1,9 @@
 # Workflow Studio UI Customization Recovery Design
 
-**Status:** Draft for review  
-**Date:** 2026-09-06  
-**Branch:** `fix/ui-customization-recovery`  
-**Base:** `aa91baac4081f0ca585b10fb3fb65b966a7ec24c` (`base`, tagged `v2.0.0`)  
+**Status:** Draft for review
+**Date:** 2026-09-06
+**Branch:** `fix/ui-customization-recovery`
+**Base:** `aa91baac4081f0ca585b10fb3fb65b966a7ec24c` (`base`, tagged `v2.0.0`)
 **Recovery source:** the uncommitted state in `.worktrees/ui-customization-panels` at `716096e944161eac1995aff8698ab78cf302f833`
 
 ## 1. Problem and root cause
