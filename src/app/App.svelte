@@ -89,6 +89,7 @@
     $documentSyncOrigins as documentSyncOriginsStore,
     $problemFocus as problemFocusStore,
     acknowledgeProblemFocus,
+    isDocumentPairDirty,
     openDocumentSession,
   } from '$src/stores/documents'
   import {
@@ -203,6 +204,8 @@
   import PanelLeftOpen from 'lucide-svelte/icons/panel-left-open'
   import PanelRightClose from 'lucide-svelte/icons/panel-right-close'
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open'
+  import RotateCcw from 'lucide-svelte/icons/rotate-ccw'
+  import Save from 'lucide-svelte/icons/save'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
@@ -378,6 +381,7 @@
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
   let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
   let documentationNavigationSequence = 0
+  let documentSavePending = $state(false)
   let canvasProjection = $state.raw<WorkflowProjection | null>(null)
   let canvasWorkflowId = $state<string | null>(null)
   let canvasStale = $state(false)
@@ -428,6 +432,7 @@
     opener: HTMLElement | undefined
   } | null>(null)
   let deleteRequest = $state<{ impact: DeleteImpact; opener: HTMLElement | undefined } | null>(null)
+  let revertRequest = $state<{ opener: HTMLElement | undefined } | null>(null)
   let exportConfirmation = $state<{
     paths: readonly string[]
     resolve: (confirmed: boolean) => void
@@ -562,6 +567,29 @@
   const explorerCatalogError = $derived(
     explorerCatalogOperation.phase === 'error' ? explorerCatalogOperation.message : undefined,
   )
+  const activeDocumentEntry = $derived(
+    $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId),
+  )
+  const documentDirty = $derived(
+    $documentSessionStore.pair === null ? false : isDocumentPairDirty($documentSessionStore.pair),
+  )
+  const documentReadOnly = $derived(activeDocumentEntry?.readOnly !== false)
+  const documentSaveAvailable = $derived.by(() => {
+    const pair = $documentSessionStore.pair
+    return Boolean(pair && documentDirty && !documentReadOnly && !$documentWorkspaceState.missingChange)
+  })
+  const documentRevertAvailable = $derived.by(() => {
+    const pair = $documentSessionStore.pair
+    return Boolean(
+      pair &&
+      documentDirty &&
+      !documentReadOnly &&
+      !$documentWorkspaceState.missingChange &&
+      pair.generation === pair.savedGeneration &&
+      pair.definition.diskHash &&
+      (pair.companion === null || pair.companion.diskHash),
+    )
+  })
   const workspacePanelHidden = $derived(
     authoringHidden || (workbenchPresentation.panels === 'drawers' ? !$workspacePanelOpen : !dockedWorkspacePanelOpen),
   )
@@ -829,6 +857,26 @@
 
   function runCommand(id: string, context: CommandContext = globalContext): Promise<void> {
     return commandSurface.executeCommand(id, context).then(() => undefined)
+  }
+
+  async function saveCurrentDocument(): Promise<void> {
+    if (documentSavePending || !documentSaveAvailable) return
+    documentSavePending = true
+    try {
+      await documentWorkspace.save()
+    } finally {
+      documentSavePending = false
+    }
+  }
+
+  async function confirmRevertToSaved(): Promise<void> {
+    try {
+      const outcome = await documentWorkspace.revertToSaved()
+      if (outcome === 'reverted' || outcome === 'conflict') revertRequest = null
+      else workspaceError = 'Revert is unavailable because the saved disk version could not be verified.'
+    } catch (error: unknown) {
+      workspaceError = error instanceof Error ? error.message : 'The saved YAML could not be reloaded.'
+    }
   }
 
   function keyboardContext(target: EventTarget | null): CommandContext {
@@ -2301,9 +2349,7 @@
         unlistenGit()
         return
       }
-      const unbindSave = setDocumentSaveHandler(async () => {
-        await documentWorkspace.save()
-      })
+      const unbindSave = setDocumentSaveHandler(saveCurrentDocument)
       const unbindHistory = setDocumentHistoryHandlers({ undo: undoDocument, redo: redoDocument })
       const unbindDocumentCommands = setDocumentCommandHandlers({
         find: findInCurrentSurface,
@@ -2315,6 +2361,7 @@
           ...($commandPaletteOpen ? [{ priority: 90, cancel: closeCommandPalette }] : []),
           ...($keyboardShortcutsOpen ? [{ priority: 80, cancel: closeKeyboardShortcuts }] : []),
           ...(addNodeRequest ? [{ priority: 70, cancel: () => (addNodeRequest = null) }] : []),
+          ...(revertRequest ? [{ priority: 61, cancel: () => (revertRequest = null) }] : []),
           ...(deleteRequest ? [{ priority: 60, cancel: () => (deleteRequest = null) }] : []),
         ]
       }
@@ -2685,6 +2732,47 @@
               class:active={compactSplitPane === 'yaml'}
               onclick={() => (compactSplitPane = 'yaml')}>YAML</button
             >
+          </div>
+        {/if}
+        <span class="editor-tab-spacer" aria-hidden="true"></span>
+        {#if $documentSessionStore.pair}
+          <div class="document-save-control">
+            <span
+              class:dirty={documentDirty}
+              class="document-save-status"
+              role="status"
+              aria-label="Document save status"
+              aria-live="polite">{documentSavePending ? 'Saving…' : documentDirty ? 'Unsaved changes' : 'Saved'}</span
+            >
+            {#if documentDirty}
+              <button
+                type="button"
+                class="document-revert-button"
+                data-variant="ghost"
+                aria-label="Revert to saved YAML"
+                title="Discard unsaved changes and reload the verified disk YAML"
+                disabled={!documentRevertAvailable || documentSavePending}
+                onclick={(event) =>
+                  (revertRequest = {
+                    opener: event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined,
+                  })}
+              >
+                <RotateCcw size={15} aria-hidden="true" />
+                <span>Revert</span>
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="document-save-button"
+              data-variant={documentDirty ? 'primary' : 'secondary'}
+              aria-label="Save workflow"
+              title={documentReadOnly ? 'This workflow is read-only.' : 'Save workflow — Mod+S'}
+              disabled={!documentSaveAvailable || documentSavePending}
+              onclick={() => void saveCurrentDocument()}
+            >
+              <Save size={15} aria-hidden="true" />
+              <span>Save</span>
+            </button>
           </div>
         {/if}
         {#if workbenchPresentation.panels === 'docked'}
@@ -3346,6 +3434,26 @@
       onConfirm={confirmCanvasDelete}
     />
   {/if}
+  {#if revertRequest}
+    <ModalShell
+      titleId="revert-saved-title"
+      initialFocusSelector="[data-revert-primary]"
+      opener={revertRequest.opener ?? null}
+      onCancel={() => {
+        revertRequest = null
+      }}
+    >
+      <h2 id="revert-saved-title">Revert to saved YAML?</h2>
+      <p>This will discard all unsaved YAML changes and reload the exact version currently saved on disk.</p>
+      <p>If a file changed outside Workflow Studio, the existing conflict choices will open instead.</p>
+      {#snippet actions()}
+        <button type="button" data-variant="ghost" onclick={() => (revertRequest = null)}>Cancel</button>
+        <button type="button" data-revert-primary data-variant="danger" onclick={() => void confirmRevertToSaved()}
+          >Revert changes</button
+        >
+      {/snippet}
+    </ModalShell>
+  {/if}
 </main>
 
 {#if setupProgress && setupProgress.status !== 'succeeded'}
@@ -3710,10 +3818,13 @@
     background: var(--color-surface);
   }
 
+  .editor-tab-spacer {
+    flex: 1;
+  }
+
   .split-pane-tabs {
     display: flex;
     gap: var(--space-1);
-    margin-left: auto;
   }
 
   .split-pane-tabs button {
@@ -3728,6 +3839,47 @@
     border: 1px solid transparent;
     color: var(--color-text-muted);
     background: transparent;
+  }
+
+  .document-save-control {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
+  .document-save-status {
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .document-save-status.dirty {
+    color: var(--color-warning);
+  }
+
+  .editor-tabs .document-save-button,
+  .editor-tabs .document-revert-button {
+    display: inline-flex;
+    gap: var(--space-1);
+    align-items: center;
+    padding-inline: var(--space-2);
+  }
+
+  .editor-tabs .document-revert-button {
+    border-color: var(--color-border);
+  }
+
+  .editor-tabs .document-save-button[data-variant='primary'] {
+    border-color: var(--color-accent);
+    color: var(--color-accent-contrast);
+    background: var(--color-accent);
+  }
+
+  .editor-tabs .document-save-button[data-variant='secondary'] {
+    border-color: var(--color-border);
+    color: var(--color-text);
+    background: var(--color-surface-elevated);
   }
 
   .editor-tabs button.active {

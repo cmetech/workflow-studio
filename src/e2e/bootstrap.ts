@@ -165,6 +165,26 @@ tags: [release, e2e]
 `,
 } as const
 
+const DOCUMENT_CONTROLS_SAVED_YAML = `name: Save and revert fixture
+description: Preserve the exact saved workflow text.
+nodes:
+  - id: prepare
+    prompt: Prepare the release notes.
+  - id: publish
+    command: /publish
+    depends_on: [prepare]
+`
+
+const DOCUMENT_CONTROLS_RECOVERY_YAML = DOCUMENT_CONTROLS_SAVED_YAML.replace(
+  'description: Preserve the exact saved workflow text.',
+  'description: Restore this exact recovery draft before reverting.',
+)
+
+const DOCUMENT_CONTROLS_EXTERNAL_YAML = DOCUMENT_CONTROLS_SAVED_YAML.replace(
+  'description: Preserve the exact saved workflow text.',
+  'description: This exact text changed outside Workflow Studio.',
+)
+
 interface E2EState {
   readonly scenario: string
   readonly setupRetries: number
@@ -248,6 +268,7 @@ declare global {
         readonly saveCount: number
         readonly scope: LayoutRecordV2['scopeLayouts'][GraphScopeKey] | null
       }
+      stageExternalDefinitionChange(): Promise<void>
       prepareScopedConnection(scopeKey: GraphScopeKey, source: string, target: string): Promise<void>
       flushRecoveryPersistence(): Promise<void>
     }
@@ -421,19 +442,24 @@ nodes:
           [DEFINITION_PATH]: largeCanvasDefinition!,
           [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
         }
-      : scenario === 'long-create-version'
+      : scenario === 'document-controls-recovery'
         ? {
             ...AUTHORING_FILES,
-            [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
-            [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+            [DEFINITION_PATH]: DOCUMENT_CONTROLS_SAVED_YAML,
           }
-        : scenario === 'repeated-diagnostics'
-          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
-          : scenario === 'export-blocking-modal'
-            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
-            : scenario === 'advanced-inspector'
-              ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
-              : AUTHORING_FILES
+        : scenario === 'long-create-version'
+          ? {
+              ...AUTHORING_FILES,
+              [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+              [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+            }
+          : scenario === 'repeated-diagnostics'
+            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
+            : scenario === 'export-blocking-modal'
+              ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
+              : scenario === 'advanced-inspector'
+                ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
+                : AUTHORING_FILES
   const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
   const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0
@@ -619,25 +645,32 @@ nodes:
         ? { id: activeBrandPack.manifest.id, pack: activeBrandPack, recovered: false, warning: null }
         : base.brandLoadActive(),
     recoveryList: async () => {
-      if (scenario !== 'recovery-modal') return base.recoveryList()
+      if (scenario !== 'recovery-modal' && scenario !== 'document-controls-recovery') return base.recoveryList()
+      const [definitionDisk, companionDisk] = await Promise.all([
+        base.workspaceRead(DEFINITION_PATH),
+        base.workspaceRead(COMPANION_PATH),
+      ])
       const content = JSON.stringify({
         schemaVersion: 1,
         workflowId: `workflow:browser-workspace:${DEFINITION_PATH}`,
-        generation: 1,
+        generation: scenario === 'document-controls-recovery' ? 0 : 1,
         savedGeneration: 0,
         definition: {
           path: DEFINITION_PATH,
-          text: AUTHORING_FILES[DEFINITION_PATH].replace('Release demo', 'Recovered release demo'),
+          text:
+            scenario === 'document-controls-recovery'
+              ? DOCUMENT_CONTROLS_RECOVERY_YAML
+              : AUTHORING_FILES[DEFINITION_PATH].replace('Release demo', 'Recovered release demo'),
           revision: 1,
           savedRevision: 0,
-          diskHash: null,
+          diskHash: scenario === 'document-controls-recovery' ? definitionDisk.sha256 : null,
         },
         companion: {
           path: COMPANION_PATH,
           text: AUTHORING_FILES[COMPANION_PATH],
           revision: 0,
           savedRevision: 0,
-          diskHash: 'e2e-companion-hash',
+          diskHash: scenario === 'document-controls-recovery' ? companionDisk.sha256 : 'e2e-companion-hash',
         },
         updatedAt: '2026-08-30T12:00:00.000Z',
       })
@@ -903,6 +936,14 @@ nodes:
         saveCount: persistedLayoutSaveCount,
         scope: scope ? structuredClone(scope) : null,
       }
+    },
+    async stageExternalDefinitionChange(): Promise<void> {
+      const current = await base.workspaceRead(DEFINITION_PATH)
+      await base.workspaceWrite({
+        relativePath: DEFINITION_PATH,
+        text: DOCUMENT_CONTROLS_EXTERNAL_YAML,
+        expectedCurrentHash: current.sha256,
+      })
     },
     async prepareScopedConnection(scopeKey, source, target): Promise<void> {
       const session = $documentSession.get()

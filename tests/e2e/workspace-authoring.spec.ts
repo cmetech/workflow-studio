@@ -121,13 +121,18 @@ description: The graph is derived from this exact text.
 nodes:
   - id: yaml_node
     prompt: Confirm the release.
-`
+  `
   await openSeededPair(page)
   await replaceDefinitionYaml(page, yaml)
+  await expect(page.getByRole('status', { name: 'Document save status' })).toHaveText('Unsaved changes')
+  const save = page.getByRole('button', { name: 'Save workflow' })
+  await expect(save).toBeEnabled()
   await page.getByRole('button', { name: 'Split', exact: true }).click()
 
   await expect(page.getByRole('group', { name: 'prompt node yaml_node' })).toBeVisible()
-  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S')
+  await save.click()
+  await expect(page.getByRole('status', { name: 'Document save status' })).toHaveText('Saved')
+  await expect(save).toBeDisabled()
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(yaml)
 })
 

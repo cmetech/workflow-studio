@@ -212,6 +212,36 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function installRealDocumentWorker(): () => void {
+  const originalWorker = globalThis.Worker
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
+  return () => {
+    if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
+    else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
+  }
+}
+
+function publishCurrentAnalysis(structurallyValid: boolean): void {
+  const revision = $documentSession.get().revision
+  if (!revision) throw new Error('Expected an active document revision.')
+  receiveDocumentAnalysis({
+    ...revision,
+    issues: structurallyValid
+      ? []
+      : [
+          {
+            code: 'schema_required',
+            layer: 'contract',
+            severity: 'error',
+            blocking: true,
+            message: 'A required workflow field is missing.',
+            document: 'definition',
+          },
+        ],
+    structurallyValid,
+  })
+}
+
 class RealDocumentWorker {
   private readonly cache = createDocumentWorkerCache()
   private readonly listeners = new Set<(event: MessageEvent<DocumentWorkerResponse>) => void>()
@@ -1293,6 +1323,204 @@ nodes:
 
     expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: analysis_missing_or_stale')
     expect(screen.getByRole('alert')).toHaveAttribute('data-application-notice')
+  })
+
+  it('shows dirty document state and confirms an exact revert before discarding YAML edits', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: dirty\n',
+          revision: 1,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'0'.repeat(64)}`,
+    )
+    publishCurrentAnalysis(true)
+
+    render(App)
+    await waitForSetupReady()
+
+    expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Unsaved changes')
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Revert to saved YAML' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Revert to saved YAML?' })
+    expect(within(dialog).getByText(/reload the exact version currently saved on disk/i)).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Revert changes' })).toBeEnabled()
+  })
+
+  it('disables unavailable document actions while keeping invalid dirty YAML revertible', async () => {
+    const writableFile = {
+      relativePath: 'flow.yaml',
+      kind: 'file' as const,
+      size: 1,
+      modifiedAt: '0',
+      symlink: 'none' as const,
+      readOnly: false,
+    }
+    loadWorkspaceEntries('workspace', 'Workspace', [writableFile])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Saved\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'0'.repeat(64)}`,
+    )
+    publishCurrentAnalysis(true)
+    render(App)
+    await waitForSetupReady()
+
+    expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved')
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Revert to saved YAML' })).not.toBeInTheDocument()
+
+    const dirty = editDocumentText($documentSession.get().pair!, 'definition', 'name: Dirty\n')
+    updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
+    publishCurrentAnalysis(true)
+    await tick()
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeEnabled()
+
+    loadWorkspaceEntries('workspace', 'Workspace', [{ ...writableFile, readOnly: true }])
+    await tick()
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeDisabled()
+
+    loadWorkspaceEntries('workspace', 'Workspace', [writableFile])
+    $documentWorkspace.set({
+      ...$documentWorkspace.get(),
+      missingChange: { kind: 'remove', paths: ['flow.yaml'], dirty: true },
+    })
+    await tick()
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeDisabled()
+
+    $documentWorkspace.set({ ...$documentWorkspace.get(), missingChange: null })
+    publishCurrentAnalysis(false)
+    await tick()
+    expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeEnabled()
+  })
+
+  it('routes the Save button and Mod+S through one non-overlapping save operation', async () => {
+    const savedText = `name: Save controls\ndescription: Verify the shared save path.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    const saveGate = deferred<void>()
+    const workspaceWrite = vi.fn(async (request: Parameters<typeof backing.workspaceWrite>[0]) => {
+      await saveGate.promise
+      return backing.workspaceWrite(request)
+    })
+    setNativeBridgeForTest({ ...backing, workspaceWrite })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const restoreWorker = installRealDocumentWorker()
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+
+      const dirty = editDocumentText(
+        $documentSession.get().pair!,
+        'definition',
+        savedText.replace('Draft\n', 'Edited\n'),
+      )
+      updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
+      publishCurrentAnalysis(true)
+      await fireEvent.click(screen.getByRole('button', { name: 'Save workflow' }))
+
+      expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saving…')
+      await waitFor(() => expect(workspaceWrite).toHaveBeenCalledOnce())
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 's',
+          metaKey: /mac/i.test(navigator.platform),
+          ctrlKey: !/mac/i.test(navigator.platform),
+          bubbles: true,
+        }),
+      )
+      await tick()
+      expect(workspaceWrite).toHaveBeenCalledOnce()
+
+      saveGate.resolve()
+      await waitFor(() =>
+        expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved'),
+      )
+      expect(workspaceWrite).toHaveBeenCalledOnce()
+    } finally {
+      saveGate.resolve()
+      restoreWorker()
+    }
+  })
+
+  it('restores exact saved text and delegates changed-disk reverts to the existing conflict dialog', async () => {
+    const savedText = `name: Revert controls\ndescription: Restore exact text.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const changedDiskText = savedText.replace('Restore exact text.', 'Changed outside the app.')
+    const savedBridge = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    const changedBridge = createBrowserBridge({ initialFiles: { 'flow.yaml': changedDiskText } })
+    let useChangedDisk = false
+    setNativeBridgeForTest({
+      ...savedBridge,
+      workspaceRead: (path) => (useChangedDisk ? changedBridge.workspaceRead(path) : savedBridge.workspaceRead(path)),
+    })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await savedBridge.workspaceScan())
+    const restoreWorker = installRealDocumentWorker()
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+
+      const firstDirty = editDocumentText(
+        $documentSession.get().pair!,
+        'definition',
+        savedText.replace('Restore exact text.', 'Discard this local edit.'),
+      )
+      updateDocumentSession(firstDirty, $documentSession.get().revision!.contractDigest, 'user')
+      await tick()
+      await fireEvent.click(screen.getByRole('button', { name: 'Revert to saved YAML' }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Revert changes' }))
+      await waitFor(() => expect($documentSession.get().pair?.definition.text).toBe(savedText))
+      expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved')
+
+      const secondDirtyText = savedText.replace('Restore exact text.', 'Keep this local edit.')
+      const secondDirty = editDocumentText($documentSession.get().pair!, 'definition', secondDirtyText)
+      updateDocumentSession(secondDirty, $documentSession.get().revision!.contractDigest, 'user')
+      useChangedDisk = true
+      await tick()
+      await fireEvent.click(screen.getByRole('button', { name: 'Revert to saved YAML' }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Revert changes' }))
+
+      expect(await screen.findByRole('dialog', { name: 'Workflow changed on disk' })).toBeVisible()
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog', { name: 'Revert to saved YAML?' })).not.toBeInTheDocument(),
+      )
+      expect($documentSession.get().pair?.definition.text).toBe(secondDirtyText)
+    } finally {
+      restoreWorker()
+    }
   })
 
   it('surfaces a dirty active file removed outside the application', async () => {
