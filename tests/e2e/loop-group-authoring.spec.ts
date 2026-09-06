@@ -153,7 +153,15 @@ test.describe('loop group visual authoring', () => {
     await openSeededPair(page, { scenario: 'loop-group-authoring', pairName: 'release-demo.yaml' })
     await page.locator('.svelte-flow__node[data-id="polish"]').focus()
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('region', { name: 'References for polish' })).toBeVisible()
+    await page.getByRole('tab', { name: 'References', exact: true }).click()
+    const references = page.getByRole('region', { name: 'References for polish' })
+    await expect(references).toBeVisible()
+    for (const name of [
+      'Earlier nodes in this iteration',
+      'Inputs from the main workflow',
+      'Outputs from the previous iteration',
+    ])
+      await expect(references.getByRole('heading', { name, exact: true })).toBeVisible()
     await page.locator('.svelte-flow__node[data-id="review"]').focus()
     await page.keyboard.press('Enter')
     await expect(page.locator('.svelte-flow__node[data-id="review"]')).toHaveClass(/selected/)
@@ -368,6 +376,8 @@ test.describe('loop group visual authoring', () => {
     await review.focus()
     await page.keyboard.press('Enter')
     await page.getByRole('tab', { name: 'General' }).click()
+    await page.getByRole('tab', { name: 'Problems', exact: true }).focus()
+    await page.keyboard.press('Enter')
     const bodyInspectorScroller = page.locator('[data-scroll-owner="inspector"]')
     await bodyInspectorScroller.evaluate((element) => {
       element.scrollTop = element.scrollHeight
@@ -609,6 +619,7 @@ test.describe('loop group visual authoring', () => {
       .click()
     await expect(page.getByText(/visual canvas supports at most 250 nodes and 500 edges/i)).toBeVisible()
     await expect(page.locator('.svelte-flow')).toHaveCount(0)
+    await page.getByRole('tab', { name: 'Problems', exact: true }).click()
     const capacityIssue = page.locator('[data-issue-key*="visual_capacity_exceeded"]')
     await capacityIssue.getByRole('button', { name: /Open documentation/i }).click()
     await expect(page.getByRole('region', { name: 'Documentation', exact: true })).toBeVisible()
@@ -650,8 +661,9 @@ test.describe('loop group visual authoring', () => {
     await expectVisibleFocusCue(openBody)
     await page.keyboard.press('Enter')
     await expect(page.getByRole('heading', { name: /polish loop body/i })).toBeFocused()
+    await page.getByRole('tab', { name: 'References', exact: true }).click()
     await expect(page.getByRole('region', { name: 'References for polish' })).toContainText(
-      'Copy or insert a contract-supported output token.',
+      'Copy works at any time. Insert adds a token to a compatible Inspector text field.',
     )
     const copyCurrent = page.getByRole('button', { name: /^Copy / }).first()
     await copyCurrent.focus()
@@ -671,18 +683,18 @@ test.describe('loop group visual authoring', () => {
     await expectExactWorkbenchGeometry(page)
     const bounded = await page.evaluate(() => {
       const toolbar = document.querySelector<HTMLElement>('[aria-label="Canvas tools"]')!
-      const problems = document.querySelector<HTMLElement>('[data-scroll-frame="problems"]')!
-      const problemScroller = document.querySelector<HTMLElement>('[data-scroll-owner="problems"]')
+      const problems = document.querySelector<HTMLElement>('[data-scroll-frame="auxiliary"]')!
+      const referenceScroller = document.querySelector<HTMLElement>('[data-scroll-owner="references"]')!
       return {
         toolbarBottom: toolbar.getBoundingClientRect().bottom,
         problemsTop: problems.getBoundingClientRect().top,
         problemsBottom: problems.getBoundingClientRect().bottom,
-        problemScrollerBottom: problemScroller?.getBoundingClientRect().bottom ?? 0,
+        referenceScrollerBottom: referenceScroller.getBoundingClientRect().bottom,
       }
     })
     expect(bounded.toolbarBottom).toBeLessThanOrEqual(bounded.problemsTop)
     expect(bounded.problemsBottom).toBeLessThanOrEqual(700)
-    expect(bounded.problemScrollerBottom).toBeLessThanOrEqual(bounded.problemsBottom)
+    expect(bounded.referenceScrollerBottom).toBeLessThanOrEqual(bounded.problemsBottom)
     const addNode = page.getByRole('button', { name: 'Add Node' })
     await addNode.focus()
     await expectVisibleFocusCue(addNode)
@@ -690,6 +702,7 @@ test.describe('loop group visual authoring', () => {
     await expect(page.getByRole('dialog', { name: 'Add node' })).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: 'Add node' })).toHaveCount(0)
+    await page.getByRole('tab', { name: 'Problems', exact: true }).click()
     const firstProblemAction = page.locator('[data-issue-key*="e2e_state_advisory_"] button').first()
     await firstProblemAction.focus()
     await expectVisibleFocusCue(firstProblemAction)
@@ -720,6 +733,8 @@ test.describe('loop group visual authoring', () => {
     await prompt.focus()
     await expectVisibleFocusCue(prompt)
     await page.keyboard.press('End')
+    await page.getByRole('tab', { name: 'References', exact: true }).focus()
+    await page.keyboard.press('Enter')
     const insertCurrent = page.getByRole('button', { name: 'Insert $draft.output' })
     await insertCurrent.focus()
     await expectVisibleFocusCue(insertCurrent)
@@ -764,12 +779,15 @@ test.describe('loop group visual authoring', () => {
     await page.keyboard.press('Enter')
     await page.setViewportSize({ width: 512, height: 350 })
     const compactInspectorScroller = page.locator('[data-scroll-owner="inspector"]')
+    await page.getByRole('tab', { name: 'Problems', exact: true }).focus()
+    await page.keyboard.press('Enter')
     const compactProblemsScroller = page.locator('[data-scroll-owner="problems"]')
     await compactInspectorScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
     await compactProblemsScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
     await expect.poll(() => compactInspectorScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
     await expect.poll(() => compactProblemsScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
     await page.keyboard.press('Escape')
+    await page.getByRole('tab', { name: 'References', exact: true }).click()
     const motion = await page
       .locator(
         '[data-testid="graph-scope-header"], [aria-label="References for polish"], .workflow-node, .graph-canvas',
@@ -976,6 +994,7 @@ test.describe('loop group visual authoring', () => {
     await expect(page.locator('.svelte-flow__node[data-id="body-1-003"]')).toHaveCount(0)
     await expect.poll(() => page.locator('.svelte-flow__node').count()).toBeLessThanOrEqual(20)
     expectNoPointerAuthorityWork(await editorMetrics(page))
+    await page.getByRole('tab', { name: 'Problems', exact: true }).click()
     await expect(page.locator('[data-issue-key*="e2e_capacity_advisory_"]')).toHaveCount(20)
     const capacityProblems = page.locator('[data-scroll-owner="problems"]')
     const problemsScrollPhase = await beginLongTaskPhase(page, browserName)

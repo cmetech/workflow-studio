@@ -35,6 +35,10 @@
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
   }
+  button {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
   h2 {
     min-width: 0;
     margin: 0;
@@ -47,6 +51,11 @@
   button:focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
+  }
+  @media (max-height: 500px) {
+    .scope-header {
+      padding-block: 0;
+    }
   }
   @media (forced-colors: active) {
     .scope-header {

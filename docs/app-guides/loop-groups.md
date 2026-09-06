@@ -21,13 +21,20 @@ nodes:
           prompt: Draft a concise summary.
 ```
 
-## Reference current, outer, and previous outputs
+## Reuse outputs with References
 
-- `$child.output` reads a current body node and requires a direct body dependency on that child.
-- `$outer.output` reads a root node only when the loop group has a direct root dependency on that node. **Add group dependency** is an explicit YAML change; **Copy** and **Insert** never add it automatically.
-- `$LOOP_PREV.child.output` reads that child's previous-iteration output. A whole previous output resolves to an empty value on the first iteration.
+Inside a loop body, open **References** beside **Problems** in the bottom panel. The canvas keeps its compact scope header above the graph. The Problems and blocking counts remain visible whichever tab is selected.
 
-A body ID shadows an equal outer ID. The reference bar lists only references valid for the active field and scope. **Copy** copies exact reference text, while **Insert** changes only the currently focused compatible field.
+The panel groups references by where an output comes from:
+
+- **Earlier nodes in this iteration** lists current body outputs such as `$child.output`. The focused body field must support the reference, and its node must depend directly on that child.
+- **Inputs from the main workflow** lists root outputs such as `$outer.output` when the loop already depends directly on that root node.
+- **Outputs from the previous iteration** lists body outputs such as `$LOOP_PREV.child.output`. A whole previous output resolves to an empty value on the first iteration.
+- **More workflow outputs** explains unavailable root outputs. An action such as **Allow this loop to use seed** explicitly adds that group dependency when safe. **Copy** and **Insert** never add dependencies automatically.
+
+A body ID shadows an equal outer ID. Suggestions follow the active field and scope; they do not preview runtime values. **Copy** copies exact reference text and works without an insertion target. To use **Insert**, focus a compatible Inspector text field. The banner then shows **Insert target:** followed by the node and field names. That remembered field remains the target while you use the panel; **Apply** commits the edited field to YAML. If no valid target exists, the banner asks you to focus a compatible Inspector text field and Insert is disabled.
+
+Each scope remembers its selected tab and each tab's scroll position. On the first visit, a body opens Problems if blocking issues exist and References otherwise. Use the Left and Right arrow keys, Home, or End to switch tabs from the tab bar; Tab moves into the selected panel.
 
 ## Output and companion paths
 

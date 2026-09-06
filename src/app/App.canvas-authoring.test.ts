@@ -616,7 +616,7 @@ describe('App canvas authoring composition', () => {
       inspector: { tab: 'Advanced', scrollTop: 42 },
       canvasScroll: { left: 11, top: 22 },
     }))
-    const body = activeLayoutStore.get()!.scopeLayouts['loop-group:repeat']
+    const body = { ...activeLayoutStore.get()!.scopeLayouts['loop-group:repeat'], auxiliaryTab: 'references' }
     const pair = $documentSession.get().pair
     const layoutWork = vi.spyOn(placement, 'reconcileLayout')
     const metrics = createEditorMetricsCollector()
@@ -677,11 +677,9 @@ describe('App canvas authoring composition', () => {
 
     setCanvasSelection(['child'])
     await tick()
-    const referenceBar = screen.getByRole('region', { name: 'References for repeat' })
-    const currentTokens = () =>
-      [...referenceBar.querySelectorAll('article')]
-        .filter((article) => [...article.querySelectorAll('span')].some(({ textContent }) => textContent === 'current'))
-        .map((article) => article.querySelector('code')?.textContent)
+    await fireEvent.click(screen.getByRole('tab', { name: 'References' }))
+    const currentReferences = screen.getByRole('region', { name: 'Earlier nodes in this iteration' })
+    const currentTokens = () => [...currentReferences.querySelectorAll('code')].map(({ textContent }) => textContent)
     await fireEvent.focusIn(screen.getByRole('textbox', { name: /bash/i }))
     await waitFor(() => expect(currentTokens()).toEqual(['$prepare.output']))
 

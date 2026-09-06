@@ -39,6 +39,11 @@
   })
 
   function navigate(event: KeyboardEvent, tab: AuxiliaryTab): void {
+    if (event.key === 'Enter' || event.key === ' ') {
+      // Keep native button activation without invoking a global canvas shortcut.
+      event.stopPropagation()
+      return
+    }
     const index = tabs.indexOf(tab)
     const next =
       event.key === 'Home'

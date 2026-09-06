@@ -225,18 +225,22 @@ The body palette derives availability from the contract's scoped-DAG rule. For v
 
 ## 9. Scope and reference guidance
 
-A compact scope bar sits above the body canvas. It makes hidden outer context visible without drawing fake graph nodes or misleading dependency edges.
+The loop-body canvas keeps only its compact scope header above the graph. Reference guidance appears in a **References** tab beside **Problems** in the existing resizable bottom panel, so guidance does not permanently reduce canvas height. The tab exists only in loop-body scope. Problems keeps a visible issue and blocking count while References is active.
 
-The bar contains:
+The References tab explains that a reference is exact workflow text which lets a node reuse another node's output; it does not preview or resolve runtime values. It presents suggestions under plain-language groups:
 
-- available outer values from direct dependencies of the group;
-- available `$LOOP_PREV` producers from the body;
-- exact copy-reference actions; and
-- insertion actions for compatible focused fields.
+- **Earlier nodes in this iteration** for valid current-body producers governed by the selected consumer's direct dependencies and active field;
+- **Inputs from the main workflow** for available outer values from direct dependencies of the group;
+- **Outputs from the previous iteration** for available `$LOOP_PREV` producers from the body; and
+- **More workflow outputs** for root producers that require an explicit group dependency before use.
 
-Current-body references remain governed by actual body dependencies and selected-node context. The bar never implies that an outer input is a body dependency.
+Exact namespace terms may appear as secondary badges, but they are not the primary explanation. Each available suggestion exposes an exact copy action and an insertion action for a compatible remembered Inspector field. The panel states the active insertion target or tells the author to focus a compatible Inspector text field. Copy remains available without an insertion target.
 
-Insertion actions use contract-published syntax and field applicability. They are disabled when focus, schema, or scope makes insertion ambiguous. Authors can always type YAML directly.
+Unavailable outer references are separated from valid suggestions. Their action is described as allowing the loop to use that workflow output, with supporting text explaining that the action adds a group dependency. Copy and Insert never add a dependency automatically.
+
+Current-body references remain governed by actual body dependencies and selected-node context. The panel never implies that an outer input is a body dependency. Insertion continues to use contract-published syntax, field applicability, and identity/revision checks, and is disabled when focus, schema, revision, or scope makes insertion ambiguous. Authors can always type YAML directly.
+
+The auxiliary tab selection and each tab's scroll position are remembered per graph scope. On a loop scope's first visit, Problems is selected when blocking issues exist; otherwise References is selected. Later selection changes do not switch tabs automatically. ArrowLeft and ArrowRight wrap between tabs; Home and End select the first and last tab. Tab moves into the selected panel. The issue and blocking summary remains visible in the panel header at 1024 x 700 and the effective 200% zoom viewport (512 x 350 CSS pixels).
 
 The primary sink receives a Group Output badge. If several terminal nodes exist, Studio explains that Hermes selects the first terminal node in YAML definition order. Canvas position does not change definition order.
 
@@ -417,7 +421,7 @@ Golden and property tests cover add, settings edits, connect, disconnect, rename
 
 ### 17.4 Component and accessibility tests
 
-Tests cover compound-node summaries, keyboard and pointer entry, breadcrumbs, empty states, Add First Node, group settings, body palette filtering, scope bar reference actions, primary-output badges, Inspector binding, Problems navigation, focus restoration, reduced motion, forced colors, and screen-reader naming.
+Tests cover compound-node summaries, keyboard and pointer entry, breadcrumbs, empty states, Add First Node, group settings, body palette filtering, References tab actions, primary-output badges, Inspector binding, Problems navigation, focus restoration, reduced motion, forced colors, and screen-reader naming.
 
 ### 17.5 Cross-engine end-to-end tests
 
@@ -446,7 +450,7 @@ Implementation proceeds in these architectural slices:
 3. Introduce scoped projection, identity, topology, and reference validation.
 4. Extend CST mutations and repairable draft analysis to scoped paths.
 5. Add scope-owned layout, selection, viewport, and navigation state.
-6. Implement the compound node, drill-in canvas, empty state, palette, Inspector, and scope bar.
+6. Implement the compound node, drill-in canvas, empty state, palette, Inspector, and References panel.
 7. Add documentation, examples, parity, accessibility, cross-engine, and performance gates.
 8. Run complete build and installed-app verification before release.
 
@@ -463,7 +467,7 @@ This design is complete only when:
 5. New groups begin as explicit empty repairable drafts without invented semantics.
 6. Save and export remain blocked until strict contract and semantic validation pass.
 7. Group controls are fully Inspector-editable from contract descriptors.
-8. The scope bar exposes valid outer and previous-iteration references without fake graph nodes.
+8. The loop-body References tab exposes valid current, outer, and previous-iteration references without fake graph nodes or permanently reducing canvas height.
 9. Body, outer, previous-iteration, and companion references are validated in their correct scopes.
 10. Primary-sink behavior is visible and matches Hermes definition-order semantics.
 11. CST mutations preserve comments, key order, scalar style, aliases where safe, unknown fields, and unrelated content.

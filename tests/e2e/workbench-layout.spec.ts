@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { e2eSnapshot, replaceDefinitionYaml } from './support'
+import { e2eSnapshot, expectExactWorkbenchGeometry, openSeededPair, replaceDefinitionYaml } from './support'
 
 const UNSAVED_YAML = `name: Release demo
 description: Unsaved responsive layout edit.
@@ -847,3 +847,82 @@ test('compact Split switches mounted surfaces without changing Split mode or scr
     [...pageErrors, ...consoleErrors, ...resizeErrors].filter((message) => /ResizeObserver loop/i.test(message)),
   ).toEqual([])
 })
+
+for (const viewport of [
+  { width: 1024, height: 700 },
+  { width: 512, height: 350 },
+]) {
+  test(`loop References preserve canvas space and visible Problems counts at ${viewport.width}x${viewport.height}`, async ({
+    page,
+    browserName,
+  }) => {
+    await page.setViewportSize(viewport)
+    await openSeededPair(page, { scenario: 'loop-group-state-restoration' })
+    await page.locator('.svelte-flow__node[data-id="polish"]').focus()
+    await page.keyboard.press('Enter')
+    const problems = page.getByRole('tab', { name: 'Problems', exact: true })
+    const references = page.getByRole('tab', { name: 'References', exact: true })
+    await references.click()
+    await expect(references).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tabpanel', { name: 'References', exact: true })).toBeVisible()
+
+    const geometry = await page.evaluate(() => {
+      const header = document.querySelector<HTMLElement>('[data-testid="graph-scope-header"]')!
+      const surfaces = document.querySelector<HTMLElement>('.editor-surfaces')!
+      const canvas = document.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"]')!
+      const auxiliary = document.querySelector<HTMLElement>('[data-scroll-frame="auxiliary"]')!
+      const summary = auxiliary.querySelector<HTMLElement>('header p')!
+      const summaryBounds = summary.getBoundingClientRect()
+      return {
+        headerBottom: header.getBoundingClientRect().bottom,
+        surfacesTop: surfaces.getBoundingClientRect().top,
+        canvasHeight: canvas.getBoundingClientRect().height,
+        summary: {
+          top: summaryBounds.top,
+          bottom: summaryBounds.bottom,
+          left: summaryBounds.left,
+          right: summaryBounds.right,
+        },
+        summaryText: summary.textContent,
+        summaryHittable: summary.contains(
+          document.elementFromPoint(
+            summaryBounds.left + summaryBounds.width / 2,
+            summaryBounds.top + summaryBounds.height / 2,
+          ),
+        ),
+      }
+    })
+    expect(geometry.surfacesTop).toBeCloseTo(geometry.headerBottom, 0)
+    expect(geometry.canvasHeight).toBeGreaterThanOrEqual(44)
+    expect(geometry.summaryText).toBe('20 problems, 0 blocking')
+    expect(geometry.summary.top).toBeGreaterThanOrEqual(0)
+    expect(geometry.summary.bottom).toBeLessThanOrEqual(viewport.height)
+    expect(geometry.summary.left).toBeGreaterThanOrEqual(0)
+    expect(geometry.summary.right).toBeLessThanOrEqual(viewport.width)
+    expect(geometry.summaryHittable).toBe(true)
+    await expectExactWorkbenchGeometry(page)
+
+    await problems.focus()
+    await page.keyboard.press('Enter')
+    await expect(problems).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await references.focus()
+    await page.keyboard.press('Space')
+    await expect(references).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    for (const [key, target] of [
+      ['ArrowRight', problems],
+      ['ArrowLeft', references],
+      ['Home', problems],
+      ['End', references],
+    ] as const) {
+      await page.keyboard.press(key)
+      await expect(target).toBeFocused()
+      await expect(target).toHaveAttribute('aria-selected', 'true')
+      await expect(page.getByRole('tabpanel', { name: await target.innerText(), exact: true })).toBeVisible()
+    }
+    await page.keyboard.press(browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab')
+    await expect(page.getByRole('tabpanel', { name: 'References', exact: true })).toBeFocused()
+  })
+}
