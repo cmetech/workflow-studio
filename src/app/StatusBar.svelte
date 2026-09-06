@@ -4,11 +4,11 @@
   import { updateState } from '$src/stores/updates'
   import { formatBytes } from '$src/lib/updates/format'
   import { COLOR_THEMES } from '$src/lib/branding/appearance'
-  import { resolveThemeMode } from '$src/lib/branding/load-brand'
   import {
     activeBrandManifest,
     colorTheme,
     customAccent,
+    resolvedThemeMode,
     resetAccent,
     setCustomAccent,
     themePreference,
@@ -47,7 +47,7 @@
     return 'Update: Later'
   })
   const fallbackAccent = $derived.by(() => {
-    const mode = resolveThemeMode($themePreference)
+    const mode = $themePreference === 'system' ? $resolvedThemeMode : $themePreference
     if ($colorTheme === 'loop24-indigo') return $activeBrandManifest.themes[mode].accent
     return COLOR_THEMES.find(({ id }) => id === $colorTheme)?.accents[mode] ?? $activeBrandManifest.themes[mode].accent
   })

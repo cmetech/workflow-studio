@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { normalizeAccent } from '$src/lib/branding/appearance'
+  import { normalizeAccent, toNativeColorValue } from '$src/lib/branding/appearance'
 
   interface Props {
     accent: string | null
@@ -15,8 +15,16 @@
   let textInput: HTMLInputElement | undefined = $state()
   let open = $state(false)
   let draft = $state('')
+  let previousFallbackAccent = $state('')
   const normalizedDraft = $derived(normalizeAccent(draft))
   const displayedAccent = $derived(accent ?? fallbackAccent)
+  const nativeColorValue = $derived(toNativeColorValue(normalizedDraft ?? fallbackAccent))
+
+  $effect(() => {
+    const nextFallbackAccent = fallbackAccent
+    if (open && accent === null && draft === previousFallbackAccent) draft = nextFallbackAccent
+    previousFallbackAccent = nextFallbackAccent
+  })
 
   async function openPicker(): Promise<void> {
     draft = accent ?? fallbackAccent
@@ -36,12 +44,12 @@
   function applyAccent(): void {
     if (!normalizedDraft) return
     onAccent(normalizedDraft)
-    void closePicker()
+    void closePicker(true)
   }
 
   function resetAccent(): void {
     onReset()
-    void closePicker()
+    void closePicker(true)
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -83,7 +91,7 @@
         <span>Accent color</span>
         <input
           type="color"
-          value={normalizedDraft ?? fallbackAccent}
+          value={nativeColorValue}
           oninput={(event) => (draft = event.currentTarget.value.toUpperCase())}
         />
       </label>

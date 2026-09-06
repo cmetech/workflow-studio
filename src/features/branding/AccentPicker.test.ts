@@ -14,7 +14,8 @@ describe('AccentPicker', () => {
     const current = props()
     render(AccentPicker, current)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Choose custom accent' }))
+    const trigger = screen.getByRole('button', { name: 'Choose custom accent' })
+    await fireEvent.click(trigger)
     const input = screen.getByRole('textbox', { name: 'Hex accent' })
     const apply = screen.getByRole('button', { name: 'Apply accent' })
 
@@ -27,13 +28,15 @@ describe('AccentPicker', () => {
 
     expect(current.onAccent).toHaveBeenCalledWith('#FAD22D')
     expect(screen.queryByRole('dialog', { name: 'Custom accent' })).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
   })
 
   it('synchronizes the native color input and resets to the selected palette', async () => {
     const current = { ...props(), accent: '#123456' }
     render(AccentPicker, current)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Choose custom accent' }))
+    const trigger = screen.getByRole('button', { name: 'Choose custom accent' })
+    await fireEvent.click(trigger)
     const nativePicker = screen.getByLabelText('Accent color')
     await fireEvent.input(nativePicker, { target: { value: '#32c48d' } })
     expect(screen.getByRole('textbox', { name: 'Hex accent' })).toHaveValue('#32C48D')
@@ -41,6 +44,19 @@ describe('AccentPicker', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Reset to selected palette' }))
     expect(current.onReset).toHaveBeenCalledOnce()
     expect(screen.queryByRole('dialog', { name: 'Custom accent' })).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
+  it.each([
+    ['#abc', '#aabbcc'],
+    ['#12345678', '#123456'],
+    ['rgba(17, 34, 51, 0.5)', '#112233'],
+  ])('provides a six-digit native value for the accepted fallback %s', async (fallbackAccent, expected) => {
+    render(AccentPicker, { ...props(), fallbackAccent })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Choose custom accent' }))
+
+    expect(screen.getByLabelText('Accent color')).toHaveValue(expected)
   })
 
   it('closes on Escape and restores focus to its trigger', async () => {

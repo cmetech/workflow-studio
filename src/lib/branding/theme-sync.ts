@@ -1,12 +1,13 @@
 import type { ReadableAtom } from 'nanostores'
 import { applyAppearanceTheme, type ColorThemeId } from './appearance'
-import type { BrandManifest, ThemePreference } from './types'
+import type { BrandManifest, ThemeMode, ThemePreference } from './types'
 
 const COLOR_SCHEME_QUERY = '(prefers-color-scheme: dark)'
 
 export interface AppearanceThemeStores {
   readonly colorTheme: ReadableAtom<ColorThemeId>
   readonly customAccent: ReadableAtom<string | null>
+  readonly resolvedMode?: { set(mode: ThemeMode): void }
 }
 
 export function synchronizeBrandTheme(
@@ -24,13 +25,9 @@ export function synchronizeBrandTheme(
   let stopColorSchemeSubscription: (() => void) | undefined
 
   const applyCurrent = (): void => {
-    applyAppearanceTheme(
-      brand,
-      preference === 'system' ? (systemIsDark ? 'dark' : 'light') : preference,
-      colorTheme,
-      customAccent,
-      root,
-    )
+    const mode = preference === 'system' ? (systemIsDark ? 'dark' : 'light') : preference
+    appearance?.resolvedMode?.set(mode)
+    applyAppearanceTheme(brand, mode, colorTheme, customAccent, root)
   }
 
   const stopBrandSubscription = brandStore.subscribe((nextBrand) => {

@@ -48,6 +48,33 @@ export function normalizeAccent(value: string): string | null {
   return match?.[1] ? `#${match[1].toUpperCase()}` : null
 }
 
+function nativeColorChannel(value: string): number | null {
+  const percentage = value.endsWith('%')
+  const parsed = Number.parseFloat(percentage ? value.slice(0, -1) : value)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, Math.min(255, Math.round(percentage ? (parsed / 100) * 255 : parsed)))
+}
+
+export function toNativeColorValue(value: string): string {
+  const trimmed = value.trim()
+  const hex = /^#([\dA-F]{3,4}|[\dA-F]{6}|[\dA-F]{8})$/i.exec(trimmed)?.[1]
+  if (hex) {
+    const opaque = hex.length <= 4 ? [...hex.slice(0, 3)].map((channel) => channel.repeat(2)).join('') : hex.slice(0, 6)
+    return `#${opaque.toUpperCase()}`
+  }
+
+  const rgb = /^rgba?\((.*)\)$/i.exec(trimmed)?.[1]
+  if (rgb) {
+    const values = rgb.replaceAll(',', ' ').replace('/', ' ').trim().split(/\s+/)
+    const red = values[0] ? nativeColorChannel(values[0]) : null
+    const green = values[1] ? nativeColorChannel(values[1]) : null
+    const blue = values[2] ? nativeColorChannel(values[2]) : null
+    if (red !== null && green !== null && blue !== null) return toHex([red, green, blue])
+  }
+
+  return '#000000'
+}
+
 function parseHex(value: string): Rgb {
   return [
     Number.parseInt(value.slice(1, 3), 16),

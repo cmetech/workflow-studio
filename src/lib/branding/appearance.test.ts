@@ -6,6 +6,7 @@ import {
   loadAppearancePreferences,
   normalizeAccent,
   saveAppearancePreferences,
+  toNativeColorValue,
 } from './appearance'
 
 class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem'> {
@@ -28,6 +29,18 @@ describe('appearance preferences', () => {
     ['rgb(1, 2, 3)', null],
   ])('normalizes the six-digit hexadecimal accent %s', (input, expected) => {
     expect(normalizeAccent(input)).toBe(expected)
+  })
+
+  it.each([
+    ['#abc', '#AABBCC'],
+    ['#abcd', '#AABBCC'],
+    ['#12345678', '#123456'],
+    ['rgb(17, 34, 51)', '#112233'],
+    ['rgba(17, 34, 51, 0.5)', '#112233'],
+    ['rgb(100% 0% 50% / 50%)', '#FF0080'],
+    ['transparent', '#000000'],
+  ])('converts the brand fallback %s for a native color input', (input, expected) => {
+    expect(toNativeColorValue(input)).toBe(expected)
   })
 
   it('applies the selected palette after the active brand theme', () => {

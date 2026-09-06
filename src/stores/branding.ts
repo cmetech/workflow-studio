@@ -8,12 +8,19 @@ import {
   type ColorThemeId,
 } from '$src/lib/branding/appearance'
 import { parseBrandManifest, validateBrandPack, type ValidatedBrandPack } from '$src/lib/branding/validate-theme'
-import type { BrandManifest, RuntimeBrandPack, RuntimeBrandReport, ThemePreference } from '$src/lib/branding/types'
+import type {
+  BrandManifest,
+  RuntimeBrandPack,
+  RuntimeBrandReport,
+  ThemeMode,
+  ThemePreference,
+} from '$src/lib/branding/types'
 import type { BrandActivationResult, BrandNativeBridge, StoredBrandPack } from '$src/lib/native/types'
 
 export const activeBrand = atom('loop24')
 export const activeBrandManifest = atom<BrandManifest>(loadBundledBrand())
 export const themePreference = atom<ThemePreference>('system')
+export const resolvedThemeMode = atom<ThemeMode>(resolveThemeMode('system'))
 export const colorTheme = atom<ColorThemeId>('loop24-indigo')
 export const customAccent = atom<string | null>(null)
 
@@ -33,6 +40,7 @@ export function initializeAppearancePreferences(storage: AppearanceStorage = win
   appearanceStorage = storage
   const preferences = loadAppearancePreferences(storage)
   themePreference.set(preferences.mode)
+  resolvedThemeMode.set(resolveThemeMode(preferences.mode))
   colorTheme.set(preferences.colorTheme)
   customAccent.set(preferences.customAccent)
   persistAppearancePreferences()
@@ -40,6 +48,7 @@ export function initializeAppearancePreferences(storage: AppearanceStorage = win
 
 export function setThemePreference(preference: ThemePreference): void {
   themePreference.set(preference)
+  resolvedThemeMode.set(resolveThemeMode(preference))
   persistAppearancePreferences()
 }
 

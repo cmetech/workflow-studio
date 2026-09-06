@@ -1,14 +1,19 @@
-import { render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it } from 'vitest'
 import { resetGitState, setGitInspection } from '$src/stores/git'
 import StatusBar from './StatusBar.svelte'
 import { setUpdateStateForTest } from '$src/stores/updates'
 import packageMetadata from '../../package.json'
+import { colorTheme, customAccent, resolvedThemeMode, themePreference } from '$src/stores/branding'
 
 describe('StatusBar', () => {
   afterEach(() => {
     resetGitState()
     setUpdateStateForTest(null)
+    themePreference.set('system')
+    resolvedThemeMode.set('light')
+    colorTheme.set('loop24-indigo')
+    customAccent.set(null)
   })
 
   it('reports the detected branch and pair change count', () => {
@@ -91,5 +96,26 @@ describe('StatusBar', () => {
     expect(disclosure).toHaveTextContent('YAML: pending')
     expect(disclosure).toHaveTextContent('DAG: pending')
     expect(container.querySelectorAll('[data-secondary-status]')).toHaveLength(2)
+  })
+
+  it('updates an uncustomized picker when the resolved System mode changes', async () => {
+    themePreference.set('system')
+    resolvedThemeMode.set('light')
+    colorTheme.set('ocean-blue')
+    customAccent.set(null)
+    render(StatusBar)
+
+    const trigger = screen.getByRole('button', { name: 'Choose custom accent' })
+    expect(trigger.querySelector('span')).toHaveStyle('background-color: #0B6BCB')
+    await fireEvent.click(trigger)
+    const input = screen.getByRole('textbox', { name: 'Hex accent' })
+    expect(input).toHaveValue('#0B6BCB')
+
+    resolvedThemeMode.set('dark')
+    await waitFor(() => expect(input).toHaveValue('#5BA8FF'))
+    expect(trigger.querySelector('span')).toHaveStyle('background-color: #5BA8FF')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply accent' }))
+    expect(customAccent.get()).toBe('#5BA8FF')
   })
 })

@@ -26,6 +26,7 @@ async function startApplication(): Promise<void> {
     {
       colorTheme: brandStores.colorTheme,
       customAccent: brandStores.customAccent,
+      resolvedMode: brandStores.resolvedThemeMode,
     },
   )
   import.meta.hot?.dispose(stopThemeSynchronization)

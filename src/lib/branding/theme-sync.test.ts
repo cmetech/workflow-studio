@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 import { describe, expect, it } from 'vitest'
 import type { ColorThemeId } from './appearance'
-import type { ThemePreference } from './types'
+import type { ThemeMode, ThemePreference } from './types'
 import { loadBundledBrand } from './load-brand'
 import { synchronizeBrandTheme } from './theme-sync'
 
@@ -81,6 +81,25 @@ describe('brand theme synchronization', () => {
     preference.set('light')
     colorScheme.setDark(false)
     expect(root.dataset.theme).toBe('dark')
+  })
+
+  it('publishes the resolved mode when the system color scheme changes', () => {
+    const preference = atom<ThemePreference>('system')
+    const resolvedMode = atom<ThemeMode>('dark')
+    const colorScheme = new ControllableColorScheme(false)
+    const stop = synchronizeBrandTheme(
+      atom(loadBundledBrand()),
+      preference,
+      document.createElement('div'),
+      { matchMedia: () => colorScheme as MediaQueryList },
+      { colorTheme: atom<ColorThemeId>('ocean-blue'), customAccent: atom(null), resolvedMode },
+    )
+
+    expect(resolvedMode.get()).toBe('light')
+    colorScheme.setDark(true)
+    expect(resolvedMode.get()).toBe('dark')
+
+    stop()
   })
 
   it('does not subscribe to color-scheme changes for an explicit initial preference', () => {
