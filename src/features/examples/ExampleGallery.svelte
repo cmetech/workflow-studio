@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
+  import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
 
   type ExampleCatalogState =
@@ -71,8 +72,13 @@
   {:else if selectedExample}
     <section class="preview" aria-label={`${selectedExample.title} preview`}>
       <header class="preview-header">
-        <button bind:this={previewBack} type="button" data-variant="ghost" onclick={() => void returnToExamples()}
-          >Back to Examples</button
+        <button
+          bind:this={previewBack}
+          class="preview-back"
+          type="button"
+          data-variant="secondary"
+          onclick={() => void returnToExamples()}
+          ><ArrowLeft size={16} aria-hidden="true" /><span>Back to Examples</span></button
         >
         <div>
           <h3>{selectedExample.title}</h3>
@@ -235,6 +241,14 @@
   .preview-header > div {
     min-width: 0;
   }
+  .preview-back {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+    box-shadow: 0 0.2rem 0.6rem var(--color-shadow);
+  }
   .preview-header p,
   h4,
   .catalog-state p {
@@ -265,6 +279,19 @@
   button:focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
+  }
+
+  @media (forced-colors: active) {
+    .preview-back {
+      box-shadow: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .preview-back {
+      scroll-behavior: auto !important;
+      transition: none !important;
+    }
   }
 
   @media (max-width: 40rem) {

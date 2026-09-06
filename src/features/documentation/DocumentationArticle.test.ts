@@ -97,7 +97,10 @@ describe('DocumentationArticle', () => {
     const onBack = vi.fn()
     render(DocumentationArticle, { topic, index, onBack, onSelectTopic: vi.fn() })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to Results' }))
+    const back = screen.getByRole('button', { name: 'Back to Results' })
+    expect(back).toHaveAttribute('data-variant', 'secondary')
+    expect(back.querySelector('svg')).not.toBeNull()
+    await fireEvent.click(back)
     expect(onBack).toHaveBeenCalledOnce()
   })
 

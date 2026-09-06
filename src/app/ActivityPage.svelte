@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, type Snippet } from 'svelte'
+  import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import type { PageActivityId } from '$src/stores/shell'
 
   interface Props {
@@ -31,7 +32,9 @@
 <section class="activity-page" aria-labelledby={headingId} data-workbench-page={activity}>
   <header>
     {#if showBack}
-      <button type="button" data-variant="ghost" onclick={() => void onBack?.()}>Back to Workflow</button>
+      <button class="back-button" type="button" data-variant="secondary" onclick={() => void onBack?.()}
+        ><ArrowLeft size={16} aria-hidden="true" /><span>Back to Workflow</span></button
+      >
     {/if}
     <div>
       <h2 id={headingId} bind:this={heading} tabindex="-1">{title}</h2>
@@ -68,6 +71,15 @@
     min-width: 0;
   }
 
+  .back-button {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+    box-shadow: 0 0.2rem 0.6rem var(--color-shadow);
+  }
+
   h2,
   p {
     margin: 0;
@@ -89,9 +101,19 @@
   }
 
   @media (forced-colors: active) {
+    .back-button {
+      box-shadow: none;
+    }
     h2:focus-visible {
       outline: 2px solid CanvasText;
       outline-offset: 2px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .back-button {
+      scroll-behavior: auto !important;
+      transition: none !important;
     }
   }
 </style>

@@ -110,6 +110,42 @@ test('docked panel icons collapse both sides and give their width to the canvas'
   await expect.poll(async () => (await editor.boundingBox())!.width).toBeCloseTo(initialWidth, 0)
 })
 
+test('persists docked panel visibility across workflow reopen without adopting compact drawer state', async ({
+  page,
+}) => {
+  await openPairAt(page, 1440, 900)
+
+  const persistedCollapsedPanels = async (): Promise<{ left: boolean; right: boolean } | undefined> => {
+    const content = (await e2eSnapshot(page)).layout
+    if (typeof content !== 'string') return undefined
+    const entries = JSON.parse(content) as Array<{
+      layout?: {
+        workflowPath?: string
+        collapsedPanels?: { left: boolean; right: boolean }
+      }
+    }>
+    return entries.find(({ layout }) => layout?.workflowPath === 'workflows/release-demo.yaml')?.layout?.collapsedPanels
+  }
+
+  const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await prepare.click()
+  await page.getByRole('button', { name: 'Collapse inspector panel' }).click()
+  await expect.poll(persistedCollapsedPanels).toEqual({ left: false, right: true })
+
+  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
+  await expect(page.locator('aside[aria-label="Inspector"]')).toHaveAttribute('inert', '')
+  await expect(page.getByRole('button', { name: 'Expand inspector panel' })).toBeVisible()
+
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await expect(page.locator('.workbench')).toHaveAttribute('data-panel-presentation', 'drawers')
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Inspector for prepare' }).click()
+  await expect(page.locator('aside[aria-label="Inspector"]')).not.toHaveAttribute('inert')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('aside[aria-label="Inspector"]')).toHaveAttribute('inert', '')
+  await expect.poll(persistedCollapsedPanels).toEqual({ left: false, right: true })
+})
+
 test('effective 200% reflow keeps dirty document controls in YAML and compact Split inside the viewport', async ({
   page,
 }) => {

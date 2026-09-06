@@ -342,6 +342,9 @@ export function sanitizeLayoutRecord(value: unknown): LayoutRecordV2 | null {
     activeScopeKey,
     scopeLayouts,
     panels: { ...value.panels },
+    collapsedPanels: validCollapsedPanels(value.collapsedPanels)
+      ? { left: value.collapsedPanels.left, right: value.collapsedPanels.right }
+      : { left: false, right: false },
     editorMode: value.editorMode,
     updatedAt: value.updatedAt,
   }
@@ -451,6 +454,10 @@ function validViewport(value: unknown): value is { x: number; y: number; zoom: n
 
 function validPanels(value: unknown): value is { left: number; right: number; problems: number } {
   return isRecord(value) && panelSize(value.left) && panelSize(value.right) && panelSize(value.problems)
+}
+
+function validCollapsedPanels(value: unknown): value is { left: boolean; right: boolean } {
+  return isRecord(value) && typeof value.left === 'boolean' && typeof value.right === 'boolean'
 }
 
 function boundedCoordinate(value: unknown): value is number {

@@ -29,6 +29,7 @@ function record(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV2 {
     schemaVersion: 2,
     activeScopeKey: 'root',
     scopeLayouts: { root: { ...emptyScopeLayout(), nodePositions, viewport } },
+    collapsedPanels: { left: false, right: false },
   }
 }
 
@@ -44,6 +45,45 @@ function nativeWith(content: string | null = null) {
 }
 
 describe('layout app-data store', () => {
+  it('round-trips valid collapsed panels without aliasing saved or loaded state', async () => {
+    const native = nativeWith()
+    const store = createLayoutStore(native)
+    const collapsedPanels = { left: true, right: true }
+    const layout = { ...record(), collapsedPanels }
+
+    await store.saveLayout(layout, hashes)
+    collapsedPanels.left = false
+
+    const loaded = await store.loadLayout(layout)
+    expect(loaded?.collapsedPanels).toEqual({ left: true, right: true })
+    ;(loaded!.collapsedPanels as { left: boolean; right: boolean }).right = false
+    await expect(store.loadLayout(layout)).resolves.toMatchObject({
+      collapsedPanels: { left: true, right: true },
+    })
+  })
+
+  it('defaults absent and malformed collapsed panels without rejecting compatible records', async () => {
+    const oldLayout = { ...record(), collapsedPanels: undefined }
+    const malformedLayout = {
+      ...record({ workflowPath: 'flows/malformed.yaml' }),
+      collapsedPanels: { left: true, right: 'false' },
+    }
+    const native = nativeWith(
+      JSON.stringify([
+        { schemaVersion: 2, layout: oldLayout, savedHashes: hashes },
+        { schemaVersion: 2, layout: malformedLayout, savedHashes: hashes },
+      ]),
+    )
+    const store = createLayoutStore(native)
+
+    await expect(store.loadLayout(oldLayout)).resolves.toMatchObject({
+      collapsedPanels: { left: false, right: false },
+    })
+    await expect(store.loadLayout(malformedLayout)).resolves.toMatchObject({
+      collapsedPanels: { left: false, right: false },
+    })
+  })
+
   it('migrates the complete legacy envelope into root without writing until a save', async () => {
     const legacy = legacyRecord()
     const native = nativeWith(JSON.stringify([{ schemaVersion: 1, layout: legacy, savedHashes: hashes }]))
@@ -54,6 +94,7 @@ describe('layout app-data store', () => {
       workspaceId: legacy.workspaceId,
       workflowPath: legacy.workflowPath,
       panels: legacy.panels,
+      collapsedPanels: { left: false, right: false },
       editorMode: legacy.editorMode,
       updatedAt: legacy.updatedAt,
       activeScopeKey: 'root',

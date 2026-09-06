@@ -410,6 +410,102 @@ nodes:
     expect(inspectorPanel).not.toHaveAttribute('aria-hidden')
   })
 
+  it('restores docked panel preferences per workflow without persisting compact drawer transitions', async () => {
+    const restoreWorker = installRealDocumentWorker()
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'flow.yaml': 'name: Flow\ndescription: First workflow.\nnodes:\n  - id: build\n    prompt: Build it.\n',
+        'other.yaml': 'name: Other\ndescription: Second workflow.\nnodes:\n  - id: check\n    prompt: Check it.\n',
+      },
+    })
+    let layoutContent: string | null = JSON.stringify([
+      {
+        schemaVersion: 2,
+        layout: {
+          schemaVersion: 2,
+          workspaceId: 'browser-workspace',
+          workflowPath: 'flow.yaml',
+          activeScopeKey: 'root',
+          scopeLayouts: { root: emptyScopeLayout() },
+          panels: { left: 280, right: 320, problems: 180 },
+          collapsedPanels: { left: true, right: false },
+          editorMode: 'visual',
+          updatedAt: '2026-09-06T12:00:00.000Z',
+        },
+        savedHashes: null,
+      },
+    ])
+    const layoutSave = vi.fn(async (content: string) => {
+      layoutContent = content
+    })
+    setNativeBridgeForTest({ ...backing, layoutLoad: async () => layoutContent, layoutSave })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+
+    try {
+      const { container } = render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await screen.findByRole('region', { name: 'Workflow graph' })
+      const workbench = container.querySelector<HTMLElement>('.workbench')!
+      const editor = screen.getByRole('region', { name: 'Workflow workspace' })
+      await publishCompactPanelMedia(false)
+      await publishResize(workbench, 1440)
+      await publishResize(editor, 840)
+      await tick()
+
+      const workspacePanel = container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
+      const inspectorPanel = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
+      expect(workspacePanel).toHaveAttribute('inert')
+      expect(inspectorPanel).not.toHaveAttribute('inert')
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Expand workspace panel' }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Collapse inspector panel' }))
+      await waitFor(() => expect(layoutSave).toHaveBeenCalled(), { timeout: 1_500 })
+      expect(
+        (
+          JSON.parse(layoutContent!) as Array<{
+            layout: { workflowPath: string; collapsedPanels?: { left: boolean; right: boolean } }
+          }>
+        ).find(({ layout }) => layout.workflowPath === 'flow.yaml')?.layout.collapsedPanels,
+      ).toEqual({ left: false, right: true })
+
+      await fireEvent.click(screen.getByRole('treeitem', { name: /other\.yaml/i }))
+      await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('other.yaml'))
+      expect(workspacePanel).not.toHaveAttribute('inert')
+      expect(inspectorPanel).not.toHaveAttribute('inert')
+
+      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('flow.yaml'))
+      await screen.findByRole('region', { name: 'Workflow graph' })
+      expect(workspacePanel).not.toHaveAttribute('inert')
+      expect(inspectorPanel).toHaveAttribute('inert')
+
+      await fireEvent.click(screen.getByRole('group', { name: 'prompt node build' }))
+      await new Promise((resolve) => setTimeout(resolve, 1_200))
+      layoutSave.mockClear()
+      await publishCompactPanelMedia(true)
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      expect(layoutSave).not.toHaveBeenCalled()
+      await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
+      await fireEvent.keyDown(window, { key: 'Escape' })
+      await fireEvent.click(screen.getByRole('button', { name: 'Inspector for build' }))
+      await fireEvent.keyDown(window, { key: 'Escape' })
+      await new Promise((resolve) => setTimeout(resolve, 600))
+
+      expect(activeLayoutStore.get()?.collapsedPanels).toEqual({ left: false, right: true })
+      for (const [content] of layoutSave.mock.calls) {
+        const saved = (
+          JSON.parse(content) as Array<{
+            layout: { workflowPath: string; collapsedPanels?: { left: boolean; right: boolean } }
+          }>
+        ).find(({ layout }) => layout.workflowPath === 'flow.yaml')
+        expect(saved?.layout.collapsedPanels).toEqual({ left: false, right: true })
+      }
+    } finally {
+      restoreWorker()
+    }
+  })
+
   it('keeps compact drawers mounted, inert when closed, and restores keyboard and activity invokers on close', async () => {
     closeTransientPanels()
     loadWorkspaceEntries('workspace', 'Workspace', [])

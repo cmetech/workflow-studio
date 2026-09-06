@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import { renderMarkdown } from '$src/lib/docs/render-markdown'
   import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
   import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
@@ -50,7 +51,9 @@
 </script>
 
 <article aria-label={topic.title} tabindex="-1">
-  <button class="back-to-results" type="button" data-variant="ghost" onclick={onBack}>Back to Results</button>
+  <button class="back-to-results" type="button" data-variant="secondary" onclick={onBack}
+    ><ArrowLeft size={16} aria-hidden="true" /><span>Back to Results</span></button
+  >
 
   <nav aria-label="Documentation breadcrumb">
     <ol>
@@ -149,7 +152,12 @@
     overflow-wrap: anywhere;
   }
   .back-to-results {
+    display: inline-flex;
     justify-self: start;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+    box-shadow: 0 0.2rem 0.6rem var(--color-shadow);
   }
   nav ol {
     display: flex;
@@ -230,9 +238,18 @@
     outline-offset: 2px;
   }
   @media (forced-colors: active) {
+    .back-to-results {
+      box-shadow: none;
+    }
     .topic-context div,
     .related-topics button {
       border-color: CanvasText;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .back-to-results {
+      scroll-behavior: auto !important;
+      transition: none !important;
     }
   }
 </style>

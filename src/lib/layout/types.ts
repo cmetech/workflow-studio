@@ -75,6 +75,7 @@ export interface LayoutRecordV2 {
   activeScopeKey: GraphScopeKey
   scopeLayouts: Record<GraphScopeKey, ScopeLayoutV1>
   panels: PanelLayout
+  readonly collapsedPanels?: { readonly left: boolean; readonly right: boolean }
   editorMode: EditorMode
   updatedAt: string
 }

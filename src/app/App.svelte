@@ -444,6 +444,7 @@
   } | null>(null)
   let handledIntent = 0
   let restoredLayoutModeIdentity: string | null = null
+  let restoredDockedPanelsIdentity: string | null = null
   const documentWorkspace = new DocumentWorkspaceController({
     read: (path) => native.workspaceRead(path),
     write: (request) => native.workspaceWrite(request),
@@ -1090,11 +1091,22 @@
   function toggleDockedWorkspacePanel(): void {
     dockedWorkspacePanelOpen = !dockedWorkspacePanelOpen
     workspacePanelOpen.set(dockedWorkspacePanelOpen)
+    persistDockedPanelState()
   }
 
   function toggleDockedInspectorPanel(): void {
     dockedInspectorPanelOpen = !dockedInspectorPanelOpen
     inspectorPanelOpen.set(dockedInspectorPanelOpen)
+    persistDockedPanelState()
+  }
+
+  function persistDockedPanelState(): void {
+    const active = activeLayoutStore.get()
+    if (!active) return
+    const collapsedPanels = { left: !dockedWorkspacePanelOpen, right: !dockedInspectorPanelOpen }
+    if (active.collapsedPanels?.left === collapsedPanels.left && active.collapsedPanels.right === collapsedPanels.right)
+      return
+    setActiveLayout({ ...active, collapsedPanels, updatedAt: new Date().toISOString() })
   }
 
   function previewProblemsHeight(height: number | null): void {
@@ -2231,6 +2243,23 @@
 
   $effect(() => {
     documentWorkspace.layoutChanged($activeLayoutStore)
+  })
+
+  $effect(() => {
+    const layout = $activeLayoutStore
+    if (!layout) {
+      restoredDockedPanelsIdentity = null
+      return
+    }
+    const identity = `${layout.workspaceId}\0${layout.workflowPath}`
+    if (identity === restoredDockedPanelsIdentity) return
+    restoredDockedPanelsIdentity = identity
+    dockedWorkspacePanelOpen = !(layout.collapsedPanels?.left ?? false)
+    dockedInspectorPanelOpen = !(layout.collapsedPanels?.right ?? false)
+    if (workbenchPresentation.panels === 'docked') {
+      workspacePanelOpen.set(dockedWorkspacePanelOpen)
+      inspectorPanelOpen.set(dockedInspectorPanelOpen)
+    }
   })
 
   $effect(() => {
