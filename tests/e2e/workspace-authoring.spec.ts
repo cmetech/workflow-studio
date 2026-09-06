@@ -1,5 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
-import { e2eSnapshot, openSeededPair, replaceDefinitionYaml } from './support'
+import {
+  editorMetrics,
+  expectNoPointerAuthorityWork,
+  resetEditorMetrics,
+  e2eSnapshot,
+  openSeededPair,
+  replaceDefinitionYaml,
+} from './support'
 
 const SEEDED_YAML = `name: Release demo
 description: Verify the complete authoring path.
@@ -799,3 +806,63 @@ test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and r
   await expectAuthoritativeYaml(page, rebuilt)
   await expect(page.getByRole('group', { name: 'prompt node prompt', exact: true })).toBeVisible()
 })
+
+for (const modifier of ['Meta', 'Control'] as const) {
+  test(`node actions preserve ${modifier} multi-selection and keyboard focus`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openSeededPair(page)
+    const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+    const publish = page.getByRole('group', { name: 'command node publish', exact: true })
+    await prepare.click()
+    // macOS maps Control-click to its native context-menu gesture. Exercise
+    // the same SvelteFlow multi-selection modifier with keyboard activation there.
+    if (modifier === 'Control' && process.platform === 'darwin') {
+      await publish.focus()
+      await publish.press('Control+Space')
+    } else await publish.click({ modifiers: [modifier] })
+    await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(2)
+    // Flush the existing viewport/layout debounce before measuring menu-only work.
+    await page.waitForTimeout(400)
+    await resetEditorMetrics(page)
+    await prepare.click({ button: 'right' })
+    const menu = page.getByRole('menu', { name: 'Node actions' })
+    await expect(menu).toBeVisible()
+    await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(2)
+    await expect(menu.getByRole('menuitem', { name: 'Open Inspector' })).toBeFocused()
+    await page.keyboard.press('End')
+    await expect(menu.getByRole('menuitem', { name: 'Delete All Nodes' })).toBeFocused()
+    await page.keyboard.press('ArrowDown')
+    await expect(menu.getByRole('menuitem', { name: 'Open Inspector' })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(prepare).toBeFocused()
+    await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(2)
+    await prepare.press('Shift+F10')
+    await expect(menu).toBeVisible()
+    const [bounds, canvas] = await Promise.all([menu.boundingBox(), page.getByTestId('workflow-canvas').boundingBox()])
+    if (!bounds || !canvas) throw new Error('Expected bounded canvas menu')
+    expect(bounds.x).toBeGreaterThanOrEqual(canvas.x)
+    expect(bounds.y).toBeGreaterThanOrEqual(canvas.y)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(canvas.x + canvas.width)
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(canvas.y + canvas.height)
+    expectNoPointerAuthorityWork(await editorMetrics(page))
+    await menu.getByRole('menuitem', { name: 'Delete Selection', exact: true }).focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
+    await expect(dialog).toBeVisible()
+    await expectAuthoritativeYaml(page, SEEDED_YAML)
+    await dialog.getByRole('button', { name: 'Delete nodes' }).click()
+    await expect(page.getByText(/blank workflow draft.*add a node/i)).toBeVisible()
+    await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+z`)
+    await expectAuthoritativeYaml(page, SEEDED_YAML)
+    await expect(prepare).toBeVisible()
+    await prepare.focus()
+    await prepare.press('ContextMenu')
+    await expect(menu).toBeVisible()
+    await menu.getByRole('menuitem', { name: 'Open Inspector' }).click()
+    await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeVisible()
+    await prepare.press('Shift+F10')
+    await page.getByRole('button', { name: 'Visual', exact: true }).click()
+    await expect(menu).toBeHidden()
+  })
+}

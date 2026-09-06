@@ -109,6 +109,132 @@ describe('GraphCanvas', () => {
     clearCanvasState()
   })
 
+  it('opens node actions without replacing an existing multi-selection and selects an unselected target', async () => {
+    setCanvasSelection(['collect', 'review'])
+    const { container } = renderCanvas({ projection, layout })
+    const collect = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    const review = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
+    await fireEvent.contextMenu(collect, { clientX: 790, clientY: 590 })
+    const menu = screen.getByRole('menu', { name: 'Node actions' })
+    for (const name of [
+      'Open Inspector',
+      'Duplicate Selection',
+      'Select All Nodes',
+      'Delete Selection',
+      'Delete All Nodes',
+    ]) {
+      expect(within(menu).getByRole('menuitem', { name })).toBeVisible()
+    }
+    expect($canvasSelection.get()).toEqual(['collect', 'review'])
+    await fireEvent.keyDown(menu, { key: 'Escape' })
+    expect(collect).toHaveFocus()
+    expect($canvasSelection.get()).toEqual(['collect', 'review'])
+    setCanvasSelection(['collect'])
+    await tick()
+    await fireEvent.contextMenu(review)
+    expect($canvasSelection.get()).toEqual(['review'])
+    await fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu', { name: 'Node actions' })).not.toBeInTheDocument()
+  })
+
+  it.each([{ key: 'F10', shiftKey: true }, { key: 'ContextMenu' }])(
+    'opens from the focused node with $key and navigates without moving nodes',
+    async (key) => {
+      const onPersistLayout = vi.fn()
+      const { container } = renderCanvas({ projection, layout, onPersistLayout })
+      const node = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+      node.focus()
+      await fireEvent.keyDown(node, key)
+      const menu = screen.getByRole('menu', { name: 'Node actions' })
+      const items = within(menu).getAllByRole('menuitem')
+      expect(items[0]).toHaveFocus()
+      const positions = $canvasPositions.get()
+      await fireEvent.keyDown(items[0]!, { key: 'ArrowUp' })
+      expect(items[4]).toHaveFocus()
+      await fireEvent.keyDown(items[4]!, { key: 'Home' })
+      expect(items[0]).toHaveFocus()
+      await fireEvent.keyDown(items[0]!, { key: 'ArrowDown' })
+      expect(items[1]).toHaveFocus()
+      await fireEvent.keyDown(items[1]!, { key: 'End' })
+      expect(items[4]).toHaveFocus()
+      await fireEvent.keyDown(items[4]!, { key: 'Escape' })
+      expect(node).toHaveFocus()
+      expect($canvasPositions.get()).toEqual(positions)
+      expect(onPersistLayout).not.toHaveBeenCalled()
+    },
+  )
+
+  it('uses resolved command labels, enablement, and execution while skipping disabled actions', async () => {
+    const registry = createCommandRegistry()
+    const inspected: string[][] = []
+    for (const command of listCommands())
+      registry.registerCommand({
+        ...command,
+        ...(command.id === 'canvas.open-inspector' ? { label: 'Inspect selected nodes', enabled: () => false } : {}),
+        ...(command.id === 'canvas.duplicate-selection'
+          ? {
+              label: 'Clone selected nodes',
+              run: () => {
+                inspected.push([...$canvasSelection.get()])
+              },
+            }
+          : {}),
+      })
+    const { container } = renderCanvas({ projection, layout, commandSurface: registry })
+    await fireEvent.contextMenu(container.querySelector('.svelte-flow__node[data-id="collect"]')!)
+    const menu = screen.getByRole('menu', { name: 'Node actions' })
+    expect(within(menu).getByRole('menuitem', { name: 'Inspect selected nodes' })).toBeDisabled()
+    const duplicate = within(menu).getByRole('menuitem', { name: 'Clone selected nodes' })
+    expect(duplicate).toHaveFocus()
+    await fireEvent.click(duplicate)
+    expect(inspected).toEqual([['collect']])
+    expect(screen.queryByRole('menu', { name: 'Node actions' })).not.toBeInTheDocument()
+  })
+
+  it('omits commands absent from the provided surface and keeps Delete All disabled', async () => {
+    const { container } = renderCanvas({ projection, layout, commandSurface: createCommandRegistry() })
+    await fireEvent.contextMenu(container.querySelector('.svelte-flow__node[data-id="collect"]')!)
+    const menu = screen.getByRole('menu', { name: 'Node actions' })
+    expect(within(menu).queryByRole('menuitem', { name: 'Open Inspector' })).not.toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'Select All Nodes' })).toHaveFocus()
+    expect(within(menu).getByRole('menuitem', { name: 'Delete All Nodes' })).toBeDisabled()
+  })
+
+  it('selects and requests deletion of all current-scope nodes through the existing delete primitive', async () => {
+    const onRequestDelete = vi.fn()
+    const { container } = renderCanvas({ projection, layout, onRequestDelete })
+    const node = container.querySelector('.svelte-flow__node[data-id="collect"]')!
+    await fireEvent.contextMenu(node)
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Select All Nodes' }))
+    expect($canvasSelection.get()).toEqual(['collect', 'review'])
+    await fireEvent.contextMenu(node)
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete All Nodes' }))
+    expect(onRequestDelete).toHaveBeenCalledWith(['collect', 'review'])
+  })
+
+  it.each([
+    { repairMode: true, stale: true, readOnly: false, deletable: true },
+    { repairMode: false, stale: true, readOnly: false, deletable: false },
+    { repairMode: true, stale: true, readOnly: true, deletable: false },
+  ])('keeps repair deletion narrow for $repairMode/$readOnly', async ({ deletable, ...props }) => {
+    const { container } = renderCanvas({ projection, layout, ...props })
+    await fireEvent.contextMenu(container.querySelector('.svelte-flow__node[data-id="collect"]')!)
+    const menu = screen.getByRole('menu', { name: 'Node actions' })
+    expect(within(menu).getByRole('menuitem', { name: 'Duplicate Selection' })).toBeDisabled()
+    for (const name of ['Delete Selection', 'Delete All Nodes']) {
+      expect(within(menu).getByRole('menuitem', { name }).matches(':disabled')).toBe(!deletable)
+    }
+    expect(within(menu).getByRole('menuitem', { name: 'Open Inspector' })).toBeEnabled()
+  })
+
+  it('closes node actions when a scope transition starts', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    await fireEvent.contextMenu(rendered.container.querySelector('.svelte-flow__node[data-id="collect"]')!)
+    expect(screen.getByRole('menu', { name: 'Node actions' })).toBeVisible()
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, transitionLocked: true })
+    expect(screen.queryByRole('menu', { name: 'Node actions' })).not.toBeInTheDocument()
+  })
+
   it('opens a compound loop group from its button, double-click, and focused-node Enter only', async () => {
     const onOpenLoopGroup = vi.fn()
     const groupProjection: ProjectedGraph = {

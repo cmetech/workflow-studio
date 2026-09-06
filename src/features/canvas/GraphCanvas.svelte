@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { CanvasScopeRestoration } from '$src/stores/canvas-scope'
-  import { onDestroy, onMount, setContext, untrack } from 'svelte'
+  import { onDestroy, onMount, setContext, tick, untrack } from 'svelte'
   import { Background, BackgroundVariant, SelectionMode, SvelteFlow, type Viewport } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
@@ -157,6 +157,8 @@
   let edgeTargetIndex = $state(0)
   let reducedMotion = $state(false)
   let root: HTMLElement
+  let nodeMenu = $state<{ x: number; y: number; invoker: HTMLElement; identity: string; nodeId: string } | null>(null)
+  let nodeMenuElement = $state<HTMLDivElement>()
   let viewportElement: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
   let pendingLayout: { scope: ScopeLayoutV1; identity: string } | null = null
@@ -183,6 +185,7 @@
     hasSelection: selection.length > 0,
     selectionCount: selection.length,
   }))
+  const inspectorCommand = $derived(resolveCommand(commandSurface, 'canvas.open-inspector', canvasCommandContext))
   const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', canvasCommandContext))
   const edgeCommand = $derived(resolveCommand(commandSurface, 'canvas.create-edge', canvasCommandContext))
   const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
@@ -216,6 +219,121 @@
   function executeToolbarId(id: string): Promise<CommandExecutionResult> | undefined {
     return executeToolbar(toolbarCommands.find((command) => command.id === id))
   }
+
+  function closeNodeMenu(restoreFocus = false): boolean {
+    if (!nodeMenu) return false
+    const invoker = nodeMenu.invoker
+    nodeMenu = null
+    if (restoreFocus) (invoker.isConnected ? invoker : root)?.focus({ preventScroll: true })
+    return true
+  }
+
+  function nodeMenuItems(): HTMLButtonElement[] {
+    return Array.from(nodeMenuElement?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])
+  }
+
+  async function openNodeMenu(event: MouseEvent | KeyboardEvent): Promise<void> {
+    if (transitionLocked || !surfaceActive || !(event.target instanceof Element)) return
+    const invoker = event.target.closest<HTMLElement>('.svelte-flow__node[data-id]')
+    const nodeId = invoker?.dataset.id
+    if (!invoker || !nodeId || !nodeIds().includes(nodeId)) return
+    event.preventDefault()
+    event.stopPropagation()
+    clearSelectionGestures()
+    pendingSelection = null
+    pendingSurfaceSelectionPayload = undefined
+    if (!selection.includes(nodeId)) selectionChanged([nodeId])
+    restoreSurfaceSelection()
+    const bounds = root.getBoundingClientRect()
+    const anchor = invoker.getBoundingClientRect()
+    const menu = {
+      x: (event instanceof MouseEvent ? event.clientX : anchor.left + anchor.width / 2) - bounds.left,
+      y: (event instanceof MouseEvent ? event.clientY : anchor.top + anchor.height / 2) - bounds.top,
+      invoker,
+      identity: workflowIdentity,
+      nodeId,
+    }
+    nodeMenu = menu
+    await tick()
+    if (!nodeMenu || nodeMenu.invoker !== invoker || !nodeMenuElement) return
+    const size = nodeMenuElement.getBoundingClientRect()
+    nodeMenu = {
+      ...menu,
+      x: Math.max(0, Math.min(menu.x, root.clientWidth - size.width)),
+      y: Math.max(0, Math.min(menu.y, root.clientHeight - size.height)),
+    }
+    nodeMenuItems()[0]?.focus({ preventScroll: true })
+  }
+
+  function handleNodeMenuKeydown(event: KeyboardEvent): void {
+    if (nodeMenu && nodeMenuElement?.contains(event.target as Node)) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeNodeMenu(true)
+        return
+      }
+      if (event.key === 'Tab') {
+        closeNodeMenu(true)
+        event.stopPropagation()
+        return
+      }
+      const items = nodeMenuItems()
+      const index = items.indexOf(document.activeElement as HTMLButtonElement)
+      const next =
+        event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? items.length - 1
+            : event.key === 'ArrowDown'
+              ? (index + 1) % items.length
+              : event.key === 'ArrowUp'
+                ? (index - 1 + items.length) % items.length
+                : null
+      if (next !== null) {
+        event.preventDefault()
+        event.stopPropagation()
+        items[next]?.focus({ preventScroll: true })
+        items[next]?.scrollIntoView?.({ block: 'nearest' })
+      }
+      // Menu keys must not reach canvas shortcuts (including Enter and Delete).
+      if (next === null) event.stopPropagation()
+      return
+    }
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) void openNodeMenu(event)
+  }
+
+  function outsideNodeMenu(event: PointerEvent): void {
+    if (nodeMenu && event.target instanceof Node && !nodeMenuElement?.contains(event.target)) closeNodeMenu()
+  }
+
+  async function executeNodeMenu(command: ResolvedCommand | undefined): Promise<void> {
+    if (!command?.enabled) return
+    closeNodeMenu(true)
+    try {
+      await executeToolbar(command)
+    } catch (error) {
+      authoringFeedback = error instanceof Error ? error.message : 'The node action failed.'
+    }
+  }
+
+  async function allNodeMenuAction(remove: boolean): Promise<void> {
+    if (transitionLocked || !surfaceActive || (remove && !deleteCommand?.enabled)) return
+    closeNodeMenu(true)
+    selectAll()
+    if (remove) await beforeDelete(projection.nodes, [])
+  }
+
+  $effect(() => {
+    if (
+      nodeMenu &&
+      (transitionLocked ||
+        !surfaceActive ||
+        nodeMenu.identity !== workflowIdentity ||
+        !projection.nodes.some(({ id }) => id === nodeMenu?.nodeId))
+    )
+      closeNodeMenu()
+  })
 
   function deriveCanvas() {
     return projectMemoizedCanvas(projection, layout, {
@@ -448,6 +566,7 @@
   }
 
   export function cancel(): boolean {
+    if (closeNodeMenu(true)) return true
     if (cancelEdge()) return true
     if (selection.length === 0 && edgeSelectionState.edgeIds.length === 0) return false
     clearSurfaceSelection()
@@ -858,6 +977,9 @@
       reducedMotion = event.matches
     }
     reducedMotion = motionQuery.matches
+    root.addEventListener('contextmenu', openNodeMenu, true)
+    root.addEventListener('keydown', handleNodeMenuKeydown, true)
+    window.addEventListener('pointerdown', outsideNodeMenu, true)
     root.addEventListener('workflowdragmove', drag)
     root.addEventListener('workflowdragstop', stop)
     root.addEventListener('workflowconnect', connect)
@@ -879,6 +1001,9 @@
     })
     return () => {
       canvasMounted = false
+      root.removeEventListener('contextmenu', openNodeMenu, true)
+      root.removeEventListener('keydown', handleNodeMenuKeydown, true)
+      window.removeEventListener('pointerdown', outsideNodeMenu, true)
       root.removeEventListener('workflowdragmove', drag)
       root.removeEventListener('workflowdragstop', stop)
       root.removeEventListener('workflowconnect', connect)
@@ -1002,6 +1127,50 @@
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
     </SvelteFlow>
   </div>
+  {#if nodeMenu}
+    <div
+      class="node-menu"
+      role="menu"
+      aria-label="Node actions"
+      data-canvas-chrome
+      style:left={`${nodeMenu.x}px`}
+      style:top={`${nodeMenu.y}px`}
+      bind:this={nodeMenuElement}
+    >
+      {#each [inspectorCommand, duplicateCommand] as command, index (index)}
+        {#if command}
+          <button
+            type="button"
+            role="menuitem"
+            tabindex="-1"
+            disabled={!command.enabled}
+            title={command.title}
+            onclick={() => void executeNodeMenu(command)}>{command.label}</button
+          >
+        {/if}
+      {/each}
+      <button type="button" role="menuitem" tabindex="-1" onclick={() => void allNodeMenuAction(false)}
+        >Select All Nodes</button
+      >
+      {#if deleteCommand}
+        <button
+          type="button"
+          role="menuitem"
+          tabindex="-1"
+          disabled={!deleteCommand.enabled}
+          title={deleteCommand.title}
+          onclick={() => void executeNodeMenu(deleteCommand)}>{deleteCommand.label}</button
+        >
+      {/if}
+      <button
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        disabled={!deleteCommand?.enabled}
+        onclick={() => void allNodeMenuAction(true)}>Delete All Nodes</button
+      >
+    </div>
+  {/if}
   <p class="sr-only" role="status" aria-label="Canvas authoring feedback" aria-live="polite">
     {authoringFeedback}
   </p>
@@ -1019,6 +1188,35 @@
     min-height: 0;
     overflow: hidden;
     background: var(--color-canvas);
+  }
+
+  .node-menu {
+    position: absolute;
+    z-index: 20;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: 100%;
+    max-height: 100%;
+    overflow: auto;
+    padding: 0.25rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    background: var(--color-surface);
+    color: var(--color-text);
+    box-shadow: 0 0.25rem 1rem #0003;
+  }
+
+  .node-menu button {
+    display: block;
+    width: 100%;
+    min-height: 2.75rem;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .node-menu button:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: -2px;
   }
 
   .canvas-viewport {

@@ -1312,10 +1312,9 @@ describe('App canvas authoring composition', () => {
       companionText: 'language_compatibility: archon-2026-07\n',
     })
     const deleteAll = async () => {
-      await fireEvent(
-        screen.getByRole('region', { name: 'Workflow graph' }),
-        new CustomEvent('workflowbeforedelete', { detail: { nodes: [{ id: 'first' }, { id: 'second' }], edges: [] } }),
-      )
+      await fireEvent.contextMenu(rendered.container.querySelector('.svelte-flow__node[data-id="first"]')!)
+      await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete All Nodes' }))
+      expect($documentSession.get().pair?.definition.text).toBe(original)
       await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
     }
     await deleteAll()
