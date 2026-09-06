@@ -315,6 +315,7 @@ describe('DocumentWorkspaceController', () => {
       [changedDefinition.relativePath, changedDefinition],
       [changedCompanion.relativePath, changedCompanion],
     ])
+    vi.mocked(deps.recoveryDrafts.changed).mockClear()
     vi.mocked(client.schedule).mockClear()
 
     await expect(controller.revertToSaved()).resolves.toBe('conflict')
@@ -337,6 +338,8 @@ describe('DocumentWorkspaceController', () => {
     })
     expect(client.schedule).toHaveBeenCalledOnce()
     expect(client.schedule).toHaveBeenCalledWith(active, contract, 'open')
+    expect(deps.recoveryDrafts.changed).toHaveBeenCalledOnce()
+    expect(deps.recoveryDrafts.changed).toHaveBeenCalledWith(active)
   })
 
   it('does not publish a revert whose asynchronous read loses the activation generation', async () => {
@@ -565,6 +568,83 @@ describe('DocumentWorkspaceController', () => {
     expect($documentWorkspace.get()).toBe(workspaceState)
     expect(recoveryDrafts.changed).toHaveBeenCalledTimes(2)
     expect(recoveryDrafts.changed).toHaveBeenLastCalledWith(edited)
+    expect(client.schedule).not.toHaveBeenCalled()
+  })
+
+  it('preserves a concurrent edit and its prior history when staged recovery cleanup rejects', async () => {
+    const cleanupError = new Error('recovery cleanup failed after edit')
+    let rejectCleanup: ((error: Error) => void) | undefined
+    const recoveryDrafts = {
+      changed: vi.fn(),
+      flush: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectCleanup = reject
+          }),
+      ),
+      close: vi.fn(async () => undefined),
+    }
+    const { deps, client } = dependencies({ recoveryDrafts })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', entry('flow.yaml'), contract)
+    const firstEdit = editDocumentText(opened!, 'definition', 'name: first edit\n')
+    controller.changed(firstEdit)
+    const firstHistory = recordTransaction(createHistoryState(), {
+      mutation: { type: 'replace-document', document: 'definition', text: firstEdit.definition.text },
+      label: 'First edit',
+      workflowId: opened!.workflowId,
+      pairGeneration: opened!.generation,
+      before: { definition: opened!.definition.text, companion: null },
+      after: { definition: firstEdit.definition.text, companion: null },
+      beforeRevisions: { definition: opened!.definition.revision, companion: null },
+      afterRevisions: { definition: firstEdit.definition.revision, companion: null },
+      selection: { document: 'definition' },
+    })
+    historyStore.set(firstHistory)
+    const workspaceState = {
+      ...$documentWorkspace.get(),
+      saveOutcome: {
+        status: 'blocked' as const,
+        pair: firstEdit,
+        issues: [],
+        reason: 'analysis_missing_or_stale' as const,
+      },
+    }
+    $documentWorkspace.set(workspaceState)
+    vi.mocked(recoveryDrafts.changed).mockClear()
+    vi.mocked(client.schedule).mockClear()
+
+    const reverting = controller.revertToSaved()
+    await vi.waitFor(() => expect(rejectCleanup).toBeDefined())
+    const pairWhileCleanup = $documentSession.get().pair!
+    const historyWhileCleanup = historyStore.get()
+    const newest = editDocumentText(pairWhileCleanup, 'definition', 'name: newest edit\n')
+    controller.changed(newest)
+    expect(client.schedule).toHaveBeenCalledWith(newest, contract, 'edit')
+    vi.mocked(client.schedule).mockClear()
+    const newestHistory = recordTransaction(historyStore.get(), {
+      mutation: { type: 'replace-document', document: 'definition', text: newest.definition.text },
+      label: 'Newest edit',
+      workflowId: opened!.workflowId,
+      pairGeneration: opened!.generation,
+      before: { definition: pairWhileCleanup.definition.text, companion: null },
+      after: { definition: newest.definition.text, companion: null },
+      beforeRevisions: { definition: pairWhileCleanup.definition.revision, companion: null },
+      afterRevisions: { definition: newest.definition.revision, companion: null },
+      selection: { document: 'definition' },
+    })
+    historyStore.set(newestHistory)
+    rejectCleanup?.(cleanupError)
+
+    await expect(reverting).rejects.toThrow('recovery cleanup failed after edit')
+    expect(pairWhileCleanup).toBe(firstEdit)
+    expect(historyWhileCleanup).toBe(firstHistory)
+    expect($documentSession.get().pair).toBe(newest)
+    expect(historyStore.get()).toBe(newestHistory)
+    expect(historyStore.get().undo.map(({ label }) => label)).toEqual(['First edit', 'Newest edit'])
+    expect($documentWorkspace.get()).toBe(workspaceState)
+    expect(recoveryDrafts.changed).toHaveBeenCalledTimes(3)
+    expect(recoveryDrafts.changed).toHaveBeenLastCalledWith(newest)
     expect(client.schedule).not.toHaveBeenCalled()
   })
 

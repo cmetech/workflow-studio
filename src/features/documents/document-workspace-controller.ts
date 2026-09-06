@@ -31,7 +31,6 @@ import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { createHistoryState, historyStore, migrateHistoryWorkflowIdentity } from '$src/stores/history'
 import {
   $documentSession,
-  $documentSyncOrigins,
   closeDocumentSession,
   openDocumentSession,
   receiveDocumentAnalysis,
@@ -389,6 +388,7 @@ export class DocumentWorkspaceController {
     }
     if (reloadedPair !== pair) {
       updateDocumentSession(reloadedPair, session.revision.contractDigest, 'disk')
+      this.dependencies.recoveryDrafts.changed(reloadedPair)
       this.reconcileDocumentContract(reloadedPair, 'open')
     }
     if (conflictingDisk) {
@@ -423,32 +423,13 @@ export class DocumentWorkspaceController {
             }
           : pair.companion,
     }
-    const historyBeforeRevert = historyStore.get()
-    const syncOriginsBeforeRevert = $documentSyncOrigins.get()
-    historyStore.set(createHistoryState())
-    updateDocumentSession(reverted, session.revision.contractDigest, 'disk')
     this.dependencies.recoveryDrafts.changed(reverted)
     try {
       await this.flushRecoveryForClose()
     } catch (error: unknown) {
-      const activeAfterFailure = $documentSession.get()
-      if (
-        !this.publicationSuppressed() &&
-        activationGeneration === this.activationGeneration &&
-        activeAfterFailure.pair &&
-        activeAfterFailure.revision &&
-        samePairSavedBaseline(activeAfterFailure.pair, reverted)
-      ) {
-        historyStore.set(historyBeforeRevert)
-        updateDocumentSession(
-          pair,
-          activeAfterFailure.revision.contractDigest,
-          'unknown',
-          session.analysis ?? undefined,
-        )
-        $documentSyncOrigins.set(syncOriginsBeforeRevert)
-        this.dependencies.recoveryDrafts.changed(pair)
-      }
+      const activeAfterFailure = $documentSession.get().pair
+      if (activeAfterFailure && pairNeedsRecovery(activeAfterFailure))
+        this.dependencies.recoveryDrafts.changed(activeAfterFailure)
       throw error
     }
     const activeAfterCleanup = $documentSession.get()
@@ -458,9 +439,14 @@ export class DocumentWorkspaceController {
       !activeAfterCleanup.pair ||
       !activeAfterCleanup.revision ||
       activeAfterCleanup.revision.contractDigest !== session.revision.contractDigest ||
-      !samePairSavedBaseline(activeAfterCleanup.pair, reverted)
-    )
+      !samePairSavedBaseline(activeAfterCleanup.pair, pair)
+    ) {
+      if (activeAfterCleanup.pair && pairNeedsRecovery(activeAfterCleanup.pair))
+        this.dependencies.recoveryDrafts.changed(activeAfterCleanup.pair)
       return 'unavailable'
+    }
+    historyStore.set(createHistoryState())
+    updateDocumentSession(reverted, session.revision.contractDigest, 'disk')
     $documentWorkspace.set({ ...$documentWorkspace.get(), conflict: null, saveOutcome: null })
     this.reconcileDocumentContract(reverted, 'open')
     return 'reverted'
@@ -1270,6 +1256,14 @@ function samePairSavedBaseline(left: WorkflowPairText, right: WorkflowPairText):
     left.definition.diskHash === right.definition.diskHash &&
     (left.companion?.savedRevision ?? null) === (right.companion?.savedRevision ?? null) &&
     (left.companion?.diskHash ?? null) === (right.companion?.diskHash ?? null)
+  )
+}
+
+function pairNeedsRecovery(pair: WorkflowPairText): boolean {
+  return (
+    isDocumentPairDirty(pair) ||
+    pair.definition.diskHash === null ||
+    (pair.companion !== null && pair.companion.diskHash === null)
   )
 }
 
