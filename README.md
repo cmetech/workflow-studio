@@ -22,7 +22,7 @@ Native macOS (Apple Silicon and Intel) and Windows x64 packages are distributed 
 
 See [Installing Workflow Studio](docs/installing.md) for direct downloads, checksum verification, safe one-line installer commands, and platform warning guidance. Maintainers should follow the [release runbook](docs/releasing.md); automation creates a verified draft and never publishes it automatically.
 
-Security boundaries and the untrusted-input threat model are documented in [Security](docs/security.md). The current [version 1 release acceptance record](docs/verification/version-1-release-acceptance.md) distinguishes completed local verification from the still-required staged updater and clean-machine evidence.
+Security boundaries and the untrusted-input threat model are documented in [Security](docs/security.md). The current [version 2 release acceptance record](docs/verification/version-2-release-acceptance.md) distinguishes completed local verification from the still-required staged updater and clean-machine evidence; the [version 1 record](docs/verification/version-1-release-acceptance.md) remains available as history.
 
 ## Start here
 
@@ -47,7 +47,7 @@ Security boundaries and the untrusted-input threat model are documented in [Secu
 - Phase 2 YAML document and workspace: complete
 - Phase 3 visual authoring: complete
 - Phase 4 integration and release: in progress
-- Version 1 implementation: in progress
+- Version 2 release: in progress
 
 ## Foundational decisions
 

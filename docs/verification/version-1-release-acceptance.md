@@ -1,8 +1,8 @@
 # Workflow Studio version 1 release acceptance
 
-Status: **PRE-RELEASE — v1.0.8 metadata and the unsigned macOS Apple Silicon package are verified locally. The immutable tag, protected updater-signed draft, publication, and installed-platform follow-up remain open.**
+Status: **SUPERSEDED — v1.0.8 was verified locally but was not tagged, drafted, or published. Its loop-group work moved forward as the v2.0.0 release candidate.**
 
-Recorded: 2026-09-06. v1.0.1 and v1.0.2 remain unpublished failed drafts. v1.0.3 is the published recovery release. v1.0.4 remains an unpublished failed empty draft. v1.0.5 remains unpublished with no release after CI run `33355845811`; its immutable tag peels to `0ecb5bd46a49cebe4037825856411d8ead5db17f`. v1.0.6 is the latest published content-aware workbench release, published on 2026-08-31. v1.0.7 is the verified unpublished documentation-and-shortcuts draft. v1.0.8 is the loop-group visual-authoring release candidate.
+Recorded: 2026-09-06. v1.0.1 and v1.0.2 remain unpublished failed drafts. v1.0.3 is the published recovery release. v1.0.4 remains an unpublished failed empty draft. v1.0.5 remains unpublished with no release after CI run `33355845811`; its immutable tag peels to `0ecb5bd46a49cebe4037825856411d8ead5db17f`. v1.0.6 is the latest published content-aware workbench release, published on 2026-08-31. v1.0.7 is the verified unpublished documentation-and-shortcuts draft. v1.0.8 was the loop-group visual-authoring candidate and was superseded without a tag or release.
 
 ## Candidate identity
 
@@ -28,18 +28,6 @@ Recorded: 2026-09-06. v1.0.1 and v1.0.2 remain unpublished failed drafts. v1.0.3
 | Protected native draft | Updater-signed macOS Apple Silicon, macOS Intel, and Windows x64 jobs have not run for v1.0.8. Exact ten-asset inventory, `latest.json`, `SHA256SUMS`, signatures, and extracted payload checks remain open. | Required before publication |
 | Installed-app follow-up | Clean macOS Apple Silicon/Intel and Windows installed-app validation, native-WebView interaction, staged update, and release-artifact performance evidence remain open. | Required follow-up |
 
-## Pre-publication decision
+## Disposition
 
-- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v1.0.8 draft bytes.
-- [x] No unresolved Critical/Important review finding remains.
-- [ ] Release approved for manual publication.
-
-Decision owner/date: Open. No v1.0.8 tag, push, draft workflow, or publication has been authorized or performed.
-
-## Required next steps
-
-1. Integrate the reviewed release metadata and local-build evidence into `base`, push the exact commit, create and push one immutable annotated `v1.0.8` tag, then dispatch the protected draft-only workflow from `base`.
-2. Keep the draft unpublished unless all three native jobs, extracted package payloads, exact inventory, updater targets, checksums, and signatures pass.
-3. After a separate publication decision, complete clean-machine installation, staged update, relaunch, version confirmation, and 250-node/500-edge acceptance on each supported platform.
-
-Linux packaging and Windows ARM64 remain deferred. Extracted DMG/NSIS payload verification, exact draft inventory, checksums, and updater signatures block publication. Clean-machine functional installs and staged-update exercises remain required follow-up evidence.
+No v1.0.8 tag, push, draft workflow, or publication was performed. The local evidence remains historical; the current release gates and follow-up work are tracked in `docs/verification/version-2-release-acceptance.md`.
