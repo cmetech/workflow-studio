@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { parse } from 'yaml'
 import { buildDocumentationIndex, searchDocumentation } from './build-index'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
@@ -114,6 +115,35 @@ function bundledGuideFixtures() {
 function exampleProfile(value: string | undefined): WorkflowProfile {
   if (value === 'archon-2026-07' || value === 'hermes-legacy') return value
   throw new Error(`Unknown guide example profile: ${String(value)}`)
+}
+
+function schemaObject(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Readonly<Record<string, unknown>>
+  throw new Error(`Expected ${label} to be a schema object.`)
+}
+
+function retryBoundsByNode(contract: AuthoringContract): Readonly<Record<string, unknown>> {
+  const definition = schemaObject(contract.definition_schema, 'definition')
+  const nodes = schemaObject(schemaObject(definition.properties, 'definition properties').nodes, 'nodes')
+  const items = schemaObject(nodes.items, 'node items')
+  const itemProperties = schemaObject(items.properties, 'node item properties')
+  const sharedRetry = schemaObject(itemProperties.retry, 'shared retry')
+  const branches = items.oneOf
+  if (!Array.isArray(branches)) throw new Error('Expected node branches.')
+
+  return Object.fromEntries(
+    contract.node_kinds.flatMap((nodeKind) => {
+      const branch = branches
+        .map((value, index) => schemaObject(value, `node branch ${index}`))
+        .find((candidate) => Array.isArray(candidate.required) && candidate.required.includes(nodeKind.id))
+      if (!branch) return []
+      const branchRetry = schemaObject(branch.properties, `${nodeKind.id} properties`).retry
+      if (branchRetry === undefined) return []
+      const retry = branchRetry === true ? sharedRetry : schemaObject(branchRetry, `${nodeKind.id} retry`)
+      const maximumAttempts = schemaObject(schemaObject(retry.properties, `${nodeKind.id} retry properties`).max_attempts, `${nodeKind.id} max attempts`)
+      return [[nodeKind.id, { minimum: maximumAttempts.minimum, maximum: maximumAttempts.maximum }]]
+    }),
+  )
 }
 
 describe('buildDocumentationIndex', () => {
@@ -334,6 +364,7 @@ describe('buildDocumentationIndex', () => {
   it('validates profile-qualified guide examples and their declared incompatibilities', async () => {
     const contracts = new Map((await loadBundledAuthoringContracts()).map((activeContract) => [activeContract.profile, activeContract]))
     const coveredProfiles = new Set<WorkflowProfile>()
+    const archonRetryNodeKinds = new Set<string>()
     let incompatibleExampleCount = 0
 
     for (const [path, guide] of Object.entries(guideSources)) {
@@ -345,6 +376,12 @@ describe('buildDocumentationIndex', () => {
         const definition = match[3]
         const activeContract = contracts.get(profile)!
         coveredProfiles.add(profile)
+        const parsed = parse(definition!) as { readonly nodes?: readonly Readonly<Record<string, unknown>>[] }
+        for (const node of parsed.nodes ?? []) {
+          if (!node.retry) continue
+          const nodeKind = activeContract.node_kinds.find(({ field_path: fieldPath }) => fieldPath.split('.').at(-1)! in node)
+          if (profile === 'archon-2026-07' && nodeKind) archonRetryNodeKinds.add(nodeKind.id)
+        }
         const analysis = await analyzeWorkflowPair(
           {
             type: 'analyze', requestId: `${path}:${profile}`, workflowId: path, pairGeneration: 0,
@@ -379,6 +416,7 @@ describe('buildDocumentationIndex', () => {
     }
 
     expect(coveredProfiles).toEqual(new Set(['archon-2026-07', 'hermes-legacy']))
+    expect(archonRetryNodeKinds).toEqual(new Set(['prompt', 'command', 'bash', 'script']))
     expect(incompatibleExampleCount).toBeGreaterThanOrEqual(2)
   })
 
@@ -386,10 +424,16 @@ describe('buildDocumentationIndex', () => {
     const contracts = new Map((await loadBundledAuthoringContracts()).map((activeContract) => [activeContract.profile, activeContract]))
     const archon = contracts.get('archon-2026-07')!
     const legacy = contracts.get('hermes-legacy')!
+    const archonRetries = retryBoundsByNode(archon)
     const archonRetry = collectContractFields(archon).find(({ id }) => id === 'prompt.retry.max_attempts')!
     const legacyRetry = collectContractFields(legacy).find(({ id }) => id === 'prompt.retry.max_attempts')!
 
-    expect(archonRetry.constraints).toMatchObject({ minimum: 0, maximum: 5 })
+    expect(archonRetries).toEqual({
+      command: expect.objectContaining({ minimum: 0, maximum: 5 }),
+      prompt: expect.objectContaining({ minimum: 0, maximum: 5 }),
+      bash: expect.objectContaining({ minimum: 1, maximum: 5 }),
+      script: expect.objectContaining({ minimum: 1, maximum: 5 }),
+    })
     expect(archonRetry.schema['x-hermes-semantics']).toEqual({
       counts: 'retries_after_initial',
       omitted_ai: 2,
@@ -407,6 +451,36 @@ describe('buildDocumentationIndex', () => {
     )
     expect(archon.node_kinds.some(({ id }) => id === 'loop_group')).toBe(true)
     expect(legacy.node_kinds.some(({ id }) => id === 'loop_group')).toBe(false)
+  })
+
+  it('accepts zero Archon retries for AI nodes and rejects zero for deterministic nodes', async () => {
+    const archon = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+    for (const fixture of [
+      { kind: 'prompt', body: '    prompt: Review the change.\n', valid: true },
+      { kind: 'command', body: '    command: /review\n', valid: true },
+      { kind: 'bash', body: '    bash: "printf ok"\n', valid: false },
+      { kind: 'script', body: '    script: "print(1)"\n    runtime: uv\n', valid: false },
+    ]) {
+      const definition = `name: ${fixture.kind}-zero-retry\ndescription: Check the node-specific retry bound.\nnodes:\n  - id: work\n${fixture.body}    retry:\n      max_attempts: 0\n`
+      const analysis = await analyzeWorkflowPair(
+        {
+          type: 'analyze', requestId: fixture.kind, workflowId: fixture.kind, pairGeneration: 0,
+          profile: archon.profile, reason: 'explicit-validate', contractDigest: archon.contract_digest,
+          definition: { path: `${fixture.kind}.yaml`, text: definition, revision: 0 },
+          companion: {
+            path: `${fixture.kind}.hermes.yaml`, text: 'language_compatibility: archon-2026-07\n', revision: 0,
+          },
+        },
+        archon,
+      )
+
+      expect(analysis.structurallyValid, fixture.kind).toBe(fixture.valid)
+      if (!fixture.valid) {
+        expect(analysis.issues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ code: 'schema_minimum', path: '/nodes/0/retry/max_attempts' })]),
+        )
+      }
+    }
   })
 
   it('validates every bundled definition guide fence through the production contract and DAG analyzer', async () => {
