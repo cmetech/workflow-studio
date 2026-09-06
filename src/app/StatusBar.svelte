@@ -3,6 +3,18 @@
   import { gitState } from '$src/stores/git'
   import { updateState } from '$src/stores/updates'
   import { formatBytes } from '$src/lib/updates/format'
+  import { COLOR_THEMES } from '$src/lib/branding/appearance'
+  import { resolveThemeMode } from '$src/lib/branding/load-brand'
+  import {
+    activeBrandManifest,
+    colorTheme,
+    customAccent,
+    resetAccent,
+    setCustomAccent,
+    themePreference,
+  } from '$src/stores/branding'
+  import AccentPicker from '$src/features/branding/AccentPicker.svelte'
+  import packageMetadata from '../../package.json'
 
   const gitLabel = $derived.by(() => {
     if ($gitState.phase === 'idle') return 'Git: no workspace'
@@ -18,7 +30,7 @@
   const updateLabel = $derived.by(() => {
     const update = $updateState
     if (!update || update.phase === 'idle' || update.phase === 'current' || update.phase === 'offline') {
-      return 'Updates: Current'
+      return `Version: ${packageMetadata.version}`
     }
     if (update.phase === 'checking') return 'Updates: Checking…'
     if (update.phase === 'available') return `Update Available: ${update.version}`
@@ -33,6 +45,11 @@
     if (update.phase === 'recheck-required') return 'Update: Check Again'
     if (update.phase === 'failed') return 'Update: Failed'
     return 'Update: Later'
+  })
+  const fallbackAccent = $derived.by(() => {
+    const mode = resolveThemeMode($themePreference)
+    if ($colorTheme === 'loop24-indigo') return $activeBrandManifest.themes[mode].accent
+    return COLOR_THEMES.find(({ id }) => id === $colorTheme)?.accents[mode] ?? $activeBrandManifest.themes[mode].accent
   })
   let secondaryOpen = $state(true)
 
@@ -64,6 +81,7 @@
     </div>
   </details>
   <span class="update">{updateLabel}</span>
+  <AccentPicker accent={$customAccent} {fallbackAccent} onAccent={setCustomAccent} onReset={resetAccent} />
 </footer>
 
 <style>

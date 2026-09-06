@@ -118,13 +118,26 @@ test('keeps the desktop shell and status bar inside the viewport', async ({ page
   expect(geometry.statusBottom).toBeLessThanOrEqual(geometry.viewport)
 })
 
-test('keeps Git and Updates visible while narrow status detail stays contained', async ({ page }) => {
+test('keeps Git, version, and the accent picker reachable while narrow status detail stays contained', async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 512, height: 350 })
   await page.goto('/')
 
   const status = page.getByRole('status', { name: 'Application status' })
   await expect(status.getByText('Git: no workspace')).toBeVisible()
-  await expect(status.getByText('Updates: Current')).toBeVisible()
+  await expect(status.getByText('Version: 2.0.0')).toBeVisible()
+  const accentPicker = status.getByRole('button', { name: 'Choose custom accent' })
+  await expect(accentPicker).toBeVisible()
+  await accentPicker.click()
+  const accentDialog = page.getByRole('dialog', { name: 'Custom accent' })
+  await expect(accentDialog).toBeVisible()
+  const accentBounds = await accentDialog.boundingBox()
+  expect(accentBounds).not.toBeNull()
+  expect(accentBounds!.x).toBeGreaterThanOrEqual(0)
+  expect(accentBounds!.x + accentBounds!.width).toBeLessThanOrEqual(512)
+  await page.keyboard.press('Escape')
+  await expect(accentPicker).toBeFocused()
   const disclosure = status.getByText('More application status', { exact: true })
   await expect(disclosure).toBeVisible()
   await disclosure.click()
@@ -237,6 +250,10 @@ test('many contracts and brand packs retain a reachable final action at every ap
   ]) {
     await page.setViewportSize(size)
     await page.getByRole('tab', { name: 'Appearance' }).click()
+    const advancedBrandPacks = page.getByText('Advanced brand packs', { exact: true })
+    if (!(await advancedBrandPacks.evaluate((element) => (element.parentElement as HTMLDetailsElement).open))) {
+      await advancedBrandPacks.click()
+    }
     const brandActions = page.getByRole('list', { name: 'Available brand packs' }).getByRole('button')
     expect(await brandActions.count()).toBeGreaterThanOrEqual(37)
     const lastBrandAction = brandActions.last()

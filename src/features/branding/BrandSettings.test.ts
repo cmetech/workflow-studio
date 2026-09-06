@@ -20,6 +20,28 @@ function pack(id: string, canActivate = true): RuntimeBrandPack {
 }
 
 describe('BrandSettings', () => {
+  it('uses the accent-aware LOOP24 mark only for the bundled pack', () => {
+    const { container } = render(BrandSettings, {
+      packs: [pack('loop24'), pack('acme')],
+      activeId: 'loop24',
+      pending: false,
+      warning: null,
+      onImport: vi.fn(),
+      onPreview: vi.fn(),
+      onActivate: vi.fn(),
+      onRemove: vi.fn(),
+    })
+
+    const bundled = screen.getByText('LOOP24 Workflow Studio').closest('li')!
+    const imported = screen.getByText('acme Studio').closest('li')!
+    expect(bundled.querySelector('[data-loop24-mark]')).toBeInTheDocument()
+    expect(bundled.querySelector('img')).not.toBeInTheDocument()
+    expect(imported.querySelector('[data-loop24-mark]')).not.toBeInTheDocument()
+    expect(imported.querySelector('img')).toHaveAttribute('src', 'blob:acme-mark')
+    expect(container.querySelector('[data-loop24-tile]')).toHaveStyle('fill: var(--color-accent-contrast)')
+    expect(container.querySelector('[data-loop24-glyph]')).toHaveStyle('fill: var(--color-accent)')
+  })
+
   it('shows non-renderable invalid-pack diagnostics without exposing preview or activation controls', () => {
     render(BrandSettings, {
       packs: [pack('loop24')],

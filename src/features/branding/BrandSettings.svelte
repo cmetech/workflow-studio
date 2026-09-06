@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import ModalShell from '$src/app/ModalShell.svelte'
+  import Loop24Mark from './Loop24Mark.svelte'
   import type { RuntimeBrandPack, RuntimeBrandReport } from '$src/lib/branding/types'
 
   interface Props {
@@ -51,7 +52,11 @@
   <ul aria-label="Available brand packs">
     {#each packs as pack (pack.manifest.id)}
       <li>
-        <img src={pack.assetUrls.mark} alt="" />
+        {#if pack.builtIn}
+          <Loop24Mark />
+        {:else}
+          <img src={pack.assetUrls.mark} alt="" />
+        {/if}
         <div class="identity">
           <strong>{pack.manifest.displayName}</strong>
           <span
@@ -162,7 +167,8 @@
     border: 1px solid var(--color-border);
     border-radius: 0.5rem;
   }
-  li img {
+  li img,
+  li :global([data-loop24-mark]) {
     width: 2.5rem;
     height: 2.5rem;
     object-fit: contain;

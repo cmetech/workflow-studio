@@ -28,6 +28,7 @@
   import AppearanceSettings from '$src/features/branding/AppearanceSettings.svelte'
   import BrandSettings from '$src/features/branding/BrandSettings.svelte'
   import BrandPreview from '$src/features/branding/BrandPreview.svelte'
+  import Loop24Mark from '$src/features/branding/Loop24Mark.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
   import {
@@ -2490,7 +2491,11 @@
 <main class="application-shell" data-viewport-shell>
   <header class="titlebar">
     <div class="brand-lockup">
-      <img src={activeRuntimeBrand.assetUrls.mark} alt="" />
+      {#if activeRuntimeBrand.builtIn}
+        <Loop24Mark />
+      {:else}
+        <img src={activeRuntimeBrand.assetUrls.mark} alt="" />
+      {/if}
       <div class="title-copy">
         <p class="eyebrow">{activeRuntimeBrand.builtIn ? 'LOOP24' : 'CUSTOM BRAND'}</p>
         <h1 aria-label={activeRuntimeBrand.manifest.displayName}>
@@ -3495,7 +3500,8 @@
     gap: var(--space-2);
   }
 
-  .brand-lockup img {
+  .brand-lockup img,
+  .brand-lockup :global([data-loop24-mark]) {
     width: var(--control-md);
     height: var(--control-md);
     object-fit: contain;

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { resetGitState, setGitInspection } from '$src/stores/git'
 import StatusBar from './StatusBar.svelte'
 import { setUpdateStateForTest } from '$src/stores/updates'
+import packageMetadata from '../../package.json'
 
 describe('StatusBar', () => {
   afterEach(() => {
@@ -52,13 +53,21 @@ describe('StatusBar', () => {
     expect(screen.getByText('Git: not a repository')).toBeVisible()
   })
 
-  it('reports current, available, byte progress, restart, and failure update states', async () => {
+  it('reports the package version for neutral updater states and preserves active update labels', async () => {
     const { rerender } = render(StatusBar)
-    expect(screen.getByText('Updates: Current')).toBeVisible()
+    expect(screen.getByText(`Version: ${packageMetadata.version}`)).toBeVisible()
 
-    setUpdateStateForTest({ phase: 'available', version: '1.2.3' })
+    setUpdateStateForTest({ phase: 'current' })
     await rerender({})
-    expect(screen.getByText('Update Available: 1.2.3')).toBeVisible()
+    expect(screen.getByText(`Version: ${packageMetadata.version}`)).toBeVisible()
+
+    setUpdateStateForTest({ phase: 'offline' })
+    await rerender({})
+    expect(screen.getByText(`Version: ${packageMetadata.version}`)).toBeVisible()
+
+    setUpdateStateForTest({ phase: 'available', version: '2.0.1' })
+    await rerender({})
+    expect(screen.getByText('Update Available: 2.0.1')).toBeVisible()
 
     setUpdateStateForTest({ phase: 'downloading', downloadedBytes: 1_024, totalBytes: 4_096 })
     await rerender({})
@@ -73,11 +82,11 @@ describe('StatusBar', () => {
     expect(screen.getByText('Update: Failed')).toBeVisible()
   })
 
-  it('keeps Git and Updates visible while naming secondary YAML and DAG status in one disclosure', () => {
+  it('keeps Git and version visible while naming secondary YAML and DAG status in one disclosure', () => {
     const { container } = render(StatusBar)
 
     expect(screen.getByText('Git: no workspace')).toBeVisible()
-    expect(screen.getByText('Updates: Current')).toBeVisible()
+    expect(screen.getByText(`Version: ${packageMetadata.version}`)).toBeVisible()
     const disclosure = screen.getByRole('group', { name: 'More application status' })
     expect(disclosure).toHaveTextContent('YAML: pending')
     expect(disclosure).toHaveTextContent('DAG: pending')

@@ -985,7 +985,8 @@ nodes:
     const welcome = screen.getByRole('region', { name: 'Welcome' })
     expect(screen.getByRole('heading', { name: 'LOOP24 Workflow Studio' })).toBeVisible()
     expect(welcome).toHaveAttribute('data-workbench-page', 'welcome')
-    expect(container.querySelector('.brand-lockup img')).toHaveAttribute('alt', '')
+    expect(container.querySelector('.brand-lockup [data-loop24-mark]')).toBeInTheDocument()
+    expect(container.querySelector('.brand-lockup img')).not.toBeInTheDocument()
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Open Folder' })).toHaveLength(2)
     expect(
