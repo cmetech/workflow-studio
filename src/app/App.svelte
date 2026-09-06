@@ -490,7 +490,10 @@
     onWorkspaceChanged: refreshWorkspace,
     activeContractForProfile,
   })
-  const canvasAuthoring = createCanvasAuthoringCoordinator({ getContext: canvasAuthoringContext })
+  const canvasAuthoring = createCanvasAuthoringCoordinator({
+    getContext: () => canvasAuthoringContext(),
+    getDeleteContext: () => canvasAuthoringContext(true),
+  })
   const nodeChords = new NodeChordController({
     onStateChange: (state) => (nodeChordState = state),
     onChoose: (kind, afterSelection) => chooseCanvasChord(kind, afterSelection),
@@ -722,6 +725,19 @@
     )
   })
   const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
+  const canvasRepairMode = $derived(
+    Boolean(
+      canvasStale &&
+      canvasGraph &&
+      $documentSessionStore.revision &&
+      $documentSessionStore.analysis?.visuallyAuthorable === true &&
+      isAnalysisCurrent($documentSessionStore.revision, $documentSessionStore.analysis) &&
+      $documentSessionStore.analysis.projection === canvasProjection,
+    ),
+  )
+  const canvasBlankDraft = $derived(
+    canvasRepairMode && canvasGraph?.scope.key === 'root' && canvasGraph.nodes.length === 0,
+  )
   const canvasRepairableDraft = $derived(
     Boolean(
       canvasGraph?.scope.kind === 'loop-group' &&
@@ -936,6 +952,7 @@
       surface,
       setupReady,
       canMutate: surface === 'canvas' ? Boolean(canvasContext && !('unavailable' in canvasContext)) : documentCanMutate,
+      canRepair: surface === 'canvas' && canvasRepairMode && !('unavailable' in canvasAuthoringContext(true)),
       canValidate: Boolean(pair),
       hasSelection: surface === 'canvas' ? canvasSelectionStore.get().length > 0 : false,
       selectionCount: surface === 'canvas' ? canvasSelectionStore.get().length : 0,
@@ -1183,9 +1200,9 @@
     workspaceError = error instanceof Error ? error.message : 'The canvas layout could not be saved.'
   }
 
-  function canvasAuthoringContext(): CanvasActionContext | { readonly unavailable: string } {
+  function canvasAuthoringContext(deleting = false): CanvasActionContext | { readonly unavailable: string } {
     if (canvasTransitionLocked) return { unavailable: 'Canvas authoring is unavailable during a document transition.' }
-    if (canvasStale && !canvasRepairableDraft)
+    if (canvasStale && !canvasRepairableDraft && !canvasBlankDraft && !(deleting && canvasRepairMode))
       return { unavailable: 'Canvas authoring is unavailable while the YAML projection is stale.' }
     if ($documentWorkspaceState.missingChange) {
       return { unavailable: 'Canvas authoring is unavailable while a backing YAML file is missing.' }
@@ -2928,9 +2945,11 @@
                   issues={$documentSessionStore.analysis?.issues ?? []}
                   stale={canvasStale && !canvasRepairableDraft}
                   staleSource={canvasStaleSource}
+                  repairMode={canvasRepairMode}
+                  blankDraft={canvasBlankDraft}
                   inspectorControls={inspectorPanelId}
                   inspectorExpanded={!inspectorPanelHidden}
-                  readOnly={(canvasReadOnly && !canvasRepairableDraft) ||
+                  readOnly={(canvasReadOnly && !canvasRepairableDraft && !canvasRepairMode) ||
                     $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
                       ?.readOnly === true}
                   onLayoutChange={captureCanvasLayout}

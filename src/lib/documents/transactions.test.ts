@@ -784,3 +784,29 @@ it.each(['', 'metadata: *all\n'])(
     expect(current).toEqual(before)
   },
 )
+
+it('deletes the last root node as an undoable save-blocked draft preserving exact metadata', async () => {
+  const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
+  const initial = {
+    ...pair('# keep\nname: "Repair"\ndescription: Repair\ntags: [retained]\nnodes:\n  - id: final\n    prompt: ""\n'),
+    companion: null,
+  }
+  const withProfile = {
+    ...initial,
+    companion: { ...pair().companion!, text: 'language_compatibility: archon-2026-07\n' },
+  }
+  const result = await applyWorkflowMutation(
+    withProfile,
+    { type: 'delete-node', scopeKey: 'root', nodeId: 'final' },
+    contract,
+  )
+  expect(result).toMatchObject({ ok: true, analysis: { structurallyValid: false, visuallyAuthorable: true } })
+  if (!result.ok) return
+  expect(result.pair.definition.text).toBe(
+    '# keep\nname: "Repair"\ndescription: Repair\ntags: [retained]\nnodes:\n  []\n',
+  )
+  const history = recordTransaction(createHistoryState(), result.transaction)
+  const restored = undoTransaction(history, result.pair)
+  expect(restored.ok).toBe(true)
+  if (restored.ok) expect(restored.pair.definition.text).toBe(withProfile.definition.text)
+})

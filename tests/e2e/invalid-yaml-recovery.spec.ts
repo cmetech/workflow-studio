@@ -73,3 +73,31 @@ test('reverts exact recovered text and delegates a changed disk to the conflict 
   await expect(page.getByRole('dialog', { name: 'Workflow changed on disk' })).toBeVisible()
   await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(localText)
 })
+
+test('deletes an incomplete Script node while preserving the current workflow', async ({ page }) => {
+  await openSeededPair(page)
+  const before = (await e2eSnapshot(page)).definitionText
+  await page.getByRole('button', { name: 'Add Node' }).click()
+  await page
+    .getByRole('dialog', { name: 'Add node' })
+    .getByRole('option', { name: /Script/ })
+    .click()
+  const script = page.getByRole('group', { name: 'script node script', exact: true })
+  await expect(script).toBeVisible()
+  await expect(page.getByText(/delete incomplete nodes.*inspector/i)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Save workflow' }).click()
+  await expect(page.getByRole('alert').filter({ hasText: /Save blocked/i })).toBeVisible()
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  await page.getByRole('menuitem', { name: 'Fit Graph' }).click()
+  await script.focus()
+  await script.press('Enter')
+  await script.focus()
+  await script.press('Backspace')
+  await page
+    .getByRole('dialog', { name: 'Delete selected nodes' })
+    .getByRole('button', { name: 'Delete nodes' })
+    .click()
+  await expect.poll(async () => (await e2eSnapshot(page)).definitionText).toBe(before)
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+})

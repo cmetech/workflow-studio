@@ -504,6 +504,19 @@ function draftIssuesAreVisuallyAuthorable(
   if (!nodesPath || descriptorPaths.some((candidate) => !samePath(candidate.nodesPath, nodesPath))) return false
   const nodes = valueAtPath(definition, nodesPath)
   if (!Array.isArray(nodes)) return false
+  if (nodes.length === 0) {
+    const blockers = issues.filter((issue) => issue.blocking)
+    return (
+      blockers.length > 0 &&
+      blockers.every(
+        (issue) =>
+          issue.document === 'definition' &&
+          issue.layer === 'contract' &&
+          issue.code === 'schema_min_items' &&
+          issue.path === pointerPath(nodesPath),
+      )
+    )
+  }
   const draftNodes = new Map<number, DraftNode>()
   for (const [index, node] of nodes.entries()) {
     if (!isRecord(node)) continue
@@ -527,13 +540,22 @@ function draftIssuesAreVisuallyAuthorable(
       (branch) =>
         Array.isArray(branch.required) && typeof kindField === 'string' && branch.required.includes(kindField),
     )
-    draftNodes.set(index, { node, descriptor, intendedBranch })
+    draftNodes.set(index, {
+      node,
+      descriptor,
+      intendedBranch,
+      otherBranchRequiredFields: new Set(
+        branches
+          .filter((branch) => branch !== intendedBranch)
+          .flatMap((branch) => (Array.isArray(branch.required) ? branch.required.filter(isString) : [])),
+      ),
+    })
   }
   if (draftNodes.size === 0) return false
 
   return issues
     .filter((issue) => issue.blocking)
-    .every((issue) => draftIssueIsPermitted(issue, draftNodes, descriptorPaths, nodesPath, contract))
+    .every((issue) => draftIssueIsPermitted(issue, draftNodes, nodesPath, contract))
 }
 
 interface DescriptorPath {
@@ -547,6 +569,7 @@ interface DraftNode {
   readonly node: Record<string, unknown>
   readonly descriptor: DescriptorPath
   readonly intendedBranch: Record<string, unknown> | undefined
+  readonly otherBranchRequiredFields: ReadonlySet<string>
 }
 
 function descriptorPath(fieldPath: string): DescriptorPath | null {
@@ -567,7 +590,6 @@ function descriptorPath(fieldPath: string): DescriptorPath | null {
 function draftIssueIsPermitted(
   issue: ValidationIssue,
   draftNodes: ReadonlyMap<number, DraftNode>,
-  descriptors: readonly DescriptorPath[],
   nodesPath: readonly string[],
   contract: AuthoringContract,
 ): boolean {
@@ -578,7 +600,6 @@ function draftIssueIsPermitted(
   const draft = draftNodes.get(index)
   if (!draft) return false
   const relative = path.slice(nodesPath.length + 1)
-  const kindFields = new Set(descriptors.map(({ relativePath }) => relativePath[0]).filter(isString))
   const selectedKind = draft.descriptor.relativePath[0]
 
   if (issue.code === 'schema_one_of') {
@@ -608,7 +629,8 @@ function draftIssueIsPermitted(
   }
   // Required-kind errors from non-selected oneOf branches are branch noise;
   // required fields from the selected branch remain progressively fillable.
-  if (draft.intendedBranch && kindFields.has(relative[0]) && relative[0] !== selectedKind) return true
+  if (draft.intendedBranch && draft.otherBranchRequiredFields.has(relative[0]) && relative[0] !== selectedKind)
+    return true
   return Array.isArray(draft.intendedBranch?.required) && draft.intendedBranch.required.includes(relative[0])
 }
 

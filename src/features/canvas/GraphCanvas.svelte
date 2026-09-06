@@ -61,6 +61,8 @@
     transitionLocked?: boolean
     surfaceActive?: boolean
     issues?: readonly ValidationIssue[]
+    repairMode?: boolean
+    blankDraft?: boolean
     stale?: boolean
     staleSource?: 'current' | 'retained' | null
     readOnly?: boolean
@@ -98,6 +100,8 @@
     transitionLocked = false,
     surfaceActive = true,
     issues = [],
+    repairMode = false,
+    blankDraft = false,
     stale = false,
     staleSource = stale ? 'retained' : null,
     readOnly = false,
@@ -174,10 +178,12 @@
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
     canMutate: canAuthor(),
+    canRepair: repairMode && !readOnly && !transitionLocked,
     hasSelection: selection.length > 0,
     selectionCount: selection.length,
   }))
-  const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', canvasCommandContext))
+  const addCommandContext = $derived({ ...canvasCommandContext, canMutate: canAdd() })
+  const addCommand = $derived(resolveCommand(commandSurface, 'canvas.add-node', addCommandContext))
   const edgeCommand = $derived(resolveCommand(commandSurface, 'canvas.create-edge', canvasCommandContext))
   const duplicateCommand = $derived(resolveCommand(commandSurface, 'canvas.duplicate-selection', canvasCommandContext))
   const deleteCommand = $derived(resolveCommand(commandSurface, 'canvas.delete-selection', canvasCommandContext))
@@ -204,7 +210,10 @@
     command: { readonly id: string; readonly enabled: boolean } | undefined,
   ): Promise<CommandExecutionResult> | undefined {
     if (!command?.enabled) return undefined
-    return commandSurface.executeCommand(command.id, canvasCommandContext)
+    return commandSurface.executeCommand(
+      command.id,
+      command.id === 'canvas.add-node' ? addCommandContext : canvasCommandContext,
+    )
   }
 
   function executeToolbarId(id: string): Promise<CommandExecutionResult> | undefined {
@@ -702,6 +711,10 @@
     return !readOnly && !stale && !transitionLocked
   }
 
+  function canAdd(): boolean {
+    return !readOnly && !transitionLocked && (!stale || (blankDraft && projection.nodes.length === 0))
+  }
+
   export function viewportCenterPosition(): { x: number; y: number } {
     const zoom = flowViewport.zoom || 1
     return {
@@ -723,14 +736,12 @@
   }
 
   export function requestAdd(afterNodeId?: string): void {
-    if (!canAuthor() || !onRequestAdd) return
+    if (!canAdd() || !onRequestAdd) return
     void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenterPosition() })
   }
 
   function acceptsNodeDrop(event: DragEvent): boolean {
-    return (
-      canAuthor() && Boolean(event.dataTransfer && Array.from(event.dataTransfer.types).includes(NODE_KIND_DRAG_TYPE))
-    )
+    return canAdd() && Boolean(event.dataTransfer && Array.from(event.dataTransfer.types).includes(NODE_KIND_DRAG_TYPE))
   }
 
   function dragNodeKindOver(event: DragEvent): void {
@@ -756,7 +767,7 @@
     nodes: readonly { readonly id: string }[],
     edges: readonly { readonly source: string; readonly target: string }[],
   ): Promise<boolean> {
-    if (!canAuthor()) return false
+    if (readOnly || transitionLocked || (stale && !(repairMode && nodes.length > 0))) return false
     if (nodes.length > 0) {
       await onRequestDelete?.(nodes.map(({ id }) => id))
       return false
@@ -912,9 +923,13 @@
 
   {#if stale}
     <div class="stale-overlay" role="status" data-canvas-chrome>
-      {staleSource === 'current'
-        ? 'Current graph shown read-only while current YAML has structural errors.'
-        : 'Last valid graph shown read-only while current YAML has structural errors.'}
+      {blankDraft
+        ? 'Blank workflow draft. Add a node to begin; save and export remain blocked.'
+        : repairMode
+          ? 'Delete incomplete nodes or complete their required fields in the Inspector. Other canvas changes are paused.'
+          : staleSource === 'current'
+            ? 'Current graph shown read-only while current YAML has structural errors.'
+            : 'Last valid graph shown read-only while current YAML has structural errors.'}
     </div>
   {/if}
   {#if edgeSourceId}

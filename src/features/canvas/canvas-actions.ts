@@ -777,7 +777,7 @@ function analysisFailure(error: unknown): { readonly code: CanvasRejectionCode; 
 export async function commitPreparedDefinition(
   context: CanvasActionContext,
   text: string,
-  allowEmptyBody = false,
+  allowRepairDraft = false,
 ): Promise<CanvasActionResult> {
   const unavailable = validateActionContext(context)
   if (unavailable) return unavailable
@@ -815,7 +815,7 @@ export async function commitPreparedDefinition(
     const failure = analysisFailure(error)
     return reject(context, failure.code, failure.message)
   }
-  if (!analysis.structurallyValid && !(allowEmptyBody && context.scopeKey !== 'root' && analysis.visuallyAuthorable)) {
+  if (!analysis.structurallyValid && !(allowRepairDraft && analysis.visuallyAuthorable)) {
     const message = 'The proposed canvas mutation would make the workflow structurally invalid.'
     context.announce(message)
     return { status: 'rejected', code: 'mutation_invalid_workflow', message }
@@ -878,7 +878,7 @@ async function prepareAndCommitMultipleDeletes(
     if (!patched.ok) return reject(context, patched.code, patched.message)
     text = patched.texts.definition
   }
-  return commitPreparedDefinition(context, text, context.scopeKey !== 'root')
+  return commitPreparedDefinition(context, text, true)
 }
 
 export function graphContractFields(contract: AuthoringContract): GraphContractFields | null {

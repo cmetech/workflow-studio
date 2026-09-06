@@ -501,6 +501,69 @@ describe('GraphCanvas', () => {
     expect(screen.queryByText(/last valid graph/i)).not.toBeInTheDocument()
   })
 
+  it('allows deletion alone from an incomplete repair projection', async () => {
+    const onRequestDelete = vi.fn()
+    const onDisconnect = vi.fn()
+    const onRequestAdd = vi.fn()
+    const { component, container } = renderCanvas({
+      projection,
+      layout,
+      stale: true,
+      repairMode: true,
+      onRequestDelete,
+      onDisconnect,
+      onRequestAdd,
+    })
+    expect(screen.getByText(/delete incomplete nodes.*inspector/i)).toBeVisible()
+    const canvas = container.querySelector('[data-testid="workflow-canvas"]')!
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowbeforedelete', {
+        detail: { nodes: [{ id: 'review' }], edges: [{ source: 'collect', target: 'review' }] },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowbeforedelete', {
+        detail: { nodes: [], edges: [{ source: 'collect', target: 'review' }] },
+      }),
+    )
+    component.requestAdd()
+    setCanvasSelection(['review'])
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Delete Selection' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Duplicate Selection' })).toBeDisabled()
+    expect(onRequestDelete).toHaveBeenCalledExactlyOnceWith(['review'])
+    expect(onDisconnect).not.toHaveBeenCalled()
+    expect(onRequestAdd).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+  })
+
+  it('allows add and palette drop on an explicit blank draft while other mutations remain paused', async () => {
+    const onRequestAdd = vi.fn()
+    const onDropNodeKind = vi.fn()
+    const { component, container } = renderCanvas({
+      projection: { ...projection, nodes: [], edges: [], definitionOrder: [] },
+      layout,
+      stale: true,
+      blankDraft: true,
+      onRequestAdd,
+      onDropNodeKind,
+    })
+    expect(screen.getByText(/blank workflow draft.*add a node/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+    component.requestAdd()
+    await fireEvent.drop(container.querySelector('[data-testid="workflow-canvas-viewport"]')!, {
+      clientX: 100,
+      clientY: 100,
+      dataTransfer: { types: [NODE_KIND_DRAG_TYPE], getData: () => 'prompt' },
+    })
+    expect(onRequestAdd).toHaveBeenCalledOnce()
+    expect(onDropNodeKind).toHaveBeenCalledOnce()
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeDisabled()
+  })
+
   it('suppresses graph callbacks, palette drops, drag state, and layout persistence while stale', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)

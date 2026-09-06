@@ -44,11 +44,30 @@ export interface CanvasAuthoringCoordinator {
 
 export function createCanvasAuthoringCoordinator(dependencies: {
   readonly getContext: () => CanvasActionContext | CanvasAuthoringUnavailable
+  readonly getDeleteContext?: () => CanvasActionContext | CanvasAuthoringUnavailable
 }): CanvasAuthoringCoordinator {
   let clipboard: CanvasClipboard | null = null
 
-  const context = (): CanvasActionContext | CanvasUnavailableResult => {
-    const current = dependencies.getContext()
+  const context = (
+    operation: 'normal' | 'delete' | 'add' = 'normal',
+  ): CanvasActionContext | CanvasUnavailableResult => {
+    const current = (
+      operation === 'delete' ? (dependencies.getDeleteContext ?? dependencies.getContext) : dependencies.getContext
+    )()
+    if (
+      operation === 'normal' &&
+      !('unavailable' in current) &&
+      current.scopeKey === 'root' &&
+      current.graph.nodes.length === 0 &&
+      current.currentAnalysis?.visuallyAuthorable &&
+      !current.currentAnalysis.structurallyValid
+    ) {
+      return {
+        status: 'rejected',
+        code: 'canvas_action_unavailable',
+        message: 'Add the first node to rebuild this blank workflow draft.',
+      }
+    }
     return 'unavailable' in current
       ? { status: 'rejected', code: 'canvas_action_unavailable', message: current.unavailable }
       : (validateActionContext(current) ?? current)
@@ -64,7 +83,7 @@ export function createCanvasAuthoringCoordinator(dependencies: {
       return isUnavailable(current) ? current : disconnectNodes(current, sourceId, targetId)
     },
     async add(descriptor, request) {
-      const current = context()
+      const current = context('add')
       return isUnavailable(current) ? current : addNode(current, descriptor, request)
     },
     async duplicate(nodeIds) {
@@ -94,11 +113,11 @@ export function createCanvasAuthoringCoordinator(dependencies: {
       return pasteSelection(current, clipboard)
     },
     previewDelete(nodeIds) {
-      const current = context()
+      const current = context('delete')
       return isUnavailable(current) ? current : { status: 'ready', impact: previewDeleteNodes(current, nodeIds) }
     },
     async delete(impact) {
-      const current = context()
+      const current = context('delete')
       return isUnavailable(current) ? current : deleteNodes(current, impact)
     },
   }

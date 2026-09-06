@@ -336,3 +336,25 @@ describe('command registry', () => {
     }
   })
 })
+
+it('enables only deletion as a mutation in a repair-only canvas command context', () => {
+  const context: CommandContext = { surface: 'canvas', canMutate: false, canRepair: true, hasSelection: true }
+  const commands = listCommands()
+  expect(commands.find(({ id }) => id === 'canvas.delete-selection')!.enabled(context)).toBe(true)
+  for (const id of [
+    'canvas.add-node',
+    'canvas.duplicate-selection',
+    'canvas.paste-selection',
+    'canvas.create-edge',
+    'canvas.arrange',
+    'canvas.nudge-up',
+  ]) {
+    expect(commands.find((command) => command.id === id)!.enabled(context), id).toBe(false)
+  }
+  expect(commands.find(({ id }) => id === 'canvas.delete-selection')!.enabled({ ...context, canRepair: false })).toBe(
+    false,
+  )
+  expect(
+    commands.find(({ id }) => id === 'canvas.delete-selection')!.enabled({ ...context, hasSelection: false }),
+  ).toBe(false)
+})

@@ -435,7 +435,7 @@ test.describe('loop group visual authoring', () => {
     expect(visualBody.canvasScroll).not.toEqual(root.canvasScroll)
     expect(visualBody.problemsScroll).toBeGreaterThan(root.problemsScroll)
     await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: 'YAML' }).click()
+    await page.getByRole('button', { name: 'YAML', exact: true }).click()
     const yamlScroller = page.locator('[aria-label="Definition YAML"] .cm-scroller')
     await yamlScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
     await expect.poll(() => yamlScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
@@ -510,7 +510,7 @@ test.describe('loop group visual authoring', () => {
 
     const yamlIssue = page.locator('[data-issue-key*="e2e_yaml_fallback"] button').first()
     await yamlIssue.click()
-    await expect(page.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('button', { name: 'YAML', exact: true })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('textbox', { name: 'Definition YAML' })).toBeFocused()
     await expect(page.locator('[aria-label="Definition YAML"] .cm-activeLine')).toHaveText(
       'description: Repairable scoped findings with repeated child identifiers.',
@@ -625,7 +625,7 @@ test.describe('loop group visual authoring', () => {
     await expect(page.getByRole('region', { name: 'Documentation', exact: true })).toBeVisible()
     await page.getByRole('button', { name: /Back to Workflow/i }).click()
     await capacityIssue.locator('button').first().click()
-    await expect(page.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('button', { name: 'YAML', exact: true })).toHaveAttribute('aria-pressed', 'true')
     expect(await yamlSelection(page)).toEqual(await expectedIssueSelection(page, 'visual_capacity_exceeded'))
     expect((await activeScopeSnapshot(page)).activeScopeKey).toBe('loop-group:large-group')
     await page.getByRole('button', { name: 'Back to root workflow' }).click()

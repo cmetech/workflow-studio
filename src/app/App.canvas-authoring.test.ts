@@ -1290,11 +1290,81 @@ describe('App canvas authoring composition', () => {
       await waitFor(async () => expect(await bridge.layoutLoad()).not.toBeNull())
       const persisted = JSON.parse((await bridge.layoutLoad())!) as Array<{ layout: typeof active }>
       expect(persisted).toHaveLength(1)
-      expect(persisted[0]?.layout).toEqual(active)
+      expect(persisted[0]?.layout).toEqual({ ...active, collapsedPanels: { left: false, right: false } })
     } finally {
       rendered.unmount()
       Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
     }
+  })
+
+  it('deletes all root nodes into a blocked blank draft, undoes it, and adds its first node', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error('Expected bundled contract')
+    additionalContract = loaded.contract
+    const original =
+      '# keep\nname: Root repair\ndescription: Start over\nnodes:\n  - id: first\n    prompt: first\n  - id: second\n    prompt: second\n'
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: original,
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+    const deleteAll = async () => {
+      await fireEvent(
+        screen.getByRole('region', { name: 'Workflow graph' }),
+        new CustomEvent('workflowbeforedelete', { detail: { nodes: [{ id: 'first' }, { id: 'second' }], edges: [] } }),
+      )
+      await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
+    }
+    await deleteAll()
+    await waitFor(() => expect(screen.getByText(/blank workflow draft.*add a node/i)).toBeVisible())
+    expect($documentSession.get().analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect(historyStore.get().undo).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+    await fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toBe(original))
+    await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
+    await deleteAll()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
+    await fireEvent.click(await screen.findByRole('option', { name: /Prompt/ }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: prompt'))
+    expect(parse($documentSession.get().pair!.definition.text).nodes).toEqual([{ id: 'prompt', prompt: '' }])
+    rendered.unmount()
+  })
+
+  it('allows deleting an incomplete projected node with current analysis while other mutations remain paused', async () => {
+    const draftText = `${source}  - id: command\n    command: ""\n`
+    const rendered = await renderAuthoringApp({ text: draftText })
+    receiveDocumentAnalysis({
+      ...$documentSession.get().revision!,
+      structurallyValid: false,
+      visuallyAuthorable: true,
+      issues: [
+        {
+          code: 'schema_min_length',
+          layer: 'contract',
+          severity: 'error',
+          blocking: true,
+          message: 'Command required.',
+          document: 'definition',
+          path: '/nodes/2/command',
+        },
+      ],
+      projection: projection(draftText),
+    })
+    await tick()
+    expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+    setCanvasSelection(['command'])
+    await tick()
+    await fireEvent.keyDown(screen.getByRole('region', { name: 'Workflow graph' }), { key: 'Backspace' })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Delete nodes' }))
+    await waitFor(() => expect($documentSession.get().pair?.definition.text).toBe(source))
+    expect(historyStore.get().undo).toHaveLength(1)
+    rendered.unmount()
   })
 
   it('keeps an incomplete projected node canvas-read-only while Inspector repairs it and valid analysis resumes authoring', async () => {
@@ -1323,7 +1393,7 @@ describe('App canvas authoring composition', () => {
     await tick()
 
     expect(screen.getByLabelText('command node command')).toBeVisible()
-    expect(screen.getByText(/current graph.*read-only/i)).toBeVisible()
+    expect(screen.getByText(/delete incomplete nodes.*inspector/i)).toBeVisible()
     expect(screen.queryByText(/last valid graph/i)).not.toBeInTheDocument()
     const commandField = await screen.findByRole('textbox', { name: 'Command' })
     expect(commandField).toBeEnabled()
@@ -1367,7 +1437,7 @@ describe('App canvas authoring composition', () => {
       issues: [],
       projection: projection(repairedText),
     })
-    await waitFor(() => expect(screen.queryByText(/current graph.*read-only/i)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/delete incomplete nodes.*inspector/i)).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
 
     await fireEvent(

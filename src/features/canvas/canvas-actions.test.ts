@@ -284,7 +284,7 @@ describe('canvas YAML actions', () => {
         revision: createDocumentRevision(activePair, contract.contract_digest),
       }),
       applyMutation: vi.fn(() => pending.shift()!.promise),
-      commit: vi.fn((next: WorkflowPairText) => {
+      commit: vi.fn<CanvasActionContext['commit']>((next) => {
         activePair = next
       }),
     }
@@ -322,7 +322,7 @@ describe('canvas YAML actions', () => {
         revision: createDocumentRevision(activePair, contract.contract_digest),
       }),
       applyMutation: vi.fn(() => analysis.promise),
-      commit: vi.fn((next: WorkflowPairText) => {
+      commit: vi.fn<CanvasActionContext['commit']>((next) => {
         activePair = next
       }),
     }
@@ -391,7 +391,7 @@ describe('canvas YAML actions', () => {
       revision: baseRevision,
       getCurrentSnapshot: () => ({ pair: activePair, revision: baseRevision, scopeKey: 'root' as const }),
       applyMutation: vi.fn(() => analysis.promise),
-      commit: vi.fn((next: WorkflowPairText) => {
+      commit: vi.fn<CanvasActionContext['commit']>((next) => {
         activePair = next
       }),
     }
@@ -943,7 +943,7 @@ async function scopedContext(
       revision: createDocumentRevision(current, activeContract.contract_digest),
       scopeKey: scope,
     }),
-    commit: vi.fn((next: WorkflowPairText) => {
+    commit: vi.fn<CanvasActionContext['commit']>((next) => {
       current = next as typeof current
     }),
     commitPositions: vi.fn(),
@@ -1262,4 +1262,56 @@ nodes:
 
   expect(result, JSON.stringify(result)).toMatchObject({ status: 'committed', nodeId: 'prompt' })
   expect(parse(fixture.current().definition.text).nodes[3].loop_group.nodes).toEqual([{ id: 'prompt', prompt: '' }])
+})
+
+it.each([true, false])(
+  'deletes all root nodes into one prevalidated blank transaction (newline %s)',
+  async (newline) => {
+    const text =
+      '# keep metadata\nname: "Canvas actions"\ndescription: Action fixture\ntags: [retained]\nnodes:\n  - id: first\n    prompt: first\n  - id: second\n    prompt: second' +
+      (newline ? '\n' : '')
+    const fixture = await scopedContext('root', text, 'language_compatibility: archon-2026-07\n')
+    const result = await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['first', 'second']))
+    expect(result).toMatchObject({ status: 'committed' })
+    expect(fixture.current().definition.text).toBe(
+      '# keep metadata\nname: "Canvas actions"\ndescription: Action fixture\ntags: [retained]\nnodes:\n  []' +
+        (newline ? '\n' : ''),
+    )
+    expect(fixture.context.commit).toHaveBeenCalledOnce()
+    expect(vi.mocked(fixture.context.commit).mock.calls[0]?.[2]).toMatchObject({
+      structurallyValid: false,
+      visuallyAuthorable: true,
+    })
+    expect(fixture.current().companion).toEqual(fixture.context.pair.companion)
+  },
+)
+
+it('progressively deletes an incomplete root node while another remains, then rebuilds a blank root', async () => {
+  const text =
+    'name: Repair\ndescription: Repair incomplete nodes\nnodes:\n  - id: first\n    prompt: ""\n  - id: second\n    prompt: ""\n'
+  const fixture = await scopedContext('root', text, 'language_compatibility: archon-2026-07\n', false)
+  expect(await deleteNodes(fixture.context, previewDeleteNodes(fixture.context, ['first']))).toMatchObject({
+    status: 'committed',
+  })
+  expect(parsedNodes(fixture.current().definition.text)).toEqual([{ id: 'second', prompt: '' }])
+  const last = await scopedContext(
+    'root',
+    fixture.current().definition.text,
+    'language_compatibility: archon-2026-07\n',
+    false,
+  )
+  expect(await deleteNodes(last.context, previewDeleteNodes(last.context, ['second']))).toMatchObject({
+    status: 'committed',
+  })
+  const blank = await scopedContext(
+    'root',
+    last.current().definition.text,
+    'language_compatibility: archon-2026-07\n',
+    false,
+  )
+  const descriptor = blank.context.contract.node_kinds.find(({ id }) => id === 'prompt')!
+  expect(await addNode(blank.context, descriptor, { viewportCenter: { x: 50, y: 80 } })).toMatchObject({
+    status: 'committed',
+  })
+  expect(parsedNodes(blank.current().definition.text)).toEqual([{ id: 'prompt', prompt: '' }])
 })

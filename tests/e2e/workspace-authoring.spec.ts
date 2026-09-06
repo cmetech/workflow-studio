@@ -738,3 +738,57 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   const staleDash = await stalePath.evaluate((path) => getComputedStyle(path).strokeDasharray)
   expect(staleDash.replaceAll('px', '').replaceAll(',', '').trim().replace(/\s+/g, ' ')).toBe('5 4')
 })
+
+test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and reopens', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await openSeededPair(page)
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
+  const deleteAll = async () => {
+    const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+    await prepare.focus()
+    await prepare.press('Enter')
+    await page.getByRole('group', { name: 'command node publish', exact: true }).click({ modifiers: [modifier] })
+    await page.getByRole('button', { name: 'More canvas actions' }).click()
+    await page.getByRole('menuitem', { name: 'Delete Selection' }).click()
+    await page
+      .getByRole('dialog', { name: 'Delete selected nodes' })
+      .getByRole('button', { name: 'Delete nodes' })
+      .click()
+    await expect(page.getByText(/blank workflow draft.*add a node/i)).toBeVisible()
+  }
+  await deleteAll()
+  const blank = SEEDED_YAML.slice(0, SEEDED_YAML.indexOf('  - id:')) + '  []\n'
+  await expectAuthoritativeYaml(page, blank)
+  await page.getByRole('button', { name: 'Save workflow' }).click()
+  await expect(page.getByRole('alert').filter({ hasText: /Save blocked/i })).toBeVisible()
+  await page.keyboard.press(`${modifier}+z`)
+  await expectAuthoritativeYaml(page, SEEDED_YAML)
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+  await deleteAll()
+  await page.getByRole('button', { name: 'Add Node' }).click()
+  await page
+    .getByRole('dialog', { name: 'Add node' })
+    .getByRole('option', { name: /Prompt/ })
+    .click()
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+  const promptNode = page.getByRole('group', { name: 'prompt node prompt', exact: true })
+  await promptNode.focus()
+  await promptNode.press('Enter')
+  const prompt = page.getByRole('textbox', { name: /Prompt.*Required/i })
+  await prompt.fill('Rebuilt workflow.')
+  await page.getByRole('button', { name: 'Apply Prompt' }).click()
+  await expect(page.getByRole('button', { name: 'Add Node' })).toBeEnabled()
+  const rebuilt = (await e2eSnapshot(page)).definitionText
+  await page.getByRole('button', { name: 'Save workflow' }).click()
+  await expect(page.getByRole('status', { name: 'Document save status' })).toHaveText('Saved')
+  await page.getByRole('button', { name: 'Examples', exact: true }).click()
+  await page
+    .getByRole('button', { name: /^Create Editable Copy:/ })
+    .first()
+    .click()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+  await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+  await page.getByRole('treeitem', { name: /release-demo.yaml, paired workflow/i }).click()
+  await expectAuthoritativeYaml(page, rebuilt)
+  await expect(page.getByRole('group', { name: 'prompt node prompt', exact: true })).toBeVisible()
+})

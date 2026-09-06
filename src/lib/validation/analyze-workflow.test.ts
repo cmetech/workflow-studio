@@ -758,6 +758,99 @@ describe('workflow pair analysis', () => {
     ])
   })
 
+  it('projects an incomplete Script using the bundled kind branch and required runtime metadata', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error('Expected bundled contract')
+    const analysis = await analyzeWorkflowPair(
+      request(
+        loaded.contract,
+        'name: Script repair\ndescription: Delete incomplete script\nnodes:\n  - id: script\n    script: ""\n',
+        'language_compatibility: archon-2026-07\n',
+      ),
+      loaded.contract,
+    )
+    expect(analysis, JSON.stringify(analysis.issues)).toMatchObject({
+      structurallyValid: false,
+      visuallyAuthorable: true,
+    })
+  })
+
+  it.each([
+    '    surprise: true\n',
+    '    runtime: unknown\n',
+    '    depends_on: [missing]\n',
+    '    depends_on: [script]\n',
+    '    when: "$missing.output"\n',
+  ])('does not let Script branch noise hide an authored defect: %s', async (extra) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error('Expected bundled contract')
+    const analysis = await analyzeWorkflowPair(
+      request(
+        loaded.contract,
+        'name: Script repair\ndescription: Reject defects\nnodes:\n  - id: script\n    script: ""\n' + extra,
+        'language_compatibility: archon-2026-07\n',
+      ),
+      loaded.contract,
+    )
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it('does not authorize a blank draft under an unsupported imported schema', async () => {
+    const activeContract = importedComposedContract()
+    activeContract.definition_schema = { $ref: 'https://invalid.example/schema.json' }
+    const analysis = await analyzeWorkflowPair(
+      request(activeContract, 'name: Blank\ndescription: Blank\nnodes: []\n'),
+      activeContract,
+    )
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it('projects an exact empty root as a save-blocked blank draft', async () => {
+    const activeContract = importedComposedContract()
+    const analysis = await analyzeWorkflowPair(
+      request(activeContract, 'name: Blank\ndescription: Start over\nnodes: []\n'),
+      activeContract,
+    )
+    expect(analysis).toMatchObject({
+      structurallyValid: false,
+      visuallyAuthorable: true,
+      issues: [expect.objectContaining({ code: 'schema_min_items', path: '/nodes', blocking: true })],
+    })
+    expect(analysis.projection).toMatchObject({ graphs: [expect.objectContaining({ nodes: [], edges: [] })] })
+  })
+
+  it.each([
+    'name: Blank\nnodes: []\n',
+    'name: Blank\ndescription: Start over\n',
+    'name: Blank\ndescription: Start over\nnodes: {}\n',
+    'name: Blank\ndescription: Start over\nnodes: []\nsurprise: true\n',
+  ])('does not authorize a blank root with other defects: %s', async (text) => {
+    const activeContract = importedComposedContract()
+    const analysis = await analyzeWorkflowPair(request(activeContract, text), activeContract)
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
+  it('does not authorize a blank root with mismatched contract identity', async () => {
+    const activeContract = importedComposedContract()
+    const input = request(
+      activeContract,
+      'name: Blank\ndescription: Start over\nnodes: []\n',
+      'language_compatibility: archon-2026-07\n',
+    )
+    const analysis = await analyzeWorkflowPair(input, activeContract)
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+  })
+
   it.each([
     ['a scalar kind draft', '  - id: command\n    command: ""\n', 'command'],
     ['an object kind draft', '  - id: loop\n    loop: {}\n', 'loop'],
