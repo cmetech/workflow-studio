@@ -64,6 +64,7 @@ describe('layout app-data store', () => {
           selectedNodeIds: [],
           inspector: { tab: 'General', scrollTop: 0 },
           canvasScroll: { left: 0, top: 0 },
+          problemsScroll: 0,
         },
       },
     })
@@ -88,6 +89,7 @@ describe('layout app-data store', () => {
         focusTarget: { kind: 'node', nodeId: 'child' },
         inspector: { tab: 'Advanced', scrollTop: x + 2 },
         canvasScroll: { left: x + 3, top: x + 4 },
+        problemsScroll: x + 5,
       }
     }
     await store.saveLayout(layout, hashes)

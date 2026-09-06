@@ -697,7 +697,38 @@ describe('App canvas authoring composition', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
     await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveFocus())
+    const moreActions = screen.getByRole('button', { name: 'More canvas actions' })
+    moreActions.focus()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    expect(moreActions).toHaveFocus()
     expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
+    rendered.unmount()
+  })
+
+  it('keeps a selected root loop group Inspector bounded to owner fields', async () => {
+    const loadedContract = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loadedContract.ok) throw new Error('Bundled Archon contract did not activate')
+    additionalContract = loadedContract.contract
+    const body = Array.from(
+      { length: 3 },
+      (_, index) => `        - id: child-${String(index).padStart(3, '0')}\n          prompt: Work ${index}\n`,
+    ).join('')
+    const rendered = await renderAuthoringApp({
+      scopeContract: additionalContract,
+      text: `name: Scoped\ndescription: Bounded group Inspector\nnodes:\n  - id: repeat\n    loop_group:\n      until: "false"\n      max_iterations: 2\n      nodes:\n${body}`,
+      companionText: 'language_compatibility: archon-2026-07\n',
+    })
+
+    setCanvasSelection(['repeat'])
+    await tick()
+
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' })
+    await fireEvent.click(within(inspector).getByRole('tab', { name: 'Advanced' }))
+    expect(within(inspector).getByRole('spinbutton', { name: /loop group max iterations/i })).toBeVisible()
+    expect(rendered.container.querySelector('[data-field-pointer^="/nodes/0/loop_group/nodes/"]')).toBeNull()
     rendered.unmount()
   })
 

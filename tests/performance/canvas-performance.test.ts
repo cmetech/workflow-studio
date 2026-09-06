@@ -339,6 +339,7 @@ describe('250-node canvas performance contract', () => {
     const atLimit = canvasCapacityForProjection(fixture.projection)
     const overLimit = canvasCapacityForProjection({
       ...fixture.projection,
+      capacity: { status: 'yaml-only', nodeCount: 251, edgeCount: 500 },
       nodes: [
         ...fixture.projection.nodes,
         {

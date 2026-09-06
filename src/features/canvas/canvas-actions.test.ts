@@ -897,6 +897,7 @@ async function scopedContext(
   scopeKey: import('$src/lib/projection/types').GraphScopeKey = 'loop-group:repeat',
   text = scopedSource,
   companion = 'language_compatibility: archon-2026-07\noutward_action_nodes: [repeat/child, sibling/child]\n',
+  expectedValidity = true,
 ) {
   const contracts = await loadBundledAuthoringContracts()
   const activeContract = contracts.find((candidate) => candidate.profile === 'archon-2026-07')!
@@ -925,7 +926,7 @@ async function scopedContext(
     },
     activeContract,
   )
-  expect(analysis.structurallyValid, JSON.stringify(analysis.issues)).toBe(true)
+  expect(analysis.structurallyValid, JSON.stringify(analysis.issues)).toBe(expectedValidity)
   const projection = analysis.projection as WorkflowProjection
   const context = {
     pair: current,
@@ -1213,4 +1214,52 @@ it('adds an allowed node kind to the active body without inserting a root node',
   const nodes = parse(fixture.current().definition.text).nodes
   expect(nodes.some((node: { id: string }) => node.id === 'bash')).toBe(false)
   expect(nodes[2].loop_group.nodes.some((node: { id: string }) => node.id === 'bash')).toBe(true)
+})
+
+it('adds the first incomplete node only to an explicit repairable empty body', async () => {
+  const text = `# retained authoring fixture comment
+name: Loop group authoring
+description: "Preserve quoted style while editing"
+tags: [e2e, retained]
+nodes:
+  - id: seed
+    prompt: |
+      Prepare the outer seed.
+  - id: refine
+    depends_on: [seed]
+    loop_group:
+      until: complete
+      max_iterations: 2
+      nodes:
+        - id: draft
+          prompt: Draft a concise summary.
+        - id: review
+          depends_on: [draft]
+          prompt: Review the body outputs.
+  - id: polish
+    loop_group:
+      until: complete
+      max_iterations: 3
+      nodes:
+        - id: draft
+          prompt: Draft within the sibling scope.
+        - id: finish
+          depends_on: [draft]
+          prompt: Finish $draft.output
+  - id: loop_group
+    loop_group:
+      nodes: []
+`
+  const fixture = await scopedContext(
+    'loop-group:loop_group',
+    text,
+    'language_compatibility: archon-2026-07\ntags: [example, loop-group]\n',
+    false,
+  )
+  const descriptor = fixture.context.contract.node_kinds.find((node) => node.id === 'prompt')!
+
+  const result = await addNode(fixture.context, descriptor, { viewportCenter: { x: 0, y: 0 } })
+
+  expect(result, JSON.stringify(result)).toMatchObject({ status: 'committed', nodeId: 'prompt' })
+  expect(parse(fixture.current().definition.text).nodes[3].loop_group.nodes).toEqual([{ id: 'prompt', prompt: '' }])
 })

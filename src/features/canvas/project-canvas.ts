@@ -261,7 +261,7 @@ export function projectCanvas(
       data: {
         id: node.id,
         kind: node.kind,
-        summary: boundedSummary(node.value),
+        summary: compound ? '' : boundedSummary(node.value),
         errorCount: renderedErrorCount,
         requiredIssueCount: renderedRequiredIssueCount,
         stale,

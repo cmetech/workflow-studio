@@ -61,6 +61,8 @@ export interface ScopeLayoutV1 {
   focusTarget?: CanvasFocusTarget
   inspector: InspectorLayout
   canvasScroll: { left: number; top: number }
+  /** Added compatibly to v2 records; readers default an omitted value to zero. */
+  problemsScroll?: number
 }
 export interface LayoutRecordV2 {
   schemaVersion: 2
@@ -80,5 +82,6 @@ export function emptyScopeLayout(): ScopeLayoutV1 {
     selectedNodeIds: [],
     inspector: { tab: 'General', scrollTop: 0 },
     canvasScroll: { left: 0, top: 0 },
+    problemsScroll: 0,
   }
 }

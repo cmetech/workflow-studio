@@ -203,6 +203,37 @@ describe('projectCanvas', () => {
     })
   })
 
+  it('does not traverse a compound node body while projecting its bounded canvas summary', () => {
+    const readBody = vi.fn(() => [])
+    const value = Object.defineProperty({ max_iterations: 2 }, 'nodes', {
+      enumerable: true,
+      get: readBody,
+    })
+    const groupProjection: ProjectedGraph = {
+      ...projection,
+      nodes: [{ ...projection.nodes[0]!, id: 'repeat', kind: 'loop_group', value }],
+      edges: [],
+      definitionOrder: ['repeat'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+
+    const canvas = projectCanvas(
+      groupProjection,
+      { ...savedLayout, nodePositions: { repeat: { x: 0, y: 0 } } },
+      {
+        groupSummaries: {
+          repeat: { bodyNodeCount: 250, maxIterations: 2, primarySinkId: 'work', errorCount: 0, requiredIssueCount: 0 },
+        },
+      },
+    )
+
+    expect(canvas.nodes[0]?.data).toMatchObject({
+      summary: '',
+      compound: { bodyNodeCount: 250, maxIterations: 2, primarySinkId: 'work' },
+    })
+    expect(readBody).not.toHaveBeenCalled()
+  })
+
   it('qualifies body node names and diagnostic counts by their loop group', () => {
     const body: ProjectedGraph = {
       ...projection,

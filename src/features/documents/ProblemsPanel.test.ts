@@ -28,6 +28,28 @@ const issues: readonly ValidationIssue[] = [
 ]
 
 describe('ProblemsPanel', () => {
+  it('publishes scroll changes and restores the active scope offset', async () => {
+    const onScroll = vi.fn()
+    const { container, rerender } = render(ProblemsPanel, {
+      issues,
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      scrollTop: 17,
+      onScroll,
+    })
+    const owner = container.querySelector<HTMLElement>('[data-scroll-owner="problems"]')!
+    expect(owner.scrollTop).toBe(17)
+    owner.scrollTop = 29
+    await fireEvent.scroll(owner)
+    expect(onScroll).toHaveBeenLastCalledWith(29)
+    await rerender({
+      issues,
+      paths: { definition: 'flow.yaml', companion: 'flow.hermes.yaml' },
+      scrollTop: 43,
+      onScroll,
+    })
+    expect(owner.scrollTop).toBe(43)
+  })
+
   it('groups by file and layer, exposes blocking status, and announces only the summary politely', async () => {
     const { container } = render(ProblemsPanel, {
       issues,

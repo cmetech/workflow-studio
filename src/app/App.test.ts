@@ -1318,14 +1318,16 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    const problem = screen.getByRole('button', { name: /add at least one node/i })
-    await fireEvent.click(problem)
+    const documentation = screen.getByRole('button', {
+      name: 'Open documentation for Add at least one node.',
+    })
+    await fireEvent.click(documentation)
     await screen.findByRole('region', { name: 'Documentation' })
     expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
 
-    await waitFor(() => expect(problem).toHaveFocus())
+    await waitFor(() => expect(documentation).toHaveFocus())
   })
 
   it('mounts the local Git activity view from feature-owned Git state', async () => {
@@ -1747,7 +1749,9 @@ nodes:
     expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('tab', { name: 'Definition YAML' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('textbox', { name: 'Definition YAML' })).toHaveFocus()
-    expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false })
+    await waitFor(() =>
+      expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false }),
+    )
   })
 
   it('publishes each unified visual undo once through the authoritative document boundary', async () => {

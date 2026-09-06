@@ -1187,6 +1187,169 @@ describe('workflow pair analysis', () => {
     expect(analysis.issues).toEqual([expect.objectContaining({ code: 'loop_group_shape_invalid', groupId: 'empty' })])
   })
 
+  it('keeps one incomplete selected-kind field in a loop-group body visually repairable', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Scoped node draft',
+      'description: Repair the selected prompt kind in its body.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: draft',
+      '          prompt: ""',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect(analysis.issues.filter(({ blocking }) => blocking)).toEqual([
+      expect.objectContaining({ code: 'schema_min_length', path: '/nodes/0/loop_group/nodes/0/prompt' }),
+    ])
+    expect(
+      (analysis.projection as WorkflowProjection | undefined)?.graphs.find(
+        ({ scope }) => scope.key === 'loop-group:group',
+      )?.nodes,
+    ).toContainEqual(expect.objectContaining({ id: 'draft', kind: 'prompt', value: '' }))
+  })
+
+  it('keeps one incomplete selected-kind child repairable while its empty-group controls are still absent', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Scoped first-child draft',
+      'description: Repair either advertised empty-group action first.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      nodes:',
+      '        - id: draft',
+      '          prompt: ""',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect(analysis.issues.filter(({ blocking }) => blocking)).toEqual([
+      expect.objectContaining({ code: 'loop_group_shape_invalid', groupId: 'group' }),
+    ])
+  })
+
+  it('keeps an incomplete child in a newly appended loop-group body visually repairable', async () => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Appended scoped node draft',
+      'description: Repair the selected prompt kind after existing root nodes.',
+      'nodes:',
+      '  - id: first',
+      '    prompt: Ready.',
+      '  - id: second',
+      '    prompt: Ready.',
+      '  - id: third',
+      '    prompt: Ready.',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      '        - id: draft',
+      '          prompt: ""',
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false, visuallyAuthorable: true })
+    expect(analysis.issues.filter(({ blocking }) => blocking)).toEqual([
+      expect.objectContaining({ code: 'schema_min_length', path: '/nodes/3/loop_group/nodes/0/prompt' }),
+    ])
+  })
+
+  it.each([
+    [
+      'an unknown child field',
+      ['        - id: draft', '          prompt: ""', '          surprise: true'],
+      'schema_additional_properties',
+    ],
+    [
+      'a scoped dependency cycle',
+      [
+        '        - id: first',
+        '          prompt: ""',
+        '          depends_on: [second]',
+        '        - id: second',
+        '          prompt: ready',
+        '          depends_on: [first]',
+      ],
+      'loop_group_topology_invalid',
+    ],
+    [
+      'a nested loop group',
+      [
+        '        - id: nested',
+        '          loop_group:',
+        '            until: done',
+        '            max_iterations: 1',
+        '            nodes:',
+        '              - id: work',
+        '                prompt: Work.',
+      ],
+      'loop_group_shape_invalid',
+    ],
+  ])('does not broaden scoped draft admission to %s', async (_case, body, issueCode) => {
+    const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
+      kind: 'bundled',
+      identifier: 'archon-2026-07-v6.json',
+    })
+    if (!loaded.ok) throw new Error(loaded.message)
+    const definition = [
+      'name: Rejected scoped draft',
+      'description: Keep unrelated invalid body states blocking.',
+      'nodes:',
+      '  - id: group',
+      '    loop_group:',
+      '      until: done',
+      '      max_iterations: 1',
+      '      nodes:',
+      ...body,
+      '',
+    ].join('\n')
+
+    const analysis = await analyzeWorkflowPair(
+      request(loaded.contract, definition, 'language_compatibility: archon-2026-07\n'),
+      loaded.contract,
+    )
+
+    expect(analysis).toMatchObject({ structurallyValid: false })
+    expect(analysis.visuallyAuthorable).not.toBe(true)
+    expect(analysis.projection).toBeUndefined()
+    expect(analysis.issues.map(({ code }) => code)).toContain(issueCode)
+  })
+
   it('does not let an empty group draft mask a separate invalid nonempty group', async () => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(archonContractText), {
       kind: 'bundled',

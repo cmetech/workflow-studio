@@ -4,6 +4,7 @@ import { commandRegistry } from '$src/lib/commands/registry'
 import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
+import { VISUAL_NODE_CAPACITY } from '$src/lib/projection/types'
 
 vi.mock('@xyflow/svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xyflow/svelte')>()
@@ -75,5 +76,42 @@ describe('GraphCanvas Svelte Flow boundary', () => {
       'data-received-pan-on-drag',
       String(CANVAS_PAN_INTERACTION.panOnDrag),
     )
+  })
+
+  it('mounts a newly admitted small draft while retaining visible-only rendering at the capacity boundary', () => {
+    const projectionWithCount = (nodeCount: number): ProjectedGraph => {
+      const nodes = Array.from({ length: nodeCount }, (_, index) => ({
+        id: `node-${index}`,
+        kind: 'prompt',
+        value: `Node ${index}`,
+        dependsOn: [],
+        options: {},
+        source: { path: `/nodes/${index}`, start: index, end: index + 1 },
+      }))
+      return {
+        ...projection,
+        nodes,
+        definitionOrder: nodes.map(({ id }) => id),
+        capacity: { status: 'visual', nodeCount, edgeCount: 0 },
+      }
+    }
+
+    const small = render(GraphCanvas, {
+      commandSurface: commandRegistry,
+      projection: projectionWithCount(1),
+      layout,
+    } as never)
+    expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-visible-only', 'false')
+    small.unmount()
+
+    for (const nodeCount of [2, VISUAL_NODE_CAPACITY - 1, VISUAL_NODE_CAPACITY]) {
+      const virtualized = render(GraphCanvas, {
+        commandSurface: commandRegistry,
+        projection: projectionWithCount(nodeCount),
+        layout,
+      } as never)
+      expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-visible-only', 'true')
+      virtualized.unmount()
+    }
   })
 })

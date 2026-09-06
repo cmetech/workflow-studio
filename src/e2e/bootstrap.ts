@@ -13,8 +13,15 @@ import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/met
 import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
 import { isAnalysisCurrent } from '$src/lib/documents/revisions'
 import { $activeLayout } from '$src/stores/layout'
-import { $documentSession } from '$src/stores/documents'
+import { $documentSession, receiveDocumentAnalysis } from '$src/stores/documents'
 import { historyStore } from '$src/stores/history'
+import {
+  bundledLoopGroupExamples,
+  createOversizedBodyFixture,
+  createScopedCapacityFixture,
+} from '$src/e2e/loop-group-fixtures'
+import type { GraphScopeKey } from '$src/lib/projection/types'
+import type { LayoutRecordV2 } from '$src/lib/layout/types'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
@@ -134,6 +141,14 @@ function capacityLayout() {
     updatedAt: '2026-08-30T00:00:00.000Z',
   }
 }
+
+export function installApplicationReadiness(readiness: {
+  readonly flushRecoveryPersistence: () => Promise<void>
+}): void {
+  if (!window.__WORKFLOW_STUDIO_E2E__) throw new Error('E2E fixture controls were not installed.')
+  window.__WORKFLOW_STUDIO_E2E__.flushRecoveryPersistence = readiness.flushRecoveryPersistence
+}
+
 const AUTHORING_FILES = {
   [DEFINITION_PATH]: `name: Release demo
 description: Verify the complete authoring path.
@@ -171,6 +186,8 @@ interface E2EState {
   readonly activeBrandId: string
   readonly definitionText: string
   readonly definitionRevision: number
+  readonly analysisDefinitionRevision: number | null
+  readonly analysisIssues: readonly { readonly code: string; readonly line?: number; readonly column?: number }[]
   readonly undoDepth: number
   readonly companionText: string
   readonly workspacePaths: readonly string[]
@@ -194,6 +211,21 @@ interface PersistedLayoutProbe {
   readonly position: { readonly x: number; readonly y: number } | null
 }
 
+interface E2EScopeSnapshot {
+  readonly workflowId: string | null
+  readonly definitionRevision: number
+  readonly activeScopeKey: GraphScopeKey | null
+  readonly selectedNodeIds: readonly string[]
+  readonly viewport: { readonly x: number; readonly y: number; readonly zoom: number } | null
+  readonly positions: Readonly<Record<string, { readonly x: number; readonly y: number }>>
+  readonly focusTarget: Readonly<Record<string, unknown>> | null
+  readonly inspector: { readonly tab: string; readonly scrollTop: number } | null
+  readonly canvasScroll: { readonly left: number; readonly top: number } | null
+  readonly yamlScroll: number
+  readonly problemsScroll: number
+  readonly mountedSvelteFlowCount: number
+}
+
 declare global {
   interface Window {
     __WORKFLOW_STUDIO_E2E__?: {
@@ -204,6 +236,19 @@ declare global {
       prepareCapacityConnection(): Promise<void>
       metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']>
       resetMetrics(): void
+      scopeSnapshot(): E2EScopeSnapshot
+      projectionScopes(): readonly {
+        readonly scopeKey: GraphScopeKey
+        readonly nodeCount: number
+        readonly edgeCount: number
+        readonly capacity: 'visual' | 'yaml-only'
+      }[]
+      persistedScopeLayout(scopeKey: GraphScopeKey): {
+        readonly saveCount: number
+        readonly scope: LayoutRecordV2['scopeLayouts'][GraphScopeKey] | null
+      }
+      prepareScopedConnection(scopeKey: GraphScopeKey, source: string, target: string): Promise<void>
+      flushRecoveryPersistence(): Promise<void>
     }
   }
 }
@@ -287,31 +332,107 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 export async function installRuntimeBootstrap(): Promise<void> {
   const scenario = new URLSearchParams(location.search).get('scenario') ?? 'authoring'
+  const scopedCapacityFixture = scenario === 'loop-group-scoped-capacity' ? createScopedCapacityFixture() : null
+  const oversizedBodyFixture = scenario === 'loop-group-oversized-body' ? createOversizedBodyFixture() : null
+  const loopGroupAuthoringDefinition = `${bundledLoopGroupExamples.iterationContext.definition}  # retained visual-authoring augmentation
+  - id: polish
+    depends_on: [seed]
+    loop_group:
+      until: complete
+      max_iterations: 3
+      nodes:
+        - id: draft
+          prompt: |-
+            Draft a concise summary.
+          provider: &retained_provider "deterministic-provider"
+        - id: review
+          depends_on: [draft]
+          prompt: Review the body outputs.
+          provider: *retained_provider
+          model: retained-model
+`
+  const scopedProblemsDefinition = `name: Scoped loop group problems
+description: Repairable scoped findings with repeated child identifiers.
+nodes:
+  - id: refine
+    loop_group:
+      until: complete
+      max_iterations: 2
+      nodes:
+        - id: draft
+          prompt: Refine this draft.
+  - id: polish
+    loop_group:
+      until: complete
+      max_iterations: 2
+      nodes:
+        - id: draft
+          prompt: Polish this draft.
+`
+  const emptyDraftDefinition = `name: Empty loop group draft
+description: Repair the empty group visually.
+nodes:
+  - id: empty
+    loop_group:
+      nodes: []
+`
   const largeCanvasLayout = scenario === 'large-canvas' ? capacityLayout() : null
   const metrics = createEditorMetricsCollector()
   installEditorMetrics(metrics)
   const largeCanvasDefinition = largeCanvasLayout
     ? `${Array.from({ length: 8 }, (_, index) => `future_large_canvas_finding_${index + 1}: retained`).join('\n')}\n${capacityWorkflowYaml()}`
     : null
-  const initialFiles = largeCanvasLayout
+  const loopGroupFiles = scopedCapacityFixture
     ? {
-        ...AUTHORING_FILES,
-        [DEFINITION_PATH]: largeCanvasDefinition!,
-        [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+        [DEFINITION_PATH]: scopedCapacityFixture.definition,
+        [COMPANION_PATH]: scopedCapacityFixture.companion,
       }
-    : scenario === 'long-create-version'
+    : oversizedBodyFixture
+      ? {
+          [DEFINITION_PATH]: oversizedBodyFixture.definition,
+          [COMPANION_PATH]: oversizedBodyFixture.companion,
+        }
+      : scenario === 'loop-group-authoring' || scenario === 'loop-group-state-restoration'
+        ? {
+            [DEFINITION_PATH]: loopGroupAuthoringDefinition,
+            [COMPANION_PATH]: bundledLoopGroupExamples.iterationContext.companion,
+            'workflows/other.yaml': bundledLoopGroupExamples.currentOutput.definition,
+            'workflows/other.hermes.yaml': bundledLoopGroupExamples.currentOutput.companion,
+          }
+        : scenario === 'loop-group-scoped-problems'
+          ? {
+              [DEFINITION_PATH]: scopedProblemsDefinition,
+              [COMPANION_PATH]: bundledLoopGroupExamples.currentOutput.companion,
+            }
+          : scenario === 'loop-group-empty-draft'
+            ? {
+                [DEFINITION_PATH]: emptyDraftDefinition,
+                [COMPANION_PATH]: bundledLoopGroupExamples.currentOutput.companion,
+                'workflows/other.yaml': bundledLoopGroupExamples.currentOutput.definition,
+                'workflows/other.hermes.yaml': bundledLoopGroupExamples.currentOutput.companion,
+              }
+            : null
+  const initialFiles = loopGroupFiles
+    ? { ...AUTHORING_FILES, ...loopGroupFiles }
+    : largeCanvasLayout
       ? {
           ...AUTHORING_FILES,
-          [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+          [DEFINITION_PATH]: largeCanvasDefinition!,
           [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
         }
-      : scenario === 'repeated-diagnostics'
-        ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
-        : scenario === 'export-blocking-modal'
-          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
-          : scenario === 'advanced-inspector'
-            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
-            : AUTHORING_FILES
+      : scenario === 'long-create-version'
+        ? {
+            ...AUTHORING_FILES,
+            [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+            [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+          }
+        : scenario === 'repeated-diagnostics'
+          ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
+          : scenario === 'export-blocking-modal'
+            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
+            : scenario === 'advanced-inspector'
+              ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
+              : AUTHORING_FILES
   const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
   const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0
@@ -341,18 +462,21 @@ export async function installRuntimeBootstrap(): Promise<void> {
   let updateRelaunched = false
   const updateHandlers = new Set<UpdateEventHandler>()
   const workspaceChangeHandlers = new Set<WorkspaceChangedHandler>()
-  let layout: string | null = largeCanvasLayout
-    ? JSON.stringify([
-        {
-          schemaVersion: 1,
-          layout: {
-            ...largeCanvasLayout,
+  let layout: string | null = scopedCapacityFixture
+    ? JSON.stringify([{ schemaVersion: 2, layout: scopedCapacityFixture.layout, savedHashes: null }])
+    : largeCanvasLayout
+      ? JSON.stringify([
+          {
+            schemaVersion: 1,
+            layout: {
+              ...largeCanvasLayout,
+            },
+            savedHashes: null,
           },
-          savedHashes: null,
-        },
-      ])
-    : null
-  let persistedCapacityLayout = largeCanvasLayout
+        ])
+      : null
+  let persistedCapacityLayout: ReturnType<typeof capacityLayout> | LayoutRecordV2 | null =
+    scopedCapacityFixture?.layout ?? largeCanvasLayout
   let persistedLayoutSaveCount = 0
   let brandSelection = 0
   let activeBrandId = scenario === 'active-brand-removal-modal' ? 'northstar' : 'loop24'
@@ -686,7 +810,9 @@ export async function installRuntimeBootstrap(): Promise<void> {
     layoutSave: async (content) => {
       layout = content
       persistedLayoutSaveCount += 1
-      const entries = JSON.parse(content) as Array<{ readonly layout?: ReturnType<typeof capacityLayout> }>
+      const entries = JSON.parse(content) as Array<{
+        readonly layout?: ReturnType<typeof capacityLayout> | LayoutRecordV2
+      }>
       persistedCapacityLayout =
         entries.find(
           (entry) => entry.layout?.workspaceId === 'browser-workspace' && entry.layout.workflowPath === DEFINITION_PATH,
@@ -720,11 +846,92 @@ export async function installRuntimeBootstrap(): Promise<void> {
       }
     },
     persistedLayoutProbe(nodeId): PersistedLayoutProbe {
-      const position = persistedCapacityLayout?.nodePositions[nodeId]
+      const position =
+        persistedCapacityLayout && 'scopeLayouts' in persistedCapacityLayout
+          ? persistedCapacityLayout.scopeLayouts[persistedCapacityLayout.activeScopeKey]?.nodePositions[nodeId]
+          : persistedCapacityLayout?.nodePositions[nodeId]
       return {
         saveCount: persistedLayoutSaveCount,
         position: position ? { x: position.x, y: position.y } : null,
       }
+    },
+    scopeSnapshot(): E2EScopeSnapshot {
+      const session = $documentSession.get()
+      const active = $activeLayout.get()
+      const scope = active ? active.scopeLayouts[active.activeScopeKey] : null
+      return {
+        workflowId: session.pair?.workflowId ?? null,
+        definitionRevision: session.pair?.definition.revision ?? 0,
+        activeScopeKey: active?.activeScopeKey ?? null,
+        selectedNodeIds: scope?.selectedNodeIds ?? [],
+        viewport: scope?.viewport ? { ...scope.viewport } : null,
+        positions: scope
+          ? Object.fromEntries(Object.entries(scope.nodePositions).map(([id, position]) => [id, { ...position }]))
+          : {},
+        focusTarget: scope?.focusTarget ? { ...scope.focusTarget } : null,
+        inspector: scope?.inspector ? { ...scope.inspector } : null,
+        canvasScroll: scope?.canvasScroll ? { ...scope.canvasScroll } : null,
+        yamlScroll: document.querySelector<HTMLElement>('.cm-scroller')?.scrollTop ?? 0,
+        problemsScroll: document.querySelector<HTMLElement>('[data-scroll-owner="problems"]')?.scrollTop ?? 0,
+        mountedSvelteFlowCount: document.querySelectorAll('.svelte-flow').length,
+      }
+    },
+    projectionScopes() {
+      const projection = $documentSession.get().analysis?.projection
+      if (!isWorkflowProjection(projection)) return []
+      return projection.graphs.map((graph) => ({
+        scopeKey: graph.scope.key,
+        nodeCount: graph.nodes.length,
+        edgeCount: graph.edges.length,
+        capacity: graph.capacity.status,
+      }))
+    },
+    persistedScopeLayout(scopeKey) {
+      const record =
+        persistedCapacityLayout && 'scopeLayouts' in persistedCapacityLayout ? persistedCapacityLayout : null
+      const scope = record?.scopeLayouts[scopeKey]
+      return {
+        saveCount: persistedLayoutSaveCount,
+        scope: scope ? structuredClone(scope) : null,
+      }
+    },
+    async prepareScopedConnection(scopeKey, source, target): Promise<void> {
+      const session = $documentSession.get()
+      const pair = session.pair
+      const projection = session.analysis?.projection
+      if (!pair || !isWorkflowProjection(projection)) throw new Error('No projected workflow is active.')
+      const graph = projection.graphs.find(({ scope }) => scope.key === scopeKey)
+      const node = graph?.nodes.find(({ id }) => id === target)
+      if (!graph || !node || !node.dependsOn.includes(source)) {
+        throw new Error(`The deterministic scoped edge ${source} -> ${target} is unavailable.`)
+      }
+      const rootIndent = scopeKey === 'root' ? '  ' : '        '
+      const nodeMarker = `${rootIndent}- id: ${target}\n`
+      const scopeStart =
+        scopeKey === 'root' ? 0 : pair.definition.text.indexOf(`  - id: ${scopeKey.slice('loop-group:'.length)}\n`)
+      const start = pair.definition.text.indexOf(nodeMarker, scopeStart)
+      const nextMarker = pair.definition.text.indexOf(`\n${rootIndent}- id: `, start + nodeMarker.length)
+      const end = nextMarker < 0 ? pair.definition.text.length : nextMarker + 1
+      const block = pair.definition.text.slice(start, end)
+      const dependencyIndent = `${rootIndent}  `
+      const dependencyLine = new RegExp(`^${dependencyIndent}depends_on:\\n(?:${dependencyIndent}  - .+\\n)+`, 'm')
+      const match = dependencyLine.exec(block)
+      if (scopeStart < 0 || start < 0 || !match) {
+        throw new Error('The deterministic scoped dependency block could not be located.')
+      }
+      const dependencies = node.dependsOn.filter((id) => id !== source)
+      const replacement = dependencies.length
+        ? `${dependencyIndent}depends_on:\n${dependencies.map((id) => `${dependencyIndent}  - ${id}\n`).join('')}`
+        : ''
+      const nextText = `${pair.definition.text.slice(0, start)}${block.replace(dependencyLine, replacement)}${pair.definition.text.slice(end)}`
+      const current = await base.workspaceRead(DEFINITION_PATH)
+      await base.workspaceWrite({ relativePath: DEFINITION_PATH, text: nextText, expectedCurrentHash: current.sha256 })
+      await Promise.all(
+        [...workspaceChangeHandlers].map((handler) => handler({ paths: [DEFINITION_PATH], kind: 'modify' })),
+      )
+    },
+    async flushRecoveryPersistence(): Promise<void> {
+      throw new Error('The application recovery controller is not ready.')
     },
     async triggerExternalChange(): Promise<void> {
       const current = await base.workspaceRead(DEFINITION_PATH)
@@ -781,6 +988,13 @@ export async function installRuntimeBootstrap(): Promise<void> {
         activeBrandId,
         definitionText,
         definitionRevision: openPair?.definition.revision ?? 0,
+        analysisDefinitionRevision: $documentSession.get().analysis?.definitionRevision ?? null,
+        analysisIssues:
+          $documentSession.get().analysis?.issues.map(({ code, line, column }) => ({
+            code,
+            ...(line === undefined ? {} : { line }),
+            ...(column === undefined ? {} : { column }),
+          })) ?? [],
         undoDepth: historyStore.get().undo.length,
         companionText,
         workspacePaths,
@@ -793,5 +1007,145 @@ export async function installRuntimeBootstrap(): Promise<void> {
           : 0,
       }
     },
+  }
+  if (scenario === 'loop-group-scoped-problems') {
+    let injected = false
+    let unsubscribe: () => void = () => undefined
+    unsubscribe = $documentSession.subscribe((session) => {
+      if (injected || !session.revision || !session.analysis?.projection) return
+      injected = true
+      queueMicrotask(() => {
+        receiveDocumentAnalysis({
+          ...session.revision!,
+          structurallyValid: false,
+          visuallyAuthorable: true,
+          ...(session.analysis!.referenceIndex ? { referenceIndex: session.analysis!.referenceIndex } : {}),
+          projection: session.analysis!.projection,
+          issues: [
+            {
+              code: 'e2e_scoped_child',
+              layer: 'semantic',
+              severity: 'error',
+              blocking: true,
+              message: 'Repair the repeated draft prompt.',
+              document: 'definition',
+              scopeKey: 'loop-group:refine',
+              groupId: 'refine',
+              nodeId: 'draft',
+              field: 'prompt',
+              path: '/nodes/0/loop_group/nodes/0/prompt',
+              line: 9,
+              column: 19,
+            },
+            {
+              code: 'e2e_group_control',
+              layer: 'semantic',
+              severity: 'error',
+              blocking: true,
+              message: 'Repair the refine stopping condition.',
+              document: 'definition',
+              scopeKey: 'loop-group:refine',
+              groupId: 'refine',
+              nodeId: 'refine',
+              field: 'until',
+              path: '/nodes/0/loop_group/until',
+              line: 6,
+              column: 14,
+            },
+            {
+              code: 'e2e_yaml_fallback',
+              layer: 'semantic',
+              severity: 'error',
+              blocking: true,
+              message: 'Inspect the exact workflow description.',
+              document: 'definition',
+              path: '/description',
+              line: 2,
+              column: 1,
+            },
+          ],
+        })
+        unsubscribe()
+      })
+    })
+  }
+  if (scenario === 'loop-group-scoped-capacity') {
+    let injectedRevision = -1
+    $documentSession.subscribe((session) => {
+      if (
+        !session.revision ||
+        !session.analysis?.projection ||
+        session.analysis.definitionRevision === injectedRevision ||
+        session.analysis.issues.some(({ code }) => code.startsWith('e2e_capacity_advisory_'))
+      )
+        return
+      injectedRevision = session.analysis.definitionRevision
+      queueMicrotask(() => {
+        if (!$documentSession.get().revision || $documentSession.get().pair?.definition.revision !== injectedRevision)
+          return
+        receiveDocumentAnalysis({
+          ...session.revision!,
+          structurallyValid: session.analysis!.structurallyValid,
+          ...(session.analysis!.visuallyAuthorable ? { visuallyAuthorable: true } : {}),
+          ...(session.analysis!.referenceIndex ? { referenceIndex: session.analysis!.referenceIndex } : {}),
+          projection: session.analysis!.projection,
+          issues: [
+            ...session.analysis!.issues,
+            ...Array.from({ length: 20 }, (_, index) => ({
+              code: `e2e_capacity_advisory_${index}`,
+              layer: 'operational' as const,
+              severity: 'warning' as const,
+              blocking: false,
+              message: `Deterministic capacity advisory ${index + 1}.`,
+              document: 'definition' as const,
+              scopeKey: 'loop-group:root-000' as const,
+              groupId: 'root-000',
+              nodeId: `body-0-${String(index).padStart(3, '0')}`,
+              path: `/nodes/0/loop_group/nodes/${index}/prompt`,
+            })),
+          ],
+        })
+      })
+    })
+  }
+  if (scenario === 'loop-group-state-restoration') {
+    let injectedRevision = -1
+    $documentSession.subscribe((session) => {
+      if (
+        !session.revision ||
+        !session.analysis?.projection ||
+        session.analysis.definitionRevision === injectedRevision ||
+        session.analysis.issues.some(({ code }) => code.startsWith('e2e_state_advisory_'))
+      )
+        return
+      injectedRevision = session.analysis.definitionRevision
+      queueMicrotask(() => {
+        if (!$documentSession.get().revision || $documentSession.get().pair?.definition.revision !== injectedRevision)
+          return
+        receiveDocumentAnalysis({
+          ...session.revision!,
+          structurallyValid: session.analysis!.structurallyValid,
+          ...(session.analysis!.visuallyAuthorable ? { visuallyAuthorable: true } : {}),
+          ...(session.analysis!.referenceIndex ? { referenceIndex: session.analysis!.referenceIndex } : {}),
+          projection: session.analysis!.projection,
+          issues: [
+            ...session.analysis!.issues,
+            ...Array.from({ length: 20 }, (_, index) => ({
+              code: `e2e_state_advisory_${index}`,
+              layer: 'operational' as const,
+              severity: 'warning' as const,
+              blocking: false,
+              message: `Deterministic state advisory ${index + 1}.`,
+              document: 'definition' as const,
+              scopeKey: 'loop-group:polish' as const,
+              groupId: 'polish',
+              nodeId: index % 2 === 0 ? 'draft' : 'review',
+              field: 'prompt',
+              path: `/nodes/2/loop_group/nodes/${index % 2}/prompt`,
+            })),
+          ],
+        })
+      })
+    })
   }
 }

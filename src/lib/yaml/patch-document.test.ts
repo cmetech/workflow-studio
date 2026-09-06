@@ -620,6 +620,27 @@ it('retains quoted dependency scalars and their comments when connecting another
   if (result.ok) expect(result.text).toContain('            - "a" # retained dependency\n')
 })
 
+it('patches an existing dependency sequence locally without cloning the full YAML document', async () => {
+  const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
+  const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!
+  const source =
+    'nodes: [{id: a, bash: echo}, {id: b, bash: echo}, {id: c, depends_on: ["a", b], bash: echo}] # retained\n'
+  const cloneDocument = vi.spyOn(Document.prototype, 'clone')
+
+  try {
+    expect(
+      patchWorkflowDocument(
+        source,
+        { type: 'set-dependencies', scopeKey: 'root', nodeId: 'c', dependsOn: ['a', 'b'] },
+        contract,
+      ),
+    ).toEqual({ ok: true, text: source.replace('["a", b]', '[ "a", b ]') })
+    expect(cloneDocument).not.toHaveBeenCalled()
+  } finally {
+    cloneDocument.mockRestore()
+  }
+})
+
 it('returns a rejection if current reference discovery encounters an unresolved YAML alias', async () => {
   const { loadBundledAuthoringContracts } = await import('$src/lib/contract/bundled-contracts')
   const contract = (await loadBundledAuthoringContracts()).find((contract) => contract.profile === 'archon-2026-07')!

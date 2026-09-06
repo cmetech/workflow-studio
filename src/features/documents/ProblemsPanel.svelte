@@ -11,6 +11,8 @@
     workflowName?: string | undefined
     execute?: CommandSurface['executeCommand']
     onDocumentation?: ((id: string, opener: HTMLButtonElement) => void) | undefined
+    scrollTop?: number | undefined
+    onScroll?: ((scrollTop: number) => void) | undefined
   }
 
   interface IssueGroup {
@@ -19,10 +21,23 @@
     readonly layers: readonly { readonly layer: IssueLayer; readonly issues: readonly ValidationIssue[] }[]
   }
 
-  let { issues, paths, workflowName, execute = executeCommand, onDocumentation }: Props = $props()
+  let {
+    issues,
+    paths,
+    workflowName,
+    execute = executeCommand,
+    onDocumentation,
+    scrollTop = 0,
+    onScroll,
+  }: Props = $props()
+  let scrollOwner = $state<HTMLElement>()
   const groups = $derived(groupIssues(issues, paths))
   const blockingCount = $derived(issues.filter((issue) => issue.blocking).length)
   const focusContext: CommandContext = { surface: 'global', canMutate: false, hasSelection: true }
+
+  $effect(() => {
+    if (scrollOwner && scrollOwner.scrollTop !== scrollTop) scrollOwner.scrollTop = scrollTop
+  })
 
   function groupIssues(
     values: readonly ValidationIssue[],
@@ -84,7 +99,12 @@
   {#if groups.length === 0}
     <p class="empty">No problems found.</p>
   {:else}
-    <div class="groups" data-scroll-owner="problems">
+    <div
+      class="groups"
+      data-scroll-owner="problems"
+      bind:this={scrollOwner}
+      onscroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
+    >
       {#each groups as group (group.document)}
         <section class="file-group" aria-labelledby={`problems-${group.document}`}>
           <h3 id={`problems-${group.document}`}>{group.path}</h3>

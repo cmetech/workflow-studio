@@ -103,6 +103,7 @@
     setActiveLayout,
   } from '$src/stores/layout'
   import { createRecoveryDraft, createRecoveryStore, RecoveryDraftController } from '$src/lib/recovery/recovery-store'
+  import { installApplicationReadiness } from '$runtime-bootstrap'
   import { watchWorkspaceChanges } from '$src/lib/native/workspace-api'
   import { DocumentClient } from '$src/workers/document-client'
   import type { DocumentAnalysis, DocumentKind, WorkflowPairText } from '$src/lib/documents/types'
@@ -371,6 +372,14 @@
   let canvasStaleSource = $state<'current' | 'retained' | null>(null)
   let canvasTransitionLocked = $state(false)
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
+  installApplicationReadiness({
+    flushRecoveryPersistence: async () => {
+      await graphCanvas?.flushPersistence()
+      const layout = activeLayoutStore.get()
+      if (layout) await documentWorkspace.persistLayoutChanges(layout)
+      await recoveryDrafts.flush()
+    },
+  })
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
   let workbenchHost = $state<HTMLDivElement>()
   let editorColumnHost = $state<HTMLElement>()
@@ -733,6 +742,8 @@
     }
     const definition = projection.definition as Readonly<Record<string, unknown>>
     if (inspectorTarget.kind === 'group') return fieldsForLoopGroupOwner(inspectorContract, index, definition)
+    if (inspectorGraph?.scope.kind === 'root' && node.kind === 'loop_group')
+      return fieldsForLoopGroupOwner(inspectorContract, index, definition)
     if (inspectorGraph?.scope.kind === 'loop-group')
       return fieldsForScopedNode(inspectorContract, node.kind, inspectorGraph, index, definition)
     return materializeFormFields(fieldsForNode(inspectorContract, node.kind), definition, index)
@@ -1421,6 +1432,16 @@
       (candidate) => candidate.dataset.id === groupId,
     )
     node?.focus()
+    const fallbackOwner = document.activeElement
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (document.activeElement !== fallbackOwner && document.activeElement !== document.body) return
+        const restored = [...document.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]')].find(
+          (candidate) => candidate.dataset.id === groupId,
+        )
+        restored?.focus()
+      }),
+    )
   }
 
   async function editLoopGroupSettings(groupId: string, invoker: HTMLElement): Promise<void> {
@@ -2526,8 +2547,8 @@
             <button
               type="button"
               data-variant="ghost"
-              aria-pressed={$activeEditorMode === mode}
-              class:active={$activeEditorMode === mode}
+              aria-pressed={canvasSurfaceMode === mode}
+              class:active={canvasSurfaceMode === mode}
               title={command.title}
               disabled={!command.enabled}
               onclick={() => void commandSurface.executeCommand(command.id, globalContext)}
@@ -2683,6 +2704,9 @@
             definition: $documentSessionStore.pair.definition.path,
             companion: $documentSessionStore.pair.companion?.path ?? null,
           }}
+          scrollTop={$activeScopeLayoutStore?.problemsScroll ?? 0}
+          onScroll={(problemsScroll) =>
+            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll }))}
           onDocumentation={(id, opener) => {
             exampleDocumentationProfile = undefined
             documentationNavigationSequence += 1
@@ -3496,7 +3520,7 @@
   }
 
   .editor-region.scoped-canvas {
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
   }
 
   .editor-surfaces,

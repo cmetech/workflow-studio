@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import LoopGroupScopeBar from './LoopGroupScopeBar.svelte'
 
@@ -69,5 +70,33 @@ describe('LoopGroupScopeBar', () => {
     })
     expect(screen.getByRole('button', { name: 'Insert $outer.output' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Insert $LOOP_PREV.child.output' })).toBeDisabled()
+  })
+
+  it('keeps a large suggestion set DOM-bounded while every token remains keyboard searchable', async () => {
+    const user = userEvent.setup()
+    const onCopy = vi.fn()
+    render(LoopGroupScopeBar, {
+      groupId: 'repeat',
+      suggestions: Array.from({ length: 250 }, (_, index) => ({
+        namespace: 'previous' as const,
+        producerId: `child-${String(index).padStart(3, '0')}`,
+        token: `$LOOP_PREV.child-${String(index).padStart(3, '0')}.output`,
+        available: true,
+        canAddDependency: false,
+      })),
+      onCopy,
+    })
+
+    expect(screen.getAllByRole('article')).toHaveLength(12)
+    expect(screen.queryByRole('button', { name: 'Copy $LOOP_PREV.child-249.output' })).not.toBeInTheDocument()
+
+    const search = screen.getByRole('searchbox', { name: 'Search scope references' })
+    await user.type(search, 'child-249')
+    const copyLast = screen.getByRole('button', { name: 'Copy $LOOP_PREV.child-249.output' })
+    copyLast.focus()
+    await user.keyboard('{Enter}')
+
+    expect(onCopy).toHaveBeenCalledWith('$LOOP_PREV.child-249.output')
+    expect(screen.getAllByRole('article')).toHaveLength(1)
   })
 })

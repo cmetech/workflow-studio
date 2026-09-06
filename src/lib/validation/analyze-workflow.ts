@@ -4,7 +4,7 @@ import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
 import type { DocumentAnalysis, ValidationIssue } from '$src/lib/documents/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
-import type { WorkflowProjection } from '$src/lib/projection/types'
+import type { ProjectedGraph, WorkflowProjection } from '$src/lib/projection/types'
 import { buildReferenceIndex, prepareReferenceContract } from '$src/lib/references/reference-index'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import type { ParsedYamlDocument } from '$src/lib/yaml/types'
@@ -343,10 +343,10 @@ function explicitScopedRepairDraft(
     return false
   }
   const blockers = issues.filter(({ blocking }) => blocking)
-  if (blockers.length === 0 || blockers.some(({ code }) => code !== capabilities.topology.validation_codes.nesting))
-    return false
-  const draftGroupIds = new Set(blockers.map(({ groupId }) => groupId).filter(isString))
-  if (draftGroupIds.size === 0 || blockers.some(({ groupId }) => !groupId)) return false
+  const groupShapeBlockers = blockers.filter(({ code }) => code === capabilities.topology.validation_codes.nesting)
+  if (groupShapeBlockers.length === 0 || groupShapeBlockers.some(({ groupId }) => !groupId)) return false
+  const draftGroupIds = new Set(groupShapeBlockers.map(({ groupId }) => groupId).filter(isString))
+  if (draftGroupIds.size === 0) return false
   const draftGraphs = projection.graphs.filter(
     ({ scope }) => scope.kind === 'loop-group' && scope.groupId && draftGroupIds.has(scope.groupId),
   )
@@ -380,7 +380,54 @@ function explicitScopedRepairDraft(
       }
     }
   }
-  return compileContractValidators(contract).definition(candidate)
+  if (blockers.length !== groupShapeBlockers.length) return false
+  const validator = compileContractValidators(contract).definition
+  if (validator(candidate)) return true
+  if (!draftGraphs.every((graph) => isExactFirstChildDraft(candidate, graph, capabilities, contract))) return false
+  const schemaIssues = (validator.errors ?? []).map((error) => ({
+    code: `schema_${error.keyword.replaceAll(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}`,
+    layer: 'contract' as const,
+    severity: 'error' as const,
+    blocking: true,
+    message: 'The first child draft is incomplete.',
+    document: 'definition' as const,
+    path: schemaErrorPath(error),
+  }))
+  return draftIssuesAreVisuallyAuthorable(schemaIssues, candidate, contract)
+}
+
+function isExactFirstChildDraft(
+  definition: unknown,
+  graph: ProjectedGraph,
+  capabilities: ReturnType<typeof readScopedDagCapabilities>,
+  contract: AuthoringContract,
+): boolean {
+  const groupPath = graph.sourcePath.slice(0, -capabilities.bodyPath.length)
+  const groupNode = valueAtOwnPath(definition, groupPath)
+  const payload = isRecord(groupNode) ? valueAtOwnPath(groupNode, [capabilities.groupKind]) : undefined
+  const body = isRecord(payload) ? valueAtOwnPath(payload, [capabilities.bodyPath.at(-1)!]) : undefined
+  if (!Array.isArray(body) || body.length !== 1 || !isRecord(body[0])) return false
+  const idField = graphIdField(contract)
+  const kindFields = contract.node_kinds
+    .filter(({ id }) => capabilities.allowedNodeKinds.includes(id))
+    .map(({ field_path }) => descriptorPath(field_path)?.relativePath[0])
+    .filter(isString)
+  const presentKinds = kindFields.filter((field) => Object.hasOwn(body[0]!, field))
+  return (
+    presentKinds.length === 1 &&
+    Object.hasOwn(body[0], idField) &&
+    Object.keys(body[0]).every((key) => key === idField || key === presentKinds[0])
+  )
+}
+
+function schemaErrorPath(error: { keyword: string; instancePath: string; params: Record<string, unknown> }): string {
+  if (error.keyword === 'required' && typeof error.params.missingProperty === 'string') {
+    return `${error.instancePath}/${error.params.missingProperty.replaceAll('~', '~0').replaceAll('/', '~1')}`
+  }
+  if (error.keyword === 'additionalProperties' && typeof error.params.additionalProperty === 'string') {
+    return `${error.instancePath}/${error.params.additionalProperty.replaceAll('~', '~0').replaceAll('/', '~1')}`
+  }
+  return error.instancePath || '/'
 }
 
 function projectionWithScopedIssues(

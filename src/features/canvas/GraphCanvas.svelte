@@ -892,6 +892,7 @@
   class="graph-canvas"
   class:canvas-transitions={!reducedMotion}
   data-testid="workflow-canvas"
+  data-scope-key={projection.scope.key}
   data-motion={reducedMotion ? 'reduced' : 'full'}
   data-keyboard-viewport-focus="instant"
   aria-label="Workflow graph"
@@ -943,7 +944,7 @@
       nodesDraggable={!readOnly && !stale && !transitionLocked}
       nodesConnectable={!readOnly && !stale && !transitionLocked}
       elementsSelectable={!transitionLocked}
-      onlyRenderVisibleElements={true}
+      onlyRenderVisibleElements={projection.capacity.nodeCount !== 1}
       nodesFocusable={true}
       edgesFocusable={true}
       selectionOnDrag={true}

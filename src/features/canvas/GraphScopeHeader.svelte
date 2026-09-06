@@ -12,7 +12,7 @@
   } = $props()
 </script>
 
-<header class="scope-header" data-canvas-chrome>
+<header class="scope-header" data-testid="graph-scope-header" data-canvas-chrome>
   <button type="button" data-variant="ghost" aria-label="Back to root workflow" onclick={() => void onBack()}
     >Back</button
   >

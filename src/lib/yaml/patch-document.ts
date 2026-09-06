@@ -306,15 +306,14 @@ export function patchWorkflowDocument(
   if (pathCrossesSharedNode(document, path.slice(0, -1))) return ambiguousAlias()
   const existing = document.getIn(path, true)
   if (isAlias(existing)) return ambiguousAlias()
-  const working = document.clone() as Document.Parsed
-  const workingExisting = working.getIn(path, true)
   if (isSeq(existing)) {
-    if (!isSeq(workingExisting)) return ambiguousAlias()
+    const workingExisting = existing.clone() as YAMLSeq
     const authored = new Map(workingExisting.items.filter(isScalar).map((scalar) => [scalar.value, scalar]))
     workingExisting.items = mutation.dependsOn.map(
-      (dependency) => authored.get(dependency) ?? working.createNode(dependency),
+      (dependency) => authored.get(dependency) ?? document.createNode(dependency),
     )
-    return patchClonedPaths(source, document, working, [path], contract, 'definition')
+    const edit = isolatedNodeEdit(source, existing, workingExisting)
+    return edit ? verifiedPatch(applySourceEdits(source, [edit]), contract, 'definition') : ambiguousAlias()
   }
   if (fields.dependenciesPath.length !== 1) {
     return {
@@ -334,6 +333,17 @@ export function patchWorkflowDocument(
     contract,
     'definition',
   )
+}
+
+function isolatedNodeEdit(source: string, original: YAMLSeq, replacement: YAMLSeq): SourceEdit | null {
+  const range = nodeRange(original)
+  if (!range) return null
+  const serialized = new Document(replacement).toString()
+  let text = replacement.flow
+    ? serialized.replace(/\n$/, '')
+    : indentBlockScalar(serialized, source.slice(lineStart(source, range[0]), range[0]))
+  if (source.slice(range[0], range[1]).endsWith('\n') && !text.endsWith('\n')) text += '\n'
+  return { start: range[0], end: range[1], text }
 }
 
 export interface WorkflowPairSources {
