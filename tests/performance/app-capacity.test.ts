@@ -1,3 +1,4 @@
+import { EditorView } from '@codemirror/view'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { parse } from 'yaml'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -132,12 +133,31 @@ async function expectYamlOnlySave(yaml: string, expectedNodes: number, expectedE
     key: 's',
     ...(/mac/i.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }),
   })
-  await waitFor(() => expect($documentWorkspace.get().saveOutcome?.status).toBe('saved'))
-  expect($documentWorkspace.get().saveOutcome).toMatchObject({
-    results: { definition: { status: 'unchanged' }, companion: null },
-  })
+  expect(screen.getByRole('button', { name: 'Save workflow', exact: true })).toBeDisabled()
+  expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved')
+  expect($documentWorkspace.get().saveOutcome).toBeNull()
   expect($documentSession.get().pair?.definition.text).toBe(yaml)
   expect(nativeHarness.writes).toEqual([])
+  closeCommandPalette()
+
+  const editedYaml = `# Edited above visual capacity\n${yaml}`
+  const editor = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'Definition YAML' }))!
+  editor.dispatch({ changes: { from: 0, insert: '# Edited above visual capacity\n' } })
+  await waitFor(() => {
+    const session = $documentSession.get()
+    expect(session.pair?.definition.text).toBe(editedYaml)
+    expect(session.analysis?.definitionRevision).toBe(session.pair?.definition.revision)
+    expect(session.analysis?.structurallyValid).toBe(true)
+    expect(screen.getByRole('button', { name: 'Save workflow', exact: true })).toBeEnabled()
+  })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save workflow', exact: true }))
+  await waitFor(() => expect($documentWorkspace.get().saveOutcome?.status).toBe('saved'))
+  expect($documentSession.get().pair?.definition.text).toBe(editedYaml)
+  expect(nativeHarness.writes).toEqual([editedYaml])
+  expect(parse(nativeHarness.writes[0]!)).toEqual(parsed)
+  expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved')
+  expect(screen.getByRole('button', { name: 'Save workflow', exact: true })).toBeDisabled()
+  expect(screen.queryByRole('region', { name: 'Workflow graph' })).not.toBeInTheDocument()
 }
 
 describe('oversized workflow App boundary', () => {
