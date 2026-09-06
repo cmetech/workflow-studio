@@ -36,9 +36,17 @@ function persistAppearancePreferences(): void {
   })
 }
 
-export function initializeAppearancePreferences(storage: AppearanceStorage = window.localStorage): void {
-  appearanceStorage = storage
-  const preferences = loadAppearancePreferences(storage)
+export function initializeAppearancePreferences(storage?: AppearanceStorage): void {
+  let availableStorage = storage
+  if (!availableStorage) {
+    try {
+      availableStorage = window.localStorage
+    } catch {
+      availableStorage = undefined
+    }
+  }
+  appearanceStorage = availableStorage
+  const preferences = loadAppearancePreferences(availableStorage ?? { getItem: () => null })
   themePreference.set(preferences.mode)
   resolvedThemeMode.set(resolveThemeMode(preferences.mode))
   colorTheme.set(preferences.colorTheme)

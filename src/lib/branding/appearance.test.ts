@@ -90,6 +90,47 @@ describe('appearance preferences', () => {
     expect(root.style.getPropertyValue('--color-accent-contrast')).toBe('#FFFFFF')
   })
 
+  it.each([
+    ['light', '#FFFFFF', '#000000'],
+    ['light', '#F5F7FB', '#000000'],
+    ['light', '#000000', '#000000'],
+    ['dark', '#000000', '#FFFFFF'],
+    ['dark', '#11141C', '#FFFFFF'],
+    ['dark', '#FFFFFF', '#FFFFFF'],
+  ] as const)('keeps focus visible in %s mode when the requested accent is %s', (mode, customAccent, expectedFocus) => {
+    const root = document.createElement('div')
+
+    applyAppearanceTheme(loadBundledBrand(), mode, 'ocean-blue', customAccent, root)
+
+    expect(root.style.getPropertyValue('--color-accent')).toBe(customAccent)
+    expect(root.style.getPropertyValue('--color-focus')).toBe(expectedFocus)
+  })
+
+  it.each([
+    ['light', 'ocean-blue', '#0B6BCB'],
+    ['light', 'emerald', '#087A55'],
+    ['dark', 'ocean-blue', '#5BA8FF'],
+    ['dark', 'emerald', '#32C48D'],
+  ] as const)('keeps the safe %s %s palette accent as its focus color', (mode, colorTheme, expectedFocus) => {
+    const root = document.createElement('div')
+
+    applyAppearanceTheme(loadBundledBrand(), mode, colorTheme, null, root)
+
+    expect(root.style.getPropertyValue('--color-focus')).toBe(expectedFocus)
+  })
+
+  it.each([
+    ['light', '#5145CD'],
+    ['dark', '#5BA8FF'],
+  ] as const)('keeps a safe custom accent unchanged for focus in %s mode', (mode, accent) => {
+    const root = document.createElement('div')
+
+    applyAppearanceTheme(loadBundledBrand(), mode, 'emerald', accent, root)
+
+    expect(root.style.getPropertyValue('--color-accent')).toBe(accent)
+    expect(root.style.getPropertyValue('--color-focus')).toBe(accent)
+  })
+
   it('saves and loads one normalized preference record', () => {
     const storage = new MemoryStorage()
 

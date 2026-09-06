@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { APPEARANCE_STORAGE_KEY } from '$src/lib/branding/appearance'
 import {
   colorTheme,
@@ -31,6 +31,7 @@ class TrackingStorage implements Pick<Storage, 'getItem' | 'setItem'> {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   initializeAppearancePreferences(new TrackingStorage())
 })
 
@@ -125,5 +126,31 @@ describe('appearance store', () => {
     expect(themePreference.get()).toBe('light')
     expect(colorTheme.get()).toBe('emerald')
     expect(customAccent.get()).toBe('#ABCDEF')
+  })
+
+  it('uses in-memory defaults when acquiring window local storage throws', () => {
+    const priorStorage = new TrackingStorage(
+      JSON.stringify({ mode: 'dark', colorTheme: 'emerald', customAccent: '#123456' }),
+    )
+    initializeAppearancePreferences(priorStorage)
+    const priorWrites = priorStorage.writes
+    vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => {
+      throw new DOMException('Storage is unavailable.', 'SecurityError')
+    })
+
+    expect(() => initializeAppearancePreferences()).not.toThrow()
+    expect(themePreference.get()).toBe('system')
+    expect(colorTheme.get()).toBe('loop24-indigo')
+    expect(customAccent.get()).toBeNull()
+
+    expect(() => {
+      setThemePreference('light')
+      setColorTheme('emerald')
+      setCustomAccent('#abcdef')
+    }).not.toThrow()
+    expect(themePreference.get()).toBe('light')
+    expect(colorTheme.get()).toBe('emerald')
+    expect(customAccent.get()).toBe('#ABCDEF')
+    expect(priorStorage.writes).toBe(priorWrites)
   })
 })

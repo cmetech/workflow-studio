@@ -40,6 +40,7 @@ const DEFAULT_APPEARANCE: AppearancePreferences = Object.freeze({
 const ACCENT_PATTERN = /^#?([\dA-F]{6})$/i
 const COLOR_THEME_IDS = new Set<ColorThemeId>(COLOR_THEMES.map(({ id }) => id))
 const THEME_PREFERENCES = new Set<ThemePreference>(['system', 'light', 'dark'])
+const MIN_FOCUS_CONTRAST = 3
 
 type Rgb = readonly [red: number, green: number, blue: number]
 
@@ -110,10 +111,28 @@ function relativeLuminance(value: string): number {
   return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
 }
 
+function contrastRatio(first: string, second: string): number {
+  const firstLuminance = relativeLuminance(first)
+  const secondLuminance = relativeLuminance(second)
+  const lighter = Math.max(firstLuminance, secondLuminance)
+  const darker = Math.min(firstLuminance, secondLuminance)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
 function contrastColor(accent: string): '#000000' | '#FFFFFF' {
-  const luminance = relativeLuminance(accent)
-  const blackContrast = (luminance + 0.05) / 0.05
-  const whiteContrast = 1.05 / (luminance + 0.05)
+  const blackContrast = contrastRatio(accent, '#000000')
+  const whiteContrast = contrastRatio(accent, '#FFFFFF')
+  return blackContrast >= whiteContrast ? '#000000' : '#FFFFFF'
+}
+
+function minimumContrast(color: string, surfaces: readonly string[]): number {
+  return Math.min(...surfaces.map((surface) => contrastRatio(color, surface)))
+}
+
+function focusColor(accent: string, surfaces: readonly string[]): string {
+  if (minimumContrast(accent, surfaces) >= MIN_FOCUS_CONTRAST) return accent
+  const blackContrast = minimumContrast('#000000', surfaces)
+  const whiteContrast = minimumContrast('#FFFFFF', surfaces)
   return blackContrast >= whiteContrast ? '#000000' : '#FFFFFF'
 }
 
@@ -151,12 +170,22 @@ export function applyAppearanceTheme(
   const contrast = contrastColor(accent)
   const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
   const selectedAmount = mode === 'light' ? 0.14 : 0.24
+  const nodeSelected = mixHex(brand.themes[mode].background, accent, selectedAmount)
+  const focusSurfaces = [
+    brand.themes[mode].background,
+    brand.themes[mode].surface,
+    brand.themes[mode]['surface-elevated'],
+    brand.themes[mode].canvas,
+    brand.themes[mode].node,
+    brand.themes[mode]['yaml-gutter'],
+    nodeSelected,
+  ].map(toNativeColorValue)
 
   root.style.setProperty('--color-accent', accent)
   root.style.setProperty('--color-accent-strong', mixHex(accent, strongTarget, 0.18))
   root.style.setProperty('--color-accent-contrast', contrast)
-  root.style.setProperty('--color-focus', accent)
-  root.style.setProperty('--color-node-selected', mixHex(brand.themes[mode].background, accent, selectedAmount))
+  root.style.setProperty('--color-focus', focusColor(accent, focusSurfaces))
+  root.style.setProperty('--color-node-selected', nodeSelected)
   root.style.setProperty('--color-edge-selected', accent)
 }
 
