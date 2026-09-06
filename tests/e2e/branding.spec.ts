@@ -4,6 +4,7 @@ import { e2eSnapshot, openSeededPair } from './support'
 test('keeps a malicious brand inspectable but inactive, then previews and activates a valid pack', async ({ page }) => {
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByText('Advanced brand packs', { exact: true }).click()
 
   await page.getByRole('button', { name: 'Import brand pack' }).click()
   await expect(page.getByRole('list', { name: 'Rejected brand pack reports' })).toBeVisible()
