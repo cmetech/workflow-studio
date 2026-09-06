@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 import { describe, expect, it } from 'vitest'
+import type { ColorThemeId } from './appearance'
 import type { ThemePreference } from './types'
 import { loadBundledBrand } from './load-brand'
 import { synchronizeBrandTheme } from './theme-sync'
@@ -95,5 +96,63 @@ describe('brand theme synchronization', () => {
     expect(colorScheme.listenerCount()).toBe(0)
 
     stop()
+  })
+
+  it('reapplies the active brand when palette or custom accent changes', () => {
+    const brand = atom(loadBundledBrand())
+    const preference = atom<ThemePreference>('light')
+    const colorTheme = atom<ColorThemeId>('loop24-indigo')
+    const customAccent = atom<string | null>(null)
+    const root = document.createElement('div')
+    const colorScheme = new ControllableColorScheme(false)
+
+    const stop = synchronizeBrandTheme(
+      brand,
+      preference,
+      root,
+      {
+        matchMedia: () => colorScheme as MediaQueryList,
+      },
+      { colorTheme, customAccent },
+    )
+
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#5145CD')
+    colorTheme.set('emerald')
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#087A55')
+    customAccent.set('#123456')
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#123456')
+
+    stop()
+  })
+
+  it('unsubscribes brand, preference, palette, accent, and media-query changes on cleanup', () => {
+    const brand = atom(loadBundledBrand())
+    const preference = atom<ThemePreference>('system')
+    const colorTheme = atom<ColorThemeId>('ocean-blue')
+    const customAccent = atom<string | null>(null)
+    const root = document.createElement('div')
+    const colorScheme = new ControllableColorScheme(false)
+
+    const stop = synchronizeBrandTheme(
+      brand,
+      preference,
+      root,
+      { matchMedia: () => colorScheme as MediaQueryList },
+      { colorTheme, customAccent },
+    )
+    expect(colorScheme.listenerCount()).toBe(1)
+
+    stop()
+    const appliedAccent = root.style.getPropertyValue('--color-accent')
+    brand.set({ ...loadBundledBrand(), id: 'after-cleanup' })
+    preference.set('dark')
+    colorTheme.set('emerald')
+    customAccent.set('#123456')
+    colorScheme.setDark(true)
+
+    expect(root.dataset.brand).toBe('loop24')
+    expect(root.dataset.theme).toBe('light')
+    expect(root.style.getPropertyValue('--color-accent')).toBe(appliedAccent)
+    expect(colorScheme.listenerCount()).toBe(0)
   })
 })

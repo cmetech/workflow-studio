@@ -17,9 +17,16 @@ async function startApplication(): Promise<void> {
   const target = document.getElementById('app')
   if (!target) throw new Error('Workflow Studio could not find its application root.')
 
+  brandStores.initializeAppearancePreferences()
   const stopThemeSynchronization = themeModule.synchronizeBrandTheme(
     brandStores.activeBrandManifest,
     brandStores.themePreference,
+    document.documentElement,
+    window,
+    {
+      colorTheme: brandStores.colorTheme,
+      customAccent: brandStores.customAccent,
+    },
   )
   import.meta.hot?.dispose(stopThemeSynchronization)
   svelte.mount(appModule.default, { target })

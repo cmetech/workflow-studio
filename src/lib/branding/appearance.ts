@@ -1,0 +1,153 @@
+import { applyBrandTheme } from './load-brand'
+import type { BrandManifest, ThemeMode, ThemePreference } from './types'
+
+export type ColorThemeId = 'loop24-indigo' | 'ocean-blue' | 'emerald'
+
+export interface AppearancePreferences {
+  readonly mode: ThemePreference
+  readonly colorTheme: ColorThemeId
+  readonly customAccent: string | null
+}
+
+export const APPEARANCE_STORAGE_KEY = 'workflow-studio.appearance.v1'
+
+export const COLOR_THEMES = [
+  {
+    id: 'loop24-indigo',
+    label: 'LOOP24 Indigo',
+    description: 'The original violet-indigo workflow palette.',
+    accents: { light: '#5145CD', dark: '#5B50E6' },
+  },
+  {
+    id: 'ocean-blue',
+    label: 'Ocean Blue',
+    description: 'A clear blue palette with cool canvas accents.',
+    accents: { light: '#0B6BCB', dark: '#5BA8FF' },
+  },
+  {
+    id: 'emerald',
+    label: 'Emerald',
+    description: 'A calm green palette for nodes and focus states.',
+    accents: { light: '#087A55', dark: '#32C48D' },
+  },
+] as const
+
+const DEFAULT_APPEARANCE: AppearancePreferences = Object.freeze({
+  mode: 'system',
+  colorTheme: 'loop24-indigo',
+  customAccent: null,
+})
+const ACCENT_PATTERN = /^#?([\dA-F]{6})$/i
+const COLOR_THEME_IDS = new Set<ColorThemeId>(COLOR_THEMES.map(({ id }) => id))
+const THEME_PREFERENCES = new Set<ThemePreference>(['system', 'light', 'dark'])
+
+type Rgb = readonly [red: number, green: number, blue: number]
+
+export function normalizeAccent(value: string): string | null {
+  const match = ACCENT_PATTERN.exec(value.trim())
+  return match?.[1] ? `#${match[1].toUpperCase()}` : null
+}
+
+function parseHex(value: string): Rgb {
+  return [
+    Number.parseInt(value.slice(1, 3), 16),
+    Number.parseInt(value.slice(3, 5), 16),
+    Number.parseInt(value.slice(5, 7), 16),
+  ]
+}
+
+function toHex([red, green, blue]: Rgb): string {
+  const channel = (value: number): string =>
+    Math.max(0, Math.min(255, Math.round(value)))
+      .toString(16)
+      .padStart(2, '0')
+  return `#${channel(red)}${channel(green)}${channel(blue)}`.toUpperCase()
+}
+
+function mixHex(from: string, to: string, amount: number): string {
+  const ratio = Math.max(0, Math.min(1, amount))
+  const source = parseHex(from)
+  const target = parseHex(to)
+  return toHex([
+    source[0] + (target[0] - source[0]) * ratio,
+    source[1] + (target[1] - source[1]) * ratio,
+    source[2] + (target[2] - source[2]) * ratio,
+  ])
+}
+
+function relativeLuminance(value: string): number {
+  const channels = parseHex(value).map((channel) => {
+    const normalized = channel / 255
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+  })
+  return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+}
+
+function contrastColor(accent: string): '#000000' | '#FFFFFF' {
+  const luminance = relativeLuminance(accent)
+  const blackContrast = (luminance + 0.05) / 0.05
+  const whiteContrast = 1.05 / (luminance + 0.05)
+  return blackContrast >= whiteContrast ? '#000000' : '#FFFFFF'
+}
+
+function isColorThemeId(value: unknown): value is ColorThemeId {
+  return typeof value === 'string' && COLOR_THEME_IDS.has(value as ColorThemeId)
+}
+
+function isThemePreference(value: unknown): value is ThemePreference {
+  return typeof value === 'string' && THEME_PREFERENCES.has(value as ThemePreference)
+}
+
+function normalizePreferences(value: unknown): AppearancePreferences | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  if (!isThemePreference(record.mode) || !isColorThemeId(record.colorTheme)) return null
+  if (record.customAccent !== null && typeof record.customAccent !== 'string') return null
+  const customAccent = record.customAccent === null ? null : normalizeAccent(record.customAccent)
+  if (record.customAccent !== null && customAccent === null) return null
+  return Object.freeze({ mode: record.mode, colorTheme: record.colorTheme, customAccent })
+}
+
+export function applyAppearanceTheme(
+  brand: BrandManifest,
+  mode: ThemeMode,
+  colorTheme: ColorThemeId,
+  customAccent: string | null,
+  root: HTMLElement = document.documentElement,
+): void {
+  applyBrandTheme(brand, mode, root)
+  const normalizedCustomAccent = customAccent === null ? null : normalizeAccent(customAccent)
+  if (colorTheme === 'loop24-indigo' && normalizedCustomAccent === null) return
+
+  const palette = COLOR_THEMES.find(({ id }) => id === colorTheme) ?? COLOR_THEMES[0]
+  const accent = normalizedCustomAccent ?? palette.accents[mode]
+  const contrast = contrastColor(accent)
+  const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
+  const selectedAmount = mode === 'light' ? 0.14 : 0.24
+
+  root.style.setProperty('--color-accent', accent)
+  root.style.setProperty('--color-accent-strong', mixHex(accent, strongTarget, 0.18))
+  root.style.setProperty('--color-accent-contrast', contrast)
+  root.style.setProperty('--color-focus', accent)
+  root.style.setProperty('--color-node-selected', mixHex(brand.themes[mode].background, accent, selectedAmount))
+  root.style.setProperty('--color-edge-selected', accent)
+}
+
+export function loadAppearancePreferences(storage: Pick<Storage, 'getItem'>): AppearancePreferences {
+  try {
+    const stored = storage.getItem(APPEARANCE_STORAGE_KEY)
+    if (stored === null) return DEFAULT_APPEARANCE
+    return normalizePreferences(JSON.parse(stored)) ?? DEFAULT_APPEARANCE
+  } catch {
+    return DEFAULT_APPEARANCE
+  }
+}
+
+export function saveAppearancePreferences(storage: Pick<Storage, 'setItem'>, preferences: AppearancePreferences): void {
+  const normalized = normalizePreferences(preferences) ?? DEFAULT_APPEARANCE
+  try {
+    storage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(normalized))
+  } catch {
+    // Appearance remains usable in memory when storage is unavailable.
+  }
+}

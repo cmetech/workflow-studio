@@ -1,10 +1,12 @@
 import { atom } from 'nanostores'
+import { getBundledBrandAssetUrl, loadBundledBrand, resolveThemeMode } from '$src/lib/branding/load-brand'
 import {
-  applyBrandTheme,
-  getBundledBrandAssetUrl,
-  loadBundledBrand,
-  resolveThemeMode,
-} from '$src/lib/branding/load-brand'
+  applyAppearanceTheme,
+  loadAppearancePreferences,
+  normalizeAccent,
+  saveAppearancePreferences,
+  type ColorThemeId,
+} from '$src/lib/branding/appearance'
 import { parseBrandManifest, validateBrandPack, type ValidatedBrandPack } from '$src/lib/branding/validate-theme'
 import type { BrandManifest, RuntimeBrandPack, RuntimeBrandReport, ThemePreference } from '$src/lib/branding/types'
 import type { BrandActivationResult, BrandNativeBridge, StoredBrandPack } from '$src/lib/native/types'
@@ -12,6 +14,52 @@ import type { BrandActivationResult, BrandNativeBridge, StoredBrandPack } from '
 export const activeBrand = atom('loop24')
 export const activeBrandManifest = atom<BrandManifest>(loadBundledBrand())
 export const themePreference = atom<ThemePreference>('system')
+export const colorTheme = atom<ColorThemeId>('loop24-indigo')
+export const customAccent = atom<string | null>(null)
+
+type AppearanceStorage = Pick<Storage, 'getItem' | 'setItem'>
+let appearanceStorage: AppearanceStorage | undefined
+
+function persistAppearancePreferences(): void {
+  if (!appearanceStorage) return
+  saveAppearancePreferences(appearanceStorage, {
+    mode: themePreference.get(),
+    colorTheme: colorTheme.get(),
+    customAccent: customAccent.get(),
+  })
+}
+
+export function initializeAppearancePreferences(storage: AppearanceStorage = window.localStorage): void {
+  appearanceStorage = storage
+  const preferences = loadAppearancePreferences(storage)
+  themePreference.set(preferences.mode)
+  colorTheme.set(preferences.colorTheme)
+  customAccent.set(preferences.customAccent)
+  persistAppearancePreferences()
+}
+
+export function setThemePreference(preference: ThemePreference): void {
+  themePreference.set(preference)
+  persistAppearancePreferences()
+}
+
+export function setColorTheme(theme: ColorThemeId): void {
+  colorTheme.set(theme)
+  customAccent.set(null)
+  persistAppearancePreferences()
+}
+
+export function setCustomAccent(value: string): void {
+  const normalized = normalizeAccent(value)
+  if (normalized === null) return
+  customAccent.set(normalized)
+  persistAppearancePreferences()
+}
+
+export function resetAccent(): void {
+  customAccent.set(null)
+  persistAppearancePreferences()
+}
 
 export interface BrandControllerState {
   readonly activeId: string
@@ -174,7 +222,13 @@ export function createBrandController(
   }
 
   function commit(pack: RuntimeBrandPack): void {
-    applyBrandTheme(pack.manifest, resolveThemeMode(themePreference.get()), root)
+    applyAppearanceTheme(
+      pack.manifest,
+      resolveThemeMode(themePreference.get()),
+      colorTheme.get(),
+      customAccent.get(),
+      root,
+    )
     activeBrand.set(pack.manifest.id)
     activeBrandManifest.set(pack.manifest)
     publish({ activeId: pack.manifest.id, warning: null })
@@ -417,5 +471,5 @@ export function selectBrand(id: string): void {
 }
 
 export function selectTheme(preference: ThemePreference): void {
-  themePreference.set(preference)
+  setThemePreference(preference)
 }
