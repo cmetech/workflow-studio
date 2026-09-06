@@ -392,6 +392,7 @@
   let inspectorPanelHost = $state<HTMLElement>()
   let workbenchWidth = $state(1280)
   let workbenchHeight = $state(700)
+  let problemsHeightPreview = $state<number | null>(null)
   let editorWidth = $state(720)
   let compactPanelViewport = $state(false)
   let dockedWorkspacePanelOpen = $state(true)
@@ -541,7 +542,8 @@
   const storedPanels = $derived($activeLayoutStore?.panels ?? { left: 280, right: 320, problems: 180 })
   const clampedPanels = $derived(clampDockedPanels(storedPanels, workbenchWidth))
   const overlayPanels = $derived(resolveOverlayPanelWidths(storedPanels, workbenchWidth))
-  const problemsHeight = $derived(clampProblemsHeight(storedPanels.problems, workbenchHeight))
+  const problemsHeightMaximum = $derived(clampProblemsHeight(360, workbenchHeight))
+  const problemsHeight = $derived(clampProblemsHeight(problemsHeightPreview ?? storedPanels.problems, workbenchHeight))
   const explorerCatalogState = $derived(
     explorerCatalogOperation.phase === 'ready'
       ? $workspace.tree.length > 0
@@ -1001,6 +1003,23 @@
   function toggleDockedInspectorPanel(): void {
     dockedInspectorPanelOpen = !dockedInspectorPanelOpen
     inspectorPanelOpen.set(dockedInspectorPanelOpen)
+  }
+
+  function previewProblemsHeight(height: number | null): void {
+    problemsHeightPreview = height === null ? null : clampProblemsHeight(height, workbenchHeight)
+  }
+
+  function commitProblemsHeight(height: number): void {
+    const active = activeLayoutStore.get()
+    if (!active) {
+      problemsHeightPreview = null
+      return
+    }
+    const problems = clampProblemsHeight(height, workbenchHeight)
+    if (active.panels.problems !== problems) {
+      setActiveLayout({ ...active, panels: { ...active.panels, problems } })
+    }
+    problemsHeightPreview = null
   }
 
   async function closeOpenDrawer(snapshot?: DrawerEscapeSnapshot): Promise<void> {
@@ -2830,6 +2849,11 @@
           issueCount={$documentSessionStore.analysis?.issues.length ?? 0}
           blockingCount={auxiliaryBlockingCount}
           activeTab={auxiliaryTab}
+          height={problemsHeight}
+          minimumHeight={96}
+          maximumHeight={problemsHeightMaximum}
+          onHeightPreview={previewProblemsHeight}
+          onHeightCommit={commitProblemsHeight}
           onTabChange={(auxiliaryTab) =>
             updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab }))}
           problemsScroll={$activeScopeLayoutStore?.problemsScroll ?? 0}

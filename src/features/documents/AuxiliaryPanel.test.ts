@@ -83,4 +83,45 @@ describe('AuxiliaryPanel', () => {
     await rerender({ ...common, activeTab: 'references', referencesScroll: 83 })
     expect(screen.getByRole('tabpanel').scrollTop).toBe(83)
   })
+
+  it('previews pointer resizing, commits on release, and supports bounded keyboard resizing', async () => {
+    const onHeightPreview = vi.fn()
+    const onHeightCommit = vi.fn()
+    render(AuxiliaryPanel, {
+      ...props,
+      onTabChange: vi.fn(),
+      height: 180,
+      minimumHeight: 96,
+      maximumHeight: 280,
+      onHeightPreview,
+      onHeightCommit,
+    })
+
+    const handle = screen.getByRole('separator', { name: 'Resize workflow details panel' })
+    expect(handle).toHaveAttribute('aria-orientation', 'horizontal')
+    expect(handle).toHaveAttribute('aria-valuemin', '96')
+    expect(handle).toHaveAttribute('aria-valuemax', '280')
+    expect(handle).toHaveAttribute('aria-valuenow', '180')
+
+    await fireEvent.pointerDown(handle, { button: 0, pointerId: 4, isPrimary: true, clientY: 400 })
+    await fireEvent.pointerMove(window, { pointerId: 4, isPrimary: true, clientY: 280 })
+    expect(onHeightPreview).toHaveBeenLastCalledWith(280)
+    expect(onHeightCommit).not.toHaveBeenCalled()
+    expect(handle).toHaveAttribute('aria-valuenow', '280')
+
+    await fireEvent.pointerUp(window, { pointerId: 4, isPrimary: true, clientY: 280 })
+    expect(onHeightCommit).toHaveBeenLastCalledWith(280)
+
+    await fireEvent.keyDown(handle, { key: 'ArrowUp' })
+    await fireEvent.keyDown(handle, { key: 'ArrowDown', shiftKey: true })
+    await fireEvent.keyDown(handle, { key: 'Home' })
+    await fireEvent.keyDown(handle, { key: 'End' })
+    expect(onHeightCommit.mock.calls.map(([height]) => height)).toEqual([280, 196, 132, 96, 280])
+
+    await fireEvent.pointerDown(handle, { button: 0, pointerId: 7, isPrimary: true, clientY: 300 })
+    await fireEvent.pointerMove(window, { pointerId: 7, isPrimary: true, clientY: 250 })
+    await fireEvent.pointerCancel(window, { pointerId: 7, isPrimary: true })
+    expect(onHeightPreview).toHaveBeenLastCalledWith(null)
+    expect(onHeightCommit).toHaveBeenCalledTimes(5)
+  })
 })

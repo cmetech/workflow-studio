@@ -860,6 +860,15 @@ for (const viewport of [
     await openSeededPair(page, { scenario: 'loop-group-state-restoration' })
     await page.locator('.svelte-flow__node[data-id="polish"]').focus()
     await page.keyboard.press('Enter')
+    const back = page.getByRole('button', { name: 'Back to root workflow' })
+    await expect(back.locator('svg')).toHaveCount(1)
+    const backAppearance = await back.evaluate((button) => {
+      const style = getComputedStyle(button)
+      return { background: style.backgroundColor, border: style.borderTopWidth, shadow: style.boxShadow }
+    })
+    expect(backAppearance.background).not.toBe('rgba(0, 0, 0, 0)')
+    expect(backAppearance.border).not.toBe('0px')
+    expect(backAppearance.shadow).not.toBe('none')
     const problems = page.getByRole('tab', { name: 'Problems', exact: true })
     const references = page.getByRole('tab', { name: 'References', exact: true })
     await references.click()
@@ -926,3 +935,30 @@ for (const viewport of [
     await expect(page.getByRole('tabpanel', { name: 'References', exact: true })).toBeFocused()
   })
 }
+
+test('the workflow details panel grows by pointer and supports keyboard height bounds', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await openSeededPair(page, { scenario: 'loop-group-state-restoration' })
+  await page.locator('.svelte-flow__node[data-id="polish"]').focus()
+  await page.keyboard.press('Enter')
+
+  const panel = page.locator('[data-scroll-frame="auxiliary"]')
+  const handle = page.getByRole('separator', { name: 'Resize workflow details panel' })
+  const maximumHeight = Number(await handle.getAttribute('aria-valuemax'))
+  const before = await panel.boundingBox()
+  const handleBounds = await handle.boundingBox()
+  expect(before).not.toBeNull()
+  expect(handleBounds).not.toBeNull()
+
+  await page.mouse.move(handleBounds!.x + handleBounds!.width / 2, handleBounds!.y + handleBounds!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handleBounds!.x + handleBounds!.width / 2, handleBounds!.y - 70)
+  await page.mouse.up()
+  await expect.poll(async () => (await panel.boundingBox())!.height).toBeGreaterThan(before!.height + 50)
+
+  await handle.focus()
+  await page.keyboard.press('Home')
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(96)
+  await page.keyboard.press('End')
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(Math.round(maximumHeight))
+})

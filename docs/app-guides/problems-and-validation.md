@@ -15,6 +15,8 @@ Resolve blocking syntax, contract/schema, and semantic DAG Problems before savin
 
 Missing commands, scripts, providers, models, tools, MCP services, skills, credentials, or secrets are not local execution checks. They remain non-blocking runtime advisories. Network and service availability, runtime resources, actual model output, trust/admission, and operational success are also advisories; Workflow Studio does not run the workflow to test them.
 
+Resize the bottom Problems and References panel by dragging the grip along its top edge. With the grip focused, use Arrow Up or Arrow Down for smaller changes, Shift with either arrow for larger changes, or Home and End for the minimum and maximum heights. The panel keeps its own scrollbar when its contents need more room, and Workflow Studio remembers the chosen height for the workflow.
+
 ## When YAML is invalid
 
 If a YAML edit cannot be parsed or projected safely, the editor preserves the text and retains the last valid visual projection. Visual graph and form mutations become read-only until the text is valid again. Fix the highlighted syntax first, then re-check the contract and DAG Problems.

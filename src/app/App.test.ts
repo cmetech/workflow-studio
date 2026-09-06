@@ -1842,6 +1842,65 @@ nodes:
     expect(container.querySelector('.editor-column')).toHaveAttribute('data-has-problems', 'true')
   })
 
+  it('previews bottom-panel pointer resizing without persistence work and commits the chosen height on release', async () => {
+    loadWorkspaceEntries('workspace', 'Workspace', [
+      { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },
+    ])
+    openDocumentSession(
+      {
+        workflowId: 'workflow:workspace:flow.yaml',
+        generation: 0,
+        savedGeneration: 0,
+        definition: {
+          id: 'workflow:workspace:flow.yaml:definition',
+          kind: 'definition',
+          path: 'flow.yaml',
+          text: 'name: Flow\nnodes: []\n',
+          revision: 0,
+          savedRevision: 0,
+          diskHash: 'a'.repeat(64),
+        },
+        companion: null,
+      },
+      `sha256:${'1'.repeat(64)}`,
+    )
+    setActiveLayout({
+      schemaVersion: 2,
+      workspaceId: 'workspace',
+      workflowPath: 'flow.yaml',
+      activeScopeKey: 'root',
+      scopeLayouts: { root: emptyScopeLayout() },
+      panels: { left: 280, right: 320, problems: 180 },
+      editorMode: 'visual',
+      updatedAt: '2026-07-25T00:00:00.000Z',
+    })
+    const { container } = render(App)
+    await waitForSetupReady()
+    const workbench = container.querySelector('.workbench')!
+    await publishResize(workbench, 1280, 700)
+
+    const handle = screen.getByRole('separator', { name: 'Resize workflow details panel' })
+    await fireEvent.pointerDown(handle, { button: 0, pointerId: 2, isPrimary: true, clientY: 500 })
+    await fireEvent.pointerMove(window, { pointerId: 2, isPrimary: true, clientY: 420 })
+
+    expect(workbench).toHaveStyle('--problems-height: 260px')
+    expect(activeLayoutStore.get()?.panels.problems).toBe(180)
+
+    await fireEvent.pointerUp(window, { pointerId: 2, isPrimary: true, clientY: 420 })
+    expect(activeLayoutStore.get()?.panels.problems).toBe(260)
+    expect(workbench).toHaveStyle('--problems-height: 260px')
+
+    await fireEvent.pointerDown(handle, { button: 0, pointerId: 3, isPrimary: true, clientY: 500 })
+    await fireEvent.pointerMove(window, { pointerId: 3, isPrimary: true, clientY: 450 })
+    expect(workbench).toHaveStyle('--problems-height: 280px')
+    await fireEvent.pointerCancel(window, { pointerId: 3, isPrimary: true })
+    expect(activeLayoutStore.get()?.panels.problems).toBe(260)
+    expect(workbench).toHaveStyle('--problems-height: 260px')
+
+    await fireEvent.keyDown(handle, { key: 'End' })
+    expect(activeLayoutStore.get()?.panels.problems).toBe(280)
+  })
+
   it('routes ProblemsPanel focus through the identity-gated active YAML tab and clears the request', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [
       { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },

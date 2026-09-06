@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ArrowLeft from 'lucide-svelte/icons/arrow-left'
+
   let {
     workflowName,
     groupId,
@@ -13,8 +15,12 @@
 </script>
 
 <header class="scope-header" data-testid="graph-scope-header" data-canvas-chrome>
-  <button type="button" data-variant="ghost" aria-label="Back to root workflow" onclick={() => void onBack()}
-    >Back</button
+  <button
+    type="button"
+    class="back-button"
+    data-variant="secondary"
+    aria-label="Back to root workflow"
+    onclick={() => void onBack()}><ArrowLeft size={16} aria-hidden="true" /><span>Back</span></button
   >
   <h2 tabindex="-1" data-scope-heading>{workflowName} / {groupId} loop body</h2>
   {#if onEditGroupSettings}<button
@@ -39,6 +45,12 @@
     flex-shrink: 0;
     white-space: nowrap;
   }
+  .back-button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    box-shadow: 0 0.2rem 0.6rem var(--color-shadow);
+  }
   h2 {
     min-width: 0;
     margin: 0;
@@ -60,6 +72,9 @@
   @media (forced-colors: active) {
     .scope-header {
       border-color: CanvasText;
+    }
+    .back-button {
+      box-shadow: none;
     }
   }
   @media (prefers-reduced-motion: reduce) {

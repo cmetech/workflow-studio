@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import type { AuxiliaryTab } from '$src/lib/layout/types'
+  import PanelResizeHandle from './PanelResizeHandle.svelte'
 
   interface Props {
     problems: Snippet
@@ -13,6 +14,11 @@
     referencesScroll?: number
     onProblemsScroll?: (scrollTop: number) => void
     onReferencesScroll?: (scrollTop: number) => void
+    height?: number
+    minimumHeight?: number
+    maximumHeight?: number
+    onHeightPreview?: (height: number | null) => void
+    onHeightCommit?: (height: number) => void
   }
 
   let {
@@ -26,6 +32,11 @@
     referencesScroll = 0,
     onProblemsScroll,
     onReferencesScroll,
+    height = 180,
+    minimumHeight = 96,
+    maximumHeight = 360,
+    onHeightPreview,
+    onHeightCommit,
   }: Props = $props()
   const id = $props.id()
   const selected = $derived(references ? activeTab : 'problems')
@@ -63,6 +74,13 @@
 </script>
 
 <div class="auxiliary-panel" data-scroll-frame="auxiliary">
+  <PanelResizeHandle
+    value={height}
+    minimum={minimumHeight}
+    maximum={maximumHeight}
+    onPreview={onHeightPreview}
+    onCommit={onHeightCommit}
+  />
   <header>
     <div role="tablist" aria-label="Workflow details" bind:this={tablist}>
       {#each tabs as tab (tab)}
@@ -104,7 +122,8 @@
 <style>
   .auxiliary-panel {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
