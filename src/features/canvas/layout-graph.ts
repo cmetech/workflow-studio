@@ -8,7 +8,13 @@ import {
   type EdgeRoutePointV1,
   type EdgeRouteV1,
 } from '$src/lib/layout/routing'
-import type { LayoutWorkerRequest, LayoutWorkerResult, LayoutWorkerFailure } from '$src/workers/layout-worker-protocol'
+import {
+  sanitizeLayoutRequestIdentity,
+  type LayoutWorkerRequest,
+  type LayoutWorkerResult,
+  type LayoutWorkerFailure,
+  type UnidentifiedLayoutWorkerFailure,
+} from '$src/workers/layout-worker-protocol'
 import {
   validateRoutedLayout,
   MAX_ROUTING_COORDINATE,
@@ -104,7 +110,7 @@ const EXPANDED_SPACING: Readonly<LayoutOptions> = Object.freeze({
   'org.eclipse.elk.layered.spacing.edgeEdgeBetweenLayers': '21',
 })
 
-export function buildElkGraph(request: LayoutWorkerRequest): ElkNode | null {
+export function buildElkGraph(request: unknown): ElkNode | null {
   if (!validRequest(request)) return null
   const nodes = [...request.nodes].sort(compareOrder)
   const edges = [...request.edges].sort(compareOrder)
@@ -272,8 +278,10 @@ export function readElkResult(request: LayoutWorkerRequest, result: unknown): El
   })
 }
 
-export async function arrangeWithElk(request: LayoutWorkerRequest, elk: ElkLike): Promise<LayoutWorkerResult> {
+export async function arrangeWithElk(request: unknown, elk: ElkLike): Promise<LayoutWorkerResult> {
   const started = performance.now()
+  if (!validRequest(request)) return layoutFailure(request, 'invalid_request')
+  const identity = sanitizeLayoutRequestIdentity(request.identity)!
   const graph = buildElkGraph(request)
   if (!graph) return layoutFailure(request, 'invalid_request')
   for (const spacingProfile of ['default', 'expanded'] as const) {
@@ -295,7 +303,7 @@ export async function arrangeWithElk(request: LayoutWorkerRequest, elk: ElkLike)
       const { positions, routes } = validated.layout
       return {
         type: 'layout-result',
-        identity: request.identity,
+        identity,
         spacingProfile,
         positions,
         routes,
@@ -312,10 +320,11 @@ export async function arrangeWithElk(request: LayoutWorkerRequest, elk: ElkLike)
   return layoutFailure(request, 'invalid_result')
 }
 
-function validRequest(request: LayoutWorkerRequest): boolean {
+function validRequest(request: unknown): request is LayoutWorkerRequest {
   if (
     !isRecord(request) ||
     request.type !== 'layout' ||
+    !sanitizeLayoutRequestIdentity(request.identity) ||
     !Array.isArray(request.nodes) ||
     !Array.isArray(request.edges) ||
     request.nodes.length > VISUAL_NODE_CAPACITY ||
@@ -398,15 +407,18 @@ function layoutBounds(
   return { x: left, y: top, width: right - left, height: bottom - top }
 }
 function layoutFailure(
-  request: LayoutWorkerRequest,
+  request: unknown,
   code: 'invalid_request' | 'invalid_result' | 'layout_failed',
-): LayoutWorkerFailure {
+): LayoutWorkerFailure | UnidentifiedLayoutWorkerFailure {
+  const identity = sanitizeLayoutRequestIdentity(isRecord(request) ? request.identity : null)
   const messages = {
     invalid_request: 'Graph arrangement request is invalid.',
     invalid_result: 'Graph arrangement returned unsafe geometry.',
     layout_failed: 'Graph arrangement failed.',
   }
-  return { type: 'layout-error', identity: request.identity, code, message: messages[code] }
+  if (!identity)
+    return { type: 'layout-error', identity: null, code: 'invalid_request', message: messages.invalid_request }
+  return { type: 'layout-error', identity, code, message: messages[code] }
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)

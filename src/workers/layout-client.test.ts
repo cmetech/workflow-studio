@@ -282,6 +282,29 @@ describe('LayoutClient', () => {
     client.destroy()
   })
 
+  it('[RG8] rejects an unidentifiable worker failure and discards its endpoint', async () => {
+    const worker = new FakeWorker()
+    const client = new LayoutClient(() => worker)
+    const input = request()
+    const pending = client.arrange(input)
+    worker.emit({
+      type: 'layout-error',
+      identity: null,
+      code: 'invalid_request',
+      message: 'Graph arrangement request is invalid.',
+    })
+    await expect(pending).resolves.toEqual({
+      type: 'layout-error',
+      identity: input.identity,
+      code: 'worker_message_error',
+      message: 'Layout worker returned an unreadable message.',
+    })
+    expect(worker.terminated).toBe(true)
+    expect(worker.listenerCount()).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    client.destroy()
+  })
+
   it.each([
     ['runtime error', (worker: FakeWorker) => worker.emitError(), 'worker_runtime_error', 'Layout worker failed.'],
     [

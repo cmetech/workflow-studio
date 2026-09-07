@@ -68,5 +68,46 @@ export interface LayoutWorkerFailure {
   readonly message: string
 }
 
-export type LayoutWorkerResult = LayoutWorkerSuccess | LayoutWorkerFailure
+/** No caller identity can be trusted for an unidentifiable malformed envelope. */
+export interface UnidentifiedLayoutWorkerFailure {
+  readonly type: 'layout-error'
+  readonly identity: null
+  readonly code: 'invalid_request'
+  readonly message: string
+}
+
+export type LayoutWorkerResult = LayoutWorkerSuccess | LayoutWorkerFailure | UnidentifiedLayoutWorkerFailure
 export type LayoutWorkerResponse = LayoutWorkerResult
+
+/** Copies only bounded protocol fields, never undeclared application state. */
+export function sanitizeLayoutRequestIdentity(value: unknown): LayoutRequestIdentity | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const identity = value as Record<string, unknown>
+  const { requestId, workflowIdentity, pairGeneration, scopeKey, graphFingerprint, layoutRevision } = identity
+  if (
+    !boundedIdentityString(requestId) ||
+    !boundedIdentityString(workflowIdentity) ||
+    !nonnegativeInteger(pairGeneration) ||
+    !boundedIdentityString(scopeKey) ||
+    (scopeKey !== 'root' && (!scopeKey.startsWith('loop-group:') || scopeKey.length === 11)) ||
+    typeof graphFingerprint !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(graphFingerprint) ||
+    !nonnegativeInteger(layoutRevision)
+  )
+    return null
+  return {
+    requestId,
+    workflowIdentity,
+    pairGeneration,
+    scopeKey: scopeKey as GraphScopeKey,
+    graphFingerprint: graphFingerprint as LayoutRequestIdentity['graphFingerprint'],
+    layoutRevision,
+  }
+}
+
+function boundedIdentityString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 4096
+}
+function nonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}

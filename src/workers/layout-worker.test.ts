@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { arrangeWithElk } from '$src/features/canvas/layout-graph'
 import { processLayoutWorkerRequest } from './layout-worker'
 import type { LayoutWorkerRequest } from './layout-worker-protocol'
 
@@ -75,5 +76,50 @@ describe('layout worker', () => {
     expect(
       await processLayoutWorkerRequest(request, { layout: async () => ({ id: 'root', children: [], edges: [] }) }),
     ).toMatchObject({ type: 'layout-error', code: 'invalid_result', identity: request.identity })
+  })
+  it.each([
+    ['null', null],
+    ['missing identity', { type: 'layout', nodes: request.nodes, edges: request.edges }],
+    ['null identity', { ...request, identity: null }],
+    ['incomplete identity', { ...request, identity: { requestId: 'private' } }],
+    ['invalid request id', { ...request, identity: { ...request.identity, requestId: '' } }],
+    [
+      'oversized workflow identity',
+      { ...request, identity: { ...request.identity, workflowIdentity: 'x'.repeat(4097) } },
+    ],
+    ['invalid generation', { ...request, identity: { ...request.identity, pairGeneration: Infinity } }],
+    ['invalid scope', { ...request, identity: { ...request.identity, scopeKey: 'unknown' } }],
+    ['invalid fingerprint', { ...request, identity: { ...request.identity, graphFingerprint: 'private' } }],
+    ['invalid revision', { ...request, identity: { ...request.identity, layoutRevision: -1 } }],
+  ])('[RG8] returns a bounded invalid_request for %s without echoing unsafe identity', async (_, input) => {
+    let calls = 0
+    const elk = {
+      layout: async () => {
+        calls++
+        return { id: 'root', children: [], edges: [] }
+      },
+    }
+    const expected = {
+      type: 'layout-error',
+      identity: null,
+      code: 'invalid_request',
+      message: 'Graph arrangement request is invalid.',
+    }
+    await expect(arrangeWithElk(input, elk)).resolves.toEqual(expected)
+    await expect(processLayoutWorkerRequest(input, elk)).resolves.toEqual(expected)
+    expect(calls).toBe(0)
+  })
+  it('[RG8] strips undeclared identity fields from failure responses', async () => {
+    const input = {
+      ...request,
+      identity: { ...request.identity, privateState: { yaml: 'private' }, callback: () => undefined },
+      nodes: [],
+    }
+    expect(await processLayoutWorkerRequest(input, { layout: async () => null })).toEqual({
+      type: 'layout-error',
+      identity: request.identity,
+      code: 'invalid_request',
+      message: 'Graph arrangement request is invalid.',
+    })
   })
 })

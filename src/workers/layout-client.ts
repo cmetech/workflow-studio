@@ -211,7 +211,9 @@ function failureFor(
   return { type: 'layout-error', identity, code, message }
 }
 
-function isLayoutWorkerResponse(value: unknown): value is LayoutWorkerResponse {
+function isLayoutWorkerResponse(
+  value: unknown,
+): value is LayoutWorkerResponse & { readonly identity: LayoutRequestIdentity } {
   if (value === null || typeof value !== 'object') return false
   const response = value as { readonly type?: unknown; readonly identity?: unknown }
   return (

@@ -1,19 +1,37 @@
 /// <reference lib="webworker" />
 
-import ELK from 'elkjs/lib/elk.bundled.js'
+import ELK from 'elkjs/lib/elk-api.js'
 import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
-import type { LayoutWorkerRequest, LayoutWorkerResponse } from './layout-worker-protocol'
+import { sanitizeLayoutRequestIdentity, type LayoutWorkerResponse } from './layout-worker-protocol'
 
-export function processLayoutWorkerRequest(request: LayoutWorkerRequest, elk: ElkLike): Promise<LayoutWorkerResponse> {
-  return arrangeWithElk(request, elk)
+export async function processLayoutWorkerRequest(request: unknown, elk: ElkLike): Promise<LayoutWorkerResponse> {
+  try {
+    return await arrangeWithElk(request, elk)
+  } catch {
+    const identity = sanitizeLayoutRequestIdentity(
+      request !== null && typeof request === 'object' ? (request as { identity?: unknown }).identity : null,
+    )
+    return identity
+      ? { type: 'layout-error', identity, code: 'worker_runtime_error', message: 'Layout worker failed.' }
+      : {
+          type: 'layout-error',
+          identity: null,
+          code: 'invalid_request',
+          message: 'Graph arrangement request is invalid.',
+        }
+  }
 }
 
 const workerScope = globalThis as unknown as DedicatedWorkerGlobalScope
 if (typeof WorkerGlobalScope !== 'undefined' && workerScope instanceof WorkerGlobalScope) {
-  // The bundled implementation uses an in-process worker shim when no URL is supplied.
-  // Running it inside our dedicated worker requires neither a nested worker nor a network asset.
-  const elk = new ELK({ algorithms: ['layered'] })
-  workerScope.addEventListener('message', (event: MessageEvent<LayoutWorkerRequest>) => {
+  // elk-api supports a real worker factory. The algorithm entry must run in its
+  // own scope because it owns onmessage; raw ELK messages never reach the renderer.
+  // Dedicated-worker termination also terminates its descendant workers.
+  const elk = new ELK({
+    algorithms: ['layered'],
+    workerFactory: () => new Worker(new URL('./elk-engine-worker.ts', import.meta.url), { type: 'module' }),
+  })
+  workerScope.addEventListener('message', (event: MessageEvent<unknown>) => {
     void processLayoutWorkerRequest(event.data, elk).then((response) => workerScope.postMessage(response))
   })
 }
