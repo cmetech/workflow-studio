@@ -1,5 +1,6 @@
 <script lang="ts">
   import { BaseEdge, getSmoothStepPath } from '@xyflow/svelte'
+  import { roundedOrthogonalPath } from './edge-route-path'
   import type { CanvasEdgeData } from './types'
 
   let { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, selected, data } = $props<{
@@ -15,21 +16,38 @@
     data?: CanvasEdgeData
   }>()
 
+  let routedPath = $derived(data?.route ? roundedOrthogonalPath(data.route.points) : '')
   let path = $derived(
-    getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 10 })[0],
+    routedPath ||
+      getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 10 })[0],
   )
 </script>
 
+<path d={path} class="workflow-edge-casing" fill="none" aria-hidden="true" />
 <path d={path} class="workflow-edge-focus-halo" fill="none" aria-hidden="true" />
 <BaseEdge
   {id}
   {path}
   {markerEnd}
   interactionWidth={32}
-  class={['workflow-edge', selected && 'selected', data?.stale && 'stale'].filter(Boolean).join(' ')}
+  class={[
+    'workflow-edge',
+    selected && 'selected',
+    data?.stale && 'stale',
+    data?.readOnly && 'read-only',
+    data?.emphasized && 'emphasized',
+  ]
+    .filter(Boolean)
+    .join(' ')}
 />
 
 <style>
+  :global(.workflow-edge-casing) {
+    stroke: var(--color-canvas);
+    stroke-width: 8;
+    pointer-events: none;
+  }
+
   :global(.workflow-edge-focus-halo) {
     stroke: transparent;
     stroke-width: 6;
@@ -57,7 +75,28 @@
     stroke-dasharray: 5 4;
   }
 
+  :global(.svelte-flow__edge-path.workflow-edge.read-only) {
+    opacity: 0.72;
+  }
+
   @media (forced-colors: active) {
+    :global(.workflow-edge-casing) {
+      stroke: Canvas;
+    }
+
+    :global(.svelte-flow__edge-path.workflow-edge) {
+      stroke: CanvasText;
+    }
+
+    :global(.svelte-flow__edge-path.workflow-edge.read-only) {
+      stroke: GrayText;
+      opacity: 1;
+    }
+
+    :global(.svelte-flow__edge-path.workflow-edge.selected) {
+      stroke: Highlight;
+    }
+
     :global(.svelte-flow__edge:focus-visible .workflow-edge-focus-halo) {
       stroke: CanvasText;
     }

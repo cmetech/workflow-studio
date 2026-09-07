@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
+import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import { layoutGraph } from './layout-graph'
-import { loopGroupSummariesForProjection, projectCanvas } from './project-canvas'
+import {
+  createMemoizedCanvasProjector,
+  loopGroupSummariesForProjection,
+  projectCanvas,
+  sameCanvasEdge,
+} from './project-canvas'
+import type { CanvasEdge } from './types'
 import type { WorkflowProjection } from '$src/lib/projection/types'
 import { loadAuthoringContract } from '$src/lib/contract/contract-loader'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
@@ -49,6 +56,133 @@ const savedLayout: ScopeLayoutV1 = {
 }
 
 describe('projectCanvas', () => {
+  it('[RG5] attaches routes only when every current edge has an exactly keyed route', () => {
+    const routing: ScopeRoutingV1 = {
+      schemaVersion: 1,
+      engine: ROUTING_ENGINE,
+      fingerprint: `sha256:${'a'.repeat(64)}`,
+      routes: {
+        'dependency:collect->review': {
+          edgeId: 'dependency:collect->review',
+          points: [
+            { x: 256, y: 132 },
+            { x: 300, y: 132 },
+            { x: 300, y: 184 },
+            { x: 360, y: 184 },
+          ],
+        },
+      },
+    }
+
+    const routed = projectCanvas(projection, savedLayout, { routing })
+    expect(routed.edges[0]?.data?.route).toEqual(routing.routes['dependency:collect->review'])
+    expect(routed.edges[0]?.data?.route).not.toBe(routing.routes['dependency:collect->review'])
+    expect(routed.edges[0]?.ariaLabel).toBe('Dependency from collect to review')
+
+    const mismatched = projectCanvas(projection, savedLayout, {
+      routing: {
+        ...routing,
+        routes: {
+          'dependency:collect->review': {
+            ...routing.routes['dependency:collect->review']!,
+            edgeId: 'dependency:other->review',
+          },
+        },
+      },
+    })
+    expect(mismatched.edges.every((edge) => edge.data?.route === undefined)).toBe(true)
+
+    const withExtraRoute = projectCanvas(projection, savedLayout, {
+      routing: {
+        ...routing,
+        routes: {
+          ...routing.routes,
+          'dependency:stale->review': {
+            edgeId: 'dependency:stale->review',
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+            ],
+          },
+        },
+      },
+    })
+    expect(withExtraRoute.edges.every((edge) => edge.data?.route === undefined)).toBe(true)
+  })
+
+  it('drops the complete route set when one current edge route is missing', () => {
+    const reviewAgain = {
+      ...projection.nodes[1]!,
+      id: 'approve',
+      dependsOn: ['collect'],
+      source: { path: '/nodes/2', start: 51, end: 80 },
+    }
+    const twoEdges: ProjectedGraph = {
+      ...projection,
+      nodes: [...projection.nodes, reviewAgain],
+      edges: [...projection.edges, { id: 'dependency:collect->approve', source: 'collect', target: 'approve' }],
+      definitionOrder: [...projection.definitionOrder, 'approve'],
+      capacity: { status: 'visual', nodeCount: 3, edgeCount: 2 },
+    }
+    const routing: ScopeRoutingV1 = {
+      schemaVersion: 1,
+      engine: ROUTING_ENGINE,
+      fingerprint: `sha256:${'b'.repeat(64)}`,
+      routes: {
+        'dependency:collect->review': {
+          edgeId: 'dependency:collect->review',
+          points: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+          ],
+        },
+      },
+    }
+
+    const canvas = projectCanvas(twoEdges, savedLayout, { routing })
+
+    expect(canvas.edges).toHaveLength(2)
+    expect(canvas.edges.every((edge) => edge.data?.route === undefined)).toBe(true)
+  })
+
+  it('reuses an unchanged routed edge and replaces it after any route point changes', () => {
+    const route = {
+      edgeId: 'dependency:collect->review',
+      points: [
+        { x: 256, y: 132 },
+        { x: 360, y: 132 },
+      ],
+    } as const
+    const routing = (lastX: number): ScopeRoutingV1 => ({
+      schemaVersion: 1,
+      engine: ROUTING_ENGINE,
+      fingerprint: `sha256:${'c'.repeat(64)}`,
+      routes: {
+        'dependency:collect->review': {
+          ...route,
+          points: [route.points[0], { x: lastX, y: 132 }],
+        },
+      },
+    })
+    const project = createMemoizedCanvasProjector()
+    const first = project(projection, savedLayout, { routing: routing(360) })
+    const equivalent = project(projection, savedLayout, { routing: routing(360) })
+    const changed = project(projection, savedLayout, { routing: routing(420) })
+
+    expect(equivalent.edges[0]).toBe(first.edges[0])
+    expect(changed.edges[0]).not.toBe(equivalent.edges[0])
+  })
+
+  it('treats edge emphasis as part of edge identity reuse', () => {
+    const edge = projectCanvas(projection, savedLayout).edges[0]!
+    const emphasized: CanvasEdge = { ...edge, data: { ...edge.data!, emphasized: true } }
+    const notEmphasized: CanvasEdge = { ...edge, data: { ...edge.data!, emphasized: false } }
+
+    expect(sameCanvasEdge(edge, { ...edge, data: { ...edge.data! } })).toBe(true)
+    expect(sameCanvasEdge(edge, emphasized)).toBe(false)
+    expect(sameCanvasEdge(emphasized, notEmphasized)).toBe(false)
+  })
+
   it('derives required group status from the prepared contract and literal minimum authored payload', async () => {
     const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
       kind: 'bundled',

@@ -1,6 +1,7 @@
 import { MarkerType, Position } from '@xyflow/svelte'
 import { reconcileLayout, validPosition } from '$src/lib/layout/place-new-nodes'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
+import type { EdgeRouteV1, ScopeRoutingV1 } from '$src/lib/layout/routing'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import {
   VISUAL_EDGE_CAPACITY,
@@ -20,6 +21,7 @@ export interface ProjectCanvasOptions {
   readonly stale?: boolean
   readonly readOnly?: boolean
   readonly arrange?: boolean
+  readonly routing?: ScopeRoutingV1
   readonly issues?: readonly ValidationIssue[]
   readonly layoutGraph?: LayoutGraphAdapter
   readonly groupSummaries?: Readonly<Record<string, LoopGroupNodeSummary>>
@@ -131,7 +133,7 @@ function sameLoopGroupSummary(
   )
 }
 
-function sameCanvasEdge(left: CanvasEdge, right: CanvasEdge): boolean {
+export function sameCanvasEdge(left: CanvasEdge, right: CanvasEdge): boolean {
   return (
     left.id === right.id &&
     left.type === right.type &&
@@ -142,7 +144,22 @@ function sameCanvasEdge(left: CanvasEdge, right: CanvasEdge): boolean {
     left.interactionWidth === right.interactionWidth &&
     left.ariaLabel === right.ariaLabel &&
     left.data?.stale === right.data?.stale &&
-    left.data?.readOnly === right.data?.readOnly
+    left.data?.readOnly === right.data?.readOnly &&
+    left.data?.emphasized === right.data?.emphasized &&
+    sameEdgeRoute(left.data?.route, right.data?.route)
+  )
+}
+
+function sameEdgeRoute(left: EdgeRouteV1 | undefined, right: EdgeRouteV1 | undefined): boolean {
+  return (
+    left === right ||
+    Boolean(
+      left &&
+      right &&
+      left.edgeId === right.edgeId &&
+      left.points.length === right.points.length &&
+      left.points.every((point, index) => point.x === right.points[index]?.x && point.y === right.points[index]?.y),
+    )
   )
 }
 
@@ -271,6 +288,7 @@ export function projectCanvas(
       },
     }
   })
+  const routes = completeRoutesForEdges(projection.edges, options.routing)
   const edges: CanvasEdge[] = projection.edges.map((edge) => ({
     id: edge.id,
     type: 'workflow',
@@ -281,7 +299,11 @@ export function projectCanvas(
     interactionWidth: 32,
     markerEnd: { type: MarkerType.ArrowClosed },
     ariaLabel: `Dependency from ${edge.source} to ${edge.target}`,
-    data: { stale, readOnly },
+    data: {
+      stale,
+      readOnly,
+      ...(routes ? { route: cloneRoute(routes[edge.id]!) } : {}),
+    },
   }))
 
   return { nodes, edges, positions, capacity: projection.capacity, stale, readOnly }
@@ -293,10 +315,31 @@ function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOpti
     left.stale === right.stale &&
     left.readOnly === right.readOnly &&
     left.arrange === right.arrange &&
+    left.routing === right.routing &&
     left.issues === right.issues &&
     left.layoutGraph === right.layoutGraph &&
     left.groupSummaries === right.groupSummaries,
   )
+}
+
+function completeRoutesForEdges(
+  edges: ProjectedGraph['edges'],
+  routing: ScopeRoutingV1 | undefined,
+): ScopeRoutingV1['routes'] | undefined {
+  if (!routing) return undefined
+  const routeIds = Object.keys(routing.routes)
+  if (routeIds.length !== edges.length) return undefined
+  for (const edge of edges) {
+    if (!Object.hasOwn(routing.routes, edge.id) || routing.routes[edge.id]?.edgeId !== edge.id) return undefined
+  }
+  return routing.routes
+}
+
+function cloneRoute(route: EdgeRouteV1): EdgeRouteV1 {
+  return {
+    edgeId: route.edgeId,
+    points: route.points.map(({ x, y }) => ({ x, y })),
+  }
 }
 
 function loopGroupAccessibleLabel(id: string, summary: LoopGroupNodeSummary): string {

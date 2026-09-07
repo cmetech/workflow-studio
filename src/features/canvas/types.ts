@@ -1,4 +1,5 @@
 import type { Edge, Node, XYPosition } from '@xyflow/svelte'
+import type { EdgeRouteV1 } from '$src/lib/layout/routing'
 
 export interface CanvasNodeData extends Record<string, unknown> {
   readonly id: string
@@ -23,6 +24,8 @@ export interface LoopGroupNodeSummary {
 export interface CanvasEdgeData extends Record<string, unknown> {
   readonly stale: boolean
   readonly readOnly: boolean
+  readonly route?: EdgeRouteV1
+  readonly emphasized?: boolean
 }
 
 export type CanvasNode = Node<CanvasNodeData, 'workflow'>
