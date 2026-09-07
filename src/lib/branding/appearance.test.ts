@@ -25,7 +25,7 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem'> {
 
 const SVG_BYTES = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')
 
-function validatedImportedBrand(surfaceElevated: string) {
+function validatedImportedBrand(themeOverrides: Record<string, string>) {
   const source = structuredClone(loadBundledBrand()) as unknown as {
     id: string
     displayName: string
@@ -33,10 +33,7 @@ function validatedImportedBrand(surfaceElevated: string) {
   }
   source.id = 'transparent-surfaces'
   source.displayName = 'Transparent Surfaces'
-  for (const token of ['background', 'surface', 'canvas', 'node', 'yaml-gutter']) {
-    source.themes.dark[token] = '#000000'
-  }
-  source.themes.dark['surface-elevated'] = surfaceElevated
+  Object.assign(source.themes.dark, themeOverrides)
   const validated = validateBrandPack(stringify(source), {
     'logo.svg': SVG_BYTES,
     'mark.svg': SVG_BYTES,
@@ -160,7 +157,14 @@ describe('appearance preferences', () => {
     ['translucent rgba', 'rgba(255, 255, 255, 0.1)', '#1A1A1A'],
   ])('composites an imported %s focus surface against its semantic backdrop', (_case, surface, effectiveSurface) => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand(surface)
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': surface,
+      canvas: '#000000',
+      node: '#000000',
+      'yaml-gutter': '#000000',
+    })
 
     applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
 
@@ -169,6 +173,70 @@ describe('appearance preferences', () => {
     expect(focus).toBe('#FFFFFF')
     expect(contrastRatio(focus, effectiveSurface)).toBeGreaterThanOrEqual(3)
     expect(contrastRatio(focus, '#000000')).toBeGreaterThanOrEqual(3)
+  })
+
+  it('models the final CodeMirror surface through both translucent editor wrappers', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#FFFFFF66',
+      'surface-elevated': '#FFFFFF33',
+      text: '#767676',
+      canvas: '#000000',
+      node: '#000000',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+
+    const focus = root.style.getPropertyValue('--color-focus')
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#FFFFFF')
+    expect(contrastRatio(focus, '#B6B6B6')).toBeGreaterThanOrEqual(3)
+    expect(contrastRatio(focus, '#000000')).toBeGreaterThanOrEqual(3)
+  })
+
+  it('selects a deterministic gray that clears 3:1 against mixed black and white focus hosts', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': '#000000',
+      canvas: '#000000',
+      node: '#FFFFFF',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+    const firstFocus = root.style.getPropertyValue('--color-focus')
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#FFFFFF')
+    expect(root.style.getPropertyValue('--color-focus')).toBe(firstFocus)
+    expect(firstFocus).not.toBe('#000000')
+    expect(firstFocus).not.toBe('#FFFFFF')
+    expect(contrastRatio(firstFocus, '#000000')).toBeGreaterThanOrEqual(3)
+    expect(contrastRatio(firstFocus, '#FFFFFF')).toBeGreaterThanOrEqual(3)
+  })
+
+  it('uses deterministic max-min contrast when no focus color can clear 3:1 across every host', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': '#000000',
+      canvas: '#777777',
+      node: '#FFFFFF',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+    const firstFocus = root.style.getPropertyValue('--color-focus')
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+    const contrasts = ['#000000', '#777777', '#FFFFFF'].map((surface) => contrastRatio(firstFocus, surface))
+
+    expect(root.style.getPropertyValue('--color-focus')).toBe(firstFocus)
+    expect(Math.min(...contrasts)).toBeLessThan(3)
+    expect(Math.min(...contrasts)).toBeGreaterThan(1)
   })
 
   it('saves and loads one normalized preference record', () => {

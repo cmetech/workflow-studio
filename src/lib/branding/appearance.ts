@@ -41,6 +41,7 @@ const ACCENT_PATTERN = /^#?([\dA-F]{6})$/i
 const COLOR_THEME_IDS = new Set<ColorThemeId>(COLOR_THEMES.map(({ id }) => id))
 const THEME_PREFERENCES = new Set<ThemePreference>(['system', 'light', 'dark'])
 const MIN_FOCUS_CONTRAST = 3
+const GRAYSCALE_FOCUS_CANDIDATES = Array.from({ length: 256 }, (_, channel) => toHex([channel, channel, channel]))
 
 type Rgb = readonly [red: number, green: number, blue: number]
 interface Rgba {
@@ -183,9 +184,17 @@ function minimumContrast(color: string, surfaces: readonly string[]): number {
 
 function focusColor(accent: string, surfaces: readonly string[]): string {
   if (minimumContrast(accent, surfaces) >= MIN_FOCUS_CONTRAST) return accent
-  const blackContrast = minimumContrast('#000000', surfaces)
-  const whiteContrast = minimumContrast('#FFFFFF', surfaces)
-  return blackContrast >= whiteContrast ? '#000000' : '#FFFFFF'
+  const candidates = [accent, '#000000', '#FFFFFF', ...GRAYSCALE_FOCUS_CANDIDATES]
+  let best = candidates[0]!
+  let bestContrast = minimumContrast(best, surfaces)
+  for (const candidate of candidates.slice(1)) {
+    const candidateContrast = minimumContrast(candidate, surfaces)
+    if (candidateContrast > bestContrast) {
+      best = candidate
+      bestContrast = candidateContrast
+    }
+  }
+  return best
 }
 
 function isColorThemeId(value: unknown): value is ColorThemeId {
@@ -228,9 +237,10 @@ export function applyAppearanceTheme(
   const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
   const canvas = compositeColor(theme.canvas, background)
   const node = compositeColor(theme.node, canvas)
-  const yamlGutter = compositeColor(theme['yaml-gutter'], surface)
+  const editorSurface = compositeColor(theme.surface, surfaceElevated)
+  const yamlGutter = compositeColor(theme['yaml-gutter'], editorSurface)
   const nodeSelected = mixHex(background, accent, selectedAmount)
-  const focusSurfaces = [background, surface, surfaceElevated, canvas, node, yamlGutter, nodeSelected]
+  const focusSurfaces = [background, canvas, node, editorSurface, yamlGutter]
 
   root.style.setProperty('--color-accent', accent)
   root.style.setProperty('--color-accent-strong', mixHex(accent, strongTarget, 0.18))
