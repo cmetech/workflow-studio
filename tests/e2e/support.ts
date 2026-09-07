@@ -337,6 +337,25 @@ export async function readCanvasGeometry(page: Page): Promise<CanvasGeometry> {
   })
 }
 
+/** Keep actual bends/reversals, but not L subdivisions or Q entry/exit points on a straight run. */
+function collapsePathSubdivisions(points: CanvasGeometry['edges'][number]['points']) {
+  const corners: { x: number; y: number }[] = []
+  for (const point of points) {
+    const previous = corners.at(-1),
+      before = corners.at(-2)
+    if (previous?.x === point.x && previous.y === point.y) continue
+    if (
+      before &&
+      previous &&
+      ((before.x === previous.x && previous.x === point.x && (previous.y - before.y) * (point.y - previous.y) > 0) ||
+        (before.y === previous.y && previous.y === point.y && (previous.x - before.x) * (point.x - previous.x) > 0))
+    )
+      corners[corners.length - 1] = point
+    else corners.push(point)
+  }
+  return corners
+}
+
 /** Independent acceptance math: never call the production geometry validator as its own oracle. */
 export function expectRoutedGeometry(
   geometry: CanvasGeometry,
@@ -395,6 +414,12 @@ export function expectRoutedGeometry(
           : a.x > left && a.x < right && Math.max(a.y, b.y) > top && Math.min(a.y, b.y) < bottom
         expect(intersects, `${edge.label} enters ${node.id}'s 24px clearance`).toBe(false)
       }
+    }
+    // Crossing/coincidence endpoint exclusions apply to real bends, never artificial SVG subdivisions.
+    const corners = collapsePathSubdivisions(edge.points)
+    for (let index = 1; index < corners.length; index++) {
+      const a = corners[index - 1]!,
+        b = corners[index]!
       if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) > tolerance) segments.push({ edge: edge.id, a, b })
     }
   }
