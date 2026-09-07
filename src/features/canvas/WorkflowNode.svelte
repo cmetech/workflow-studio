@@ -26,6 +26,8 @@
   class:selected
   class:stale={data.stale}
   class:read-only={data.readOnly}
+  class:edge-emphasized={data.edgeEmphasized}
+  class:edges-deemphasized={data.edgesDeemphasized}
   data-node-id={data.id}
   aria-label={data.accessibleLabel}
 >
@@ -127,6 +129,31 @@
     box-shadow:
       0 0 0 3px color-mix(in srgb, var(--color-edge-selected) 30%, transparent),
       0 0.25rem 0.75rem color-mix(in srgb, var(--color-edge) 16%, transparent);
+  }
+
+  .workflow-node:hover {
+    border-color: var(--color-edge-selected);
+  }
+
+  :global(.svelte-flow__node:focus-visible) .workflow-node {
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  .workflow-node.edge-emphasized {
+    border-width: 2px;
+    border-color: var(--color-edge-selected);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--color-edge-selected) 24%, transparent),
+      0 0.25rem 0.75rem color-mix(in srgb, var(--color-edge) 16%, transparent);
+  }
+
+  .workflow-node.edges-deemphasized:not(.selected):not(:focus-within) {
+    opacity: 0.7;
+  }
+
+  .workflow-node.read-only {
+    filter: saturate(0.72);
   }
 
   .workflow-node.stale {
@@ -252,6 +279,24 @@
     .workflow-node.selected,
     .workflow-node:focus-within {
       outline: 2px solid Highlight;
+      outline-offset: 2px;
+    }
+
+    .workflow-node.edge-emphasized {
+      border-color: Highlight;
+      outline: 2px solid Highlight;
+      outline-offset: 2px;
+    }
+
+    .workflow-node.edges-deemphasized,
+    .workflow-node.read-only {
+      color: GrayText;
+      opacity: 1;
+      filter: none;
+    }
+
+    :global(.svelte-flow__node:focus-visible) .workflow-node {
+      outline: 3px solid CanvasText;
       outline-offset: 2px;
     }
   }

@@ -11,6 +11,8 @@ import documentationOverviewSource from '$src/features/documentation/Documentati
 import documentationTopicListSource from '$src/features/documentation/DocumentationTopicList.svelte?raw'
 import documentationArticleSource from '$src/features/documentation/DocumentationArticle.svelte?raw'
 import keyboardShortcutsSource from '$src/features/commands/KeyboardShortcuts.svelte?raw'
+import workflowEdgeSource from '$src/features/canvas/WorkflowEdge.svelte?raw'
+import workflowNodeSource from '$src/features/canvas/WorkflowNode.svelte?raw'
 
 function createMotionPreference(initialMatches = false) {
   let matches = initialMatches
@@ -77,6 +79,15 @@ describe('canvas reduced-motion contract', () => {
       for (const declaration of motionDeclarations) expect(declaration[1]?.trim()).toMatch(/^none(?:\s+!important)?$/)
     }
     expect(keyboardShortcutsSource).toContain('@media (prefers-reduced-motion: reduce)')
+  })
+
+  it('keeps routed edge emphasis and endpoint-card transitions motion-free', () => {
+    for (const source of [workflowEdgeSource, workflowNodeSource]) {
+      expect(source).toContain('@media (prefers-reduced-motion: reduce)')
+      expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*transition:\s*none !important/)
+      expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*animation:\s*none !important/)
+    }
+    expect(workflowEdgeSource).not.toContain('animateMotion')
   })
 
   it('reacts to runtime preference changes, keeps keyboard viewport movement instant, and cleans up', async () => {

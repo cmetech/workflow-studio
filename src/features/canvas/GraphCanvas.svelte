@@ -40,6 +40,7 @@
     CANVAS_INSPECTOR_RELATIONSHIP,
     type CanvasDragDetail,
     type CanvasEdge,
+    type CanvasEdgeData,
     type CanvasInspectorRelationship,
     CANVAS_SCOPE_RELATIONSHIP,
     type CanvasScopeRelationship,
@@ -109,6 +110,7 @@
     | { readonly token: number; readonly kind: 'surface' }
 
   type PointerSelectionGesture = 'edge' | 'surface' | 'marquee'
+  type Mutable<T> = { -readonly [Key in keyof T]: T[Key] }
 
   let {
     commandSurface,
@@ -196,6 +198,9 @@
   let restoredVersion = $state(0)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
   let edgeSelectionState = emptyEdgeSelectionState()
+  let hoveredEdgeId: string | null = null
+  let focusedEdgeId: string | null = null
+  let emphasisWorkflowIdentity: string | null = null
   let authoringFeedback = $state('')
   let arrangeBusy = $state(false)
   let layoutRevision = 0
@@ -454,6 +459,7 @@
     const currentEdges = untrack(() => flowEdges)
     const nextEdges = withSurfaceEdgeSelection(projected.edges, currentEdges)
     if (nextEdges !== currentEdges) flowEdges = nextEdges
+    publishCurrentEdgeEmphasis()
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
   })
@@ -593,6 +599,7 @@
           }
           const projected = deriveCanvas()
           flowEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
+          publishCurrentEdgeEmphasis()
         })
         .catch(() => {
           if (isCurrent()) invalidateRouting(true)
@@ -923,6 +930,7 @@
       }
       flowNodes = nextNodes
       flowEdges = nextEdges
+      publishCurrentEdgeEmphasis()
       replaceCanvasPositions(next.nodePositions)
       attempt.positions = canvasPositionsStore.get()
       attempt.publishedPositions = next.nodePositions
@@ -981,7 +989,111 @@
     ) {
       clearSelectionGestures()
     }
+    if (emphasisWorkflowIdentity !== workflowIdentity) {
+      emphasisWorkflowIdentity = workflowIdentity
+      hoveredEdgeId = null
+      focusedEdgeId = null
+    }
     return reconcileSurfaceEdges(edges, currentEdges, edgeSelectionState.edgeIds)
+  }
+
+  function currentEmphasizedEdgeId(edges: readonly CanvasEdge[] = flowEdges): string | null {
+    const available = new Set(edges.map(({ id }) => id))
+    return (
+      [hoveredEdgeId, focusedEdgeId, ...edgeSelectionState.edgeIds].find(
+        (candidate): candidate is string => candidate !== null && available.has(candidate),
+      ) ?? null
+    )
+  }
+
+  function edgeWithEmphasis(edge: CanvasEdge, activeEdgeId: string | null): CanvasEdge {
+    const emphasized = activeEdgeId ? edge.id === activeEdgeId : undefined
+    const deemphasized = activeEdgeId ? edge.id !== activeEdgeId : undefined
+    const zIndex = emphasized ? 2 : undefined
+    if (edge.data?.emphasized === emphasized && edge.data?.deemphasized === deemphasized && edge.zIndex === zIndex)
+      return edge
+    const data: Mutable<CanvasEdgeData> = { ...edge.data! }
+    if (emphasized === undefined) delete data.emphasized
+    else data.emphasized = emphasized
+    if (deemphasized === undefined) delete data.deemphasized
+    else data.deemphasized = deemphasized
+    const next: CanvasEdge = { ...edge, data }
+    if (zIndex === undefined) delete next.zIndex
+    else next.zIndex = zIndex
+    return next
+  }
+
+  function nodeWithEdgeEmphasis(
+    node: CanvasNode,
+    endpointIds: ReadonlySet<string>,
+    hasActiveEdge: boolean,
+  ): CanvasNode {
+    const edgeEmphasized = hasActiveEdge ? endpointIds.has(node.id) : undefined
+    const edgesDeemphasized = hasActiveEdge ? !edgeEmphasized : undefined
+    if (node.data.edgeEmphasized === edgeEmphasized && node.data.edgesDeemphasized === edgesDeemphasized) return node
+    const data = { ...node.data }
+    if (edgeEmphasized === undefined) delete data.edgeEmphasized
+    else data.edgeEmphasized = edgeEmphasized
+    if (edgesDeemphasized === undefined) delete data.edgesDeemphasized
+    else data.edgesDeemphasized = edgesDeemphasized
+    return { ...node, data }
+  }
+
+  function publishCurrentEdgeEmphasis(): void {
+    const activeEdgeId = currentEmphasizedEdgeId()
+    const activeEdge = activeEdgeId ? flowEdges.find(({ id }) => id === activeEdgeId) : undefined
+    const endpointIds = new Set(activeEdge ? [activeEdge.source, activeEdge.target] : [])
+    const nextEdges = flowEdges.map((edge) => edgeWithEmphasis(edge, activeEdgeId))
+    const nextNodes = flowNodes.map((node) => nodeWithEdgeEmphasis(node, endpointIds, Boolean(activeEdge)))
+    if (nextEdges.some((edge, index) => edge !== flowEdges[index])) flowEdges = nextEdges
+    if (nextNodes.some((node, index) => node !== flowNodes[index])) flowNodes = nextNodes
+  }
+
+  function hoverEdge(edgeId: string): void {
+    if (hoveredEdgeId === edgeId) return
+    hoveredEdgeId = edgeId
+    publishCurrentEdgeEmphasis()
+  }
+
+  function leaveEdge(edgeId: string): void {
+    if (hoveredEdgeId !== edgeId) return
+    hoveredEdgeId = null
+    publishCurrentEdgeEmphasis()
+  }
+
+  function edgeIdFromTarget(target: EventTarget | null): string | null {
+    return target instanceof Element
+      ? (target.closest<HTMLElement>('.svelte-flow__edge[data-id]')?.dataset.id ?? null)
+      : null
+  }
+
+  function focusEdge(event: FocusEvent): void {
+    const edgeId = edgeIdFromTarget(event.target)
+    if (!edgeId || focusedEdgeId === edgeId) return
+    focusedEdgeId = edgeId
+    publishCurrentEdgeEmphasis()
+  }
+
+  function blurEdge(event: FocusEvent): void {
+    const edgeId = edgeIdFromTarget(event.target)
+    if (!edgeId || focusedEdgeId !== edgeId) return
+    if (edgeIdFromTarget(event.relatedTarget) === edgeId) return
+    focusedEdgeId = null
+    publishCurrentEdgeEmphasis()
+  }
+
+  function clearEdgeEmphasis(clearSelection = false): void {
+    hoveredEdgeId = null
+    focusedEdgeId = null
+    if (clearSelection) {
+      edgeSelectionState = clearEdgeSelection(edgeSelectionState)
+      flowEdges = flowEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
+    }
+    publishCurrentEdgeEmphasis()
+  }
+
+  function clearEdgeEmphasisOnEscape(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && edgeIdFromTarget(event.target)) clearEdgeEmphasis(true)
   }
 
   function nodeIds(): readonly string[] {
@@ -1106,6 +1218,7 @@
     flowNodes = flowNodes.map((node) => (node.selected ? { ...node, selected: false } : node))
     flowEdges = flowEdges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge))
     selectionChanged([])
+    publishCurrentEdgeEmphasis()
   }
 
   export function selectAll(): void {
@@ -1342,6 +1455,7 @@
 
       const previousEdgeIds = edgeSelectionState.edgeIds
       edgeSelectionState = commitEdgeSelection(edgeSelectionState, workflowIdentity, nextEdgeIds, intendedNodeIds)
+      publishCurrentEdgeEmphasis()
 
       if (
         nextEdgeIds.length === 0 &&
@@ -1417,9 +1531,11 @@
   ): Promise<boolean> {
     if (readOnly || transitionLocked || arrangeBusy || (stale && !(repairMode && nodes.length > 0))) return false
     if (nodes.length > 0) {
+      clearEdgeEmphasis(true)
       await onRequestDelete?.(nodes.map(({ id }) => id))
       return false
     }
+    if (edges.length > 0) clearEdgeEmphasis(true)
     for (const edge of edges) {
       await handleAuthoringResult(
         onDisconnect
@@ -1543,6 +1659,9 @@
     root.addEventListener('keydown', resumeSelectionPublication, true)
     root.addEventListener('keydown', captureEdgeEscape, true)
     root.addEventListener('keydown', handleEdgeKeydown)
+    root.addEventListener('keydown', clearEdgeEmphasisOnEscape)
+    root.addEventListener('focusin', focusEdge)
+    root.addEventListener('focusout', blurEdge)
     root.addEventListener('dblclick', openLoopGroupFromEvent)
     root.addEventListener('keydown', openLoopGroupFromEvent)
     motionQuery.addEventListener?.('change', motionChanged)
@@ -1569,6 +1688,9 @@
       root.removeEventListener('keydown', resumeSelectionPublication, true)
       root.removeEventListener('keydown', captureEdgeEscape, true)
       root.removeEventListener('keydown', handleEdgeKeydown)
+      root.removeEventListener('keydown', clearEdgeEmphasisOnEscape)
+      root.removeEventListener('focusin', focusEdge)
+      root.removeEventListener('focusout', blurEdge)
       root.removeEventListener('dblclick', openLoopGroupFromEvent)
       root.removeEventListener('keydown', openLoopGroupFromEvent)
       motionQuery.removeEventListener?.('change', motionChanged)
@@ -1669,6 +1791,8 @@
       onselectionstart={() => beginPointerSelectionGesture('marquee')}
       onselectionend={schedulePointerSelectionEnd}
       onselectionchange={surfaceSelectionChanged}
+      onedgepointerenter={({ edge }) => hoverEdge(edge.id)}
+      onedgepointerleave={({ edge }) => leaveEdge(edge.id)}
       onconnect={({ source, target }) => {
         if (source && target) {
           void handleAuthoringResult(

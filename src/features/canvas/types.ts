@@ -13,6 +13,8 @@ export interface CanvasNodeData extends Record<string, unknown> {
   readonly stale: boolean
   readonly readOnly: boolean
   readonly accessibleLabel: string
+  readonly edgeEmphasized?: boolean
+  readonly edgesDeemphasized?: boolean
   readonly compound?: LoopGroupNodeSummary
 }
 
@@ -29,6 +31,7 @@ export interface CanvasEdgeData extends Record<string, unknown> {
   readonly readOnly: boolean
   readonly route?: EdgeRouteV1
   readonly emphasized?: boolean
+  readonly deemphasized?: boolean
 }
 
 export type CanvasNode = Node<CanvasNodeData, 'workflow'>

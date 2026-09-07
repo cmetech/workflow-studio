@@ -4,7 +4,16 @@ import { describe, expect, it } from 'vitest'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import workflowEdgeSource from './WorkflowEdge.svelte?raw'
 
-function renderEdge(options: { routed?: boolean; selected?: boolean; stale?: boolean; readOnly?: boolean } = {}) {
+function renderEdge(
+  options: {
+    routed?: boolean
+    selected?: boolean
+    stale?: boolean
+    readOnly?: boolean
+    emphasized?: boolean
+    deemphasized?: boolean
+  } = {},
+) {
   return render(WorkflowEdge, {
     id: 'dependency:collect->review',
     sourceX: 0,
@@ -18,6 +27,8 @@ function renderEdge(options: { routed?: boolean; selected?: boolean; stale?: boo
     data: {
       stale: options.stale ?? false,
       readOnly: options.readOnly ?? false,
+      emphasized: options.emphasized,
+      deemphasized: options.deemphasized,
       ...(options.routed
         ? {
             route: {
@@ -72,12 +83,32 @@ describe('WorkflowEdge routed rendering', () => {
     expect(container.querySelector('.svelte-flow__edge-interaction')).toHaveAttribute('stroke-width', '32')
   })
 
+  it('keeps casing, semantic, and focus layers while distinguishing emphasized and subdued routes', () => {
+    const active = renderEdge({ routed: true, selected: true, emphasized: true })
+    const activePaths = [...active.container.querySelectorAll('path')]
+    const casing = active.container.querySelector<SVGPathElement>('.workflow-edge-casing')!
+    const halo = active.container.querySelector<SVGPathElement>('.workflow-edge-focus-halo')!
+    const semantic = active.container.querySelector<SVGPathElement>('.workflow-edge')!
+
+    expect(semantic).toHaveClass('selected', 'emphasized')
+    expect(activePaths.indexOf(casing)).toBeLessThan(activePaths.indexOf(halo))
+    expect(activePaths.indexOf(halo)).toBeLessThan(activePaths.indexOf(semantic))
+
+    const subdued = renderEdge({ routed: true, deemphasized: true })
+    expect(subdued.container.querySelector('.workflow-edge')).toHaveClass('deemphasized')
+    expect(subdued.container.querySelector('.workflow-edge')).not.toHaveAttribute('hidden')
+    expect(subdued.container.querySelector('.workflow-edge')).not.toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('keeps forced-colors treatment and does not animate routed paths', () => {
     const { container } = renderEdge({ routed: true })
 
     expect(workflowEdgeSource).toContain('@media (forced-colors: active)')
     expect(workflowEdgeSource).toContain('CanvasText')
     expect(workflowEdgeSource).toContain('Highlight')
+    expect(workflowEdgeSource).toContain('GrayText')
+    expect(workflowEdgeSource).toContain('--workflow-edge-subdued-opacity')
+    expect(workflowEdgeSource).toContain('@media (prefers-reduced-motion: reduce)')
     expect(container.querySelector('.workflow-edge')).not.toHaveClass('animated')
   })
 })

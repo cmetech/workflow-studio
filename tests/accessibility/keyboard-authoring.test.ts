@@ -7,6 +7,8 @@ import type { AuthoringContract } from '$src/lib/contract/types'
 import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
 import { createCommandRegistry } from '$src/lib/commands/registry'
 import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
+import workflowEdgeSource from '$src/features/canvas/WorkflowEdge.svelte?raw'
+import workflowNodeSource from '$src/features/canvas/WorkflowNode.svelte?raw'
 
 const nativeWindow = vi.hoisted(() => ({
   onCloseRequested: vi.fn(async () => () => undefined),
@@ -339,6 +341,13 @@ async function selectNodeWithKeyboard(user: UserEvent, id: string): Promise<HTML
 }
 
 describe('keyboard-only workflow authoring', () => {
+  it('gives dense edge emphasis equivalent keyboard-focus and endpoint-card affordances', () => {
+    expect(workflowEdgeSource).toContain('.workflow-edge.emphasized')
+    expect(workflowEdgeSource).toContain('.svelte-flow__edge:focus-visible')
+    expect(workflowNodeSource).toContain('.workflow-node.edge-emphasized')
+    expect(workflowNodeSource).toContain('.svelte-flow__node:focus-visible')
+  })
+
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,

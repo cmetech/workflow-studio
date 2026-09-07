@@ -76,6 +76,29 @@ const layout: ScopeLayoutV1 = {
   viewport: { x: 0, y: 0, zoom: 1 },
 }
 
+const denseProjection: ProjectedGraph = {
+  ...projection,
+  nodes: [
+    ...projection.nodes,
+    {
+      id: 'publish',
+      kind: 'command',
+      value: 'Publish release',
+      dependsOn: ['collect'],
+      options: {},
+      source: { path: '/nodes/2', start: 51, end: 70 },
+    },
+  ],
+  edges: [...projection.edges, { id: 'dependency:collect->publish', source: 'collect', target: 'publish' }],
+  definitionOrder: ['collect', 'review', 'publish'],
+  capacity: { status: 'visual', nodeCount: 3, edgeCount: 2 },
+}
+
+const denseLayout: ScopeLayoutV1 = {
+  ...layout,
+  nodePositions: { ...layout.nodePositions, publish: { x: 320, y: 180 } },
+}
+
 class DeferredLayoutClient {
   requests: LayoutWorkerRequest[] = []
   resolve!: (result: LayoutWorkerResult) => void
@@ -242,6 +265,169 @@ describe('GraphCanvas', () => {
   afterEach(() => {
     vi.useRealTimers()
     clearCanvasState()
+  })
+
+  it('emphasizes a hovered or focused dependency and both endpoints while keeping other connections visible', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const { container } = renderCanvas({
+      projection: denseProjection,
+      layout: denseLayout,
+      onLayoutChange,
+      onPersistLayout,
+    })
+    await measurements.publish()
+    const edges = [...container.querySelectorAll<SVGGElement>('.svelte-flow__edge')]
+    const active = edges.find((edge) => edge.dataset.id === 'dependency:collect->review')!
+    const other = edges.find((edge) => edge.dataset.id === 'dependency:collect->publish')!
+    const node = (id: string) =>
+      container.querySelector<HTMLElement>(`.svelte-flow__node[data-id="${id}"] .workflow-node`)!
+
+    await fireEvent.pointerEnter(active)
+    expect(active.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    expect(other.querySelector('.workflow-edge')).toHaveClass('deemphasized')
+    expect(other.querySelector('.workflow-edge')).toBeVisible()
+    expect(node('collect')).toHaveClass('edge-emphasized')
+    expect(node('review')).toHaveClass('edge-emphasized')
+    expect(node('publish')).toHaveClass('edges-deemphasized')
+
+    await fireEvent.pointerLeave(active)
+    expect(container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    expect(container.querySelector('.workflow-node.edge-emphasized')).not.toBeInTheDocument()
+
+    active.focus()
+    await tick()
+    expect(active.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    expect(node('collect')).toHaveClass('edge-emphasized')
+    expect(node('review')).toHaveClass('edge-emphasized')
+
+    await fireEvent.pointerEnter(other)
+    expect(other.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    expect(active.querySelector('.workflow-edge')).toHaveClass('deemphasized')
+    await fireEvent.pointerLeave(other)
+    expect(active.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    active.blur()
+    await tick()
+    expect(container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    expect(onLayoutChange).not.toHaveBeenCalled()
+    expect(onPersistLayout).not.toHaveBeenCalled()
+    measurements.restore()
+  })
+
+  it('keeps selected-edge emphasis until Escape or deletion and clears it across scope identity changes', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const onDisconnect = vi.fn(async () => ({ status: 'committed' as const }))
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({
+      projection: denseProjection,
+      layout: denseLayout,
+      workflowIdentity: 'root-a',
+      onDisconnect,
+      onLayoutChange,
+      onPersistLayout,
+    })
+    await measurements.publish()
+    const edge = rendered.container.querySelector<SVGGElement>(
+      '.svelte-flow__edge[data-id="dependency:collect->review"]',
+    )!
+
+    await fireEvent.click(edge)
+    await tick()
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('selected', 'emphasized')
+    expect(rendered.container.querySelectorAll('.workflow-node.edge-emphasized')).toHaveLength(2)
+
+    edge.focus()
+    await fireEvent.keyDown(edge, { key: 'Escape' })
+    await tick()
+    expect(rendered.container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    expect(rendered.container.querySelector('.workflow-node.edge-emphasized')).not.toBeInTheDocument()
+
+    await fireEvent.click(
+      rendered.container.querySelector<SVGGElement>('.svelte-flow__edge[data-id="dependency:collect->review"]')!,
+    )
+    await tick()
+    expect(
+      rendered.container.querySelector('.svelte-flow__edge[data-id="dependency:collect->review"] .workflow-edge'),
+    ).toHaveClass('emphasized')
+    await fireEvent(
+      rendered.container.querySelector('[data-testid="workflow-canvas"]')!,
+      new CustomEvent('workflowbeforedelete', {
+        bubbles: true,
+        detail: { nodes: [], edges: [{ source: 'collect', target: 'review' }] },
+      }),
+    )
+    await tick()
+    expect(onDisconnect).toHaveBeenCalledWith('collect', 'review')
+    expect(rendered.container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+
+    const edgeBeforeScopeChange = rendered.container.querySelector<SVGGElement>(
+      '.svelte-flow__edge[data-id="dependency:collect->review"]',
+    )!
+    await fireEvent.click(edgeBeforeScopeChange)
+    await tick()
+    expect(edgeBeforeScopeChange.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: {
+        ...denseProjection,
+        scope: { ...denseProjection.scope, key: 'loop-group:ship', kind: 'loop-group', groupId: 'ship' },
+      },
+      layout: denseLayout,
+      workflowIdentity: 'loop-ship',
+      onDisconnect,
+      onLayoutChange,
+      onPersistLayout,
+    } as never)
+    await tick()
+    expect(rendered.container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    expect(onPersistLayout).not.toHaveBeenCalled()
+    measurements.restore()
+  })
+
+  it('clears incident edge emphasis as soon as a node deletion begins', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const onRequestDelete = vi.fn()
+    const { container } = renderCanvas({
+      projection: denseProjection,
+      layout: denseLayout,
+      onRequestDelete,
+    })
+    await measurements.publish()
+    const edge = container.querySelector<SVGGElement>('.svelte-flow__edge[data-id="dependency:collect->review"]')!
+    await fireEvent.click(edge)
+    await tick()
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    await fireEvent(
+      container.querySelector('[data-testid="workflow-canvas"]')!,
+      new CustomEvent('workflowbeforedelete', {
+        bubbles: true,
+        detail: {
+          nodes: [{ id: 'review' }],
+          edges: [{ source: 'collect', target: 'review' }],
+        },
+      }),
+    )
+    await tick()
+
+    expect(onRequestDelete).toHaveBeenCalledWith(['review'])
+    expect(container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    measurements.restore()
   })
 
   it('[RG5] restores exact persisted routes only after measurements and preserves a persistence echo', async () => {
