@@ -84,7 +84,7 @@ describe('version two release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "2\.0\.1"/)
   })
 
-  it('changes the npm lockfile only for the synchronized version and pinned local Geist packages', () => {
+  it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and ELK', () => {
     const expected = JSON.parse(preReleaseFile('package-lock.json')) as {
       version: string
       packages: Record<string, { version?: string; dependencies?: Record<string, string> }>
@@ -95,6 +95,7 @@ describe('version two release metadata', () => {
       ...expected.packages['']!.dependencies,
       '@fontsource-variable/geist': '5.3.0',
       '@fontsource-variable/geist-mono': '5.3.0',
+      elkjs: '0.12.0',
     }
     expected.packages['node_modules/@fontsource-variable/geist'] = {
       version: '5.3.0',
@@ -109,6 +110,13 @@ describe('version two release metadata', () => {
       integrity: 'sha512-vBbuwDEo9AkrqADMXOrlAR3DFcJi4/JxeuU43FoiQERnNwsfXNnvxvReZG02cQKmyk4DZkZdBZX3oTDvy2zBAw==',
       license: 'OFL-1.1',
       funding: { url: 'https://github.com/sponsors/ayuhito' },
+    }
+
+    expected.packages['node_modules/elkjs'] = {
+      version: '0.12.0',
+      resolved: 'https://registry.npmjs.org/elkjs/-/elkjs-0.12.0.tgz',
+      integrity: 'sha512-YZcKynxVxYoKIOEpywEPwCFdg+BTbxQRNf3pbwdDCvc8O3kQD8bmIwSxKU1eOTVc4Xo+VG9Te+575mlfvOrhEQ==',
+      license: 'EPL-2.0 OR GPL-3.0-or-later',
     }
 
     expect(json('package-lock.json')).toEqual(expected)
