@@ -35,5 +35,5 @@
   --color-edge-selected: #8a80ff;
   --color-yaml-gutter: #0e1118;
   --color-shadow: #00000080;
-  --focus-ring: 0 0 0 2px var(--color-focus), 0 0 0 4px var(--color-focus-contrast);
+  --focus-ring: inset 0 0 0 2px var(--color-focus-contrast), 0 0 0 3px var(--color-focus);
 }

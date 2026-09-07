@@ -146,7 +146,7 @@ input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--focus-ring) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -166,6 +166,6 @@ select:focus-visible {
   select:focus-visible {
     outline: 2px solid ButtonText;
     outline-offset: 2px;
-    box-shadow: none;
+    box-shadow: none !important;
   }
 }

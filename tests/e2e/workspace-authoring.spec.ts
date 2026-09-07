@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { decode } from 'fast-png'
 import {
   editorMetrics,
   expectNoPointerAuthorityWork,
@@ -223,6 +224,47 @@ test('uses both focus colors on a real canvas toolbar button', async ({ page }) 
 
   expect(colors.shadow).toContain(colors.primary)
   expect(colors.shadow).toContain(colors.secondary)
+})
+
+test('paints the secondary focus band inside a hostile canvas toolbar button', async ({ page }) => {
+  await openSeededPair(page)
+  await page.evaluate(() => {
+    const root = document.documentElement.style
+    root.setProperty('--color-surface-elevated', '#A6A6A6')
+    root.setProperty('--color-border', '#A6A6A6')
+    root.setProperty('--color-text', '#FF00FF')
+    root.setProperty('--color-focus', '#FFFFFF')
+    root.setProperty('--color-focus-contrast', '#000000')
+  })
+  const button = page.getByRole('button', { name: 'Add Node', exact: true })
+  await page.keyboard.press('Tab')
+  await button.focus()
+  const bounds = await button.boundingBox()
+  if (!bounds) throw new Error('Expected CanvasToolbar button bounds.')
+  const padding = 6
+  const image = decode(
+    await page.screenshot({
+      clip: {
+        x: Math.floor(bounds.x) - padding,
+        y: Math.floor(bounds.y) - padding,
+        width: Math.ceil(bounds.width) + padding * 2,
+        height: Math.ceil(bounds.height) + padding * 2,
+      },
+    }),
+  )
+  expect(image.depth).toBe(8)
+  expect([3, 4]).toContain(image.channels)
+  const pixel = (x: number, y: number) => {
+    const offset = (y * image.width + x) * image.channels
+    return Array.from(image.data.slice(offset, offset + 3))
+  }
+  const center = Math.floor(image.width / 2)
+  expect(pixel(center, padding - 3)).toEqual([255, 255, 255])
+  expect(pixel(center, padding + 2)).toEqual([0, 0, 0])
+
+  await page.emulateMedia({ forcedColors: 'active' })
+  await expect.poll(() => button.evaluate((element) => getComputedStyle(element).boxShadow)).toBe('none')
+  expect(await button.evaluate((element) => getComputedStyle(element).outlineWidth)).toBe('2px')
 })
 
 test('canvas menu stays outside the pointer viewport', async ({ page }) => {
