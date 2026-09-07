@@ -128,11 +128,18 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
     return failure('edge_membership_mismatch')
   }
 
+  let rawPointCount = 0
+  for (const edge of input.edges) {
+    const points = input.routes[edge.id]!.points
+    if (!Array.isArray(points)) return failure('route_point_count')
+    rawPointCount += points.length
+    if (rawPointCount > MAX_TOTAL_ROUTE_POINTS) return failure('total_route_point_count')
+  }
+
   const routes: Record<string, EdgeRouteV1> = {}
   let totalPointCount = 0
   for (const edge of input.edges) {
     const route = input.routes[edge.id]!
-    if (!Array.isArray(route.points)) return failure('route_point_count')
     for (const point of route.points) {
       if (!finitePoint(point) || !boundedCoordinate(point.x) || !boundedCoordinate(point.y)) {
         return failure('coordinate_out_of_bounds')

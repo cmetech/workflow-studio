@@ -240,6 +240,15 @@ describe('validateRoutedLayout', () => {
     expect(failureCode(validateRoutedLayout(overLimit))).toBe('total_route_point_count')
   })
 
+  it('rejects an oversized raw point aggregate before normalization allocates from it', () => {
+    const points = Array.from({ length: MAX_TOTAL_ROUTE_POINTS + 1 }, () => ({ x: 100, y: 30 }))
+    const routes = {
+      'dependency:source->target': { edgeId: 'dependency:source->target', points },
+    }
+
+    expect(failureCode(validateRoutedLayout(input({ routes })))).toBe('total_route_point_count')
+  })
+
   it('rejects routing whose canonical serialized representation exceeds 4MiB', () => {
     const oversizedId = `dependency:${'x'.repeat(Math.ceil(MAX_SERIALIZED_ROUTING_BYTES / 2))}`
     const edges = [{ id: oversizedId, source: 'source', target: 'target', order: 0 }]
