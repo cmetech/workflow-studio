@@ -128,9 +128,17 @@ describe('appearance preferences', () => {
       const theme = brand.themes[mode]
       expect(token('--color-accent')).toBe(customAccent)
       expect(contrastRatio(token('--color-edge-selected'), theme.canvas)).toBeGreaterThanOrEqual(3)
-      for (const nodeSurface of [theme.node, token('--color-node-selected')]) {
-        expect(contrastRatio(token('--color-node-kind'), nodeSurface)).toBeGreaterThanOrEqual(3)
+      expect(contrastRatio(token('--color-node-kind'), theme.node)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(token('--color-node-kind-selected'), token('--color-node-selected'))).toBeGreaterThanOrEqual(
+        4.5,
+      )
+      for (const surface of ['page', 'panel', 'rail']) {
+        expect(
+          contrastRatio(token(`--color-selection-${surface}-foreground`), token(`--color-selection-${surface}`)),
+        ).toBeGreaterThanOrEqual(4.5)
       }
+      expect(contrastRatio(token('--color-accent-on-background'), theme.background)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(token('--color-accent-on-surface'), theme.surface)).toBeGreaterThanOrEqual(4.5)
       for (const [backgroundToken, foregroundToken] of [
         ['--color-primary', '--color-primary-contrast'],
         ['--color-primary-hover', '--color-primary-hover-contrast'],
@@ -140,6 +148,72 @@ describe('appearance preferences', () => {
       }
     },
   )
+
+  it('derives independent 4.5:1 node-kind foregrounds for incompatible imported node surfaces', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': '#000000',
+      text: '#FFFFFF',
+      accent: '#FFFFFF',
+      'accent-contrast': '#000000',
+      'accent-strong': '#777777',
+      canvas: '#000000',
+      node: '#434343',
+      'node-selected': '#B1B1B1',
+      'edge-selected': '#777777',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'loop24-indigo', null, root)
+
+    const normal = root.style.getPropertyValue('--color-node-kind')
+    const selected = root.style.getPropertyValue('--color-node-kind-selected')
+    expect(normal).not.toBe(selected)
+    expect(contrastRatio(normal, '#434343')).toBeGreaterThanOrEqual(4.5)
+    expect(contrastRatio(selected, '#B1B1B1')).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('derives semantic accent foregrounds from each composited consumer surface', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#FFFFFF',
+      surface: 'rgba(0, 0, 0, 0.2)',
+      'surface-elevated': 'rgba(0, 0, 0, 0.2)',
+      text: '#000000',
+      accent: '#000000',
+      'accent-strong': 'rgba(0, 0, 0, 0.2)',
+      'accent-contrast': '#FFFFFF',
+      focus: '#000000',
+      error: '#000000',
+      canvas: '#FFFFFF',
+      node: 'rgba(0, 0, 0, 0.2)',
+      'node-selected': 'rgba(0, 0, 0, 0.2)',
+      'edge-selected': '#000000',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'loop24-indigo', null, root)
+
+    expect(
+      contrastRatio(root.style.getPropertyValue('--color-accent-on-background'), '#FFFFFF'),
+    ).toBeGreaterThanOrEqual(4.5)
+    for (const token of ['--color-accent-on-surface', '--color-accent-strong-on-surface']) {
+      expect(contrastRatio(root.style.getPropertyValue(token), '#CCCCCC')).toBeGreaterThanOrEqual(4.5)
+    }
+    for (const [surface, expectedBackground] of [
+      ['page', '#CCCCCC'],
+      ['panel', '#A3A3A3'],
+      ['rail', '#000000'],
+    ] as const) {
+      const background = root.style.getPropertyValue(`--color-selection-${surface}`)
+      expect(background).toBe(expectedBackground)
+      expect(
+        contrastRatio(root.style.getPropertyValue(`--color-selection-${surface}-foreground`), background),
+      ).toBeGreaterThanOrEqual(4.5)
+    }
+  })
 
   it.each([
     ['light', '#FFFFFF', '#000000'],

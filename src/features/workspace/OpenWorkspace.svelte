@@ -104,7 +104,7 @@
   }
 
   .eyebrow {
-    color: var(--color-accent-strong);
+    color: var(--color-accent-strong-on-surface);
     font-size: 0.6875rem;
     font-weight: 800;
     letter-spacing: 0.12em;
@@ -132,7 +132,7 @@
     flex: 0 0 auto;
     padding: 0;
     border: 0;
-    color: var(--color-accent-strong);
+    color: var(--color-accent-strong-on-surface);
     background: transparent;
     font-size: 0.75rem;
   }

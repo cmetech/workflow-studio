@@ -96,7 +96,7 @@
   }
   ol button {
     min-height: 2rem;
-    color: var(--color-accent);
+    color: var(--color-accent-on-background);
     text-align: left;
     background: transparent;
     border: 0;

@@ -41,6 +41,7 @@ const ACCENT_PATTERN = /^#?([\dA-F]{6})$/i
 const COLOR_THEME_IDS = new Set<ColorThemeId>(COLOR_THEMES.map(({ id }) => id))
 const THEME_PREFERENCES = new Set<ThemePreference>(['system', 'light', 'dark'])
 const MIN_FOCUS_CONTRAST = 3
+const MIN_TEXT_CONTRAST = 4.5
 const GRAYSCALE_FOCUS_CANDIDATES = Array.from({ length: 256 }, (_, channel) => toHex([channel, channel, channel]))
 
 type Rgb = readonly [red: number, green: number, blue: number]
@@ -226,23 +227,46 @@ function focusColors(accent: string, surfaces: readonly string[]): readonly [pri
   return [bestPrimary, bestSecondary]
 }
 
+function foregroundColor(preferred: string, surface: string): string {
+  const rendered = compositeColor(preferred, surface)
+  return contrastRatio(rendered, surface) >= MIN_TEXT_CONTRAST ? rendered : contrastColor(surface)
+}
+
 function publishSemanticColors(
   root: HTMLElement,
   preferredAccent: string,
   preferredStrongAccent: string,
   preferredSelectionAccent: string,
+  preferredSelectedSurface: string,
+  primarySurface: string,
   background: string,
+  surface: string,
   canvas: string,
   node: string,
   nodeSelected: string,
+  yamlGutter: string,
 ): void {
-  const primary = compositeColor(preferredAccent, background)
-  const primaryHover = compositeColor(preferredStrongAccent, background)
-  const primaryActive = mixHex(primaryHover, background, 0.28)
+  const primary = compositeColor(preferredAccent, primarySurface)
+  const primaryHover = compositeColor(preferredStrongAccent, primarySurface)
+  const primaryActive = mixHex(primaryHover, primarySurface, 0.28)
   const selectionAccent = compositeColor(preferredSelectionAccent, canvas)
   const edgeSelected = focusColor(selectionAccent, [canvas])
-  const nodeKind = focusColor(selectionAccent, [node, nodeSelected])
 
+  root.style.setProperty('--color-accent-on-background', foregroundColor(preferredAccent, background))
+  root.style.setProperty('--color-accent-on-surface', foregroundColor(preferredAccent, surface))
+  root.style.setProperty('--color-accent-strong-on-surface', foregroundColor(preferredStrongAccent, surface))
+  for (const [name, backdrop] of [
+    ['page', background],
+    ['panel', surface],
+    ['rail', yamlGutter],
+  ] as const) {
+    const selectedSurface = compositeColor(preferredSelectedSurface, backdrop)
+    root.style.setProperty(`--color-selection-${name}`, selectedSurface)
+    root.style.setProperty(
+      `--color-selection-${name}-foreground`,
+      foregroundColor(preferredStrongAccent, selectedSurface),
+    )
+  }
   root.style.setProperty('--color-primary', primary)
   root.style.setProperty('--color-primary-contrast', contrastColor(primary))
   root.style.setProperty('--color-primary-hover', primaryHover)
@@ -250,7 +274,8 @@ function publishSemanticColors(
   root.style.setProperty('--color-primary-active', primaryActive)
   root.style.setProperty('--color-primary-active-contrast', contrastColor(primaryActive))
   root.style.setProperty('--color-edge-selected', edgeSelected)
-  root.style.setProperty('--color-node-kind', nodeKind)
+  root.style.setProperty('--color-node-kind', foregroundColor(selectionAccent, node))
+  root.style.setProperty('--color-node-kind-selected', foregroundColor(selectionAccent, nodeSelected))
 }
 
 function isColorThemeId(value: unknown): value is ColorThemeId {
@@ -307,10 +332,14 @@ export function applyAppearanceTheme(
       theme.accent,
       theme['accent-strong'],
       theme['edge-selected'],
+      theme['node-selected'],
       surfaceElevated,
+      background,
+      surface,
       canvas,
       node,
       nodeSelected,
+      yamlGutter,
     )
     return
   }
@@ -335,10 +364,14 @@ export function applyAppearanceTheme(
     accent,
     mixHex(accent, strongTarget, 0.18),
     accent,
+    nodeSelected,
     surfaceElevated,
+    background,
+    surface,
     canvas,
     node,
     nodeSelected,
+    yamlGutter,
   )
 }
 

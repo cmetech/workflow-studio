@@ -120,9 +120,9 @@ button[data-variant='danger']:active:not(:disabled) {
 }
 
 button[data-variant='ghost'][aria-pressed='true']:active:not(:disabled) {
-  border-color: var(--color-accent-strong);
-  color: var(--color-accent-contrast);
-  background: var(--color-accent);
+  border-color: var(--color-primary-active);
+  color: var(--color-primary-active-contrast);
+  background: var(--color-primary-active);
 }
 
 button:disabled,

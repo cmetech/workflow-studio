@@ -7,7 +7,17 @@ import { THEME_TOKEN_NAMES } from '$src/lib/branding/types'
 // their existing strict token inventory and do not require or accept this key.
 const rendererDerivedColorTokens = new Set([
   'focus-contrast',
+  'accent-on-background',
+  'accent-on-surface',
+  'accent-strong-on-surface',
+  'selection-page',
+  'selection-page-foreground',
+  'selection-panel',
+  'selection-panel-foreground',
+  'selection-rail',
+  'selection-rail-foreground',
   'node-kind',
+  'node-kind-selected',
   'primary',
   'primary-contrast',
   'primary-hover',
@@ -52,6 +62,23 @@ describe('offline visual style contract', () => {
       sourceFiles('src').filter((path) => /ui-monospace/.test(readFileSync(path, 'utf8'))),
       'technical surfaces must resolve through the bundled --font-mono token',
     ).toEqual([])
+  })
+
+  it('reserves raw accent foreground paint for the decorative built-in brand mark', () => {
+    const rawAccentForegrounds = new Set(
+      sourceFiles('src').flatMap((path) =>
+        [
+          ...readFileSync(path, 'utf8').matchAll(
+            /(?:^|[;{'"\s])(color|fill|stroke)\s*:\s*var\(--color-(accent(?:-strong|-contrast)?)\)/gm,
+          ),
+        ].map((match) => `${path}:${match[1]}:${match[2]}`),
+      ),
+    )
+
+    expect([...rawAccentForegrounds].sort()).toEqual([
+      'src/features/branding/Loop24Mark.svelte:fill:accent',
+      'src/features/branding/Loop24Mark.svelte:fill:accent-contrast',
+    ])
   })
 
   it('applies the two-tone focus ring to native controls and focusable structural hosts', () => {

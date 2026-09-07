@@ -127,8 +127,8 @@
 
   .category-tabs button[aria-selected='true'] {
     border-color: var(--color-accent);
-    color: var(--color-accent-strong);
-    background: var(--color-node-selected);
+    color: var(--color-selection-page-foreground);
+    background: var(--color-selection-page);
   }
 
   .category-tabs button:focus-visible,

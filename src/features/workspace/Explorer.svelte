@@ -324,10 +324,10 @@
     background: var(--color-surface-elevated);
   }
 
-  button.active {
+  button.active[role='treeitem'] {
     border-color: var(--color-accent);
-    color: var(--color-accent-strong);
-    background: var(--color-node-selected);
+    color: var(--color-selection-panel-foreground);
+    background: var(--color-selection-panel);
   }
 
   button:focus-visible {
@@ -345,8 +345,8 @@
     color: var(--color-focus);
   }
 
-  button.active:not(.folder) .disclosure {
-    color: var(--color-accent);
+  button.active[role='treeitem']:not(.folder) .disclosure {
+    color: var(--color-selection-panel-foreground);
   }
 
   .entry-name {

@@ -102,10 +102,10 @@
     background: var(--color-surface-elevated);
   }
 
-  button.active {
+  button.active[data-activity] {
     border-color: var(--color-edge);
-    color: var(--color-accent);
-    background: var(--color-node-selected);
+    color: var(--color-selection-rail-foreground);
+    background: var(--color-selection-rail);
   }
 
   button:focus-visible {

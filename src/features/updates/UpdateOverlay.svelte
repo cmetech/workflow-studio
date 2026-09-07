@@ -302,7 +302,7 @@
     margin: 0;
   }
   header p {
-    color: var(--color-accent);
+    color: var(--color-accent-on-surface);
     font-size: 0.6875rem;
     font-weight: 800;
     letter-spacing: 0.12em;
@@ -316,8 +316,8 @@
     width: 2.5rem;
     height: 2.5rem;
     border-radius: 0.5rem;
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+    color: var(--color-primary-contrast);
+    background: var(--color-primary);
     font-weight: 800;
   }
   progress {

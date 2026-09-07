@@ -19,6 +19,34 @@ async function paintedContrast(element: Locator): Promise<number> {
   })
 }
 
+async function paintedContrastPair(foreground: Locator, surface: Locator): Promise<number> {
+  const [foregroundColor, backgroundColor] = await Promise.all([
+    foreground.evaluate((target) => getComputedStyle(target).color),
+    surface.evaluate((target) => getComputedStyle(target).backgroundColor),
+  ])
+  const luminance = (value: string): number => {
+    const channels = (value.match(/[\d.]+/g) ?? [])
+      .slice(0, 3)
+      .map((channel) => Number(channel) / 255)
+      .map((channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4))
+    return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+  }
+  const foregroundLuminance = luminance(foregroundColor)
+  const backgroundLuminance = luminance(backgroundColor)
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  )
+}
+
+async function expectPaintedContrast(element: Locator, minimum = 4.5): Promise<void> {
+  await expect.poll(() => paintedContrast(element)).toBeGreaterThanOrEqual(minimum)
+}
+
+async function expectPaintedContrastPair(foreground: Locator, surface: Locator, minimum = 4.5): Promise<void> {
+  await expect.poll(() => paintedContrastPair(foreground, surface)).toBeGreaterThanOrEqual(minimum)
+}
+
 test('keeps a malicious brand inspectable but inactive, then previews and activates a valid pack', async ({ page }) => {
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
@@ -85,16 +113,34 @@ test('keeps semantic canvas selection readable when the chosen accent matches th
   await page.getByRole('radio', { name: 'Light' }).click()
   await page.getByRole('button', { name: 'Choose custom accent' }).click()
   await page.getByRole('textbox', { name: 'Hex accent' }).fill('#FFFFFF')
-  const apply = page.getByRole('button', { name: 'Apply accent' })
-  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
-  await apply.hover()
-  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
+  await page.getByRole('button', { name: 'Apply accent' }).click()
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--color-accent')))
+    .toBe('#FFFFFF')
+
+  await page.getByRole('button', { name: 'Choose custom accent' }).click()
+  const themedApply = page.getByRole('button', { name: 'Apply accent' })
+  await expectPaintedContrast(themedApply)
+  await themedApply.hover()
+  await expectPaintedContrast(themedApply)
   await page.mouse.down()
-  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
+  await expectPaintedContrast(themedApply)
   await page.mouse.move(0, 0)
   await page.mouse.up()
-  await apply.click()
+  await page.keyboard.press('Escape')
+
+  await expectPaintedContrast(page.getByRole('tab', { name: 'Appearance' }))
+  await expectPaintedContrast(page.locator('.activity-rail button[data-activity="settings"]'))
   await page.getByRole('button', { name: 'Back to Workflow' }).click()
+
+  await expectPaintedContrast(page.locator('.activity-rail button[data-activity="explorer"]'))
+  await expectPaintedContrast(page.locator('.editor-tabs button.active').filter({ hasText: 'Visual' }))
+  await expectPaintedContrast(page.getByRole('treeitem', { selected: true }))
+
+  const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  const nodeSurface = page.locator('.workflow-node[data-node-id="prepare"]')
+  const nodeKind = nodeSurface.locator('.kind')
+  await expectPaintedContrastPair(nodeKind, nodeSurface)
 
   const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
   const selectedPath = dependency.locator('path.workflow-edge')
@@ -102,9 +148,9 @@ test('keeps semantic canvas selection readable when the chosen accent matches th
   await dependency.press('Enter')
   await expect(selectedPath).toHaveClass(/selected/)
 
-  const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await node.focus()
   await expect(selectedPath).toHaveClass(/selected/)
+  await expectPaintedContrastPair(nodeKind, nodeSurface)
 
   const contrast = await page.evaluate(() => {
     const parse = (value: string): readonly number[] =>
@@ -135,5 +181,5 @@ test('keeps semantic canvas selection readable when the chosen accent matches th
 
   expect(contrast.accent).toBe('#FFFFFF')
   expect(contrast.selectedEdge).toBeGreaterThanOrEqual(3)
-  expect(contrast.nodeKind).toBeGreaterThanOrEqual(3)
+  expect(contrast.nodeKind).toBeGreaterThanOrEqual(4.5)
 })

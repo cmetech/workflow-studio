@@ -185,6 +185,11 @@
     font-weight: 650;
   }
 
+  .workflow-node.selected .kind,
+  .workflow-node:focus-within .kind {
+    color: var(--color-node-kind-selected);
+  }
+
   .inspector-trigger {
     flex: none;
     min-height: 1.75rem;
