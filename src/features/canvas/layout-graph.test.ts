@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import ELK from 'elkjs/lib/elk.bundled.js'
 import packageJson from '../../../package.json'
+import { parse } from 'yaml'
+import { routedLayoutCases, showcaseRoot, planningBody, implementationBody } from './fixtures/routed-layout-cases'
+import { countOrthogonalCrossings } from './routed-layout'
 import { arrangeWithElk, buildElkGraph, readElkResult } from './layout-graph'
 import type { LayoutWorkerRequest } from '$src/workers/layout-worker-protocol'
 
@@ -392,5 +397,118 @@ describe('ELK adapter', () => {
     expect(Object.keys(first.routes).sort()).toEqual(['left-finish', 'right-finish', 'start-left', 'start-right'])
     expect(first.routes['start-left']!.points[0]).not.toEqual(first.routes['start-right']!.points[0])
     expect(input).toEqual(before)
+  })
+})
+
+describe('frozen showcase acceptance', () => {
+  it('[RG1] keeps the user showcase as a byte-identical repository fixture', () => {
+    const path = 'tests/e2e/fixtures/loop-group-showcase.yaml'
+    expect(existsSync(path), 'The literal showcase must be available without a home-directory dependency').toBe(true)
+    expect(createHash('sha256').update(readFileSync(path)).digest('hex')).toBe(
+      '1734f0d62a5dbad01dcf6f8ed4a4aed3572c52c0d7b2033fb98157edc57523bc',
+    )
+  })
+})
+
+describe('reviewed routed layout families', () => {
+  it.each(routedLayoutCases)(
+    '[RG1] [RG2] [RG3] $name stays within its reviewed crossing maximum',
+    async ({ request: input, maximumCrossings }) => {
+      const elk = new ELK({ algorithms: ['layered'] })
+      const first = await arrangeWithElk(input, elk)
+      expect(first.type, JSON.stringify(first)).toBe('layout-result')
+      if (first.type !== 'layout-result') return
+      expect(Object.keys(first.positions).sort()).toEqual(input.nodes.map(({ id }) => id).sort())
+      expect(Object.keys(first.routes).sort()).toEqual(input.edges.map(({ id }) => id).sort())
+      const crossings = countOrthogonalCrossings(first.routes)
+      expect(crossings).toBeLessThanOrEqual(maximumCrossings)
+      if (maximumCrossings === 1) expect(crossings).toBe(1)
+      for (const node of input.nodes) {
+        for (const end of ['source', 'target'] as const) {
+          const points = input.edges
+            .filter((edge) => edge[end] === node.id)
+            .map((edge) => {
+              const route = first.routes[edge.id]!
+              return JSON.stringify(end === 'source' ? route.points[0] : route.points.at(-1))
+            })
+          expect(new Set(points).size).toBe(points.length)
+        }
+      }
+      const second = await arrangeWithElk(
+        { ...input, nodes: [...input.nodes].reverse(), edges: [...input.edges].reverse() },
+        elk,
+      )
+      expect(second).toMatchObject({ type: 'layout-result', positions: first.positions, routes: first.routes })
+    },
+  )
+
+  it('[RG11] freezes every showcase scope dependency independently of projection code', () => {
+    interface YamlNode {
+      id: string
+      depends_on?: string[]
+      loop_group?: { nodes: YamlNode[] }
+    }
+    const document = parse(readFileSync('tests/e2e/fixtures/loop-group-showcase.yaml', 'utf8')) as { nodes: YamlNode[] }
+    for (const fixture of [showcaseRoot, planningBody, implementationBody]) {
+      const key = fixture.request.identity.scopeKey
+      const nodes =
+        key === 'root' ? document.nodes : document.nodes.find(({ id }) => `loop-group:${id}` === key)!.loop_group!.nodes
+      expect(fixture.request.nodes.map(({ id }) => id)).toEqual(nodes.map(({ id }) => id))
+      expect(fixture.request.edges.map(({ source, target }) => [source, target])).toEqual(
+        nodes.flatMap(({ id, depends_on = [] }) => depends_on.map((source) => [source, id])),
+      )
+    }
+  })
+})
+
+describe('bounded port ordering before final routing', () => {
+  it('[RG3] uses one deterministic ordering pass and a final fixed-order pass', async () => {
+    const elk = new ELK({ algorithms: ['layered'] })
+    const calls: NonNullable<ReturnType<typeof buildElkGraph>>[] = []
+    const output = await arrangeWithElk(showcaseRoot.request, {
+      layout: async (graph) => {
+        calls.push(structuredClone(graph))
+        return elk.layout(graph)
+      },
+    })
+    expect(output.type).toBe('layout-result')
+    expect(calls).toHaveLength(2)
+    expect(
+      calls[0]!.children!.every(
+        ({ layoutOptions }) => layoutOptions!['org.eclipse.elk.portConstraints'] === 'FIXED_SIDE',
+      ),
+    ).toBe(true)
+    expect(
+      calls[1]!.children!.every(
+        ({ layoutOptions }) => layoutOptions!['org.eclipse.elk.portConstraints'] === 'FIXED_ORDER',
+      ),
+    ).toBe(true)
+    expect(calls[0]!.layoutOptions!['org.eclipse.elk.randomSeed']).toBe('2')
+    expect(calls[1]!.layoutOptions!['org.eclipse.elk.randomSeed']).toBe('1')
+  })
+  it.each([
+    'missing-node',
+    'unknown-node',
+    'missing-port',
+    'duplicate-port',
+    'nonfinite-port',
+    'out-of-bounds-port',
+  ] as const)('[RG8] rejects %s in preliminary port ordering before final routing', async (corruption) => {
+    const elk = new ELK({ algorithms: ['layered'] })
+    let calls = 0
+    const output = await arrangeWithElk(showcaseRoot.request, {
+      layout: async (graph) => {
+        calls++
+        const raw = await elk.layout(graph)
+        if (corruption === 'missing-node') raw.children!.pop()
+        else if (corruption === 'unknown-node') raw.children![0]!.id = 'unknown'
+        else if (corruption === 'missing-port') raw.children![0]!.ports!.pop()
+        else if (corruption === 'duplicate-port') raw.children![0]!.ports![1] = raw.children![0]!.ports![0]!
+        else raw.children![0]!.ports![0]!.y = corruption === 'nonfinite-port' ? NaN : 1_000_001
+        return raw
+      },
+    })
+    expect(output).toMatchObject({ type: 'layout-error', code: 'invalid_result' })
+    expect(calls).toBe(1)
   })
 })

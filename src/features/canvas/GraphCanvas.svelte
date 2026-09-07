@@ -556,6 +556,7 @@
         JSON.stringify(activeRouting!.routing) === JSON.stringify(sanitized)
       )
         return
+      const firstActivation = !currentActiveRouting()
       clearRenderedRouting()
       // Absence of measurements is temporary, not evidence of a stale cache.
       if (!nodes) {
@@ -582,7 +583,16 @@
         routingCandidate() === candidate &&
         samePositions(layout.nodePositions, inputs.positions) &&
         samePositions(canvasPositionsStore.get(), positions)
-      void resolveCurrentRouting(inputs.projection, positions, nodes, sanitized)
+      // Initial dimensions temporarily size Svelte Flow's wrapper. Its first
+      // observer result can therefore be the placeholder, with the natural card
+      // height measured after the next paint. Let that measurement settle before
+      // deciding whether a durable route fingerprint has become stale.
+      const resolution = firstActivation
+        ? new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))).then(
+            () => (isCurrent() ? resolveCurrentRouting(inputs.projection, positions, nodes, sanitized) : undefined),
+          )
+        : resolveCurrentRouting(inputs.projection, positions, nodes, sanitized)
+      void resolution
         .then((routing) => {
           if (!isCurrent()) return
           if (!routing) {

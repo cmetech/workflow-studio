@@ -42,7 +42,8 @@ describe('CanvasToolbar', () => {
     const rendered = render(CanvasToolbar, { commands, onExecute })
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
     const arrange = screen.getByRole('menuitem', { name: 'Arrange Graph' })
-    arrange.focus()
+    // WebKit mouse activation does not focus buttons automatically.
+    expect(screen.getByRole('menuitem', { name: 'Duplicate Selection' })).toHaveFocus()
     await fireEvent.click(arrange)
     await rendered.rerender({
       commands: commands.map((command) => (command.id === 'canvas.arrange' ? { ...command, enabled: false } : command)),

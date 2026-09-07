@@ -1,0 +1,218 @@
+# A canvas-oriented example for exploring loop_group authoring in Workflow Studio.
+# Open each compound loop node to see and edit its internal DAG.
+name: loop-group-showcase
+description: Iteratively plan, implement, test, approve, and summarize a fictional product change
+tags: [showcase, loop-group, offline]
+
+nodes:
+  # Root preparation: two ordinary nodes feed the first loop group.
+  - id: load-brief
+    script: |
+      import json
+
+      brief = {
+          "project": "Customer health dashboard",
+          "goal": "Add an accessible risk-trend panel",
+          "constraints": ["offline demo", "no customer data", "keyboard accessible"],
+      }
+      print(json.dumps(brief))
+    runtime: uv
+    output_format:
+      type: object
+      additionalProperties: false
+      required: [project, goal, constraints]
+      properties:
+        project: {type: string}
+        goal: {type: string}
+        constraints:
+          type: array
+          items: {type: string}
+
+  - id: inspect-workspace
+    depends_on: [load-brief]
+    bash: |
+      printf '%s\n' '{"summary":"Svelte UI, TypeScript validation, Rust shell","test_count":184}'
+    output_format:
+      type: object
+      additionalProperties: false
+      required: [summary, test_count]
+      properties:
+        summary: {type: string}
+        test_count: {type: integer}
+
+  # Loop group one: build and critique a plan over several iterations.
+  - id: planning-cycle
+    depends_on: [load-brief, inspect-workspace]
+    loop_group:
+      until: The review status is ready and no blocking planning gaps remain.
+      max_iterations: 3
+      fresh_context: true
+      interactive: true
+      gate_message: >
+        Review the next planning iteration for $load-brief.output.project before it begins.
+      nodes:
+        - id: draft-plan
+          prompt: >
+            Draft an implementation plan for $load-brief.output.goal in
+            $load-brief.output.project, accounting for the workspace described by
+            $inspect-workspace.output.summary and improving on the prior review feedback:
+            $LOOP_PREV.review-plan.output
+          allowed_tools: []
+          output_format:
+            type: object
+            additionalProperties: false
+            required: [summary, tasks, risks]
+            properties:
+              summary: {type: string}
+              tasks:
+                type: array
+                items: {type: string}
+              risks:
+                type: array
+                items: {type: string}
+
+        - id: estimate-work
+          depends_on: [draft-plan]
+          script: |
+            import json
+
+            plan = r'''$draft-plan.output'''
+            print(json.dumps({"estimate": "medium", "plan_characters": len(plan)}))
+          runtime: uv
+          output_format:
+            type: object
+            additionalProperties: false
+            required: [estimate, plan_characters]
+            properties:
+              estimate: {type: string, enum: [small, medium, large]}
+              plan_characters: {type: integer, minimum: 0}
+
+        - id: review-plan
+          depends_on: [draft-plan, estimate-work]
+          prompt: >
+            Review the plan summary $draft-plan.output.summary and its estimate
+            $estimate-work.output, comparing it with the preceding iteration's review
+            $LOOP_PREV.review-plan.output
+            Return ready only when the plan is specific,
+            testable, accessible, and respects the brief.
+          allowed_tools: []
+          output_format:
+            type: object
+            additionalProperties: false
+            required: [status, feedback]
+            properties:
+              status: {type: string, enum: [revise, ready]}
+              feedback:
+                type: array
+                items: {type: string}
+
+        # This first terminal body node is the loop group's visible output.
+        - id: publish-plan
+          depends_on: [draft-plan, review-plan]
+          prompt: >
+            Publish a concise plan package using $draft-plan.output and
+            $review-plan.output, clearly identifying what changed during this iteration.
+          allowed_tools: []
+
+  # Loop group two: consume the first group's output and exercise a wider body DAG.
+  - id: implementation-cycle
+    depends_on: [planning-cycle, load-brief]
+    loop_group:
+      until: The validation result is ready and both test branches are satisfactory.
+      max_iterations: 4
+      signal_completes: true
+      nodes:
+        - id: select-task
+          prompt: >
+            Select the next smallest useful task from $planning-cycle.output for
+            $load-brief.output.project, without repeating work already recorded in
+            $LOOP_PREV.iteration-summary.output
+          allowed_tools: []
+
+        - id: implement-change
+          depends_on: [select-task]
+          script: |
+            import json
+
+            selected_task = r'''$select-task.output'''
+            previous_result = r'''$LOOP_PREV.implement-change.output'''
+            print(json.dumps({
+                "changed": True,
+                "task": selected_task,
+                "previous_result": previous_result,
+            }))
+          runtime: uv
+          output_format:
+            type: object
+            additionalProperties: false
+            required: [changed, task, previous_result]
+            properties:
+              changed: {type: boolean}
+              task: {type: string}
+              previous_result: {type: string}
+
+        # These two checks form parallel branches in the body canvas.
+        - id: unit-tests
+          depends_on: [implement-change]
+          bash: |
+            printf 'unit checks passed for change: %s\n' '$implement-change.output.changed'
+
+        - id: accessibility-check
+          depends_on: [implement-change]
+          prompt: >
+            Review $implement-change.output for keyboard access, clear labels,
+            reduced motion, and forced-colors support. Return a short audit result.
+          allowed_tools: []
+
+        - id: validate-change
+          depends_on: [unit-tests, accessibility-check]
+          prompt: >
+            Decide whether this iteration is ready using the unit result
+            $unit-tests.output and accessibility result $accessibility-check.output
+            Compare against $LOOP_PREV.validate-change.output and describe any
+            remaining work.
+          allowed_tools: []
+          output_format:
+            type: object
+            additionalProperties: false
+            required: [status, remaining_work]
+            properties:
+              status: {type: string, enum: [revise, ready]}
+              remaining_work:
+                type: array
+                items: {type: string}
+
+        # The first terminal node in YAML order becomes the outer group output.
+        - id: iteration-summary
+          depends_on: [implement-change, validate-change]
+          prompt: >
+            Summarize the implemented change $implement-change.output and validation
+            $validate-change.output, including the previous summary
+            $LOOP_PREV.iteration-summary.output to show iteration-to-iteration context.
+          allowed_tools: []
+
+  # Ordinary root nodes resume after both nested editing experiences.
+  - id: package-evidence
+    depends_on: [implementation-cycle]
+    bash: |
+      printf 'Packaging evidence from implementation cycle:\n%s\n' '$implementation-cycle.output'
+    timeout: 30
+
+  - id: approval-gate
+    depends_on: [package-evidence, planning-cycle]
+    approval:
+      message: >
+        Review the final planning and implementation evidence before accepting this showcase.
+      capture_response: true
+      on_reject:
+        prompt: Record the requested follow-up without changing external systems.
+        max_attempts: 1
+
+  - id: final-report
+    depends_on: [approval-gate, implementation-cycle, planning-cycle]
+    prompt: >
+      Produce a final report from the plan $planning-cycle.output, implementation
+      $implementation-cycle.output, and the captured approval response held in
+      $approval-gate.output
+      Explain the two iterative phases and list any remaining risks.
+    allowed_tools: []

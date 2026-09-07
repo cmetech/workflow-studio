@@ -233,8 +233,32 @@ export async function arrangeWithElk(request: unknown, elk: ElkLike): Promise<La
   const identity = sanitizeLayoutRequestIdentity(request.identity)!
   const graph = buildElkGraph(request)
   if (!graph) return layoutFailure(request, 'invalid_request')
+  // ELK orders ports clockwise. A static dependency order on both sides can
+  // force crossings even in a diamond. Derive one deterministic geometric order,
+  // then lock it for final routing and the optional spacing retry.
+  let portOrder: ReadonlyMap<string, readonly string[]> | null = null
+  if (
+    graph.children!.some((node) =>
+      ['EAST', 'WEST'].some(
+        (side) => node.ports!.filter((port) => port.layoutOptions!['org.eclipse.elk.port.side'] === side).length > 1,
+      ),
+    )
+  ) {
+    const orderingGraph = buildElkGraph(request)!
+    orderingGraph.layoutOptions!['org.eclipse.elk.randomSeed'] = '2'
+    for (const node of orderingGraph.children!) node.layoutOptions!['org.eclipse.elk.portConstraints'] = 'FIXED_SIDE'
+    let orderingResult: unknown
+    try {
+      orderingResult = await elk.layout(orderingGraph)
+    } catch {
+      return layoutFailure(request, 'layout_failed')
+    }
+    portOrder = readPortOrder(graph, orderingResult)
+    if (!portOrder) return layoutFailure(request, 'invalid_result')
+  }
   for (const spacingProfile of ['default', 'expanded'] as const) {
     const attempt = spacingProfile === 'default' ? graph : buildElkGraph(request)!
+    if (portOrder) applyPortOrder(attempt, portOrder)
     if (spacingProfile === 'expanded') attempt.layoutOptions = { ...attempt.layoutOptions, ...EXPANDED_SPACING }
     let raw: unknown
     try {
@@ -267,6 +291,62 @@ export async function arrangeWithElk(request: unknown, elk: ElkLike): Promise<La
       return layoutFailure(request, 'invalid_result')
   }
   return layoutFailure(request, 'invalid_result')
+}
+
+/** Only bounded port IDs/order escape the preliminary pass, never preliminary routes or positions. */
+function readPortOrder(graph: ElkNode, result: unknown): ReadonlyMap<string, readonly string[]> | null {
+  if (
+    !isRecord(result) ||
+    result.id !== graph.id ||
+    !Array.isArray(result.children) ||
+    result.children.length !== graph.children!.length
+  )
+    return null
+  const expectedNodes = new Map(graph.children!.map((node) => [node.id, node]))
+  const ordered = new Map<string, readonly string[]>()
+  for (const child of result.children) {
+    if (!isRecord(child) || typeof child.id !== 'string' || ordered.has(child.id)) return null
+    const node = expectedNodes.get(child.id)
+    if (
+      !node ||
+      child.width !== node.width ||
+      child.height !== node.height ||
+      !Array.isArray(child.ports) ||
+      child.ports.length !== node.ports!.length
+    )
+      return null
+    const expectedPorts = new Map(node.ports!.map((port, order) => [port.id, { port, order }]))
+    const seen = new Set<string>()
+    const ports: { id: string; y: number; east: boolean; order: number }[] = []
+    for (const raw of child.ports) {
+      if (!isRecord(raw) || typeof raw.id !== 'string' || seen.has(raw.id) || !finitePoint(raw)) return null
+      const expected = expectedPorts.get(raw.id)
+      if (!expected) return null
+      const east = expected.port.layoutOptions!['org.eclipse.elk.port.side'] === 'EAST'
+      if (!nearlyEqual(raw.x, east ? node.width! : 0) || raw.y < 0 || raw.y > node.height!) return null
+      seen.add(raw.id)
+      ports.push({ id: raw.id, y: raw.y, east, order: expected.order })
+    }
+    ports.sort(
+      (a, b) =>
+        Number(b.east) - Number(a.east) ||
+        (a.east ? a.y - b.y : b.y - a.y) ||
+        a.order - b.order ||
+        compareText(a.id, b.id),
+    )
+    ordered.set(
+      node.id,
+      ports.map(({ id }) => id),
+    )
+  }
+  return ordered
+}
+
+function applyPortOrder(graph: ElkNode, order: ReadonlyMap<string, readonly string[]>): void {
+  for (const node of graph.children!) {
+    const ports = new Map(node.ports!.map((port) => [port.id, port]))
+    node.ports = order.get(node.id)!.map((id) => ports.get(id)!)
+  }
 }
 
 function validRequest(request: unknown): request is LayoutWorkerRequest {

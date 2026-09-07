@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { parse } from 'yaml'
 import {
   activeScopeSnapshot,
+  arrangeGraph,
   editorMetrics,
   e2eSnapshot,
   expectExactWorkbenchGeometry,
@@ -134,6 +135,9 @@ test.describe('loop group visual authoring', () => {
     await openRefine.click()
     await expect(page.getByRole('heading', { name: /refine loop body/i })).toBeFocused()
     await expectSingleMountedScope(page, 'loop-group:refine')
+    // An edge-free body still uses the same explicit Arrange lifecycle.
+    await arrangeGraph(page, 1, 0)
+    expect((await e2eSnapshot(page)).definitionText).toBe(expectedDefinition)
     await page.getByRole('button', { name: 'Back to root workflow' }).click()
     await expect(group).toBeFocused()
 
@@ -279,6 +283,8 @@ test.describe('loop group visual authoring', () => {
     expect(reopenedRefine.viewport).toEqual(refineScope.viewport)
     expect(reopenedRefine.positions).toEqual(refineScope.positions)
     await page.getByRole('button', { name: 'Back to root workflow' }).click()
+    await expectSingleMountedScope(page, 'root')
+    await settleRenderer(page)
     await page.locator('.svelte-flow__node[data-id="refine"]').focus()
     await page.keyboard.press('Enter')
     await expect(page.locator('.svelte-flow__node[data-id="revise"]')).toHaveCount(1)
@@ -373,6 +379,8 @@ test.describe('loop group visual authoring', () => {
     await page.keyboard.press('Escape')
     await page.locator('.svelte-flow__node[data-id="polish"]').getByRole('button', { name: 'Open loop body' }).click()
     const review = page.locator('.svelte-flow__node[data-id="review"]')
+    await expectSingleMountedScope(page, 'loop-group:polish')
+    await settleRenderer(page)
     await review.focus()
     await page.keyboard.press('Enter')
     await page.getByRole('tab', { name: 'General' }).click()
@@ -415,6 +423,7 @@ test.describe('loop group visual authoring', () => {
       .toBe(true)
     await page.getByRole('button', { name: 'Visual' }).click()
     await expectSingleMountedScope(page, 'loop-group:polish')
+    await settleRenderer(page)
     await page.locator('.svelte-flow__node[data-id="review"]').focus()
     await page.keyboard.press('Enter')
     await page.getByRole('tab', { name: 'General' }).click()

@@ -263,6 +263,9 @@ export function projectCanvas(
     return {
       id: node.id,
       type: 'workflow',
+      // Emphasized edges use layer 2; cards and their connection handles must
+      // remain above every edge, including manual preview paths across a card.
+      zIndex: 3,
       position: clonePosition(positions[node.id] ?? { x: 0, y: 0 }),
       initialWidth: CANVAS_NODE_WIDTH,
       initialHeight: CANVAS_NODE_HEIGHT,

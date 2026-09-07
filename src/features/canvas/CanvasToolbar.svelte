@@ -88,13 +88,15 @@
     else void openMore()
   }
 
-  async function executeOverflow(command: ResolvedCommand): Promise<void> {
+  async function executeOverflow(command: ResolvedCommand, invoker: HTMLButtonElement): Promise<void> {
     if (!command.enabled || (command.id === 'canvas.arrange' && arrangePending)) return
     if (command.id !== 'canvas.arrange') {
       await closeMore()
       await onExecute(command.id)
       return
     }
+    // WebKit pointer activation does not focus buttons automatically.
+    invoker.focus({ preventScroll: true })
     // Native disabled buttons lose focus in browsers; keep this async invoker focusable.
     arrangePending = true
     try {
@@ -192,7 +194,7 @@
               title={command.title}
               disabled={!command.enabled && !(command.id === 'canvas.arrange' && arrangePending)}
               aria-disabled={!command.enabled || (command.id === 'canvas.arrange' && arrangePending)}
-              onclick={() => void executeOverflow(command)}
+              onclick={(event) => void executeOverflow(command, event.currentTarget)}
             >
               <Icon size={15} aria-hidden="true" />
               {command.label}

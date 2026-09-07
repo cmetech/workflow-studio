@@ -1,3 +1,4 @@
+import routedShowcaseSource from '../../tests/e2e/fixtures/loop-group-showcase.yaml?raw'
 import loop24ManifestSource from '../../brands/loop24/brand.yaml?raw'
 import archonContractSource from '../../contracts/archon-2026-07-v6.json?raw'
 import { NativeError, type WorkspaceChangedHandler, type WorkspaceNativeBridge } from '$src/lib/native/types'
@@ -434,32 +435,40 @@ nodes:
                 'workflows/other.hermes.yaml': bundledLoopGroupExamples.currentOutput.companion,
               }
             : null
-  const initialFiles = loopGroupFiles
-    ? { ...AUTHORING_FILES, ...loopGroupFiles }
-    : largeCanvasLayout
+  const initialFiles =
+    scenario === 'routed-showcase'
       ? {
           ...AUTHORING_FILES,
-          [DEFINITION_PATH]: largeCanvasDefinition!,
-          [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+          [DEFINITION_PATH]: routedShowcaseSource,
+          'workflows/other.yaml': AUTHORING_FILES[DEFINITION_PATH],
+          'workflows/other.hermes.yaml': AUTHORING_FILES[COMPANION_PATH],
         }
-      : scenario === 'document-controls-recovery'
-        ? {
-            ...AUTHORING_FILES,
-            [DEFINITION_PATH]: DOCUMENT_CONTROLS_SAVED_YAML,
-          }
-        : scenario === 'long-create-version'
+      : loopGroupFiles
+        ? { ...AUTHORING_FILES, ...loopGroupFiles }
+        : largeCanvasLayout
           ? {
               ...AUTHORING_FILES,
-              [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+              [DEFINITION_PATH]: largeCanvasDefinition!,
               [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
             }
-          : scenario === 'repeated-diagnostics'
-            ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
-            : scenario === 'export-blocking-modal'
-              ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
-              : scenario === 'advanced-inspector'
-                ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
-                : AUTHORING_FILES
+          : scenario === 'document-controls-recovery'
+            ? {
+                ...AUTHORING_FILES,
+                [DEFINITION_PATH]: DOCUMENT_CONTROLS_SAVED_YAML,
+              }
+            : scenario === 'long-create-version'
+              ? {
+                  ...AUTHORING_FILES,
+                  [DEFINITION_PATH]: LONG_CREATE_VERSION_YAML,
+                  [COMPANION_PATH]: 'language_compatibility: hermes-legacy\ntags: [release, e2e]\n',
+                }
+              : scenario === 'repeated-diagnostics'
+                ? { ...AUTHORING_FILES, [DEFINITION_PATH]: REPEATED_DIAGNOSTICS_YAML }
+                : scenario === 'export-blocking-modal'
+                  ? { ...AUTHORING_FILES, [DEFINITION_PATH]: EXPORT_BLOCKING_YAML }
+                  : scenario === 'advanced-inspector'
+                    ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
+                    : AUTHORING_FILES
   const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
   const base = createBrowserBridge({ initialFiles, selectedRoot })
   let setupRetries = 0

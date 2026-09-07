@@ -278,3 +278,219 @@ export async function yamlSelection(page: Page): Promise<{ line: number; column:
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
+export async function arrangeGraph(page: Page, nodes: number, edges: number): Promise<void> {
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  await page.getByRole('menuitem', { name: 'Arrange Graph', exact: true }).click()
+  await expect(
+    page.getByText(`Graph arranged: ${nodes} nodes and ${edges} dependencies.`, { exact: true }),
+  ).toBeVisible()
+  await expect(page.getByTestId('workflow-canvas')).toHaveAttribute('aria-busy', 'false')
+  await page.keyboard.press('Escape')
+  await settleRenderer(page)
+}
+
+export interface CanvasGeometry {
+  readonly nodes: readonly { id: string; x: number; y: number; width: number; height: number }[]
+  readonly edges: readonly { id: string; label: string; path: string; points: readonly { x: number; y: number }[] }[]
+}
+
+/** Read the rendered SVG, including each quadratic bend's control point, in graph coordinates. */
+export async function readCanvasGeometry(page: Page): Promise<CanvasGeometry> {
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean(document.querySelector<SVGPathElement>('path.workflow-edge')?.getScreenCTM())),
+    )
+    .toBe(true)
+  return page.evaluate(() => {
+    const svg = document.querySelector<SVGPathElement>('path.workflow-edge')
+    const matrix = svg?.getScreenCTM()
+    if (!matrix) throw new Error('Expected rendered SVG edges and their graph-to-screen transform.')
+    const inverse = matrix.inverse()
+    const nodes = [...document.querySelectorAll<HTMLElement>('.svelte-flow__node')].map((element) => {
+      const box = element.getBoundingClientRect()
+      const topLeft = new DOMPoint(box.left, box.top).matrixTransform(inverse)
+      const bottomRight = new DOMPoint(box.right, box.bottom).matrixTransform(inverse)
+      return {
+        id: element.dataset.id!,
+        x: topLeft.x,
+        y: topLeft.y,
+        width: bottomRight.x - topLeft.x,
+        height: bottomRight.y - topLeft.y,
+      }
+    })
+    const edges = [...document.querySelectorAll<SVGGElement>('.svelte-flow__edge')].map((element) => {
+      const path = element.querySelector('path.workflow-edge')?.getAttribute('d')
+      if (!path) throw new Error('Expected every edge to have a semantic SVG path.')
+      const tokens = path.match(/[MLQ]|[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?/gi) ?? []
+      if (path.replace(/[MLQ\s,\d.e+-]/gi, '') !== '') throw new Error(`Unexpected SVG command: ${path}`)
+      const points: { x: number; y: number }[] = []
+      for (let index = 0; index < tokens.length;) {
+        const command = tokens[index++]
+        if (command !== 'M' && command !== 'L' && command !== 'Q') throw new Error(`Unsupported SVG path: ${path}`)
+        points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) })
+        if (command === 'Q') points.push({ x: Number(tokens[index++]), y: Number(tokens[index++]) })
+      }
+      return { id: element.dataset.id!, label: element.getAttribute('aria-label') ?? '', path, points }
+    })
+    return { nodes, edges }
+  })
+}
+
+/** Independent acceptance math: never call the production geometry validator as its own oracle. */
+export function expectRoutedGeometry(
+  geometry: CanvasGeometry,
+  expected: {
+    readonly nodes: readonly { readonly id: string }[]
+    readonly edges: readonly { readonly source: string; readonly target: string }[]
+  },
+  maximumCrossings = 0,
+): void {
+  const tolerance = 0.5
+  expect(geometry.nodes.map(({ id }) => id).sort()).toEqual(expected.nodes.map(({ id }) => id).sort())
+  expect(geometry.edges.map(({ label }) => label).sort()).toEqual(
+    expected.edges.map(({ source, target }) => `Dependency from ${source} to ${target}`).sort(),
+  )
+  const segments: { edge: string; a: { x: number; y: number }; b: { x: number; y: number } }[] = []
+  const endpoints = new Map<string, number[]>()
+  for (const dependency of expected.edges) {
+    const edge = geometry.edges.find(
+      ({ label }) => label === `Dependency from ${dependency.source} to ${dependency.target}`,
+    )!
+    const source = geometry.nodes.find(({ id }) => id === dependency.source)!
+    const target = geometry.nodes.find(({ id }) => id === dependency.target)!
+    expect(edge.points.length).toBeGreaterThanOrEqual(2)
+    expect(edge.points.every(({ x, y }) => Number.isFinite(x) && Number.isFinite(y))).toBe(true)
+    const first = edge.points[0]!,
+      last = edge.points.at(-1)!
+    expect(Math.abs(first.x - (source.x + source.width)), edge.label).toBeLessThanOrEqual(tolerance)
+    expect(Math.abs(last.x - target.x), edge.label).toBeLessThanOrEqual(tolerance)
+    for (const [side, node, point] of [
+      ['source', source, first],
+      ['target', target, last],
+    ] as const) {
+      expect(point.y).toBeGreaterThanOrEqual(node.y - tolerance)
+      expect(point.y).toBeLessThanOrEqual(node.y + node.height + tolerance)
+      const key = `${side}:${node.id}`
+      const previous = endpoints.get(key) ?? []
+      expect(
+        previous.every((y) => Math.abs(y - point.y) > tolerance),
+        `${edge.label} must use a distinct ${side} lane`,
+      ).toBe(true)
+      endpoints.set(key, [...previous, point.y])
+    }
+    for (let index = 1; index < edge.points.length; index++) {
+      const a = edge.points[index - 1]!,
+        b = edge.points[index]!
+      const horizontal = Math.abs(a.y - b.y) <= tolerance
+      expect(horizontal || Math.abs(a.x - b.x) <= tolerance, edge.label).toBe(true)
+      for (const node of geometry.nodes) {
+        if (node.id === source.id || node.id === target.id) continue
+        const left = node.x - 24 + tolerance,
+          right = node.x + node.width + 24 - tolerance
+        const top = node.y - 24 + tolerance,
+          bottom = node.y + node.height + 24 - tolerance
+        const intersects = horizontal
+          ? a.y > top && a.y < bottom && Math.max(a.x, b.x) > left && Math.min(a.x, b.x) < right
+          : a.x > left && a.x < right && Math.max(a.y, b.y) > top && Math.min(a.y, b.y) < bottom
+        expect(intersects, `${edge.label} enters ${node.id}'s 24px clearance`).toBe(false)
+      }
+      if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) > tolerance) segments.push({ edge: edge.id, a, b })
+    }
+  }
+  const crossingPoints = new Set<string>()
+  for (let i = 0; i < segments.length; i++)
+    for (let j = i + 1; j < segments.length; j++) {
+      const a = segments[i]!,
+        b = segments[j]!
+      if (a.edge === b.edge) continue
+      const aHorizontal = Math.abs(a.a.y - a.b.y) <= tolerance
+      const bHorizontal = Math.abs(b.a.y - b.b.y) <= tolerance
+      if (aHorizontal === bHorizontal) {
+        const sameLine = aHorizontal ? Math.abs(a.a.y - b.a.y) <= tolerance : Math.abs(a.a.x - b.a.x) <= tolerance
+        if (sameLine) {
+          const axis = aHorizontal ? 'x' : 'y'
+          const overlap =
+            Math.min(Math.max(a.a[axis], a.b[axis]), Math.max(b.a[axis], b.b[axis])) -
+            Math.max(Math.min(a.a[axis], a.b[axis]), Math.min(b.a[axis], b.b[axis]))
+          expect(overlap, `${a.edge} and ${b.edge} share a long lane`).toBeLessThanOrEqual(24 + tolerance)
+        }
+        continue
+      }
+      const h = aHorizontal ? a : b,
+        v = aHorizontal ? b : a
+      if (
+        v.a.x > Math.min(h.a.x, h.b.x) + tolerance &&
+        v.a.x < Math.max(h.a.x, h.b.x) - tolerance &&
+        h.a.y > Math.min(v.a.y, v.b.y) + tolerance &&
+        h.a.y < Math.max(v.a.y, v.b.y) - tolerance
+      )
+        crossingPoints.add(`${[a.edge, b.edge].sort().join('|')}:${v.a.x}:${h.a.y}`)
+    }
+  expect(crossingPoints.size, JSON.stringify([...crossingPoints])).toBeLessThanOrEqual(maximumCrossings)
+}
+
+interface RoutedWorkerProbe {
+  corruptNextResult: boolean
+  corruptedResults: number
+  requests: number
+}
+
+declare global {
+  interface Window {
+    __ROUTED_WORKER_PROBE__?: RoutedWorkerProbe
+  }
+}
+
+/** Corrupt an actual worker response at the browser boundary; no production injection switch. */
+export async function installRoutedWorkerProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    window.__ROUTED_WORKER_PROBE__ = { corruptNextResult: false, corruptedResults: 0, requests: 0 }
+    const RealWorker = window.Worker
+    window.Worker = class extends RealWorker {
+      private readonly layoutWorker: boolean
+      private readonly listeners = new Map<EventListenerOrEventListenerObject, EventListener>()
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.layoutWorker = String(url).includes('/layout-worker')
+      }
+      override postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions): void {
+        if (this.layoutWorker && (message as { type?: string })?.type === 'layout')
+          window.__ROUTED_WORKER_PROBE__!.requests++
+        if (Array.isArray(transferOrOptions)) super.postMessage(message, transferOrOptions)
+        else super.postMessage(message, transferOrOptions)
+      }
+      override addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+      ): void {
+        if (!this.layoutWorker || type !== 'message') {
+          super.addEventListener(type, listener, options)
+          return
+        }
+        const wrapped: EventListener = (event) => {
+          const data = (event as MessageEvent).data
+          let delivered = event
+          if (data?.type === 'layout-result' && window.__ROUTED_WORKER_PROBE__!.corruptNextResult) {
+            window.__ROUTED_WORKER_PROBE__!.corruptNextResult = false
+            window.__ROUTED_WORKER_PROBE__!.corruptedResults++
+            delivered = new MessageEvent('message', { data: { ...data, routes: {} } })
+          }
+          if (typeof listener === 'function') listener.call(this, delivered)
+          else listener.handleEvent(delivered)
+        }
+        this.listeners.set(listener, wrapped)
+        super.addEventListener(type, wrapped, options)
+      }
+      override removeEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions,
+      ): void {
+        super.removeEventListener(type, this.listeners.get(listener) ?? listener, options)
+        this.listeners.delete(listener)
+      }
+    }
+  })
+}
