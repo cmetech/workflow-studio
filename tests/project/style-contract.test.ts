@@ -3,6 +3,10 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { THEME_TOKEN_NAMES } from '$src/lib/branding/types'
 
+// Appearance derives this renderer-only token; imported brand manifests keep
+// their existing strict token inventory and do not require or accept this key.
+const rendererDerivedColorTokens = new Set(['focus-contrast'])
+
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name)
@@ -19,7 +23,9 @@ describe('offline visual style contract', () => {
       ),
     )
     const unknownColors = [...referencedColors].filter(
-      (token): token is string => !THEME_TOKEN_NAMES.includes(token as (typeof THEME_TOKEN_NAMES)[number]),
+      (token): token is string =>
+        !THEME_TOKEN_NAMES.includes(token as (typeof THEME_TOKEN_NAMES)[number]) &&
+        !rendererDerivedColorTokens.has(token),
     )
     const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
       dependencies: Record<string, string>
