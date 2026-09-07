@@ -244,6 +244,7 @@ test('paints the secondary focus band inside a hostile canvas toolbar button', a
   const padding = 6
   const image = decode(
     await page.screenshot({
+      scale: 'css',
       clip: {
         x: Math.floor(bounds.x) - padding,
         y: Math.floor(bounds.y) - padding,
