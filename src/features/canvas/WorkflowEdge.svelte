@@ -20,6 +20,7 @@
   )
 </script>
 
+<path d={path} class="workflow-edge-focus-halo" fill="none" aria-hidden="true" />
 <BaseEdge
   {id}
   {path}
@@ -29,9 +30,23 @@
 />
 
 <style>
+  :global(.workflow-edge-focus-halo) {
+    stroke: transparent;
+    stroke-width: 6;
+    pointer-events: none;
+  }
+
+  :global(.svelte-flow__edge:focus-visible .workflow-edge-focus-halo) {
+    stroke: var(--color-focus);
+  }
+
   :global(.svelte-flow__edge-path.workflow-edge) {
     stroke: var(--color-edge);
     stroke-width: 2;
+  }
+
+  :global(.svelte-flow__edge:focus-visible .svelte-flow__edge-path.workflow-edge) {
+    stroke: var(--color-focus-contrast);
   }
 
   :global(.svelte-flow__edge-path.workflow-edge.selected) {
@@ -41,5 +56,15 @@
   :global(.svelte-flow__edge-path.workflow-edge.stale) {
     stroke-dasharray: 5 4;
     opacity: 0.72;
+  }
+
+  @media (forced-colors: active) {
+    :global(.svelte-flow__edge:focus-visible .workflow-edge-focus-halo) {
+      stroke: CanvasText;
+    }
+
+    :global(.svelte-flow__edge:focus-visible .svelte-flow__edge-path.workflow-edge) {
+      stroke: Highlight;
+    }
   }
 </style>

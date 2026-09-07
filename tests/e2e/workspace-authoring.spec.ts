@@ -247,6 +247,43 @@ test('uses both focus colors on the keyboard-focused canvas host', async ({ page
   expect(colors.shadow).toContain(colors.secondary)
 })
 
+test('paints both focus colors on a keyboard-focused dependency edge', async ({ page }) => {
+  await openSeededPair(page)
+  await page.evaluate(() => {
+    const root = document.documentElement.style
+    root.setProperty('--color-focus', '#FF0000')
+    root.setProperty('--color-focus-contrast', '#00FF00')
+  })
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+  await page.keyboard.press('Tab')
+  await dependency.focus()
+  const path = dependency.locator('path.workflow-edge')
+  const bounds = await path.boundingBox()
+  if (!bounds) throw new Error('Expected dependency edge bounds.')
+  const padding = 8
+  const image = decode(
+    await page.screenshot({
+      scale: 'css',
+      clip: {
+        x: Math.max(0, Math.floor(bounds.x) - padding),
+        y: Math.max(0, Math.floor(bounds.y) - padding),
+        width: Math.ceil(bounds.width) + padding * 2,
+        height: Math.ceil(bounds.height) + padding * 2,
+      },
+    }),
+  )
+  const colorPixels = (expected: readonly number[]) => {
+    let count = 0
+    for (let offset = 0; offset < image.data.length; offset += image.channels) {
+      if (expected.every((channel, index) => image.data[offset + index] === channel)) count += 1
+    }
+    return count
+  }
+
+  expect(colorPixels([255, 0, 0])).toBeGreaterThan(0)
+  expect(colorPixels([0, 255, 0])).toBeGreaterThan(0)
+})
+
 test('paints the secondary focus band inside a hostile canvas toolbar button', async ({ page }) => {
   await openSeededPair(page)
   await page.evaluate(() => {
