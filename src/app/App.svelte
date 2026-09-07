@@ -4023,8 +4023,8 @@
 
   .editor-tabs button.active {
     border-color: var(--color-accent);
-    color: var(--color-selection-panel-foreground);
-    background: var(--color-selection-panel);
+    color: var(--color-selection-editor-foreground);
+    background: var(--color-selection-editor);
   }
 
   .editor-region {

@@ -218,8 +218,8 @@
   .yaml-tabs button[aria-selected='true']:hover:not(:disabled),
   .yaml-tabs button[aria-selected='true']:active:not(:disabled) {
     border-color: var(--color-accent);
-    color: var(--color-selection-gutter-foreground);
-    background: var(--color-selection-gutter);
+    color: var(--color-selection-yaml-foreground);
+    background: var(--color-selection-yaml);
   }
 
   [role='tabpanel'] {

@@ -14,8 +14,12 @@ const rendererDerivedColorTokens = new Set([
   'selection-page-foreground',
   'selection-panel',
   'selection-panel-foreground',
-  'selection-gutter',
-  'selection-gutter-foreground',
+  'selection-editor',
+  'selection-editor-foreground',
+  'selection-rail',
+  'selection-rail-foreground',
+  'selection-yaml',
+  'selection-yaml-foreground',
   'node-kind',
   'node-kind-selected',
   'primary',
@@ -89,7 +93,7 @@ describe('offline visual style contract', () => {
     const workflowNode = readFileSync('src/features/canvas/WorkflowNode.svelte', 'utf8')
 
     expect(editorModes).toMatch(
-      /\.yaml-tabs button\[aria-selected='true'\][^{]*\{[^}]*color: var\(--color-selection-gutter-foreground\);[^}]*background: var\(--color-selection-gutter\);/,
+      /\.yaml-tabs button\[aria-selected='true'\][^{]*\{[^}]*color: var\(--color-selection-yaml-foreground\);[^}]*background: var\(--color-selection-yaml\);/,
     )
     expect(appCss).toMatch(
       /button\[data-variant='ghost'\]\[aria-pressed='true'\]:hover:not\(:disabled\)[^{]*\{[^}]*color: var\(--color-primary-hover-contrast\);[^}]*background: var\(--color-primary-hover\);/,

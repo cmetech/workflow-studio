@@ -158,6 +158,47 @@ describe('validateBrandPack', () => {
     )
   })
 
+  it('checks translucent editor surfaces against their canvas ancestry', () => {
+    const blocked = mutableBrand()
+    blocked.id = 'canvas-surface-contrast-blocked'
+    Object.assign(blocked.themes.dark, {
+      background: '#FFFFFF',
+      surface: '#FFFFFF00',
+      'surface-elevated': '#FFFFFF',
+      text: '#000000',
+      'text-muted': '#000000',
+      canvas: '#000000',
+      node: '#FFFFFF',
+      'node-selected': '#FFFFFF',
+      'yaml-gutter': '#FFFFFF',
+      focus: '#000000',
+      warning: '#000000',
+      error: '#000000',
+    })
+
+    const result = validateBrandPack(stringify(blocked), assets())
+
+    expect(result.canActivate).toBe(false)
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'brand_contrast_text_surface', severity: 'error' }),
+        expect.objectContaining({ code: 'brand_contrast_text_muted_surface', severity: 'error' }),
+      ]),
+    )
+  })
+
+  it('does not block imported packs on the built-in mark accent pair', () => {
+    const imported = mutableBrand()
+    imported.id = 'independent-image-assets'
+    imported.themes.dark.accent = '#777777'
+    imported.themes.dark['accent-contrast'] = '#777777'
+
+    const result = validateBrandPack(stringify(imported), assets())
+
+    expect(result.canActivate).toBe(true)
+    expect(result.issues).not.toContainEqual(expect.objectContaining({ code: 'brand_contrast_accent_contrast_accent' }))
+  })
+
   it('rejects incomplete token maps and CSS-capable color payloads', () => {
     const missing = mutableBrand() as unknown as {
       id: string

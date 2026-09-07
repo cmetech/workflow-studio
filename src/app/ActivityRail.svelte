@@ -104,8 +104,8 @@
 
   button.active[data-activity] {
     border-color: var(--color-edge);
-    color: var(--color-selection-gutter-foreground);
-    background: var(--color-selection-gutter);
+    color: var(--color-selection-rail-foreground);
+    background: var(--color-selection-rail);
   }
 
   button:focus-visible {

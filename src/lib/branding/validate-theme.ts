@@ -216,10 +216,7 @@ export function contrastRatio(foreground: string, background: string): number {
 
 function contrastIssues(manifest: BrandManifest): BrandValidationIssue[] {
   const issues: BrandValidationIssue[] = []
-  const directPairs = [
-    ['accent-contrast', 'accent', 4.5],
-    ['focus', 'background', 3],
-  ] as const
+  const directPairs = [['focus', 'background', 3]] as const
   const productionPairs = [
     ['text', ['background', 'surface', 'surface-elevated', 'node', 'node-selected', 'yaml-gutter']],
     ['text-muted', ['background', 'surface', 'surface-elevated', 'node', 'node-selected', 'yaml-gutter']],
@@ -233,17 +230,36 @@ function contrastIssues(manifest: BrandManifest): BrandValidationIssue[] {
     )
     const composite = (value: string, backdrop: string): string =>
       canonicalColor(opaque(parseColor(value)!, parseColor(backdrop)!))
-    const surface = composite(theme.surface, background)
-    const surfaceElevated = composite(theme['surface-elevated'], surface)
     const canvas = composite(theme.canvas, background)
-    const editorSurface = composite(theme.surface, surfaceElevated)
-    const surfaces = {
+    const node = composite(theme.node, canvas)
+    const nodeSelected = composite(theme['node-selected'], canvas)
+    const surfaceOnBackground = composite(theme.surface, background)
+    const surfaceOnCanvas = composite(theme.surface, canvas)
+    const surfaceVariants = [
+      surfaceOnBackground,
+      surfaceOnCanvas,
+      composite(theme.surface, surfaceOnBackground),
+      composite(theme.surface, surfaceOnCanvas),
+    ]
+    const yamlGutterVariants = [
+      composite(theme['yaml-gutter'], background),
+      ...surfaceVariants.map((backdrop) => composite(theme['yaml-gutter'], backdrop)),
+    ]
+    const surfaceElevatedVariants = [
       background,
-      surface,
-      'surface-elevated': surfaceElevated,
-      node: composite(theme.node, canvas),
-      'node-selected': composite(theme['node-selected'], canvas),
-      'yaml-gutter': composite(theme['yaml-gutter'], editorSurface),
+      canvas,
+      node,
+      nodeSelected,
+      ...surfaceVariants,
+      ...yamlGutterVariants,
+    ].map((backdrop) => composite(theme['surface-elevated'], backdrop))
+    const surfaces = {
+      background: [background],
+      surface: surfaceVariants,
+      'surface-elevated': surfaceElevatedVariants,
+      node: [node],
+      'node-selected': [nodeSelected],
+      'yaml-gutter': yamlGutterVariants,
     } as const
     for (const [foreground, pairBackground, minimum] of directPairs) {
       if (contrastRatio(theme[foreground], theme[pairBackground]) + Number.EPSILON < minimum) {
@@ -257,7 +273,13 @@ function contrastIssues(manifest: BrandManifest): BrandValidationIssue[] {
     }
     for (const [foreground, surfaceNames] of productionPairs) {
       for (const surfaceName of surfaceNames) {
-        if (contrastRatio(theme[foreground], surfaces[surfaceName]) + Number.EPSILON >= 4.5) continue
+        if (
+          surfaces[surfaceName].every(
+            (surfaceVariant) => contrastRatio(theme[foreground], surfaceVariant) + Number.EPSILON >= 4.5,
+          )
+        ) {
+          continue
+        }
         issues.push({
           code: `brand_contrast_${foreground.replaceAll('-', '_')}_${surfaceName.replaceAll('-', '_')}`,
           severity: 'error',

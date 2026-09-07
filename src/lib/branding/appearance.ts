@@ -240,10 +240,12 @@ function publishSemanticColors(
   preferredSelectedSurface: string,
   primarySurface: string,
   background: string,
-  surface: string,
+  panelSurface: string,
+  editorSurface: string,
   canvas: string,
   node: string,
   nodeSelected: string,
+  railGutter: string,
   yamlGutter: string,
 ): void {
   const primary = compositeColor(preferredAccent, primarySurface)
@@ -253,12 +255,14 @@ function publishSemanticColors(
   const edgeSelected = focusColor(selectionAccent, [canvas])
 
   root.style.setProperty('--color-accent-on-background', foregroundColor(preferredAccent, background))
-  root.style.setProperty('--color-accent-on-surface', foregroundColor(preferredAccent, surface))
-  root.style.setProperty('--color-accent-strong-on-surface', foregroundColor(preferredStrongAccent, surface))
+  root.style.setProperty('--color-accent-on-surface', foregroundColor(preferredAccent, panelSurface))
+  root.style.setProperty('--color-accent-strong-on-surface', foregroundColor(preferredStrongAccent, panelSurface))
   for (const [name, backdrop] of [
     ['page', background],
-    ['panel', surface],
-    ['gutter', yamlGutter],
+    ['panel', panelSurface],
+    ['editor', editorSurface],
+    ['rail', railGutter],
+    ['yaml', yamlGutter],
   ] as const) {
     const selectedSurface = compositeColor(preferredSelectedSurface, backdrop)
     root.style.setProperty(`--color-selection-${name}`, selectedSurface)
@@ -307,22 +311,31 @@ export function applyAppearanceTheme(
   const normalizedCustomAccent = customAccent === null ? null : normalizeAccent(customAccent)
   const theme = brand.themes[mode]
   const background = compositeColor(theme.background, '#FFFFFF')
-  const surface = compositeColor(theme.surface, background)
-  const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
   const canvas = compositeColor(theme.canvas, background)
   const node = compositeColor(theme.node, canvas)
-  const editorSurface = compositeColor(theme.surface, surfaceElevated)
+  const panelSurface = compositeColor(theme.surface, background)
+  const editorSurface = compositeColor(theme.surface, canvas)
+  const panelSurfaceElevated = compositeColor(theme['surface-elevated'], panelSurface)
+  const editorSurfaceElevated = compositeColor(theme['surface-elevated'], editorSurface)
+  const codeMirrorSurface = compositeColor(theme.surface, editorSurfaceElevated)
+  const railGutter = compositeColor(theme['yaml-gutter'], background)
   const yamlGutter = compositeColor(theme['yaml-gutter'], editorSurface)
+  const codeMirrorGutter = compositeColor(theme['yaml-gutter'], codeMirrorSurface)
   if (colorTheme === 'loop24-indigo' && normalizedCustomAccent === null) {
     const focus = compositeColor(theme.focus, background)
     const nodeSelected = compositeColor(theme['node-selected'], canvas)
     const [safeFocus, focusContrast] = focusColors(focus, [
       background,
-      surfaceElevated,
+      panelSurface,
+      editorSurface,
+      panelSurfaceElevated,
+      editorSurfaceElevated,
       canvas,
       node,
-      editorSurface,
+      codeMirrorSurface,
+      railGutter,
       yamlGutter,
+      codeMirrorGutter,
       nodeSelected,
     ])
     root.style.setProperty('--color-focus', safeFocus)
@@ -333,12 +346,14 @@ export function applyAppearanceTheme(
       theme['accent-strong'],
       theme['edge-selected'],
       theme['node-selected'],
-      surfaceElevated,
+      panelSurfaceElevated,
       background,
-      surface,
+      panelSurface,
+      editorSurface,
       canvas,
       node,
       nodeSelected,
+      railGutter,
       yamlGutter,
     )
     return
@@ -350,7 +365,20 @@ export function applyAppearanceTheme(
   const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
   const selectedAmount = mode === 'light' ? 0.14 : 0.24
   const nodeSelected = mixHex(background, accent, selectedAmount)
-  const focusSurfaces = [background, surfaceElevated, canvas, node, editorSurface, yamlGutter, nodeSelected]
+  const focusSurfaces = [
+    background,
+    panelSurface,
+    editorSurface,
+    panelSurfaceElevated,
+    editorSurfaceElevated,
+    canvas,
+    node,
+    codeMirrorSurface,
+    railGutter,
+    yamlGutter,
+    codeMirrorGutter,
+    nodeSelected,
+  ]
   const [focus, focusContrast] = focusColors(accent, focusSurfaces)
 
   root.style.setProperty('--color-accent', accent)
@@ -365,12 +393,14 @@ export function applyAppearanceTheme(
     mixHex(accent, strongTarget, 0.18),
     accent,
     nodeSelected,
-    surfaceElevated,
+    panelSurfaceElevated,
     background,
-    surface,
+    panelSurface,
+    editorSurface,
     canvas,
     node,
     nodeSelected,
+    railGutter,
     yamlGutter,
   )
 }

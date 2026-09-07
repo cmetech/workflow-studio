@@ -131,7 +131,7 @@ describe('appearance preferences', () => {
       expect(contrastRatio(token('--color-node-kind-selected'), token('--color-node-selected'))).toBeGreaterThanOrEqual(
         4.5,
       )
-      for (const surface of ['page', 'panel', 'gutter']) {
+      for (const surface of ['page', 'panel', 'editor', 'rail', 'yaml']) {
         expect(
           contrastRatio(token(`--color-selection-${surface}-foreground`), token(`--color-selection-${surface}`)),
         ).toBeGreaterThanOrEqual(4.5)
@@ -204,7 +204,46 @@ describe('appearance preferences', () => {
     for (const [surface, expectedBackground] of [
       ['page', '#CCCCCC'],
       ['panel', '#A3A3A3'],
-      ['gutter', '#000000'],
+      ['editor', '#A3A3A3'],
+      ['rail', '#000000'],
+      ['yaml', '#000000'],
+    ] as const) {
+      const background = root.style.getPropertyValue(`--color-selection-${surface}`)
+      expect(background).toBe(expectedBackground)
+      expect(
+        contrastRatio(root.style.getPropertyValue(`--color-selection-${surface}-foreground`), background),
+      ).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  it('derives distinct selection pairs for translucent panel, editor, rail, and YAML stacks', () => {
+    const root = document.createElement('div')
+    const brand = parsedImportedBrand({
+      background: '#FFFFFF',
+      surface: '#FFFFFF00',
+      'surface-elevated': '#FFFFFF00',
+      text: '#000000',
+      'text-muted': '#000000',
+      accent: '#000000',
+      'accent-strong': '#000000',
+      'accent-contrast': '#FFFFFF',
+      focus: '#000000',
+      error: '#000000',
+      canvas: '#000000',
+      node: '#FFFFFF',
+      'node-selected': '#00000033',
+      'edge-selected': '#FFFFFF',
+      'yaml-gutter': '#FFFFFF00',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'loop24-indigo', null, root)
+
+    for (const [surface, expectedBackground] of [
+      ['page', '#CCCCCC'],
+      ['panel', '#CCCCCC'],
+      ['editor', '#000000'],
+      ['rail', '#CCCCCC'],
+      ['yaml', '#000000'],
     ] as const) {
       const background = root.style.getPropertyValue(`--color-selection-${surface}`)
       expect(background).toBe(expectedBackground)

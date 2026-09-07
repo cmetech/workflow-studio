@@ -28,8 +28,12 @@
   --color-selection-page-foreground: #ffffff;
   --color-selection-panel: #252143;
   --color-selection-panel-foreground: #ffffff;
-  --color-selection-gutter: #252143;
-  --color-selection-gutter-foreground: #ffffff;
+  --color-selection-editor: #252143;
+  --color-selection-editor-foreground: #ffffff;
+  --color-selection-rail: #252143;
+  --color-selection-rail-foreground: #ffffff;
+  --color-selection-yaml: #252143;
+  --color-selection-yaml-foreground: #ffffff;
   --color-primary: #5b50e6;
   --color-primary-contrast: #ffffff;
   --color-primary-hover: #766df0;
