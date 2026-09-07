@@ -1191,7 +1191,9 @@
       viewport.zoom === arrangedViewport.zoom
     )
       return
-    if (readOnly || stale || transitionLocked || activeArrange?.published) return
+    // Auto-pan emits move-end every drag frame. The viewport binding stays live;
+    // drag completion saves that final camera together with the manual positions.
+    if (dragging || readOnly || stale || transitionLocked || activeArrange?.published) return
     schedulePersist({ ...layoutWithPositions(), viewport: { ...viewport } })
   }
 
