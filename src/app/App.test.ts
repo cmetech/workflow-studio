@@ -1467,6 +1467,41 @@ nodes:
     expect(screen.getByRole('alert')).toHaveAttribute('data-application-notice')
   })
 
+  it('blocks button and keyboard saves through the controller when the active contract is unavailable', async () => {
+    contractResolverTestState.missingActiveProfile = 'hermes-legacy'
+    const savedText = `name: Contract unavailable\ndescription: Keep unsaved YAML recoverable.\nnodes:\n  - id: draft\n    prompt: Draft\n`
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': savedText } })
+    const workspaceWrite = vi.fn(backing.workspaceWrite)
+    setNativeBridgeForTest({ ...backing, workspaceWrite })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+    await waitFor(() => expect($documentSession.get().analysis?.issues[0]?.code).toBe('contract_unavailable'))
+
+    const dirty = editDocumentText($documentSession.get().pair!, 'definition', savedText.replace('Draft\n', 'Edited\n'))
+    updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
+    await tick()
+
+    const save = screen.getByRole('button', { name: 'Save workflow' })
+    expect(save).toBeEnabled()
+    await fireEvent.click(save)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: contract_unavailable'))
+    expect(workspaceWrite).not.toHaveBeenCalled()
+
+    $documentWorkspace.set({ ...$documentWorkspace.get(), saveOutcome: null })
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 's',
+        metaKey: /mac/i.test(navigator.platform),
+        ctrlKey: !/mac/i.test(navigator.platform),
+        bubbles: true,
+      }),
+    )
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Save blocked: contract_unavailable'))
+    expect(workspaceWrite).not.toHaveBeenCalled()
+  })
+
   it('shows dirty document state and confirms an exact revert before discarding YAML edits', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [
       { relativePath: 'flow.yaml', kind: 'file', size: 1, modifiedAt: '0', symlink: 'none', readOnly: false },

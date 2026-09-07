@@ -803,6 +803,72 @@ describe('DocumentWorkspaceController', () => {
     expect(client.schedule).not.toHaveBeenCalled()
   })
 
+  it('publishes a blocked save outcome when the selected authoring profile is unsupported', async () => {
+    const { deps } = dependencies({
+      read: vi.fn(async (path: string) =>
+        read(
+          path,
+          path.endsWith('.hermes.yaml')
+            ? 'language_compatibility: future-profile\n'
+            : 'name: flow\ndescription: Unsupported profile\nnodes:\n  - id: run\n    command: echo ok\n',
+        ),
+      ),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    const opened = await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    const dirty = editDocumentText(opened!, 'definition', `${opened!.definition.text}# edit\n`)
+    controller.changed(dirty, 'user')
+
+    const outcome = await controller.save()
+
+    expect(outcome).toMatchObject({
+      status: 'blocked',
+      reason: 'contract_unavailable',
+      issues: [expect.objectContaining({ code: 'contract_unavailable', blocking: true })],
+    })
+    expect($documentWorkspace.get().saveOutcome).toBe(outcome)
+    expect(deps.write).not.toHaveBeenCalled()
+  })
+
+  it('publishes a blocked save outcome when an exact contract switch cannot activate', async () => {
+    const { deps, client } = dependencies({
+      read: vi.fn(async (path: string) =>
+        read(
+          path,
+          path.endsWith('.hermes.yaml')
+            ? 'language_compatibility: hermes-legacy\n'
+            : 'name: flow\ndescription: Contract switch\nnodes:\n  - id: run\n    command: echo ok\n',
+        ),
+      ),
+      activeContractForProfile: (profile) => (profile === 'archon-2026-07' ? archonContract : contract),
+      validateContractCoverage: () => [],
+    })
+    Object.assign(client, {
+      registerContract: vi.fn(async () => {
+        throw new Error('worker rejected the contract')
+      }),
+    })
+    const controller = new DocumentWorkspaceController(deps)
+    await controller.activate('workspace', pairedEntry('flow.yaml'), contract)
+    const changed = editDocumentText(
+      $documentSession.get().pair!,
+      'companion',
+      'language_compatibility: archon-2026-07\n',
+    )
+
+    controller.changed(changed, 'user')
+    await vi.waitFor(() => expect($documentSession.get().analysis?.issues[0]?.code).toBe('contract_unavailable'))
+    const outcome = await controller.save()
+
+    expect(outcome).toMatchObject({
+      status: 'blocked',
+      reason: 'contract_unavailable',
+      issues: [expect.objectContaining({ code: 'contract_unavailable', blocking: true })],
+    })
+    expect($documentWorkspace.get().saveOutcome).toBe(outcome)
+    expect(deps.write).not.toHaveBeenCalled()
+  })
+
   it('registers a selected contract without an open pair so the next compatible document can use it', async () => {
     const next = { ...contract, contract_digest: `sha256:${'d'.repeat(64)}` as const }
     const { deps, client } = dependencies({ validateContractCoverage: () => [] })

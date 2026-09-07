@@ -317,7 +317,30 @@ export class DocumentWorkspaceController {
       $documentWorkspace.set({ ...$documentWorkspace.get(), saveOutcome: outcome })
       return outcome
     }
-    if (!this.documentContract) return null
+    if (!this.documentContract) {
+      const issues = session.analysis?.issues.filter(({ code }) => code === 'contract_unavailable') ?? []
+      const outcome: SaveWorkflowPairResult = {
+        status: 'blocked',
+        pair: session.pair,
+        issues:
+          issues.length > 0
+            ? issues
+            : [
+                {
+                  code: 'contract_unavailable',
+                  layer: 'contract',
+                  severity: 'error',
+                  blocking: true,
+                  message:
+                    'Workflow analysis is unavailable because no compatible active authoring contract is available.',
+                  document: session.pair.companion ? 'companion' : 'definition',
+                },
+              ],
+        reason: 'contract_unavailable',
+      }
+      $documentWorkspace.set({ ...$documentWorkspace.get(), saveOutcome: outcome })
+      return outcome
+    }
     const generation = this.activationGeneration
     const workflowId = session.pair.workflowId
     const definitionPath = session.pair.definition.path
