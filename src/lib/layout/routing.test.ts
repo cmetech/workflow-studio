@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { graphFingerprint, normalizeRoute, routingFingerprint } from '$src/features/canvas/routed-layout'
+import { canonicalizeJsonValue } from '$src/lib/contract/canonical-json'
 import { emptyScopeLayout } from './types'
 import {
   MAX_ROUTE_POINTS_PER_EDGE,
@@ -375,6 +376,50 @@ describe('persisted scope routing', () => {
         },
       }),
     ).toBeUndefined()
+  })
+
+  it.each([
+    ['escaped', '"'],
+    ['multibyte', 'é'],
+  ])('counts exact canonical UTF-8 bytes for %s route IDs after the preliminary string guard', (_name, character) => {
+    const largeId = character.repeat(1_100_000)
+    expect(largeId.length * 2 + ROUTING_ENGINE.length + validRouting.fingerprint.length).toBeLessThan(
+      MAX_SERIALIZED_ROUTING_BYTES,
+    )
+
+    expect(
+      sanitizeScopeRouting({
+        ...validRouting,
+        routes: {
+          [largeId]: {
+            edgeId: largeId,
+            points: [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+            ],
+          },
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  it('accepts a canonical routing payload exactly at the 4 MiB byte limit', () => {
+    const boundaryId = 'x'.repeat(2_097_046)
+    const boundaryRouting = {
+      ...validRouting,
+      routes: {
+        [boundaryId]: {
+          edgeId: boundaryId,
+          points: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+          ],
+        },
+      },
+    }
+    expect(new TextEncoder().encode(canonicalizeJsonValue(boundaryRouting))).toHaveLength(MAX_SERIALIZED_ROUTING_BYTES)
+
+    expect(sanitizeScopeRouting(boundaryRouting)).toEqual(boundaryRouting)
   })
 
   it('removes routing only when present and otherwise preserves scope identity', () => {
