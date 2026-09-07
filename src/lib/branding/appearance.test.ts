@@ -190,9 +190,12 @@ describe('appearance preferences', () => {
     applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
 
     const focus = root.style.getPropertyValue('--color-focus')
+    const focusContrast = root.style.getPropertyValue('--color-focus-contrast')
     expect(root.style.getPropertyValue('--color-accent')).toBe('#FFFFFF')
-    expect(contrastRatio(focus, '#B6B6B6')).toBeGreaterThanOrEqual(3)
-    expect(contrastRatio(focus, '#000000')).toBeGreaterThanOrEqual(3)
+    expect(Math.min(contrastRatio(focus, '#B6B6B6'), contrastRatio(focus, '#000000'))).toBeLessThan(3)
+    for (const host of ['#B6B6B6', '#000000']) {
+      expect(Math.max(contrastRatio(focus, host), contrastRatio(focusContrast, host))).toBeGreaterThanOrEqual(3)
+    }
   })
 
   it('selects a deterministic gray that clears 3:1 against mixed black and white focus hosts', () => {
@@ -237,6 +240,32 @@ describe('appearance preferences', () => {
     expect(root.style.getPropertyValue('--color-focus')).toBe(firstFocus)
     expect(Math.min(...contrasts)).toBeLessThan(3)
     expect(Math.min(...contrasts)).toBeGreaterThan(1)
+  })
+
+  it('publishes a two-tone focus pair for incompatible active-line and elevated toolbar hosts', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': 'rgba(255, 255, 255, 0.65)',
+      canvas: '#000000',
+      node: '#FFFFFF',
+      'yaml-gutter': '#000000',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'emerald', '#FFFFFF', root)
+
+    const primary = root.style.getPropertyValue('--color-focus')
+    const secondary = root.style.getPropertyValue('--color-focus-contrast')
+    const activeLine = root.style.getPropertyValue('--color-node-selected')
+    const toolbar = '#A6A6A6'
+
+    expect(root.style.getPropertyValue('--color-accent')).toBe('#FFFFFF')
+    expect(['#000000', '#FFFFFF']).toContain(secondary)
+    expect(contrastRatio(primary, secondary)).toBeGreaterThanOrEqual(3)
+    for (const host of [activeLine, toolbar]) {
+      expect(Math.max(contrastRatio(primary, host), contrastRatio(secondary, host))).toBeGreaterThanOrEqual(3)
+    }
   })
 
   it('saves and loads one normalized preference record', () => {

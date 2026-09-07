@@ -57,8 +57,23 @@ describe('authoritative editor synchronization', () => {
         '.cm-cursor, .cm-dropCursor': {
           borderLeftColor: 'var(--color-focus)',
           borderLeftWidth: '2px',
+          boxShadow: '1px 0 0 var(--color-focus-contrast)',
         },
-        '.cm-fat-cursor': { backgroundColor: 'var(--color-focus)' },
+        '.cm-fat-cursor': {
+          backgroundColor: 'var(--color-focus)',
+          outline: '1px solid var(--color-focus-contrast)',
+          outlineOffset: '-1px',
+        },
+        '@media (forced-colors: active)': {
+          '.cm-cursor, .cm-dropCursor': {
+            borderLeftColor: 'CanvasText',
+            boxShadow: 'none',
+          },
+          '.cm-fat-cursor': {
+            backgroundColor: 'CanvasText',
+            outline: 'none',
+          },
+        },
       }),
     )
   })

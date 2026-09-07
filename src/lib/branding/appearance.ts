@@ -197,6 +197,35 @@ function focusColor(accent: string, surfaces: readonly string[]): string {
   return best
 }
 
+function minimumIndicatorContrast(primary: string, secondary: string, surfaces: readonly string[]): number {
+  return Math.min(
+    ...surfaces.map((surface) => Math.max(contrastRatio(primary, surface), contrastRatio(secondary, surface))),
+  )
+}
+
+function focusColors(accent: string, surfaces: readonly string[]): readonly [primary: string, secondary: string] {
+  const optimizedPrimary = focusColor(accent, surfaces)
+  const optimizedSecondary = contrastColor(optimizedPrimary)
+  if (minimumIndicatorContrast(optimizedPrimary, optimizedSecondary, surfaces) >= MIN_FOCUS_CONTRAST) {
+    return [optimizedPrimary, optimizedSecondary]
+  }
+
+  const candidates = [accent, '#000000', '#FFFFFF', ...GRAYSCALE_FOCUS_CANDIDATES]
+  let bestPrimary = candidates[0]!
+  let bestSecondary = contrastColor(bestPrimary)
+  let bestContrast = minimumIndicatorContrast(bestPrimary, bestSecondary, surfaces)
+  for (const candidate of candidates.slice(1)) {
+    const secondary = contrastColor(candidate)
+    const candidateContrast = minimumIndicatorContrast(candidate, secondary, surfaces)
+    if (candidateContrast > bestContrast) {
+      bestPrimary = candidate
+      bestSecondary = secondary
+      bestContrast = candidateContrast
+    }
+  }
+  return [bestPrimary, bestSecondary]
+}
+
 function isColorThemeId(value: unknown): value is ColorThemeId {
   return typeof value === 'string' && COLOR_THEME_IDS.has(value as ColorThemeId)
 }
@@ -224,28 +253,33 @@ export function applyAppearanceTheme(
 ): void {
   applyBrandTheme(brand, mode, root)
   const normalizedCustomAccent = customAccent === null ? null : normalizeAccent(customAccent)
-  if (colorTheme === 'loop24-indigo' && normalizedCustomAccent === null) return
+  const theme = brand.themes[mode]
+  const background = compositeColor(theme.background, '#FFFFFF')
+  const surface = compositeColor(theme.surface, background)
+  const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
+  if (colorTheme === 'loop24-indigo' && normalizedCustomAccent === null) {
+    root.style.setProperty('--color-focus-contrast', contrastColor(compositeColor(theme.focus, background)))
+    return
+  }
 
   const palette = COLOR_THEMES.find(({ id }) => id === colorTheme) ?? COLOR_THEMES[0]
   const accent = normalizedCustomAccent ?? palette.accents[mode]
   const contrast = contrastColor(accent)
   const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
   const selectedAmount = mode === 'light' ? 0.14 : 0.24
-  const theme = brand.themes[mode]
-  const background = compositeColor(theme.background, '#FFFFFF')
-  const surface = compositeColor(theme.surface, background)
-  const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
   const canvas = compositeColor(theme.canvas, background)
   const node = compositeColor(theme.node, canvas)
   const editorSurface = compositeColor(theme.surface, surfaceElevated)
   const yamlGutter = compositeColor(theme['yaml-gutter'], editorSurface)
   const nodeSelected = mixHex(background, accent, selectedAmount)
-  const focusSurfaces = [background, canvas, node, editorSurface, yamlGutter]
+  const focusSurfaces = [background, surfaceElevated, canvas, node, editorSurface, yamlGutter, nodeSelected]
+  const [focus, focusContrast] = focusColors(accent, focusSurfaces)
 
   root.style.setProperty('--color-accent', accent)
   root.style.setProperty('--color-accent-strong', mixHex(accent, strongTarget, 0.18))
   root.style.setProperty('--color-accent-contrast', contrast)
-  root.style.setProperty('--color-focus', focusColor(accent, focusSurfaces))
+  root.style.setProperty('--color-focus', focus)
+  root.style.setProperty('--color-focus-contrast', focusContrast)
   root.style.setProperty('--color-node-selected', nodeSelected)
   root.style.setProperty('--color-edge-selected', accent)
 }

@@ -23,6 +23,7 @@
   --color-accent-contrast: #ffffff;
   --color-border: #293042;
   --color-focus: #8a80ff;
+  --color-focus-contrast: #000000;
   --color-success: #32c48d;
   --color-warning: #f5a524;
   --color-error: #ff6678;
@@ -34,5 +35,5 @@
   --color-edge-selected: #8a80ff;
   --color-yaml-gutter: #0e1118;
   --color-shadow: #00000080;
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--color-focus) 34%, transparent);
+  --focus-ring: 0 0 0 2px var(--color-focus), 0 0 0 4px var(--color-focus-contrast);
 }

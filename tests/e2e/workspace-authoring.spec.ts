@@ -166,15 +166,19 @@ test('keeps the YAML caret aligned with the active focus color across appearance
           const cursor = document.querySelector<HTMLElement>('[aria-label="Definition YAML"] .cm-cursor')
           if (!cursor) throw new Error('Expected a focused CodeMirror caret.')
           const focus = getComputedStyle(root).getPropertyValue('--color-focus').trim()
+          const focusContrast = getComputedStyle(root).getPropertyValue('--color-focus-contrast').trim()
           return {
             focus,
+            focusContrast,
             cursorBorder: getComputedStyle(cursor).borderLeftColor,
+            cursorShadow: getComputedStyle(cursor).boxShadow,
             cursorWidth: getComputedStyle(cursor).borderLeftWidth,
           }
         }),
       )
       .toMatchObject({
         cursorBorder: expect.stringMatching(/^rgb\(/),
+        cursorShadow: expect.stringMatching(/^rgb\(/),
         cursorWidth: '2px',
       })
 
@@ -184,14 +188,41 @@ test('keeps the YAML caret aligned with the active focus color across appearance
       probe.style.color = 'var(--color-focus)'
       document.body.append(probe)
       const focus = getComputedStyle(probe).color
+      probe.style.color = 'var(--color-focus-contrast)'
+      const focusContrast = getComputedStyle(probe).color
       probe.remove()
       return {
         focus,
+        focusContrast,
         cursorBorder: getComputedStyle(cursor).borderLeftColor,
+        cursorShadow: getComputedStyle(cursor).boxShadow,
       }
     })
     expect(colors.cursorBorder).toBe(colors.focus)
+    expect(colors.cursorShadow).toContain(colors.focusContrast)
   }
+})
+
+test('uses both focus colors on a real canvas toolbar button', async ({ page }) => {
+  await openSeededPair(page)
+  const button = page.getByRole('button', { name: 'Add Node', exact: true })
+  await page.keyboard.press('Tab')
+  await button.focus()
+
+  const colors = await button.evaluate((element) => {
+    const root = getComputedStyle(document.documentElement)
+    const probe = document.createElement('span')
+    document.body.append(probe)
+    probe.style.color = root.getPropertyValue('--color-focus')
+    const primary = getComputedStyle(probe).color
+    probe.style.color = root.getPropertyValue('--color-focus-contrast')
+    const secondary = getComputedStyle(probe).color
+    probe.remove()
+    return { primary, secondary, shadow: getComputedStyle(element).boxShadow }
+  })
+
+  expect(colors.shadow).toContain(colors.primary)
+  expect(colors.shadow).toContain(colors.secondary)
 })
 
 test('canvas menu stays outside the pointer viewport', async ({ page }) => {
