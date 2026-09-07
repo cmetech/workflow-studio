@@ -1,5 +1,23 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator } from '@playwright/test'
 import { e2eSnapshot, openSeededPair } from './support'
+
+async function paintedContrast(element: Locator): Promise<number> {
+  return element.evaluate((target) => {
+    const parse = (value: string): readonly number[] =>
+      (value.match(/[\d.]+/g) ?? []).slice(0, 3).map((channel) => Number(channel))
+    const luminance = (value: string): number => {
+      const channels = parse(value).map((channel) => {
+        const normalized = channel / 255
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+      })
+      return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+    }
+    const style = getComputedStyle(target)
+    const foreground = luminance(style.color)
+    const background = luminance(style.backgroundColor)
+    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05)
+  })
+}
 
 test('keeps a malicious brand inspectable but inactive, then previews and activates a valid pack', async ({ page }) => {
   await openSeededPair(page)
@@ -59,4 +77,63 @@ test('applies and persists brightness, palette, and a custom accent through the 
       accent: '#FAD22D',
       preferences: { mode: 'light', colorTheme: 'ocean-blue', customAccent: '#FAD22D' },
     })
+})
+
+test('keeps semantic canvas selection readable when the chosen accent matches the canvas', async ({ page }) => {
+  await openSeededPair(page)
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await page.getByRole('radio', { name: 'Light' }).click()
+  await page.getByRole('button', { name: 'Choose custom accent' }).click()
+  await page.getByRole('textbox', { name: 'Hex accent' }).fill('#FFFFFF')
+  const apply = page.getByRole('button', { name: 'Apply accent' })
+  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
+  await apply.hover()
+  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
+  await page.mouse.down()
+  expect(await paintedContrast(apply)).toBeGreaterThanOrEqual(4.5)
+  await page.mouse.move(0, 0)
+  await page.mouse.up()
+  await apply.click()
+  await page.getByRole('button', { name: 'Back to Workflow' }).click()
+
+  const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+  const selectedPath = dependency.locator('path.workflow-edge')
+  await dependency.focus()
+  await dependency.press('Enter')
+  await expect(selectedPath).toHaveClass(/selected/)
+
+  const node = page.getByRole('group', { name: 'prompt node prepare', exact: true })
+  await node.focus()
+  await expect(selectedPath).toHaveClass(/selected/)
+
+  const contrast = await page.evaluate(() => {
+    const parse = (value: string): readonly number[] =>
+      (value.match(/[\d.]+/g) ?? []).slice(0, 3).map((channel) => Number(channel))
+    const luminance = (value: string): number => {
+      const channels = parse(value).map((channel) => {
+        const normalized = channel / 255
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+      })
+      return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+    }
+    const ratio = (first: string, second: string): number => {
+      const lighter = Math.max(luminance(first), luminance(second))
+      const darker = Math.min(luminance(first), luminance(second))
+      return (lighter + 0.05) / (darker + 0.05)
+    }
+    const path = document.querySelector<SVGPathElement>('path.workflow-edge.selected')
+    const nodeKind = document.querySelector<HTMLElement>('.workflow-node[data-node-id="prepare"] .kind')
+    const nodeBody = document.querySelector<HTMLElement>('.workflow-node[data-node-id="prepare"]')
+    const canvas = document.querySelector<HTMLElement>('.graph-canvas')
+    if (!path || !nodeKind || !nodeBody || !canvas) throw new Error('Expected painted canvas consumers.')
+    return {
+      accent: getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim(),
+      selectedEdge: ratio(getComputedStyle(path).stroke, getComputedStyle(canvas).backgroundColor),
+      nodeKind: ratio(getComputedStyle(nodeKind).color, getComputedStyle(nodeBody).backgroundColor),
+    }
+  })
+
+  expect(contrast.accent).toBe('#FFFFFF')
+  expect(contrast.selectedEdge).toBeGreaterThanOrEqual(3)
+  expect(contrast.nodeKind).toBeGreaterThanOrEqual(3)
 })

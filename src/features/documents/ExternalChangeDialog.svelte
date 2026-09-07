@@ -121,8 +121,21 @@
   }
 
   button.primary {
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+    border-color: var(--color-primary);
+    color: var(--color-primary-contrast);
+    background: var(--color-primary);
+  }
+
+  button.primary:hover:not(:disabled) {
+    border-color: var(--color-primary-hover);
+    color: var(--color-primary-hover-contrast);
+    background: var(--color-primary-hover);
+  }
+
+  button.primary:active:not(:disabled) {
+    border-color: var(--color-primary-active);
+    color: var(--color-primary-active-contrast);
+    background: var(--color-primary-active);
   }
 
   button:disabled {

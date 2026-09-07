@@ -395,7 +395,7 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Save Workflow Pair',
     category: 'File',
     defaultBindings: ['Mod+S'],
-    enabled: (context) => context.canMutate,
+    enabled: (context) => context.canSave ?? context.canMutate,
     run: () => documentSaveHandler?.(),
   },
   {

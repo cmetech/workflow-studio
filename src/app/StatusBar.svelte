@@ -66,13 +66,9 @@
   })
 </script>
 
-<footer
-  class="status-bar"
-  role="status"
-  aria-label="Application status"
-  style:background-color="var(--color-surface-elevated)"
->
-  <span class="primary-status">{gitLabel}</span>
+<footer class="status-bar" aria-label="Application status" style:background-color="var(--color-surface-elevated)">
+  <span class="primary-status" role="status" aria-label="Application status updates" aria-live="polite">{gitLabel}</span
+  >
   <details class="secondary-status" aria-label="More application status" bind:open={secondaryOpen}>
     <summary>More application status</summary>
     <div class="secondary-status-panel">
@@ -80,7 +76,7 @@
       <span data-secondary-status>DAG: pending</span>
     </div>
   </details>
-  <span class="update">{updateLabel}</span>
+  <span class="update" role="status" aria-label="Update status" aria-live="polite">{updateLabel}</span>
   <AccentPicker accent={$customAccent} {fallbackAccent} onAccent={setCustomAccent} onReset={resetAccent} />
 </footer>
 

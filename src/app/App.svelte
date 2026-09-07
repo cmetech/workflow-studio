@@ -951,6 +951,7 @@
     return {
       surface,
       setupReady,
+      canSave: documentSaveAvailable,
       canMutate:
         surface === 'canvas'
           ? !canvasBlankDraft && Boolean(canvasContext && !('unavailable' in canvasContext))
@@ -3994,9 +3995,21 @@
   }
 
   .editor-tabs .document-save-button[data-variant='primary'] {
-    border-color: var(--color-accent);
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+    border-color: var(--color-primary);
+    color: var(--color-primary-contrast);
+    background: var(--color-primary);
+  }
+
+  .editor-tabs .document-save-button[data-variant='primary']:hover:not(:disabled) {
+    border-color: var(--color-primary-hover);
+    color: var(--color-primary-hover-contrast);
+    background: var(--color-primary-hover);
+  }
+
+  .editor-tabs .document-save-button[data-variant='primary']:active:not(:disabled) {
+    border-color: var(--color-primary-active);
+    color: var(--color-primary-active-contrast);
+    background: var(--color-primary-active);
   }
 
   .editor-tabs .document-save-button[data-variant='secondary'] {

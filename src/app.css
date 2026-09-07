@@ -57,9 +57,9 @@ button {
 }
 
 button[data-variant='primary'] {
-  border-color: var(--color-accent);
-  color: var(--color-accent-contrast);
-  background: var(--color-accent);
+  border-color: var(--color-primary);
+  color: var(--color-primary-contrast);
+  background: var(--color-primary);
 }
 
 button[data-variant='secondary'] {
@@ -81,8 +81,9 @@ button[data-variant='danger'] {
 }
 
 button[data-variant='primary']:hover:not(:disabled) {
-  border-color: var(--color-accent-strong);
-  background: var(--color-accent-strong);
+  border-color: var(--color-primary-hover);
+  color: var(--color-primary-hover-contrast);
+  background: var(--color-primary-hover);
 }
 
 button[data-variant='secondary']:hover:not(:disabled),
@@ -102,8 +103,9 @@ button[data-variant='ghost'][aria-pressed='true']:hover:not(:disabled) {
 }
 
 button[data-variant='primary']:active:not(:disabled) {
-  border-color: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
-  background: color-mix(in srgb, var(--color-accent-strong) 72%, var(--color-background));
+  border-color: var(--color-primary-active);
+  color: var(--color-primary-active-contrast);
+  background: var(--color-primary-active);
 }
 
 button[data-variant='secondary']:active:not(:disabled),

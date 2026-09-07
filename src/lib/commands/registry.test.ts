@@ -298,6 +298,27 @@ describe('command registry', () => {
     }
   })
 
+  it('enables document save independently from canvas graph mutation availability', async () => {
+    const save = vi.fn(async () => undefined)
+    const unbind = setDocumentSaveHandler(save)
+    try {
+      const command = listCommands().find(({ id }) => id === 'document.save')
+      const repairCanvas: CommandContext = {
+        surface: 'canvas',
+        canMutate: false,
+        canSave: true,
+        hasSelection: false,
+      }
+
+      expect(command?.enabled(repairCanvas)).toBe(true)
+      await executeCommand('document.save', repairCanvas)
+      expect(save).toHaveBeenCalledOnce()
+      expect(command?.enabled({ ...repairCanvas, canMutate: true, canSave: false })).toBe(false)
+    } finally {
+      unbind()
+    }
+  })
+
   it('routes enabled canvas authoring commands through the active canvas handlers', async () => {
     const handlers = {
       addNode: vi.fn(),

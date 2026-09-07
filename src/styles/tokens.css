@@ -21,6 +21,12 @@
   --color-accent: #5b50e6;
   --color-accent-strong: #766df0;
   --color-accent-contrast: #ffffff;
+  --color-primary: #5b50e6;
+  --color-primary-contrast: #ffffff;
+  --color-primary-hover: #766df0;
+  --color-primary-hover-contrast: #000000;
+  --color-primary-active: #5a54ae;
+  --color-primary-active-contrast: #ffffff;
   --color-border: #293042;
   --color-focus: #8a80ff;
   --color-focus-contrast: #000000;
@@ -33,6 +39,7 @@
   --color-node-selected: #252143;
   --color-edge: #7c879d;
   --color-edge-selected: #8a80ff;
+  --color-node-kind: #8a80ff;
   --color-yaml-gutter: #0e1118;
   --color-shadow: #00000080;
   --focus-ring: inset 0 0 0 2px var(--color-focus-contrast), 0 0 0 3px var(--color-focus);

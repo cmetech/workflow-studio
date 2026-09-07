@@ -1919,7 +1919,7 @@ nodes:
     expect(screen.getByRole('complementary', { name: 'Inspector' })).toContainElement(
       screen.getByRole('region', { name: 'Workflow inspector' }),
     )
-    expect(screen.getByRole('status', { name: 'Application status' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Application status updates' })).toBeVisible()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Nodes' }))
     await tick()
@@ -2582,7 +2582,7 @@ nodes:
     expect(screen.getByRole('navigation', { name: 'Activities' }).style.backgroundColor).toBe(
       'var(--color-yaml-gutter)',
     )
-    expect(screen.getByRole('status', { name: 'Application status' }).style.backgroundColor).toBe(
+    expect(document.querySelector<HTMLElement>('.status-bar')?.style.backgroundColor).toBe(
       'var(--color-surface-elevated)',
     )
   })

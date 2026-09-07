@@ -5,7 +5,16 @@ import { THEME_TOKEN_NAMES } from '$src/lib/branding/types'
 
 // Appearance derives this renderer-only token; imported brand manifests keep
 // their existing strict token inventory and do not require or accept this key.
-const rendererDerivedColorTokens = new Set(['focus-contrast'])
+const rendererDerivedColorTokens = new Set([
+  'focus-contrast',
+  'node-kind',
+  'primary',
+  'primary-contrast',
+  'primary-hover',
+  'primary-hover-contrast',
+  'primary-active',
+  'primary-active-contrast',
+])
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

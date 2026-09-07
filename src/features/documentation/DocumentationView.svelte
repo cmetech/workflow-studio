@@ -438,8 +438,8 @@
     border: 1px solid var(--color-border);
   }
   [role='tab'][aria-selected='true'] {
-    color: var(--color-accent-contrast);
-    background: var(--color-accent);
+    color: var(--color-primary-contrast);
+    background: var(--color-primary);
   }
   .search-controls {
     display: grid;

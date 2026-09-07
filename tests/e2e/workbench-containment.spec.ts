@@ -124,7 +124,7 @@ test('keeps Git, version, and the accent picker reachable while narrow status de
   await page.setViewportSize({ width: 512, height: 350 })
   await page.goto('/')
 
-  const status = page.getByRole('status', { name: 'Application status' })
+  const status = page.locator('footer.status-bar[aria-label="Application status"]')
   await expect(status.getByText('Git: no workspace')).toBeVisible()
   await expect(status.getByText('Version: 2.0.0')).toBeVisible()
   const accentPicker = status.getByRole('button', { name: 'Choose custom accent' })

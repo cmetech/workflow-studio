@@ -89,6 +89,7 @@ describe('appearance preferences', () => {
           accent: '#AABBCC',
           'accent-strong': '#112233',
           'node-selected': '#445566',
+          'edge-selected': '#223344',
         },
       },
     }
@@ -98,6 +99,7 @@ describe('appearance preferences', () => {
     expect(root.style.getPropertyValue('--color-accent')).toBe('#AABBCC')
     expect(root.style.getPropertyValue('--color-accent-strong')).toBe('#112233')
     expect(root.style.getPropertyValue('--color-node-selected')).toBe('#445566')
+    expect(root.style.getPropertyValue('--color-edge-selected')).toBe('#223344')
   })
 
   it('uses WCAG luminance to choose custom-accent contrast', () => {
@@ -110,6 +112,34 @@ describe('appearance preferences', () => {
     applyAppearanceTheme(brand, 'dark', 'emerald', '#000000', root)
     expect(root.style.getPropertyValue('--color-accent-contrast')).toBe('#FFFFFF')
   })
+
+  it.each([
+    ['light', '#FFFFFF'],
+    ['dark', '#000000'],
+  ] as const)(
+    'derives readable semantic canvas and primary-control colors in %s mode for the %s preference',
+    (mode, customAccent) => {
+      const root = document.createElement('div')
+      const brand = loadBundledBrand()
+
+      applyAppearanceTheme(brand, mode, 'ocean-blue', customAccent, root)
+
+      const token = (name: string) => root.style.getPropertyValue(name)
+      const theme = brand.themes[mode]
+      expect(token('--color-accent')).toBe(customAccent)
+      expect(contrastRatio(token('--color-edge-selected'), theme.canvas)).toBeGreaterThanOrEqual(3)
+      for (const nodeSurface of [theme.node, token('--color-node-selected')]) {
+        expect(contrastRatio(token('--color-node-kind'), nodeSurface)).toBeGreaterThanOrEqual(3)
+      }
+      for (const [backgroundToken, foregroundToken] of [
+        ['--color-primary', '--color-primary-contrast'],
+        ['--color-primary-hover', '--color-primary-hover-contrast'],
+        ['--color-primary-active', '--color-primary-active-contrast'],
+      ] as const) {
+        expect(contrastRatio(token(foregroundToken), token(backgroundToken))).toBeGreaterThanOrEqual(4.5)
+      }
+    },
+  )
 
   it.each([
     ['light', '#FFFFFF', '#000000'],

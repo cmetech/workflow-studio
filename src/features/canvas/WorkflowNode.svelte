@@ -180,7 +180,7 @@
 
   .kind {
     flex: none;
-    color: var(--color-edge-selected);
+    color: var(--color-node-kind);
     font-size: 0.68rem;
     font-weight: 650;
   }

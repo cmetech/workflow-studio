@@ -6,6 +6,7 @@ export interface CommandContext {
   surface: 'global' | 'canvas' | 'yaml' | 'form'
   setupReady?: boolean
   canMutate: boolean
+  canSave?: boolean
   canRepair?: boolean
   canAddNode?: boolean
   canValidate?: boolean

@@ -32,8 +32,9 @@ describe('StatusBar', () => {
 
     render(StatusBar)
 
-    expect(screen.getByRole('status', { name: 'Application status' })).toHaveTextContent('YAML: pending')
-    expect(screen.getByRole('status', { name: 'Application status' })).toHaveTextContent('DAG: pending')
+    expect(screen.getByRole('status', { name: 'Application status updates' })).toHaveTextContent(
+      'Git: feature/workflow',
+    )
     expect(screen.getByText('Git: feature/workflow · 2 pair changes')).toBeVisible()
   })
 
@@ -117,5 +118,14 @@ describe('StatusBar', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: 'Apply accent' }))
     expect(customAccent.get()).toBe('#5BA8FF')
+  })
+
+  it('keeps appearance controls and their dialog outside live status regions', async () => {
+    render(StatusBar)
+
+    const trigger = screen.getByRole('button', { name: 'Choose custom accent' })
+    expect(trigger.closest('[role="status"]')).toBeNull()
+    await fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: 'Custom accent' }).closest('[role="status"]')).toBeNull()
   })
 })

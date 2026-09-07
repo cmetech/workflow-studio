@@ -226,6 +226,33 @@ function focusColors(accent: string, surfaces: readonly string[]): readonly [pri
   return [bestPrimary, bestSecondary]
 }
 
+function publishSemanticColors(
+  root: HTMLElement,
+  preferredAccent: string,
+  preferredStrongAccent: string,
+  preferredSelectionAccent: string,
+  background: string,
+  canvas: string,
+  node: string,
+  nodeSelected: string,
+): void {
+  const primary = compositeColor(preferredAccent, background)
+  const primaryHover = compositeColor(preferredStrongAccent, background)
+  const primaryActive = mixHex(primaryHover, background, 0.28)
+  const selectionAccent = compositeColor(preferredSelectionAccent, canvas)
+  const edgeSelected = focusColor(selectionAccent, [canvas])
+  const nodeKind = focusColor(selectionAccent, [node, nodeSelected])
+
+  root.style.setProperty('--color-primary', primary)
+  root.style.setProperty('--color-primary-contrast', contrastColor(primary))
+  root.style.setProperty('--color-primary-hover', primaryHover)
+  root.style.setProperty('--color-primary-hover-contrast', contrastColor(primaryHover))
+  root.style.setProperty('--color-primary-active', primaryActive)
+  root.style.setProperty('--color-primary-active-contrast', contrastColor(primaryActive))
+  root.style.setProperty('--color-edge-selected', edgeSelected)
+  root.style.setProperty('--color-node-kind', nodeKind)
+}
+
 function isColorThemeId(value: unknown): value is ColorThemeId {
   return typeof value === 'string' && COLOR_THEME_IDS.has(value as ColorThemeId)
 }
@@ -275,6 +302,16 @@ export function applyAppearanceTheme(
     ])
     root.style.setProperty('--color-focus', safeFocus)
     root.style.setProperty('--color-focus-contrast', focusContrast)
+    publishSemanticColors(
+      root,
+      theme.accent,
+      theme['accent-strong'],
+      theme['edge-selected'],
+      surfaceElevated,
+      canvas,
+      node,
+      nodeSelected,
+    )
     return
   }
 
@@ -293,7 +330,16 @@ export function applyAppearanceTheme(
   root.style.setProperty('--color-focus', focus)
   root.style.setProperty('--color-focus-contrast', focusContrast)
   root.style.setProperty('--color-node-selected', nodeSelected)
-  root.style.setProperty('--color-edge-selected', accent)
+  publishSemanticColors(
+    root,
+    accent,
+    mixHex(accent, strongTarget, 0.18),
+    accent,
+    surfaceElevated,
+    canvas,
+    node,
+    nodeSelected,
+  )
 }
 
 export function loadAppearancePreferences(storage: Pick<Storage, 'getItem'>): AppearancePreferences {
