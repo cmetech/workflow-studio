@@ -181,8 +181,10 @@
     readonly workflowIdentity: string
     readonly generation: number
     readonly scopeKey: ProjectedGraph['scope']['key']
-    readonly positions: ScopeLayoutV1['nodePositions']
-    readonly incomingPositions: ScopeLayoutV1['nodePositions']
+    positions: ScopeLayoutV1['nodePositions']
+    incomingPositions: ScopeLayoutV1['nodePositions']
+    publishedPositions?: ScopeLayoutV1['nodePositions']
+    releasePersistence?: () => void
     readonly client: LayoutClientLike
     nodes?: readonly LayoutWorkerNode[]
     cancelFrame?: () => void
@@ -198,7 +200,12 @@
   let nodeMenuElement = $state<HTMLDivElement>()
   let viewportElement: HTMLElement
   let persistTimer: ReturnType<typeof setTimeout> | undefined
-  let pendingLayout: { scope: ScopeLayoutV1; identity: string } | null = null
+  let pendingLayout: {
+    scope: ScopeLayoutV1
+    identity: string
+    owner?: ArrangeAttempt
+    waiting?: Promise<void>
+  } | null = null
   let persistenceQueue: Promise<void> = Promise.resolve()
   let pendingSelection: readonly string[] | null = null
   let pendingKeyboardSelectionGesture: KeyboardSelectionGesture | null = null
@@ -495,6 +502,10 @@
   const ARRANGE_FAILURE = 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
 
   function arrangeIsCurrent(attempt: ArrangeAttempt): boolean {
+    // The parent can echo our publication on the next render. Once observed,
+    // that echo becomes the incoming baseline; unrelated revisions never do.
+    if (attempt.publishedPositions && samePositions(layout.nodePositions, attempt.publishedPositions))
+      attempt.incomingPositions = layout.nodePositions
     return (
       !destroyed &&
       activeArrange === attempt &&
@@ -507,9 +518,8 @@
       !stale &&
       !transitionLocked &&
       surfaceActive &&
-      (attempt.published ||
-        (canvasPositionsStore.get() === attempt.positions &&
-          samePositions(layout.nodePositions, attempt.incomingPositions))) &&
+      canvasPositionsStore.get() === attempt.positions &&
+      samePositions(layout.nodePositions, attempt.incomingPositions) &&
       (!attempt.nodes ||
         attempt.nodes.every((node, index) => {
           const current = flowNodes[index]
@@ -531,6 +541,14 @@
   }
 
   function finishArrange(attempt: ArrangeAttempt): void {
+    if (pendingLayout?.owner === attempt) {
+      if (arrangeIsCurrent(attempt)) {
+        delete pendingLayout.waiting
+        schedulePersistenceFlush()
+      } else pendingLayout = null
+    }
+    attempt.releasePersistence?.()
+    delete attempt.releasePersistence
     if (activeArrange !== attempt) return
     activeArrange = undefined
     arrangeBusy = false
@@ -712,12 +730,30 @@
       flowNodes = nextNodes
       flowEdges = nextEdges
       replaceCanvasPositions(next.nodePositions)
-      schedulePersist(next)
+      attempt.positions = canvasPositionsStore.get()
+      attempt.publishedPositions = next.nodePositions
+      if (persistTimer) clearTimeout(persistTimer)
+      persistTimer = undefined
+      pendingLayout = {
+        scope: structuredClone(next),
+        identity: attempt.workflowIdentity,
+        owner: attempt,
+        waiting: new Promise<void>((resolve) => {
+          attempt.releasePersistence = resolve
+        }),
+      }
+      onLayoutChange(next, attempt.workflowIdentity)
       await tick()
       if (!arrangeIsCurrent(attempt)) return
       await viewportController?.fitGraph()
       if (!arrangeIsCurrent(attempt)) return
       arrangedViewport = viewportController?.viewport()
+      if (arrangedViewport && pendingLayout?.owner === attempt) {
+        const viewport = { ...arrangedViewport }
+        pendingLayout.scope = { ...pendingLayout.scope, viewport }
+        onLayoutChange({ viewport }, attempt.workflowIdentity)
+        if (!arrangeIsCurrent(attempt)) return
+      }
       authoringFeedback = `Graph arranged: ${nodes.length} nodes and ${edges.length} dependencies.`
     } catch {
       if (arrangeIsCurrent(attempt))
@@ -725,7 +761,7 @@
           ? `Graph arranged: ${projection.nodes.length} nodes and ${projection.edges.length} dependencies.`
           : ARRANGE_FAILURE
     } finally {
-      if (!destroyed && activeArrange === attempt && !attempt.published && authoringFeedback === 'Arranging graph…')
+      if (!destroyed && activeArrange === attempt && authoringFeedback === 'Arranging graph…')
         authoringFeedback = ARRANGE_FAILURE
       finishArrange(attempt)
     }
@@ -1216,6 +1252,10 @@
   function schedulePersist(next: ScopeLayoutV1): void {
     onLayoutChange(next, workflowIdentity)
     pendingLayout = { scope: structuredClone(next), identity: workflowIdentity }
+    schedulePersistenceFlush()
+  }
+
+  function schedulePersistenceFlush(): void {
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       void flushPersistence().catch(onPersistenceError)
@@ -1226,6 +1266,7 @@
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = undefined
     const next = pendingLayout
+    if (next?.waiting) return next.waiting.then(() => flushPersistence())
     pendingLayout = null
     if (!next) return persistenceQueue
     const operation = persistenceQueue

@@ -278,7 +278,8 @@ describe('GraphCanvas', () => {
       await tick()
       expect($canvasPositions.get()).toEqual(success.positions)
       expect($canvasSelection.get()).toEqual(['review'])
-      expect(onLayoutChange).toHaveBeenCalledTimes(1)
+      expect(onLayoutChange).toHaveBeenCalledTimes(2)
+      expect(Object.keys(onLayoutChange.mock.calls[1]![0])).toEqual(['viewport'])
       expect(onLayoutChange.mock.calls[0]![0]).toMatchObject({
         nodePositions: success.positions,
         routing: {
@@ -691,6 +692,94 @@ describe('GraphCanvas', () => {
       measurements.restore()
     }
   })
+
+  it.each(['after fit', 'during publication'])(
+    'persists the fitted viewport in one complete scope and restores that camera on reopen when flushed %s',
+    async (flushTiming) => {
+      const measurements = canvasMeasurements()
+      const client = new DeferredLayoutClient()
+      const onPersistLayout = vi.fn()
+      let earlyFlush: Promise<void> | undefined
+      const rendered = renderCanvas({
+        projection,
+        layout,
+        layoutClient: client,
+        onPersistLayout,
+        onLayoutChange: (next: Partial<ScopeLayoutV1>) => {
+          if (next.nodePositions && flushTiming === 'during publication')
+            earlyFlush = rendered.component.flushPersistence()
+        },
+      })
+      let reopened: ReturnType<typeof renderCanvas> | undefined
+      try {
+        await measurements.publish()
+        const before = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
+        const arranging = rendered.component.arrange()
+        await waitFor(() => expect(client.requests).toHaveLength(1))
+        client.resolve(successfulArrangement(client.requests[0]!))
+        await arranging
+        await tick()
+        const fitted = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
+        expect(fitted).not.toBe(before)
+        await earlyFlush
+        await rendered.component.flushPersistence()
+        await rendered.component.flushPersistence()
+        expect(onPersistLayout).toHaveBeenCalledTimes(1)
+        const persisted = onPersistLayout.mock.calls[0]![0] as ScopeLayoutV1
+        expect(persisted.viewport).not.toEqual(layout.viewport)
+        expect(persisted.routing).toBeDefined()
+        rendered.unmount()
+        reopened = renderCanvas({ projection, layout: persisted })
+        await tick()
+        expect(reopened.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')).toBe(fitted)
+      } finally {
+        reopened?.unmount()
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it.each(['immediate', 'queued'])(
+    'does not fit or persist obsolete positions superseded by the %s atomic publication callback',
+    async (timing) => {
+      const measurements = canvasMeasurements()
+      const client = new DeferredLayoutClient()
+      const replacement = { collect: { x: 90, y: 90 }, review: { x: 590, y: 90 } }
+      const onPersistLayout = vi.fn()
+      const onLayoutChange = vi.fn((next: Partial<ScopeLayoutV1>) => {
+        if (!next.nodePositions) return
+        const supersede = () => {
+          $canvasPositions.set(replacement)
+          rendered.component.actualSize()
+        }
+        if (timing === 'immediate') supersede()
+        else void tick().then(() => queueMicrotask(() => queueMicrotask(supersede)))
+      })
+      const rendered = renderCanvas({ projection, layout, layoutClient: client, onLayoutChange, onPersistLayout })
+      try {
+        await measurements.publish()
+        const before = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
+        const arranging = rendered.component.arrange()
+        await waitFor(() => expect(client.requests).toHaveLength(1))
+        client.resolve(successfulArrangement(client.requests[0]!))
+        await arranging
+        await tick()
+        expect($canvasPositions.get()).toBe(replacement)
+        const camera = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
+        if (timing === 'immediate') expect(camera).toBe(before)
+        expect(camera).toContain('scale(1)')
+        expect(onLayoutChange).toHaveBeenCalledTimes(1)
+        expect(screen.queryByText('Arranging graph…')).not.toBeInTheDocument()
+        expect(screen.getByText(arrangeFailure)).toBeVisible()
+        await rendered.component.flushPersistence()
+        expect(onPersistLayout).not.toHaveBeenCalled()
+      } finally {
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
 
   it('opens node actions without replacing an existing multi-selection and selects an unselected target', async () => {
     setCanvasSelection(['collect', 'review'])

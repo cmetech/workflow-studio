@@ -8,7 +8,8 @@
   }
 
   export function fitGraph(): Promise<boolean> {
-    // An instant fit cannot keep animating after workflow/scope replacement.
-    return flow.fitView({ padding: 0.18, duration: 0 })
+    // Measured nodes are already published. fitBounds applies the viewport before
+    // yielding; fitView queues a later mutation that cannot be cancelled if stale.
+    return flow.fitBounds(flow.getNodesBounds(flow.getNodes()), { padding: 0.18, duration: 0 })
   }
 </script>
