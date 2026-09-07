@@ -226,6 +226,27 @@ test('uses both focus colors on a real canvas toolbar button', async ({ page }) 
   expect(colors.shadow).toContain(colors.secondary)
 })
 
+test('uses both focus colors on the keyboard-focused canvas host', async ({ page }) => {
+  await openSeededPair(page)
+  const canvas = page.getByRole('region', { name: 'Workflow graph' })
+  await canvas.focus()
+
+  const colors = await canvas.evaluate((element) => {
+    const root = getComputedStyle(document.documentElement)
+    const probe = document.createElement('span')
+    document.body.append(probe)
+    probe.style.color = root.getPropertyValue('--color-focus')
+    const primary = getComputedStyle(probe).color
+    probe.style.color = root.getPropertyValue('--color-focus-contrast')
+    const secondary = getComputedStyle(probe).color
+    probe.remove()
+    return { primary, secondary, shadow: getComputedStyle(element).boxShadow }
+  })
+
+  expect(colors.shadow).toContain(colors.primary)
+  expect(colors.shadow).toContain(colors.secondary)
+})
+
 test('paints the secondary focus band inside a hostile canvas toolbar button', async ({ page }) => {
   await openSeededPair(page)
   await page.evaluate(() => {

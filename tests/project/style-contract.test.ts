@@ -45,6 +45,15 @@ describe('offline visual style contract', () => {
     ).toEqual([])
   })
 
+  it('applies the two-tone focus ring to native controls and focusable structural hosts', () => {
+    const appCss = readFileSync('src/app.css', 'utf8')
+
+    expect(appCss).toMatch(/:where\(a\[href\], summary, \[tabindex\]\):focus-visible\s*\{[^}]*var\(--focus-ring\)/s)
+    expect(appCss).toMatch(
+      /@media \(forced-colors: active\)[\s\S]*:where\(a\[href\], summary, \[tabindex\]\):focus-visible\s*\{[^}]*box-shadow: none !important/s,
+    )
+  })
+
   it('ships the exact upstream Sans and Mono notices in documentation and the frontend resource directory', () => {
     for (const license of [
       {

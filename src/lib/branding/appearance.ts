@@ -257,8 +257,24 @@ export function applyAppearanceTheme(
   const background = compositeColor(theme.background, '#FFFFFF')
   const surface = compositeColor(theme.surface, background)
   const surfaceElevated = compositeColor(theme['surface-elevated'], surface)
+  const canvas = compositeColor(theme.canvas, background)
+  const node = compositeColor(theme.node, canvas)
+  const editorSurface = compositeColor(theme.surface, surfaceElevated)
+  const yamlGutter = compositeColor(theme['yaml-gutter'], editorSurface)
   if (colorTheme === 'loop24-indigo' && normalizedCustomAccent === null) {
-    root.style.setProperty('--color-focus-contrast', contrastColor(compositeColor(theme.focus, background)))
+    const focus = compositeColor(theme.focus, background)
+    const nodeSelected = compositeColor(theme['node-selected'], canvas)
+    const [safeFocus, focusContrast] = focusColors(focus, [
+      background,
+      surfaceElevated,
+      canvas,
+      node,
+      editorSurface,
+      yamlGutter,
+      nodeSelected,
+    ])
+    root.style.setProperty('--color-focus', safeFocus)
+    root.style.setProperty('--color-focus-contrast', focusContrast)
     return
   }
 
@@ -267,10 +283,6 @@ export function applyAppearanceTheme(
   const contrast = contrastColor(accent)
   const strongTarget = mode === 'light' ? '#000000' : '#FFFFFF'
   const selectedAmount = mode === 'light' ? 0.14 : 0.24
-  const canvas = compositeColor(theme.canvas, background)
-  const node = compositeColor(theme.node, canvas)
-  const editorSurface = compositeColor(theme.surface, surfaceElevated)
-  const yamlGutter = compositeColor(theme['yaml-gutter'], editorSurface)
   const nodeSelected = mixHex(background, accent, selectedAmount)
   const focusSurfaces = [background, surfaceElevated, canvas, node, editorSurface, yamlGutter, nodeSelected]
   const [focus, focusContrast] = focusColors(accent, focusSurfaces)

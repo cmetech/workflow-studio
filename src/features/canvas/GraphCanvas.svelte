@@ -1246,8 +1246,16 @@
 
   .graph-canvas:focus {
     z-index: 1;
-    outline: 3px solid var(--color-focus);
-    outline-offset: -3px;
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  @media (forced-colors: active) {
+    .graph-canvas:focus {
+      outline: 2px solid ButtonText;
+      outline-offset: -2px;
+      box-shadow: none;
+    }
   }
 
   :global(.graph-canvas .svelte-flow) {

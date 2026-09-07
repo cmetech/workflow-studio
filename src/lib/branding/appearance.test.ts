@@ -268,6 +268,27 @@ describe('appearance preferences', () => {
     }
   })
 
+  it('derives the default imported focus pair against every modeled host surface', () => {
+    const root = document.createElement('div')
+    const brand = validatedImportedBrand({
+      background: '#000000',
+      surface: '#000000',
+      'surface-elevated': '#333333',
+      focus: '#777777',
+      canvas: '#333333',
+      node: '#000000',
+      'yaml-gutter': '#333333',
+    })
+
+    applyAppearanceTheme(brand, 'dark', 'loop24-indigo', null, root)
+
+    const primary = root.style.getPropertyValue('--color-focus')
+    const secondary = root.style.getPropertyValue('--color-focus-contrast')
+    for (const host of ['#000000', '#333333']) {
+      expect(Math.max(contrastRatio(primary, host), contrastRatio(secondary, host))).toBeGreaterThanOrEqual(3)
+    }
+  })
+
   it('saves and loads one normalized preference record', () => {
     const storage = new MemoryStorage()
 
