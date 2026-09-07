@@ -9,9 +9,11 @@ import { editDocumentText } from '$src/lib/documents/revisions'
 import {
   $inspectorPanelOpen,
   $workspacePanelOpen,
+  closeCommandPalette,
   closeKeyboardShortcuts,
   closeTransientPanels,
   openKeyboardShortcuts,
+  openCommandPalette,
   showActivity,
   showEditorMode,
 } from '$src/stores/shell'
@@ -1570,9 +1572,20 @@ nodes:
     render(App)
     await waitForSetupReady()
 
+    const expectSaveCommandEnabled = async (enabled: boolean) => {
+      openCommandPalette()
+      await tick()
+      const saveOption = await screen.findByRole('option', { name: /Save Workflow Pair/i })
+      if (enabled) expect(saveOption).toBeEnabled()
+      else expect(saveOption).toBeDisabled()
+      closeCommandPalette()
+      await tick()
+    }
+
     expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Saved')
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Revert to saved YAML' })).not.toBeInTheDocument()
+    await expectSaveCommandEnabled(true)
 
     const dirty = editDocumentText($documentSession.get().pair!, 'definition', 'name: Dirty\n')
     updateDocumentSession(dirty, $documentSession.get().revision!.contractDigest, 'user')
@@ -1580,11 +1593,13 @@ nodes:
     await tick()
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeEnabled()
+    await expectSaveCommandEnabled(true)
 
     loadWorkspaceEntries('workspace', 'Workspace', [{ ...writableFile, readOnly: true }])
     await tick()
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeDisabled()
+    await expectSaveCommandEnabled(false)
 
     loadWorkspaceEntries('workspace', 'Workspace', [writableFile])
     $documentWorkspace.set({
@@ -1594,12 +1609,18 @@ nodes:
     await tick()
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeDisabled()
+    await expectSaveCommandEnabled(false)
 
     $documentWorkspace.set({ ...$documentWorkspace.get(), missingChange: null })
     publishCurrentAnalysis(false)
     await tick()
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Revert to saved YAML' })).toBeEnabled()
+    await expectSaveCommandEnabled(true)
+
+    closeDocumentSession()
+    await tick()
+    await expectSaveCommandEnabled(false)
   })
 
   it('routes the Save button and Mod+S through one non-overlapping save operation', async () => {

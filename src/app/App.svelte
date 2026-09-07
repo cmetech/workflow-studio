@@ -586,6 +586,9 @@
     const pair = $documentSessionStore.pair
     return Boolean(pair && documentDirty && !documentReadOnly && !$documentWorkspaceState.missingChange)
   })
+  const documentSaveCommandAvailable = $derived(
+    Boolean($documentSessionStore.pair && !documentReadOnly && !$documentWorkspaceState.missingChange),
+  )
   const documentRevertAvailable = $derived.by(() => {
     const pair = $documentSessionStore.pair
     return Boolean(
@@ -951,7 +954,7 @@
     return {
       surface,
       setupReady,
-      canSave: documentSaveAvailable,
+      canSave: documentSaveCommandAvailable,
       canMutate:
         surface === 'canvas'
           ? !canvasBlankDraft && Boolean(canvasContext && !('unavailable' in canvasContext))
