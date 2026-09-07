@@ -84,7 +84,7 @@ describe('version two release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "2\.0\.1"/)
   })
 
-  it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and ELK', () => {
+  it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and the Dagre-to-ELK replacement', () => {
     const expected = JSON.parse(preReleaseFile('package-lock.json')) as {
       version: string
       packages: Record<string, { version?: string; dependencies?: Record<string, string> }>
@@ -111,6 +111,10 @@ describe('version two release metadata', () => {
       license: 'OFL-1.1',
       funding: { url: 'https://github.com/sponsors/ayuhito' },
     }
+
+    delete expected.packages['']!.dependencies!['@dagrejs/dagre']
+    delete expected.packages['node_modules/@dagrejs/dagre']
+    delete expected.packages['node_modules/@dagrejs/graphlib']
 
     expected.packages['node_modules/elkjs'] = {
       version: '0.12.0',

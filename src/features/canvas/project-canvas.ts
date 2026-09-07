@@ -9,7 +9,7 @@ import {
   type ProjectedGraph,
   type WorkflowProjection,
 } from '$src/lib/projection/types'
-import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH, layoutGraph, type LayoutGraphAdapter } from './layout-graph'
+import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
 import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition, LoopGroupNodeSummary } from './types'
 import type { ScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 
@@ -20,10 +20,8 @@ export const MAX_VISUAL_EDGES = VISUAL_EDGE_CAPACITY
 export interface ProjectCanvasOptions {
   readonly stale?: boolean
   readonly readOnly?: boolean
-  readonly arrange?: boolean
   readonly routing?: ScopeRoutingV1
   readonly issues?: readonly ValidationIssue[]
-  readonly layoutGraph?: LayoutGraphAdapter
   readonly groupSummaries?: Readonly<Record<string, LoopGroupNodeSummary>>
 }
 
@@ -235,7 +233,7 @@ export function projectCanvas(
 ): CanvasProjection {
   const stale = options.stale === true
   const readOnly = stale || options.readOnly === true
-  const positions = resolvePositions(projection, savedLayout, options)
+  const positions = resolvePositions(projection, savedLayout)
   const issues = options.issues ?? []
   const issuesByNode = new Map<string, ValidationIssue[]>()
   for (const issue of issues) {
@@ -314,10 +312,8 @@ function sameProjectOptions(left: ProjectCanvasOptions, right: ProjectCanvasOpti
     right &&
     left.stale === right.stale &&
     left.readOnly === right.readOnly &&
-    left.arrange === right.arrange &&
     left.routing === right.routing &&
     left.issues === right.issues &&
-    left.layoutGraph === right.layoutGraph &&
     left.groupSummaries === right.groupSummaries,
   )
 }
@@ -393,9 +389,7 @@ export function isWorkflowProjection(value: unknown): value is WorkflowProjectio
 function resolvePositions(
   projection: ProjectedGraph,
   savedLayout: ScopeLayoutV1,
-  options: ProjectCanvasOptions,
 ): Readonly<Record<string, CanvasPosition>> {
-  if (options.arrange) return (options.layoutGraph ?? layoutGraph)(projection.nodes, projection.edges)
   // Accepted analysis preplaces every scope. Rendering a scope needs no placement work.
   const positions = projection.nodes.every(
     ({ id }) => Object.hasOwn(savedLayout.nodePositions, id) && validPosition(savedLayout.nodePositions[id]),

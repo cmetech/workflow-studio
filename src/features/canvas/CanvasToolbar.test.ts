@@ -31,6 +31,35 @@ const commands = [
 ]
 
 describe('CanvasToolbar', () => {
+  it('keeps the Arrange menu item mounted and focused throughout asynchronous execution', async () => {
+    let finish!: () => void
+    const onExecute = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const rendered = render(CanvasToolbar, { commands, onExecute })
+    await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+    const arrange = screen.getByRole('menuitem', { name: 'Arrange Graph' })
+    arrange.focus()
+    await fireEvent.click(arrange)
+    await rendered.rerender({
+      commands: commands.map((command) => (command.id === 'canvas.arrange' ? { ...command, enabled: false } : command)),
+      onExecute,
+    })
+    expect(arrange).toHaveFocus()
+    expect(arrange).not.toBeDisabled()
+    expect(arrange).toHaveAttribute('aria-disabled', 'true')
+    await fireEvent.click(arrange)
+    expect(onExecute).toHaveBeenCalledOnce()
+    expect(screen.getByRole('menu', { name: 'More canvas actions' })).toBeVisible()
+    finish()
+    await rendered.rerender({ commands, onExecute })
+    expect(arrange).toHaveFocus()
+    expect(arrange).toBeEnabled()
+  })
+
   it('keeps primary canvas commands visible and routes resolved command IDs with their enablement and tooltips', async () => {
     const onExecute = vi.fn()
     render(CanvasToolbar, { commands, onExecute })

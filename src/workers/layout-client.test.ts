@@ -102,6 +102,25 @@ describe('LayoutClient', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it('cancels an active request, terminates its worker, and remains reusable', async () => {
+    const workers: FakeWorker[] = []
+    const client = new LayoutClient(() => {
+      const worker = new FakeWorker()
+      workers.push(worker)
+      return worker
+    })
+    const pending = client.arrange(request())
+    const rejection = expect(pending).rejects.toThrow(/cancel/i)
+    client.cancel()
+    await rejection
+    expect(workers[0]!.terminated).toBe(true)
+    const nextRequest = request(identity({ requestId: 'next' }))
+    const next = client.arrange(nextRequest)
+    workers[1]!.emit(successFor(nextRequest))
+    await expect(next).resolves.toMatchObject({ type: 'layout-result' })
+    client.destroy()
+  })
+
   it('[RG8] creates no worker until the first arrange request', async () => {
     const factory = vi.fn(() => new FakeWorker())
     const client = new LayoutClient(factory)

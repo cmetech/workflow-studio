@@ -5,6 +5,7 @@ export type EditorMode = 'visual' | 'split' | 'yaml'
 export interface CommandContext {
   surface: 'global' | 'canvas' | 'yaml' | 'form'
   setupReady?: boolean
+  arrangeBusy?: boolean
   canMutate: boolean
   canSave?: boolean
   canRepair?: boolean

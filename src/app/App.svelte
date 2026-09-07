@@ -388,6 +388,21 @@
   let canvasReadOnly = $state(false)
   let canvasStaleSource = $state<'current' | 'retained' | null>(null)
   let canvasTransitionLocked = $state(false)
+  let arrangingCanvas = $state<{ readonly identity: string; readonly generation: number } | null>(null)
+  const canvasArrangeBusy = $derived(
+    Boolean(
+      arrangingCanvas &&
+      arrangingCanvas.identity ===
+        canvasInstanceIdentity($documentSessionStore.pair?.workflowId ?? '', $activeScopeKeyStore) &&
+      arrangingCanvas.generation === $documentSessionStore.pair?.generation,
+    ),
+  )
+
+  function captureArrangeBusy(busy: boolean, identity: string): void {
+    const pair = documentSessionStore.get().pair
+    if (!pair || identity !== canvasInstanceIdentity(pair.workflowId, activeScopeKeyStore.get())) return
+    arrangingCanvas = busy ? { identity, generation: pair.generation } : null
+  }
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   installApplicationReadiness({
     flushRecoveryPersistence: async () => {
@@ -492,6 +507,7 @@
   })
   const canvasAuthoring = createCanvasAuthoringCoordinator({
     getContext: () => canvasAuthoringContext(),
+    getReadContext: () => canvasAuthoringContext(false, 'read'),
     getDeleteContext: () => canvasAuthoringContext(true),
   })
   const nodeChords = new NodeChordController({
@@ -947,7 +963,7 @@
         : element?.closest('input, textarea, select, [contenteditable="true"]')
           ? 'form'
           : 'global'
-    const canvasContext = surface === 'canvas' ? canvasAuthoringContext() : null
+    const canvasContext = surface === 'canvas' ? canvasAuthoringContext(false, 'read') : null
     const pair = documentSessionStore.get().pair
     const activeEntry = workspace.get().entries.find((entry) => entry.id === pair?.workflowId)
     const documentCanMutate = Boolean(pair && activeEntry?.readOnly === false)
@@ -955,6 +971,7 @@
       surface,
       setupReady,
       canSave: documentSaveCommandAvailable,
+      arrangeBusy: surface === 'canvas' && canvasArrangeBusy,
       canMutate:
         surface === 'canvas'
           ? !canvasBlankDraft && Boolean(canvasContext && !('unavailable' in canvasContext))
@@ -1209,7 +1226,12 @@
     workspaceError = error instanceof Error ? error.message : 'The canvas layout could not be saved.'
   }
 
-  function canvasAuthoringContext(deleting = false): CanvasActionContext | { readonly unavailable: string } {
+  function canvasAuthoringContext(
+    deleting = false,
+    intent: 'mutate' | 'read' = 'mutate',
+  ): CanvasActionContext | { readonly unavailable: string } {
+    if (canvasArrangeBusy && intent === 'mutate')
+      return { unavailable: 'Canvas authoring is unavailable while arranging the graph.' }
     if (canvasTransitionLocked) return { unavailable: 'Canvas authoring is unavailable during a document transition.' }
     if (canvasStale && !canvasRepairableDraft && !canvasBlankDraft && !(deleting && canvasRepairMode))
       return { unavailable: 'Canvas authoring is unavailable while the YAML projection is stale.' }
@@ -2944,6 +2966,8 @@
                     $documentSessionStore.pair?.workflowId ?? '',
                     $activeScopeKeyStore,
                   )}
+                  pairGeneration={$documentSessionStore.pair?.generation ?? 0}
+                  onArrangeBusyChange={captureArrangeBusy}
                   transitionLocked={canvasTransitionLocked}
                   surfaceActive={!authoringHidden &&
                     !(

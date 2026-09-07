@@ -19,6 +19,7 @@
 
   let { commands, onExecute }: Props = $props()
   let moreOpen = $state(false)
+  let arrangePending = $state(false)
   let moreTrigger: HTMLButtonElement
   let moreActions = $state<HTMLDivElement>()
   let moreMenu = $state<HTMLDivElement>()
@@ -75,7 +76,11 @@
   }
 
   function menuItems(): HTMLElement[] {
-    return moreMenu ? Array.from(moreMenu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)')) : []
+    return moreMenu
+      ? Array.from(
+          moreMenu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled):not([aria-disabled="true"])'),
+        )
+      : []
   }
 
   function toggleMore(): void {
@@ -84,9 +89,19 @@
   }
 
   async function executeOverflow(command: ResolvedCommand): Promise<void> {
-    if (!command.enabled) return
-    await closeMore()
-    await onExecute(command.id)
+    if (!command.enabled || (command.id === 'canvas.arrange' && arrangePending)) return
+    if (command.id !== 'canvas.arrange') {
+      await closeMore()
+      await onExecute(command.id)
+      return
+    }
+    // Native disabled buttons lose focus in browsers; keep this async invoker focusable.
+    arrangePending = true
+    try {
+      await onExecute(command.id)
+    } finally {
+      arrangePending = false
+    }
   }
 
   function handleMenuKeydown(event: KeyboardEvent): void {
@@ -175,7 +190,8 @@
               data-variant={command.id === 'canvas.delete-selection' ? 'danger' : 'ghost'}
               role="menuitem"
               title={command.title}
-              disabled={!command.enabled}
+              disabled={!command.enabled && !(command.id === 'canvas.arrange' && arrangePending)}
+              aria-disabled={!command.enabled || (command.id === 'canvas.arrange' && arrangePending)}
               onclick={() => void executeOverflow(command)}
             >
               <Icon size={15} aria-hidden="true" />

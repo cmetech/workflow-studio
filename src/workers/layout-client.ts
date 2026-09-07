@@ -29,7 +29,13 @@ interface PendingLayout {
   readonly timer: ReturnType<typeof setTimeout>
 }
 
-export class LayoutClient {
+export interface LayoutClientLike {
+  arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult>
+  cancel(): void
+  destroy(): void
+}
+
+export class LayoutClient implements LayoutClientLike {
   private worker: LayoutWorkerEndpoint | undefined
   private listenersAttached = false
   private pending: PendingLayout | undefined
@@ -50,7 +56,7 @@ export class LayoutClient {
     if (this.destroyed) return Promise.reject(new Error('Layout worker client has been destroyed.'))
 
     this.rejectPending('Layout request was superseded.')
-    const snapshot = snapshotRequest(request)
+    const snapshot = snapshotLayoutRequest(request)
 
     let worker: LayoutWorkerEndpoint
     try {
@@ -71,6 +77,11 @@ export class LayoutClient {
         this.failWorker('worker_runtime_error', 'Layout worker failed.')
       }
     })
+  }
+
+  cancel(): void {
+    this.rejectPending('Layout request was cancelled.')
+    this.disposeWorker()
   }
 
   destroy(): void {
@@ -95,7 +106,7 @@ export class LayoutClient {
       return
     }
     if (response.identity.requestId !== pending.request.identity.requestId) return
-    if (!sameIdentity(response.identity, pending.request.identity)) {
+    if (!sameLayoutIdentity(response.identity, pending.request.identity)) {
       this.rejectPending('Layout worker response identity did not match the current request.')
       return
     }
@@ -108,7 +119,7 @@ export class LayoutClient {
 
   private timeout(identity: LayoutRequestIdentity): void {
     const pending = this.pending
-    if (!pending || !sameIdentity(pending.request.identity, identity)) return
+    if (!pending || !sameLayoutIdentity(pending.request.identity, identity)) return
     this.pending = undefined
     clearTimeout(pending.timer)
     pending.resolve(failureFor(identity, 'worker_timeout', 'Layout worker timed out.'))
@@ -160,7 +171,7 @@ export class LayoutClient {
   }
 }
 
-function snapshotRequest(request: LayoutWorkerRequest): LayoutWorkerRequest {
+export function snapshotLayoutRequest(request: LayoutWorkerRequest): LayoutWorkerRequest {
   const identity = Object.freeze({
     requestId: request.identity.requestId,
     workflowIdentity: request.identity.workflowIdentity,
@@ -192,7 +203,7 @@ function snapshotRequest(request: LayoutWorkerRequest): LayoutWorkerRequest {
   return Object.freeze({ type: 'layout', identity, nodes, edges })
 }
 
-function sameIdentity(left: LayoutRequestIdentity, right: LayoutRequestIdentity): boolean {
+export function sameLayoutIdentity(left: LayoutRequestIdentity, right: LayoutRequestIdentity): boolean {
   return (
     left.requestId === right.requestId &&
     left.workflowIdentity === right.workflowIdentity &&

@@ -12,7 +12,12 @@ vi.mock('@xyflow/svelte', async (importOriginal) => {
     import('./SvelteFlowBoundaryProbe.svelte'),
     import('./SvelteFlowBoundaryNoop.svelte'),
   ])
-  return { ...actual, SvelteFlow, Background }
+  return {
+    ...actual,
+    SvelteFlow,
+    Background,
+    useSvelteFlow: () => ({ fitView: async () => true, getViewport: () => ({ x: 0, y: 0, zoom: 1 }) }),
+  }
 })
 
 import GraphCanvas from './GraphCanvas.svelte'

@@ -41,6 +41,10 @@ import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import { createCommandRegistry, listCommands } from '$src/lib/commands/registry'
 import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/workers/document-worker'
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
+import { LayoutClient } from '$src/workers/layout-client'
+import type { LayoutWorkerResult } from '$src/workers/layout-worker-protocol'
+import { historyStore } from '$src/stores/history'
+import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import App from './App.svelte'
 
 function rootGraph(
@@ -1124,6 +1128,158 @@ nodes:
     document.documentElement.removeAttribute('data-theme')
     document.documentElement.removeAttribute('style')
   })
+
+  it.each(['success', 'failure'])(
+    'RG9 passes pair generation to Arrange and preserves dirty YAML and undo history on %s',
+    async (outcome) => {
+      const text = 'name: Arrange\ndescription: Keep YAML unchanged.\nnodes:\n  - id: draft\n    prompt: Draft\n'
+      const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': text } })
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      const restoreWorker = installRealDocumentWorker()
+      const response = deferred<LayoutWorkerResult>()
+      const arrange = vi.spyOn(LayoutClient.prototype, 'arrange').mockReturnValue(response.promise)
+      const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        return this.classList.contains('svelte-flow__node') ? 240 : 0
+      })
+      const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        return this.classList.contains('svelte-flow__node') ? 168 : 0
+      })
+      const previousMatrix = window.DOMMatrixReadOnly
+      vi.stubGlobal(
+        'DOMMatrixReadOnly',
+        class {
+          m22 = 1
+        },
+      )
+      const duplicate = vi.fn()
+      const registry = createCommandRegistry()
+      for (const command of listCommands())
+        registry.registerCommand({
+          ...command,
+          ...(command.id === 'canvas.duplicate-selection' ? { run: duplicate } : {}),
+        })
+      const rendered = render(App, { commandSurface: registry })
+      try {
+        await waitForSetupReady()
+        await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+        await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
+        await waitFor(() => expect(screen.getByTestId('workflow-canvas')).toBeVisible())
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.svelte-flow__node[data-id="draft"]')).toBeInTheDocument(),
+        )
+        const dirty = {
+          ...editDocumentText(
+            $documentSession.get().pair!,
+            'definition',
+            text.replace('Keep YAML unchanged.', 'Keep this unsaved edit.'),
+          ),
+          generation: 7,
+          savedGeneration: 7,
+        }
+        const contract = (await loadBundledAuthoringContracts()).find(
+          (contract) => contract.contract_digest === $documentSession.get().revision!.contractDigest,
+        )!
+        const analysis = await analyzeWorkflowPair(
+          {
+            type: 'analyze',
+            requestId: 'arrange-test-edit',
+            workflowId: dirty.workflowId,
+            pairGeneration: dirty.generation,
+            definition: dirty.definition,
+            companion: null,
+            profile: contract.profile,
+            contractDigest: contract.contract_digest,
+            reason: 'edit',
+          },
+          contract,
+        )
+        updateDocumentSession(dirty, contract.contract_digest, 'user', analysis)
+        await tick()
+        const pair = $documentSession.get().pair!
+        expect(pair.generation).toBeGreaterThan(0)
+        const history = historyStore.get()
+        setCanvasSelection(['draft'])
+        await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+        for (const observer of TestResizeObserver.instances)
+          for (const target of observer.targets)
+            if (target.classList.contains('svelte-flow__node') || target.classList.contains('svelte-flow'))
+              observer.publish(target, 800, 600)
+        await tick()
+        const command = screen.getByRole('menuitem', { name: 'Arrange Graph' })
+        command.focus()
+        await fireEvent.click(command)
+        await waitFor(() => expect(arrange).toHaveBeenCalledOnce())
+        expect(arrange.mock.calls[0]![0].identity.pairGeneration).toBe(pair.generation)
+        expect(command).toHaveFocus()
+        expect(command).toHaveAttribute('aria-disabled', 'true')
+        const canvas = screen.getByTestId('workflow-canvas')
+        canvas.focus()
+        await fireEvent.keyDown(canvas, {
+          key: 'd',
+          ctrlKey: !/mac/i.test(navigator.platform),
+          metaKey: /mac/i.test(navigator.platform),
+        })
+        expect(duplicate).not.toHaveBeenCalled()
+        await fireEvent.keyDown(canvas, {
+          key: 'c',
+          ctrlKey: !/mac/i.test(navigator.platform),
+          metaKey: /mac/i.test(navigator.platform),
+        })
+        expect(screen.queryByText('Canvas authoring is unavailable while arranging the graph.')).not.toBeInTheDocument()
+        expect($documentSession.get().pair).toBe(pair)
+        expect(historyStore.get()).toBe(history)
+        const identity = arrange.mock.calls[0]![0].identity
+        response.resolve(
+          outcome === 'failure'
+            ? {
+                type: 'layout-error',
+                identity,
+                code: 'worker_timeout',
+                message: 'PRIVATE DETAILS',
+              }
+            : {
+                type: 'layout-result',
+                identity,
+                spacingProfile: 'default',
+                durationMs: 1,
+                positions: { draft: { x: 32, y: 32 } },
+                routes: {},
+                bounds: { x: 32, y: 32, width: 240, height: 168 },
+              },
+        )
+        await waitFor(() =>
+          expect(
+            screen.getByText(
+              outcome === 'failure'
+                ? 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
+                : 'Graph arranged: 1 nodes and 0 dependencies.',
+            ),
+          ).toBeVisible(),
+        )
+        await fireEvent.keyDown(canvas, {
+          key: 'd',
+          ctrlKey: !/mac/i.test(navigator.platform),
+          metaKey: /mac/i.test(navigator.platform),
+        })
+        expect(duplicate).toHaveBeenCalledOnce()
+        expect($documentSession.get().pair).toBe(pair)
+        expect(historyStore.get()).toBe(history)
+        expect(screen.getByRole('status', { name: 'Document save status' })).toHaveTextContent('Unsaved changes')
+      } finally {
+        rendered.unmount()
+        arrange.mockRestore()
+        width.mockRestore()
+        height.mockRestore()
+        vi.stubGlobal('DOMMatrixReadOnly', previousMatrix)
+        restoreWorker()
+      }
+    },
+  )
 
   it('offers a workspace action without requiring Hermes', async () => {
     const { container } = render(App)

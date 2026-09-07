@@ -2,7 +2,6 @@ import { fireEvent, render } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-import type { LayoutGraphAdapter } from '$src/features/canvas/layout-graph'
 import {
   canvasCapacityForProjection,
   createMemoizedCanvasProjector,
@@ -290,18 +289,14 @@ describe('250-node canvas performance contract', () => {
 
   it('preserves arranged live node identities across the persisted-layout projection echo', () => {
     const fixture = createLargeWorkflowFixture()
-    const deterministicArrange = ((nodes) =>
-      Object.fromEntries(
-        nodes.map(({ id }, index) => [id, { x: 24 + index * 32, y: 48 + (index % 8) * 24 }]),
-      )) satisfies LayoutGraphAdapter
+    const arrangedPositions = Object.fromEntries(
+      fixture.projection.nodes.map(({ id }, index) => [id, { x: 24 + index * 32, y: 48 + (index % 8) * 24 }]),
+    )
     const initialProjected = createMemoizedCanvasProjector()(fixture.projection, fixture.layout)
     const reconcileSelection = createCanvasSelectionReconciler()
     const initial = reconcileSelection(initialProjected.nodes, ['node-125'])
     const initialLiveNodes = initial.nodes.map((node) => ({ ...node, measured: { width: 240, height: 84 } }))
-    const arrangedProjected = projectCanvas(fixture.projection, fixture.layout, {
-      arrange: true,
-      layoutGraph: deterministicArrange,
-    })
+    const arrangedProjected = projectCanvas(fixture.projection, { ...fixture.layout, nodePositions: arrangedPositions })
     const arranged = reconcileSelection(arrangedProjected.nodes, ['node-125'], initialLiveNodes)
     expect(arranged.nodes[0]).toBe(arrangedProjected.nodes[0])
     expect(arranged.nodes[0]!.position).toEqual(arrangedProjected.nodes[0]!.position)

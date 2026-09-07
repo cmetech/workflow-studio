@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import type { ProjectedGraph } from '$src/lib/projection/types'
-import { layoutGraph } from './layout-graph'
 import {
   createMemoizedCanvasProjector,
   loopGroupSummariesForProjection,
@@ -453,18 +452,6 @@ describe('projectCanvas', () => {
     expect(canvas).toMatchObject({ stale: true, readOnly: true })
     expect(canvas.nodes.every(({ draggable, data }) => draggable === false && data.stale && data.readOnly)).toBe(true)
     expect(canvas.edges.every(({ data }) => data?.stale && data.readOnly)).toBe(true)
-  })
-
-  it('never invokes Dagre when reopening saved layout and invokes it exactly once for Arrange', () => {
-    const dagre = vi.fn(layoutGraph)
-
-    const reopened = projectCanvas(projection, savedLayout, { layoutGraph: dagre })
-    expect(dagre).not.toHaveBeenCalled()
-    expect(reopened.positions.collect).toEqual({ x: 40, y: 80 })
-
-    const arranged = projectCanvas(projection, savedLayout, { arrange: true, layoutGraph: dagre })
-    expect(dagre).toHaveBeenCalledTimes(1)
-    expect(arranged.positions).not.toEqual(savedLayout.nodePositions)
   })
 
   it('returns every node and edge unchanged when a graph is YAML-only', () => {

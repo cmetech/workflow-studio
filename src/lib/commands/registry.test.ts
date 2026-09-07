@@ -46,6 +46,43 @@ describe('command registry', () => {
     $inspectorPanelOpen.set(false)
   })
 
+  it('locks canvas mutations during Arrange while preserving view and selection commands and document editing', () => {
+    const busy: CommandContext = {
+      surface: 'canvas',
+      canMutate: true,
+      canAddNode: true,
+      canRepair: true,
+      hasSelection: true,
+      selectionCount: 1,
+      arrangeBusy: true,
+    }
+    const commands = new Map(listCommands().map((command) => [command.id, command]))
+    for (const id of [
+      'add-node',
+      'add-after-selection',
+      'create-edge',
+      'delete-selection',
+      'duplicate-selection',
+      'paste-selection',
+      'arrange',
+      'nudge-up',
+    ])
+      expect(commands.get(`canvas.${id}`)?.enabled(busy), id).toBe(false)
+    for (const id of [
+      'select-all',
+      'copy-selection',
+      'zoom-in',
+      'zoom-out',
+      'actual-size',
+      'fit-graph',
+      'fit-selection',
+      'cancel',
+      'open-inspector',
+    ])
+      expect(commands.get(`canvas.${id}`)?.enabled(busy), id).toBe(true)
+    expect(commands.get('document.undo')?.enabled({ ...busy, surface: 'yaml' })).toBe(true)
+  })
+
   it('toggles Explorer visibility when its command runs repeatedly', async () => {
     $activeActivity.set('explorer')
     $workspacePanelOpen.set(false)

@@ -287,6 +287,7 @@ function canvasCommand(
     defaultBindings: options.binding ? [options.binding] : [],
     enabled: (context) =>
       context.surface === 'canvas' &&
+      (!options.mutating || !context.arrangeBusy) &&
       (!options.selection || context.hasSelection) &&
       (!options.singleSelection || context.selectionCount === undefined || context.selectionCount === 1) &&
       (!options.mutating ||
@@ -331,7 +332,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Up',
     category: 'Canvas',
     defaultBindings: ['ArrowUp'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(false, 'up'),
   },
   {
@@ -339,7 +341,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Down',
     category: 'Canvas',
     defaultBindings: ['ArrowDown'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(false, 'down'),
   },
   {
@@ -347,7 +350,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Left',
     category: 'Canvas',
     defaultBindings: ['ArrowLeft'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(false, 'left'),
   },
   {
@@ -355,7 +359,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Right',
     category: 'Canvas',
     defaultBindings: ['ArrowRight'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(false, 'right'),
   },
   {
@@ -363,7 +368,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Up (Large)',
     category: 'Canvas',
     defaultBindings: ['Shift+ArrowUp'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(true, 'up'),
   },
   {
@@ -371,7 +377,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Down (Large)',
     category: 'Canvas',
     defaultBindings: ['Shift+ArrowDown'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(true, 'down'),
   },
   {
@@ -379,7 +386,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Left (Large)',
     category: 'Canvas',
     defaultBindings: ['Shift+ArrowLeft'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(true, 'left'),
   },
   {
@@ -387,7 +395,8 @@ const initialCommands: readonly AppCommand[] = [
     label: 'Nudge Right (Large)',
     category: 'Canvas',
     defaultBindings: ['Shift+ArrowRight'],
-    enabled: (context) => context.surface === 'canvas' && context.canMutate && context.hasSelection,
+    enabled: (context) =>
+      context.surface === 'canvas' && !context.arrangeBusy && context.canMutate && context.hasSelection,
     run: () => canvasCommandHandlers?.nudge(true, 'right'),
   },
   {

@@ -44,18 +44,23 @@ export interface CanvasAuthoringCoordinator {
 
 export function createCanvasAuthoringCoordinator(dependencies: {
   readonly getContext: () => CanvasActionContext | CanvasAuthoringUnavailable
+  readonly getReadContext?: () => CanvasActionContext | CanvasAuthoringUnavailable
   readonly getDeleteContext?: () => CanvasActionContext | CanvasAuthoringUnavailable
 }): CanvasAuthoringCoordinator {
   let clipboard: CanvasClipboard | null = null
 
   const context = (
-    operation: 'normal' | 'delete' | 'add' = 'normal',
+    operation: 'normal' | 'delete' | 'add' | 'read' = 'normal',
   ): CanvasActionContext | CanvasUnavailableResult => {
     const current = (
-      operation === 'delete' ? (dependencies.getDeleteContext ?? dependencies.getContext) : dependencies.getContext
+      operation === 'delete'
+        ? (dependencies.getDeleteContext ?? dependencies.getContext)
+        : operation === 'read'
+          ? (dependencies.getReadContext ?? dependencies.getContext)
+          : dependencies.getContext
     )()
     if (
-      operation === 'normal' &&
+      (operation === 'normal' || operation === 'read') &&
       !('unavailable' in current) &&
       current.scopeKey === 'root' &&
       current.graph.nodes.length === 0 &&
@@ -91,7 +96,7 @@ export function createCanvasAuthoringCoordinator(dependencies: {
       return isUnavailable(current) ? current : duplicateSelection(current, nodeIds)
     },
     copy(nodeIds) {
-      const current = context()
+      const current = context('read')
       if (isUnavailable(current)) return current
       const copied = copySelection(current, nodeIds)
       if (copied.nodes.length === 0) {

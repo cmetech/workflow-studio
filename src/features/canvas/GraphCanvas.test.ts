@@ -2,7 +2,7 @@ import { emptyIdentityChanges } from './canvas-actions'
 import type { YamlTransaction } from '$src/lib/documents/transactions'
 import { $activeLayout, activeScopeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import * as canvasScope from '$src/stores/canvas-scope'
-import { fireEvent, render, screen, within } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte'
 import { Position } from '@xyflow/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -22,6 +22,11 @@ import GraphCanvas from './GraphCanvas.svelte'
 import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
+import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import { ROUTING_ENGINE } from '$src/lib/layout/routing'
+import * as routedLayout from './routed-layout'
+import { graphFingerprint, routingFingerprint } from './routed-layout'
+import type { LayoutWorkerRequest, LayoutWorkerResult, LayoutWorkerSuccess } from '$src/workers/layout-worker-protocol'
 import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
 
 function renderCanvas(props: Record<string, unknown>) {
@@ -71,6 +76,111 @@ const layout: ScopeLayoutV1 = {
   viewport: { x: 0, y: 0, zoom: 1 },
 }
 
+class DeferredLayoutClient {
+  requests: LayoutWorkerRequest[] = []
+  resolve!: (result: LayoutWorkerResult) => void
+  reject!: (reason: Error) => void
+  arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult> {
+    this.requests.push(request)
+    return new Promise((resolve, reject) => {
+      this.resolve = resolve
+      this.reject = reject
+    })
+  }
+  cancel = vi.fn(() => this.reject?.(new Error('cancelled')))
+  destroy = vi.fn(() => this.cancel())
+}
+
+function successfulArrangement(request: LayoutWorkerRequest): LayoutWorkerSuccess {
+  const positions = Object.fromEntries(request.nodes.map(({ id }, index) => [id, { x: 32 + index * 400, y: 32 }]))
+  return {
+    type: 'layout-result',
+    identity: request.identity,
+    spacingProfile: 'default',
+    durationMs: 5,
+    positions,
+    routes: Object.fromEntries(
+      request.edges.map(({ id, source, target }) => [
+        id,
+        {
+          edgeId: id,
+          points: [
+            { x: positions[source]!.x + request.nodes.find(({ id }) => id === source)!.width, y: 84 },
+            { x: positions[target]!.x, y: 84 },
+          ],
+        },
+      ]),
+    ),
+    bounds: {
+      x: 32,
+      y: 32,
+      width: (request.nodes.length - 1) * 400 + request.nodes.at(-1)!.width,
+      height: Math.max(...request.nodes.map(({ height }) => height)),
+    },
+  }
+}
+
+// Publish real Svelte Flow measurements through its ResizeObserver boundary.
+function canvasMeasurements(
+  sizes: Record<string, { width: number; height: number }> = {
+    collect: { width: 240, height: 104 },
+    review: { width: 240, height: 168 },
+  },
+) {
+  const previousObserver = globalThis.ResizeObserver
+  const previousMatrix = window.DOMMatrixReadOnly
+  const observers: { callback: ResizeObserverCallback; targets: Element[] }[] = []
+  const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+    return sizes[this.dataset.id ?? '']?.width ?? 800
+  })
+  const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    return sizes[this.dataset.id ?? '']?.height ?? 600
+  })
+  vi.stubGlobal(
+    'DOMMatrixReadOnly',
+    class {
+      m22 = 1
+    },
+  )
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      targets: Element[] = []
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({ callback, targets: this.targets })
+      }
+      observe(target: Element) {
+        this.targets.push(target)
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+  return {
+    async publish() {
+      await tick()
+      for (const observer of observers)
+        observer.callback(
+          observer.targets.map(
+            (target) => ({ target, contentRect: new DOMRect(0, 0, 800, 600) }) as ResizeObserverEntry,
+          ),
+          {} as ResizeObserver,
+        )
+      await tick()
+    },
+    restore() {
+      width.mockRestore()
+      height.mockRestore()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+      vi.stubGlobal('DOMMatrixReadOnly', previousMatrix)
+    },
+  }
+}
+
+const arrangeFailure = 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
+
 describe('GraphCanvas', () => {
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
@@ -107,6 +217,479 @@ describe('GraphCanvas', () => {
   afterEach(() => {
     vi.useRealTimers()
     clearCanvasState()
+  })
+
+  it('RG5 RG8 waits for a rendered frame, posts exact measurements once, and publishes routes and positions together', async () => {
+    const measurements = canvasMeasurements()
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    const client = new DeferredLayoutClient()
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const onArrangeBusyChange = vi.fn()
+    setCanvasSelection(['review'])
+    const rendered = renderCanvas({
+      projection,
+      layout,
+      layoutClient: client,
+      workflowIdentity: 'active',
+      pairGeneration: 7,
+      onLayoutChange,
+      onPersistLayout,
+      onArrangeBusyChange,
+    })
+    try {
+      await measurements.publish()
+      const focus = screen.getByRole('button', { name: 'More canvas actions' })
+      focus.focus()
+      const before = $canvasPositions.get()
+      const arranging = rendered.component.arrange()
+      expect(client.requests).toHaveLength(0)
+      await tick()
+      expect(screen.getByText('Arranging graph…')).toHaveAttribute('aria-live', 'polite')
+      expect(screen.getByTestId('workflow-canvas')).toHaveAttribute('aria-busy', 'true')
+      expect($canvasPositions.get()).toEqual(before)
+      expect(focus).toHaveFocus()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      const request = client.requests[0]!
+      expect(request.nodes).toEqual([
+        { id: 'collect', order: 0, width: 240, height: 104 },
+        { id: 'review', order: 1, width: 240, height: 168 },
+      ])
+      expect(request.edges).toEqual([{ ...projection.edges[0], order: 0 }])
+      expect(request.identity).toMatchObject({
+        workflowIdentity: 'active',
+        pairGeneration: 7,
+        scopeKey: 'root',
+        graphFingerprint: await graphFingerprint({
+          engine: ROUTING_ENGINE,
+          scopeKey: 'root',
+          nodes: request.nodes,
+          edges: request.edges,
+        }),
+      })
+      expect(Object.isFrozen(request)).toBe(true)
+      expect(Object.isFrozen(request.nodes[0])).toBe(true)
+      expect(metrics.snapshot().layouts).toBe(1)
+      const success = successfulArrangement(request)
+      onLayoutChange.mockClear()
+      client.resolve(success)
+      await arranging
+      await tick()
+      expect($canvasPositions.get()).toEqual(success.positions)
+      expect($canvasSelection.get()).toEqual(['review'])
+      expect(onLayoutChange).toHaveBeenCalledTimes(1)
+      expect(onLayoutChange.mock.calls[0]![0]).toMatchObject({
+        nodePositions: success.positions,
+        routing: {
+          schemaVersion: 1,
+          engine: ROUTING_ENGINE,
+          routes: success.routes,
+          fingerprint: await routingFingerprint({
+            graphFingerprint: request.identity.graphFingerprint,
+            positions: success.positions,
+          }),
+        },
+      })
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 272 84 L 432 84')
+      expect(screen.getByText('Graph arranged: 2 nodes and 1 dependencies.')).toBeVisible()
+      expect(focus).toHaveFocus()
+      expect(onArrangeBusyChange.mock.calls).toEqual([
+        [true, 'active'],
+        [false, 'active'],
+      ])
+      await rendered.component.flushPersistence()
+      expect(onPersistLayout).toHaveBeenCalledTimes(1)
+      expect(onPersistLayout.mock.calls[0]![0].routing).toEqual(onLayoutChange.mock.calls[0]![0].routing)
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      restoreMetrics()
+    }
+  })
+
+  it.each([
+    undefined,
+    { width: 215, height: 104 },
+    { width: 216, height: 103 },
+    { width: NaN, height: 104 },
+    { width: 216, height: Infinity },
+  ])('RG8 preserves layout without a request when a node measurement is invalid: %j', async (size) => {
+    const measurements = canvasMeasurements({
+      collect: size ?? { width: 240, height: 104 },
+      review: { width: 240, height: 104 },
+    })
+    const client = new DeferredLayoutClient()
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    const onLayoutChange = vi.fn()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onLayoutChange })
+    try {
+      if (size) await measurements.publish()
+      const before = $canvasPositions.get()
+      await rendered.component.arrange()
+      expect(client.requests).toHaveLength(0)
+      expect(metrics.snapshot().layouts).toBe(0)
+      expect($canvasPositions.get()).toEqual(before)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(screen.getByText(arrangeFailure)).toBeVisible()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      restoreMetrics()
+    }
+  })
+
+  it('locks topology and dragging while keeping zoom, selection, and Cancel available during rapid Arrange attempts', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const onRequestAdd = vi.fn(),
+      onRequestDelete = vi.fn(),
+      onConnect = vi.fn(),
+      onDisconnect = vi.fn(),
+      onDropNodeKind = vi.fn()
+    const rendered = renderCanvas({
+      projection,
+      layout,
+      layoutClient: client,
+      onRequestAdd,
+      onRequestDelete,
+      onConnect,
+      onDisconnect,
+      onDropNodeKind,
+    })
+    try {
+      await measurements.publish()
+      const first = rendered.component.arrange()
+      const second = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
+      expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Add Node' })).toBeDisabled()
+      expect(screen.getByRole('menuitem', { name: 'Zoom In' })).toBeEnabled()
+      expect(rendered.container.querySelector('.svelte-flow__node')).not.toHaveClass('draggable')
+      const before = $canvasPositions.get()
+      const canvas = screen.getByTestId('workflow-canvas')
+      for (const type of ['workflowdragmove', 'workflowdragstop'])
+        await fireEvent(canvas, new CustomEvent(type, { detail: { id: 'collect', position: { x: 999, y: 999 } } }))
+      for (const type of ['workflowconnect', 'workflowdisconnect'])
+        await fireEvent(canvas, new CustomEvent(type, { detail: { source: 'collect', target: 'review' } }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowbeforedelete', { detail: { nodes: [{ id: 'collect' }], edges: [] } }),
+      )
+      rendered.component.requestAdd()
+      rendered.component.selectAll()
+      rendered.component.nudge(false, 'right')
+      expect($canvasSelection.get()).toEqual(['collect', 'review'])
+      expect($canvasPositions.get()).toEqual(before)
+      for (const callback of [onRequestAdd, onRequestDelete, onConnect, onDisconnect, onDropNodeKind])
+        expect(callback).not.toHaveBeenCalled()
+      expect(rendered.component.cancel()).toBe(true)
+      await Promise.all([first, second])
+      expect(client.cancel).toHaveBeenCalledOnce()
+      expect($canvasSelection.get()).toEqual(['collect', 'review'])
+      expect($canvasPositions.get()).toEqual(before)
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it.each([
+    'rejection',
+    'worker-error',
+    'malformed-routes',
+    'mismatched-identity',
+    'invalid-bounds',
+    'inconsistent-bounds',
+  ])('RG8 preserves the complete current layout and reports safe copy for %s', async (failure) => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const onLayoutChange = vi.fn(),
+      onPersistLayout = vi.fn()
+    setCanvasSelection(['review'])
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onLayoutChange, onPersistLayout })
+    try {
+      await measurements.publish()
+      const before = $canvasPositions.get()
+      const path = rendered.container.querySelector('.workflow-edge')?.getAttribute('d')
+      const viewport = rendered.container.querySelector('.svelte-flow__viewport')?.getAttribute('style')
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      const result = successfulArrangement(client.requests[0]!)
+      if (failure === 'rejection') client.reject(new Error('PRIVATE WORKER DETAILS'))
+      else if (failure === 'worker-error')
+        client.resolve({
+          type: 'layout-error',
+          identity: result.identity,
+          code: 'worker_timeout',
+          message: 'PRIVATE WORKER DETAILS',
+        })
+      else
+        client.resolve(
+          failure === 'malformed-routes'
+            ? { ...result, routes: {} }
+            : failure === 'mismatched-identity'
+              ? { ...result, identity: { ...result.identity, pairGeneration: 99 } }
+              : { ...result, bounds: { ...result.bounds, width: failure === 'inconsistent-bounds' ? 1 : NaN } },
+        )
+      await arranging
+      await tick()
+      expect($canvasPositions.get()).toEqual(before)
+      expect($canvasSelection.get()).toEqual(['review'])
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe(path)
+      expect(rendered.container.querySelector('.svelte-flow__viewport')?.getAttribute('style')).toBe(viewport)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      await rendered.component.flushPersistence()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+      expect(screen.getByText(arrangeFailure)).toBeVisible()
+      expect(screen.queryByText('PRIVATE WORKER DETAILS')).not.toBeInTheDocument()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it.each(['projection', 'workflow', 'generation', 'scope', 'layout', 'destroy'])(
+    'RG8 rejects a success made obsolete by %s replacement',
+    async (replacement) => {
+      const measurements = canvasMeasurements()
+      const client = new DeferredLayoutClient()
+      const onLayoutChange = vi.fn(),
+        onPersistLayout = vi.fn()
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        layout,
+        layoutClient: client,
+        workflowIdentity: 'active',
+        pairGeneration: 1,
+        onLayoutChange,
+        onPersistLayout,
+      }
+      const rendered = renderCanvas(props)
+      try {
+        await measurements.publish()
+        const arranging = rendered.component.arrange()
+        await waitFor(() => expect(client.requests).toHaveLength(1))
+        const success = successfulArrangement(client.requests[0]!)
+        if (replacement === 'destroy') rendered.unmount()
+        else
+          await rendered.rerender({
+            ...props,
+            ...(replacement === 'projection' ? { projection: { ...projection } } : {}),
+            ...(replacement === 'workflow' ? { workflowIdentity: 'replacement' } : {}),
+            ...(replacement === 'generation' ? { pairGeneration: 2 } : {}),
+            ...(replacement === 'scope'
+              ? { projection: { ...projection, scope: { ...projection.scope, key: 'loop-group:repeat' } } }
+              : {}),
+            ...(replacement === 'layout'
+              ? { layout: { ...layout, nodePositions: { ...layout.nodePositions, collect: { x: 11, y: 22 } } } }
+              : {}),
+          } as never)
+        const positionsAfterReplacement = $canvasPositions.get()
+        client.resolve(success)
+        await arranging
+        await tick()
+        expect($canvasPositions.get()).toEqual(positionsAfterReplacement)
+        expect(onLayoutChange).not.toHaveBeenCalled()
+        expect(onPersistLayout).not.toHaveBeenCalled()
+        if (replacement === 'destroy') expect(client.destroy).toHaveBeenCalledOnce()
+        else expect(screen.getByTestId('workflow-canvas')).toHaveAttribute('aria-busy', 'false')
+      } finally {
+        if (replacement !== 'destroy') rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it.each(['request', 'result'])('RG8 rechecks identity after the %s fingerprint await', async (boundary) => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const original = boundary === 'request' ? graphFingerprint : routingFingerprint
+    let finish!: (fingerprint: `sha256:${string}`) => void
+    const hashing = vi
+      .spyOn(routedLayout, boundary === 'request' ? 'graphFingerprint' : 'routingFingerprint')
+      .mockImplementation(
+        () =>
+          new Promise<`sha256:${string}`>((resolve) => {
+            finish = resolve
+          }),
+      )
+    const onLayoutChange = vi.fn()
+    const props = {
+      commandSurface: commandRegistry,
+      projection,
+      layout,
+      layoutClient: client,
+      onLayoutChange,
+      pairGeneration: 1,
+    }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      if (boundary === 'result') {
+        await waitFor(() => expect(client.requests).toHaveLength(1))
+        client.resolve(successfulArrangement(client.requests[0]!))
+      }
+      await waitFor(() => expect(hashing).toHaveBeenCalledOnce())
+      await rendered.rerender({ ...props, pairGeneration: 2 })
+      finish(await original(hashing.mock.calls[0]![0] as never))
+      await arranging
+      expect($canvasPositions.get()).toEqual(layout.nodePositions)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(client.requests).toHaveLength(boundary === 'request' ? 0 : 1)
+    } finally {
+      rendered.unmount()
+      hashing.mockRestore()
+      measurements.restore()
+    }
+  })
+
+  it('keeps a newer Arrange busy when an obsolete request finally settles', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    client.cancel.mockImplementation(() => undefined)
+    const onArrangeBusyChange = vi.fn()
+    const props = {
+      commandSurface: commandRegistry,
+      projection,
+      layout,
+      layoutClient: client,
+      onArrangeBusyChange,
+      pairGeneration: 1,
+      workflowIdentity: 'first',
+    }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      const first = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      const oldResolve = client.resolve
+      await rendered.rerender({ ...props, workflowIdentity: 'second', pairGeneration: 2 })
+      await measurements.publish()
+      const second = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(2))
+      oldResolve(successfulArrangement(client.requests[0]!))
+      await first
+      expect(screen.getByTestId('workflow-canvas')).toHaveAttribute('aria-busy', 'true')
+      expect(onArrangeBusyChange.mock.calls).toEqual([
+        [true, 'first'],
+        [false, 'first'],
+        [true, 'second'],
+      ])
+      client.resolve(successfulArrangement(client.requests[1]!))
+      await second
+      expect(onArrangeBusyChange.mock.calls.at(-1)).toEqual([false, 'second'])
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('RG8 retains already arranged routes, selection, and viewport after a later failure', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const onLayoutChange = vi.fn(),
+      onPersistLayout = vi.fn()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onLayoutChange, onPersistLayout })
+    try {
+      await measurements.publish()
+      const first = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await first
+      await rendered.component.flushPersistence()
+      const path = rendered.container.querySelector('.workflow-edge')?.getAttribute('d')
+      const viewport = rendered.container.querySelector('.svelte-flow__viewport')?.getAttribute('style')
+      const positions = $canvasPositions.get()
+      onLayoutChange.mockClear()
+      onPersistLayout.mockClear()
+      const second = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(2))
+      client.reject(new Error('private details'))
+      await second
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe(path)
+      expect(rendered.container.querySelector('.svelte-flow__viewport')?.getAttribute('style')).toBe(viewport)
+      expect($canvasPositions.get()).toEqual(positions)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      await rendered.component.flushPersistence()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('mounts offscreen cards for the measured Arrange frame', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const offscreenLayout = { ...layout, nodePositions: { collect: { x: 0, y: 0 }, review: { x: 10000, y: 10000 } } }
+    const disconnectedProjection = {
+      ...projection,
+      nodes: projection.nodes.map((node) => ({ ...node, dependsOn: [] })),
+      edges: [],
+      capacity: { ...projection.capacity, edgeCount: 0 },
+    }
+    const rendered = renderCanvas({ projection: disconnectedProjection, layout: offscreenLayout, layoutClient: client })
+    try {
+      await measurements.publish()
+      expect(rendered.container.querySelector('.svelte-flow__node[data-id="review"]')).not.toBeInTheDocument()
+      const arranging = rendered.component.arrange()
+      await tick()
+      expect(rendered.container.querySelector('.svelte-flow__node[data-id="review"]')).toBeInTheDocument()
+      await measurements.publish()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+      expect(screen.getByText('Graph arranged: 2 nodes and 0 dependencies.')).toBeVisible()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('cancels the measurement frame and settles Arrange when destroyed before posting', async () => {
+    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockReturnValue(123)
+    const cancelFrame = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await tick()
+      const arranging = rendered.component.arrange()
+      await tick()
+      await waitFor(() => expect(frame).toHaveBeenCalled())
+      rendered.unmount()
+      expect(cancelFrame).toHaveBeenCalledWith(123)
+      await arranging
+      expect(client.requests).toHaveLength(0)
+    } finally {
+      frame.mockRestore()
+      cancelFrame.mockRestore()
+    }
+  })
+
+  it('announces safe failure when a live position revision supersedes the pending response', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      const replacement = { ...layout.nodePositions, collect: { x: 55, y: 55 } }
+      $canvasPositions.set(replacement)
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+      expect($canvasPositions.get()).toBe(replacement)
+      expect(screen.getByText(arrangeFailure)).toBeVisible()
+      expect(screen.queryByText('Arranging graph…')).not.toBeInTheDocument()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
   })
 
   it('opens node actions without replacing an existing multi-selection and selects an unselected target', async () => {

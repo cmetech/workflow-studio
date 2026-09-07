@@ -7,10 +7,20 @@
   import type { CommandSurface } from '$src/lib/commands/registry'
   import { resolveCommand, type ResolvedCommand } from '$src/lib/commands/surface'
   import type { CommandContext, CommandExecutionResult } from '$src/lib/commands/types'
+  import {
+    LayoutClient,
+    sameLayoutIdentity,
+    snapshotLayoutRequest,
+    type LayoutClientLike,
+  } from '$src/workers/layout-client'
+  import type { LayoutWorkerRequest, LayoutWorkerNode, LayoutWorkerSuccess } from '$src/workers/layout-worker-protocol'
+  import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
+  import { graphFingerprint, routingFingerprint, validateRoutedLayout, MAX_ROUTING_COORDINATE } from './routed-layout'
+  import CanvasViewportController from './CanvasViewportController.svelte'
   import type { ScopeLayoutV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
-  import type { ProjectedGraph } from '$src/lib/projection/types'
+  import { VISUAL_NODE_CAPACITY, VISUAL_EDGE_CAPACITY, type ProjectedGraph } from '$src/lib/projection/types'
   import {
     $canvasPositions as canvasPositionsStore,
     $canvasSelection as canvasSelectionStore,
@@ -57,6 +67,9 @@
     projection: ProjectedGraph
     layout: ScopeLayoutV1
     workflowIdentity?: string
+    pairGeneration?: number
+    layoutClient?: LayoutClientLike
+    onArrangeBusyChange?: (busy: boolean, identity: string) => void
     restoreRequest?: CanvasScopeRestoration | null
     transitionLocked?: boolean
     surfaceActive?: boolean
@@ -96,6 +109,9 @@
     projection,
     layout,
     workflowIdentity = JSON.stringify([projection.scope.workflow.name, projection.scope.key]),
+    pairGeneration = 0,
+    layoutClient,
+    onArrangeBusyChange = () => undefined,
     restoreRequest = null,
     transitionLocked = false,
     surfaceActive = true,
@@ -144,6 +160,7 @@
     openLoopGroup: (groupId, invoker) => onOpenLoopGroup?.(groupId, invoker),
   }
   setContext(CANVAS_SCOPE_RELATIONSHIP, scopeRelationship)
+  let activeRouting: { projection: ProjectedGraph; routing: ScopeRoutingV1 } | undefined
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -153,9 +170,29 @@
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
   let edgeSelectionState = emptyEdgeSelectionState()
   let authoringFeedback = $state('')
+  let arrangeBusy = $state(false)
+  let layoutRevision = 0
+  let destroyed = false
+  let ownedLayoutClient: LayoutClientLike | undefined
+  let viewportController: ReturnType<typeof CanvasViewportController> | undefined
+  interface ArrangeAttempt {
+    readonly revision: number
+    readonly projection: ProjectedGraph
+    readonly workflowIdentity: string
+    readonly generation: number
+    readonly scopeKey: ProjectedGraph['scope']['key']
+    readonly positions: ScopeLayoutV1['nodePositions']
+    readonly incomingPositions: ScopeLayoutV1['nodePositions']
+    readonly client: LayoutClientLike
+    nodes?: readonly LayoutWorkerNode[]
+    cancelFrame?: () => void
+    published?: boolean
+  }
+  let activeArrange = $state.raw<ArrangeAttempt | undefined>()
   let edgeSourceId = $state<string | null>(null)
   let edgeTargetIndex = $state(0)
   let reducedMotion = $state(false)
+  let arrangedViewport: Viewport | undefined
   let root: HTMLElement
   let nodeMenu = $state<{ x: number; y: number; invoker: HTMLElement; identity: string; nodeId: string } | null>(null)
   let nodeMenuElement = $state<HTMLDivElement>()
@@ -179,6 +216,7 @@
   let previousProjectionRefresh: CanvasProjectionRefreshSnapshot | undefined
   const canvasCommandContext = $derived.by<CommandContext>(() => ({
     surface: 'canvas',
+    arrangeBusy,
     canMutate: canAuthor(),
     canAddNode: canAdd(),
     canRepair: repairMode && !readOnly && !transitionLocked,
@@ -344,6 +382,7 @@
       stale,
       readOnly: readOnly || transitionLocked,
       groupSummaries,
+      ...(activeRouting?.projection === projection ? { routing: activeRouting.routing } : {}),
     })
   }
 
@@ -402,15 +441,33 @@
     }
   })
 
+  $effect(() => {
+    const attempt = activeArrange
+    if (attempt && !arrangeIsCurrent(attempt)) untrack(() => cancelArrange())
+  })
+
+  $effect(() => {
+    const mutable = !readOnly && !stale && !transitionLocked && !arrangeBusy
+    untrack(() => {
+      flowNodes = flowNodes.map((node) =>
+        node.draggable === mutable && node.connectable === mutable
+          ? node
+          : { ...node, draggable: mutable, connectable: mutable },
+      )
+    })
+  })
+
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
-    if (readOnly || stale || transitionLocked) return
+    if (!canAuthor()) return
+    layoutRevision += 1
     moveCanvasPositions(draggedPositions(detail))
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
     recordEditorMetric('dragCompletions')
-    if (readOnly || stale || transitionLocked) return
+    if (!canAuthor()) return
+    layoutRevision += 1
     const updates = draggedPositions(detail)
     if (updates.length === 0) return
     moveCanvasPositions(updates)
@@ -435,19 +492,243 @@
     return { nodes: updates }
   }
 
-  export function arrange(): void {
-    if (readOnly || stale || transitionLocked) return
-    const projected = projectCanvas(projection, layout, {
-      issues,
-      stale,
-      readOnly: readOnly || transitionLocked,
-      groupSummaries,
-      arrange: true,
-    })
-    flowNodes = withAuthoritativeSelection(projected.nodes, flowNodes)
-    flowEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
-    replaceCanvasPositions(projected.positions)
-    schedulePersist(layoutWithPositions())
+  const ARRANGE_FAILURE = 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
+
+  function arrangeIsCurrent(attempt: ArrangeAttempt): boolean {
+    return (
+      !destroyed &&
+      activeArrange === attempt &&
+      layoutRevision === attempt.revision &&
+      workflowIdentity === attempt.workflowIdentity &&
+      pairGeneration === attempt.generation &&
+      projection === attempt.projection &&
+      projection.scope.key === attempt.scopeKey &&
+      !readOnly &&
+      !stale &&
+      !transitionLocked &&
+      surfaceActive &&
+      (attempt.published ||
+        (canvasPositionsStore.get() === attempt.positions &&
+          samePositions(layout.nodePositions, attempt.incomingPositions))) &&
+      (!attempt.nodes ||
+        attempt.nodes.every((node, index) => {
+          const current = flowNodes[index]
+          return (
+            current?.id === node.id &&
+            current.measured?.width === node.width &&
+            current.measured?.height === node.height
+          )
+        }))
+    )
+  }
+
+  function samePositions(left: ScopeLayoutV1['nodePositions'], right: ScopeLayoutV1['nodePositions']): boolean {
+    const ids = Object.keys(left)
+    return (
+      ids.length === Object.keys(right).length &&
+      ids.every((id) => left[id]?.x === right[id]?.x && left[id]?.y === right[id]?.y)
+    )
+  }
+
+  function finishArrange(attempt: ArrangeAttempt): void {
+    if (activeArrange !== attempt) return
+    activeArrange = undefined
+    arrangeBusy = false
+    onArrangeBusyChange(false, attempt.workflowIdentity)
+  }
+
+  function cancelArrange(): boolean {
+    const attempt = activeArrange
+    if (!attempt) return false
+    layoutRevision += 1
+    attempt.cancelFrame?.()
+    attempt.client.cancel()
+    if (!destroyed) authoringFeedback = ARRANGE_FAILURE
+    finishArrange(attempt)
+    return true
+  }
+
+  function measuredLayoutNodes(): readonly LayoutWorkerNode[] | undefined {
+    if (
+      flowNodes.length !== projection.nodes.length ||
+      !flowNodes.length ||
+      flowNodes.length > VISUAL_NODE_CAPACITY ||
+      projection.edges.length > VISUAL_EDGE_CAPACITY
+    )
+      return
+    const nodes = flowNodes.map((node, order) => ({
+      id: node.id,
+      order,
+      width: node.measured?.width,
+      height: node.measured?.height,
+    }))
+    if (
+      nodes.some(
+        ({ width, height, id }, index) =>
+          id !== projection.nodes[index]?.id ||
+          typeof width !== 'number' ||
+          !Number.isFinite(width) ||
+          width < CANVAS_NODE_WIDTH ||
+          width > MAX_ROUTING_COORDINATE ||
+          typeof height !== 'number' ||
+          !Number.isFinite(height) ||
+          height < CANVAS_NODE_HEIGHT ||
+          height > MAX_ROUTING_COORDINATE,
+      )
+    )
+      return
+    return nodes as readonly LayoutWorkerNode[]
+  }
+
+  function validResultMetadata(result: LayoutWorkerSuccess): boolean {
+    if (
+      !result.bounds ||
+      !Number.isFinite(result.durationMs) ||
+      result.durationMs < 0 ||
+      (result.spacingProfile !== 'default' && result.spacingProfile !== 'expanded')
+    )
+      return false
+    const { x, y, width, height } = result.bounds
+    return (
+      [x, y, width, height].every((value) => Number.isFinite(value) && Math.abs(value) <= MAX_ROUTING_COORDINATE) &&
+      width > 0 &&
+      height > 0 &&
+      Math.abs(x + width) <= MAX_ROUTING_COORDINATE &&
+      Math.abs(y + height) <= MAX_ROUTING_COORDINATE
+    )
+  }
+
+  function boundsContainLayout(result: LayoutWorkerSuccess, nodes: readonly LayoutWorkerNode[]): boolean {
+    const { x, y, width, height } = result.bounds
+    const contains = (point: CanvasPosition) =>
+      point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height
+    return (
+      nodes.every((node) => {
+        const position = result.positions[node.id]!
+        return contains(position) && contains({ x: position.x + node.width, y: position.y + node.height })
+      }) && Object.values(result.routes).every((route) => route.points.every(contains))
+    )
+  }
+
+  export async function arrange(): Promise<void> {
+    if (!canAuthor() || !surfaceActive || !canvasMounted || arrangeBusy) return
+    const client =
+      layoutClient ??
+      (ownedLayoutClient ??= new LayoutClient(
+        () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' }),
+      ))
+    const attempt: ArrangeAttempt = {
+      revision: ++layoutRevision,
+      projection,
+      workflowIdentity,
+      generation: pairGeneration,
+      scopeKey: projection.scope.key,
+      positions: canvasPositionsStore.get(),
+      incomingPositions: layout.nodePositions,
+      client,
+    }
+    activeArrange = attempt
+    arrangeBusy = true
+    authoringFeedback = 'Arranging graph…'
+    onArrangeBusyChange(true, attempt.workflowIdentity)
+    try {
+      await tick()
+      if (!arrangeIsCurrent(attempt)) return
+      await new Promise<void>((resolve) => {
+        const frame = requestAnimationFrame(() => {
+          delete attempt.cancelFrame
+          resolve()
+        })
+        attempt.cancelFrame = () => {
+          cancelAnimationFrame(frame)
+          delete attempt.cancelFrame
+          resolve()
+        }
+      })
+      if (!arrangeIsCurrent(attempt)) return
+      const nodes = measuredLayoutNodes()
+      if (!nodes) throw new Error('Canvas measurements unavailable.')
+      attempt.nodes = nodes
+      const edges = projection.edges.map(({ id, source, target }, order) => ({ id, source, target, order }))
+      const fingerprint = await graphFingerprint({ engine: ROUTING_ENGINE, scopeKey: attempt.scopeKey, nodes, edges })
+      if (!arrangeIsCurrent(attempt)) return
+      const request: LayoutWorkerRequest = snapshotLayoutRequest({
+        type: 'layout',
+        nodes,
+        edges,
+        identity: {
+          requestId: `layout:${attempt.revision}`,
+          workflowIdentity: attempt.workflowIdentity,
+          pairGeneration: attempt.generation,
+          scopeKey: attempt.scopeKey,
+          graphFingerprint: fingerprint,
+          layoutRevision: attempt.revision,
+        },
+      })
+      recordEditorMetric('layouts')
+      const result = await client.arrange(request)
+      if (!arrangeIsCurrent(attempt)) return
+      if (
+        result.type !== 'layout-result' ||
+        !result.identity ||
+        !sameLayoutIdentity(request.identity, result.identity) ||
+        !validResultMetadata(result)
+      )
+        throw new Error('Invalid layout response.')
+      const validated = validateRoutedLayout({ nodes, edges, positions: result.positions, routes: result.routes })
+      if (!validated.ok || !boundsContainLayout(result, nodes)) throw new Error('Invalid routed layout.')
+      const finalFingerprint = await routingFingerprint({
+        graphFingerprint: fingerprint,
+        positions: validated.layout.positions,
+      })
+      if (!arrangeIsCurrent(attempt)) return
+      const next: ScopeLayoutV1 = {
+        ...layoutWithPositions(),
+        nodePositions: validated.layout.positions,
+        routing: {
+          schemaVersion: 1,
+          engine: ROUTING_ENGINE,
+          fingerprint: finalFingerprint,
+          routes: validated.layout.routes,
+        },
+      }
+      const projected = projectCanvas(projection, next, {
+        issues,
+        stale,
+        readOnly,
+        groupSummaries,
+        routing: next.routing!,
+      })
+      const nextNodes = withAuthoritativeSelection(projected.nodes, flowNodes).map((node, index) => ({
+        ...node,
+        measured: { width: nodes[index]!.width, height: nodes[index]!.height },
+        draggable: false,
+        connectable: false,
+      }))
+      const nextEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
+      // Everything above is preparation. Publish the complete accepted scope in one turn.
+      attempt.published = true
+      activeRouting = { projection, routing: next.routing! }
+      flowNodes = nextNodes
+      flowEdges = nextEdges
+      replaceCanvasPositions(next.nodePositions)
+      schedulePersist(next)
+      await tick()
+      if (!arrangeIsCurrent(attempt)) return
+      await viewportController?.fitGraph()
+      if (!arrangeIsCurrent(attempt)) return
+      arrangedViewport = viewportController?.viewport()
+      authoringFeedback = `Graph arranged: ${nodes.length} nodes and ${edges.length} dependencies.`
+    } catch {
+      if (arrangeIsCurrent(attempt))
+        authoringFeedback = attempt.published
+          ? `Graph arranged: ${projection.nodes.length} nodes and ${projection.edges.length} dependencies.`
+          : ARRANGE_FAILURE
+    } finally {
+      if (!destroyed && activeArrange === attempt && !attempt.published && authoringFeedback === 'Arranging graph…')
+        authoringFeedback = ARRANGE_FAILURE
+      finishArrange(attempt)
+    }
   }
 
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
@@ -569,6 +850,7 @@
   }
 
   export function cancel(): boolean {
+    if (cancelArrange()) return true
     if (closeNodeMenu(true)) return true
     if (cancelEdge()) return true
     if (selection.length === 0 && edgeSelectionState.edgeIds.length === 0) return false
@@ -614,6 +896,7 @@
           : direction === 'left'
             ? { x: -amount, y: 0 }
             : { x: amount, y: 0 }
+    layoutRevision += 1
     const positions = canvasPositionsStore.get()
     const updates = selection.flatMap((id) => {
       const position = positions[id]
@@ -668,8 +951,16 @@
     }
   }
 
-  function viewportChanged(viewport: Viewport): void {
-    if (readOnly || stale || transitionLocked) return
+  function viewportChanged(viewport: Viewport, event: MouseEvent | TouchEvent | null): void {
+    if (
+      !event &&
+      arrangedViewport &&
+      viewport.x === arrangedViewport.x &&
+      viewport.y === arrangedViewport.y &&
+      viewport.zoom === arrangedViewport.zoom
+    )
+      return
+    if (readOnly || stale || transitionLocked || activeArrange?.published) return
     schedulePersist({ ...layoutWithPositions(), viewport: { ...viewport } })
   }
 
@@ -679,8 +970,10 @@
       restoreSurfaceSelection()
       return
     }
+    const previous = canvasSelectionStore.get()
     setCanvasSelection(ids)
-    selection = [...ids]
+    selection = [...canvasSelectionStore.get()]
+    if (previous === canvasSelectionStore.get()) return
     onLayoutChange({ selectedNodeIds: canvasSelectionStore.get() }, workflowIdentity)
   }
 
@@ -830,11 +1123,11 @@
   }
 
   function canAuthor(): boolean {
-    return !readOnly && !stale && !transitionLocked
+    return !readOnly && !stale && !transitionLocked && !arrangeBusy
   }
 
   function canAdd(): boolean {
-    return !readOnly && !transitionLocked && (!stale || (blankDraft && projection.nodes.length === 0))
+    return !readOnly && !transitionLocked && !arrangeBusy && (!stale || (blankDraft && projection.nodes.length === 0))
   }
 
   export function viewportCenterPosition(): { x: number; y: number } {
@@ -889,7 +1182,7 @@
     nodes: readonly { readonly id: string }[],
     edges: readonly { readonly source: string; readonly target: string }[],
   ): Promise<boolean> {
-    if (readOnly || transitionLocked || (stale && !(repairMode && nodes.length > 0))) return false
+    if (readOnly || transitionLocked || arrangeBusy || (stale && !(repairMode && nodes.length > 0))) return false
     if (nodes.length > 0) {
       await onRequestDelete?.(nodes.map(({ id }) => id))
       return false
@@ -907,6 +1200,7 @@
   function layoutWithPositions(): ScopeLayoutV1 {
     return {
       ...layout,
+      ...(activeRouting?.projection === projection ? { routing: activeRouting.routing } : {}),
       nodePositions: Object.fromEntries(
         Object.entries(canvasPositionsStore.get()).map(([id, position]) => [id, { ...position }]),
       ),
@@ -1042,6 +1336,10 @@
   })
 
   onDestroy(() => {
+    destroyed = true
+    const client = activeArrange?.client ?? layoutClient ?? ownedLayoutClient
+    cancelArrange()
+    client?.destroy()
     clearSelectionGestures()
     void flushPersistence().catch(onPersistenceError)
   })
@@ -1055,7 +1353,7 @@
   data-motion={reducedMotion ? 'reduced' : 'full'}
   data-keyboard-viewport-focus="instant"
   aria-label="Workflow graph"
-  aria-busy={transitionLocked}
+  aria-busy={transitionLocked || arrangeBusy}
   bind:this={root}
 >
   <CanvasToolbar commands={toolbarCommands} onExecute={executeToolbarId} />
@@ -1104,10 +1402,10 @@
       bind:viewport={flowViewport}
       {nodeTypes}
       {edgeTypes}
-      nodesDraggable={!readOnly && !stale && !transitionLocked}
-      nodesConnectable={!readOnly && !stale && !transitionLocked}
+      nodesDraggable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
+      nodesConnectable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
       elementsSelectable={!transitionLocked}
-      onlyRenderVisibleElements={projection.capacity.nodeCount !== 1}
+      onlyRenderVisibleElements={!arrangeBusy && projection.capacity.nodeCount !== 1}
       nodesFocusable={true}
       edgesFocusable={true}
       selectionOnDrag={true}
@@ -1139,8 +1437,9 @@
         }
       }}
       onbeforedelete={({ nodes, edges }) => beforeDelete(nodes, edges)}
-      onmoveend={(_event, viewport) => viewportChanged(viewport)}
+      onmoveend={(event, viewport) => viewportChanged(viewport, event)}
     >
+      <CanvasViewportController bind:this={viewportController} />
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
     </SvelteFlow>
   </div>
