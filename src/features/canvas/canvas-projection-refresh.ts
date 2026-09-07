@@ -3,6 +3,7 @@ import type { ProjectedGraph } from '$src/lib/projection/types'
 import type { CanvasPosition } from './types'
 
 export interface CanvasProjectionRefreshSnapshot {
+  readonly routingFingerprint?: string | undefined
   readonly projection: ProjectedGraph
   readonly issues: readonly ValidationIssue[]
   readonly workflowIdentity: string
@@ -20,6 +21,7 @@ export function shouldRefreshCanvasProjection(
   return (
     !previous ||
     previous.projection !== next.projection ||
+    previous.routingFingerprint !== next.routingFingerprint ||
     previous.issues !== next.issues ||
     previous.workflowIdentity !== next.workflowIdentity ||
     previous.stale !== next.stale ||

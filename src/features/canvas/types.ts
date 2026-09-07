@@ -1,6 +1,9 @@
 import type { Edge, Node, XYPosition } from '@xyflow/svelte'
 import type { EdgeRouteV1 } from '$src/lib/layout/routing'
 
+export const CANVAS_NODE_WIDTH = 216
+export const CANVAS_NODE_HEIGHT = 104
+
 export interface CanvasNodeData extends Record<string, unknown> {
   readonly id: string
   readonly kind: string

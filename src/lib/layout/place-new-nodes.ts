@@ -168,11 +168,10 @@ function semanticNode(node: LayoutNodeProjection) {
   return { id: node.id, kind: node.kind, value: node.value, options: node.options, dependsOn: node.dependsOn }
 }
 
+// Definition and dependency order also determine ELK placement and port order.
 function sameDependencyTopology(before: LayoutProjection, after: LayoutProjection): boolean {
   const dependencies = (projection: LayoutProjection) =>
-    projection.nodes
-      .map(({ id, dependsOn }) => ({ id, dependsOn: [...dependsOn].sort(compareText) }))
-      .sort((left, right) => compareText(left.id, right.id))
+    projection.nodes.map(({ id, dependsOn }) => ({ id, dependsOn }))
   return stableValue(dependencies(before)) === stableValue(dependencies(after))
 }
 

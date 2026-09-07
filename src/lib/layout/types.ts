@@ -68,7 +68,7 @@ export interface ScopeLayoutV1 {
   /** Omitted until the first visit chooses a tab from current blocking issues. */
   auxiliaryTab?: AuxiliaryTab
   referencesScroll?: number
-  routing?: ScopeRoutingV1
+  routing?: ScopeRoutingV1 | undefined
 }
 export interface LayoutRecordV2 {
   schemaVersion: 2

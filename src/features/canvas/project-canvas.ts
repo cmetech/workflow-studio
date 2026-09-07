@@ -1,7 +1,7 @@
 import { MarkerType, Position } from '@xyflow/svelte'
 import { reconcileLayout, validPosition } from '$src/lib/layout/place-new-nodes'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
-import type { EdgeRouteV1, ScopeRoutingV1 } from '$src/lib/layout/routing'
+import { sanitizeScopeRouting, type EdgeRouteV1, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import type { ValidationIssue } from '$src/lib/documents/types'
 import {
   VISUAL_EDGE_CAPACITY,
@@ -322,7 +322,9 @@ function completeRoutesForEdges(
   edges: ProjectedGraph['edges'],
   routing: ScopeRoutingV1 | undefined,
 ): ScopeRoutingV1['routes'] | undefined {
-  if (!routing) return undefined
+  const candidate = sanitizeScopeRouting(routing)
+  if (!candidate) return undefined
+  routing = candidate
   const routeIds = Object.keys(routing.routes)
   if (routeIds.length !== edges.length) return undefined
   for (const edge of edges) {

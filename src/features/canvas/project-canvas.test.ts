@@ -55,6 +55,26 @@ const savedLayout: ScopeLayoutV1 = {
 }
 
 describe('projectCanvas', () => {
+  it.each(['engine', 'sanitizer'])('[RG7] never attaches any route from a rejected %s cache', (change) => {
+    const routing = {
+      schemaVersion: 1,
+      engine: change === 'engine' ? 'old-engine' : ROUTING_ENGINE,
+      fingerprint: `sha256:${'a'.repeat(64)}`,
+      routes: {
+        'dependency:collect->review': {
+          edgeId: 'dependency:collect->review',
+          points: [
+            { x: 256, y: 132 },
+            { x: change === 'sanitizer' ? NaN : 360, y: 132 },
+          ],
+        },
+      },
+    } as ScopeRoutingV1
+    expect(
+      projectCanvas(projection, savedLayout, { routing }).edges.every((edge) => edge.data?.route === undefined),
+    ).toBe(true)
+  })
+
   it('[RG5] attaches routes only when every current edge has an exactly keyed route', () => {
     const routing: ScopeRoutingV1 = {
       schemaVersion: 1,

@@ -22,10 +22,8 @@ import {
   type RoutedLayoutValidation,
 } from './routed-layout'
 
-import type { CanvasPosition } from './types'
-
-export const CANVAS_NODE_WIDTH = 216
-export const CANVAS_NODE_HEIGHT = 104
+import { CANVAS_NODE_WIDTH, CANVAS_NODE_HEIGHT, type CanvasPosition } from './types'
+export { CANVAS_NODE_WIDTH, CANVAS_NODE_HEIGHT } from './types'
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0

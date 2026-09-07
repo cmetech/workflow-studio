@@ -1,16 +1,18 @@
 import { canonicalizeJsonValue, sha256Hex } from '$src/lib/contract/canonical-json'
-import type { GraphScopeKey } from '$src/lib/projection/types'
+import type { GraphScopeKey, ProjectedGraph } from '$src/lib/projection/types'
 import {
   MAX_ROUTE_POINTS_PER_EDGE,
   MAX_SERIALIZED_ROUTING_BYTES,
   MAX_TOTAL_ROUTE_POINTS,
   ROUTING_ENGINE,
+  sanitizeScopeRouting,
+  type ScopeRoutingV1,
   type EdgeRoutePointV1,
   type EdgeRouteV1,
   type RoutingFingerprintEdge,
   type RoutingFingerprintNode,
 } from '$src/lib/layout/routing'
-import type { CanvasPosition } from './types'
+import { CANVAS_NODE_WIDTH, CANVAS_NODE_HEIGHT, type CanvasPosition } from './types'
 
 export const ROUTING_GEOMETRY_TOLERANCE = 0.5
 export const ROUTING_NODE_CLEARANCE = 24
@@ -57,6 +59,36 @@ interface Segment {
   readonly start: EdgeRoutePointV1
   readonly end: EdgeRoutePointV1
   readonly orientation: 'horizontal' | 'vertical'
+}
+
+/** Restore only a complete cache for the exact current graph and measured geometry. */
+export async function resolveCurrentRouting(
+  projection: ProjectedGraph,
+  positions: Readonly<Record<string, CanvasPosition>>,
+  measuredNodes: readonly RoutingFingerprintNode[] | undefined,
+  routing: ScopeRoutingV1 | undefined,
+): Promise<ScopeRoutingV1 | undefined> {
+  const candidate = sanitizeScopeRouting(routing)
+  if (!candidate || !measuredNodes || measuredNodes.length !== projection.nodes.length) return undefined
+  if (
+    measuredNodes.some(
+      (node, order) =>
+        node.id !== projection.nodes[order]?.id ||
+        node.order !== order ||
+        !Number.isFinite(node.width) ||
+        node.width < CANVAS_NODE_WIDTH ||
+        !Number.isFinite(node.height) ||
+        node.height < CANVAS_NODE_HEIGHT,
+    )
+  )
+    return undefined
+  const nodes = measuredNodes.map((node) => ({ ...node }))
+  const edges = projection.edges.map(({ id, source, target }, order) => ({ id, source, target, order }))
+  const validated = validateRoutedLayout({ nodes, edges, positions, routes: candidate.routes })
+  if (!validated.ok) return undefined
+  const graph = await graphFingerprint({ engine: ROUTING_ENGINE, scopeKey: projection.scope.key, nodes, edges })
+  const fingerprint = await routingFingerprint({ graphFingerprint: graph, positions: validated.layout.positions })
+  return fingerprint === candidate.fingerprint ? candidate : undefined
 }
 
 export function normalizeRoute(points: readonly EdgeRoutePointV1[]): readonly EdgeRoutePointV1[] | null {

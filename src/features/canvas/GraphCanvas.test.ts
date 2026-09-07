@@ -23,7 +23,7 @@ import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
-import { ROUTING_ENGINE } from '$src/lib/layout/routing'
+import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import * as routedLayout from './routed-layout'
 import { graphFingerprint, routingFingerprint } from './routed-layout'
 import type { LayoutWorkerRequest, LayoutWorkerResult, LayoutWorkerSuccess } from '$src/workers/layout-worker-protocol'
@@ -179,6 +179,31 @@ function canvasMeasurements(
   }
 }
 
+async function savedRouting(graph = projection): Promise<ScopeRoutingV1> {
+  return {
+    schemaVersion: 1,
+    engine: ROUTING_ENGINE,
+    fingerprint: await routingFingerprint({
+      graphFingerprint: await graphFingerprint({
+        engine: ROUTING_ENGINE,
+        scopeKey: graph.scope.key,
+        nodes: graph.nodes.map(({ id }, order) => ({ id, order, width: 240, height: id === 'review' ? 168 : 104 })),
+        edges: graph.edges.map((edge, order) => ({ ...edge, order })),
+      }),
+      positions: layout.nodePositions,
+    }),
+    routes: {
+      'dependency:collect->review': {
+        edgeId: 'dependency:collect->review',
+        points: [
+          { x: 240, y: 40 },
+          { x: 320, y: 40 },
+        ],
+      },
+    },
+  }
+}
+
 const arrangeFailure = 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
 
 describe('GraphCanvas', () => {
@@ -217,6 +242,376 @@ describe('GraphCanvas', () => {
   afterEach(() => {
     vi.useRealTimers()
     clearCanvasState()
+  })
+
+  it('[RG5] restores exact persisted routes only after measurements and preserves a persistence echo', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const onLayoutChange = vi.fn(),
+      onPersistLayout = vi.fn()
+    const client = new DeferredLayoutClient()
+    const props = {
+      commandSurface: commandRegistry,
+      projection,
+      layout: { ...layout, routing },
+      layoutClient: client,
+      onLayoutChange,
+      onPersistLayout,
+    }
+    const rendered = renderCanvas(props)
+    try {
+      await tick()
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const edge = rendered.container.querySelector('.workflow-edge')
+      await rendered.rerender({ ...props, layout: structuredClone(props.layout) })
+      expect(rendered.container.querySelector('.workflow-edge')).toBe(edge)
+      expect(edge?.getAttribute('d')).toBe('M 240 40 L 320 40')
+      expect(client.requests).toHaveLength(0)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('[RG6] clears routing at drag start and does no expensive work during 1,000 moves', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const onLayoutChange = vi.fn(),
+      onPersistLayout = vi.fn()
+    const client = new DeferredLayoutClient()
+    const hashing = vi.spyOn(crypto.subtle, 'digest')
+    const resolving = vi.spyOn(routedLayout, 'resolveCurrentRouting')
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    const rendered = renderCanvas({
+      projection,
+      layout: { ...layout, routing },
+      layoutClient: client,
+      onLayoutChange,
+      onPersistLayout,
+    })
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      expect(onLayoutChange).toHaveBeenCalledWith(expect.objectContaining({ routing: undefined }), expect.any(String))
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+      metrics.reset()
+      hashing.mockClear()
+      resolving.mockClear()
+      onLayoutChange.mockClear()
+      vi.useFakeTimers()
+      for (let move = 1; move <= 1_000; move++) {
+        canvas.dispatchEvent(
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: move, y: move * 2 } },
+          }),
+        )
+        await tick()
+      }
+      await vi.advanceTimersByTimeAsync(500)
+      expect(metrics.snapshot()).toEqual({
+        parseRequests: 0,
+        validationPasses: 0,
+        layouts: 0,
+        yamlTransactions: 0,
+        nativeCalls: 0,
+        gitCalls: 0,
+        pointerMoves: 1_000,
+        dragCompletions: 0,
+        layoutSaves: 0,
+      })
+      expect(client.requests).toHaveLength(0)
+      expect(hashing).not.toHaveBeenCalled()
+      expect(resolving).not.toHaveBeenCalled()
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 1_000, y: 2_000 } },
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(300)
+      expect(onPersistLayout).toHaveBeenCalledOnce()
+      expect(onPersistLayout.mock.calls[0]![0].routing).toBeUndefined()
+      expect(onPersistLayout.mock.calls[0]![0].nodePositions.collect).toEqual({ x: 1_000, y: 2_000 })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      restoreMetrics()
+      hashing.mockRestore()
+      resolving.mockRestore()
+    }
+  })
+
+  it.each(['dimensions', 'invalid dimensions', 'engine', 'sanitizer', 'fingerprint'])(
+    '[RG7] removes the whole cache after %s mismatch',
+    async (change) => {
+      const sizes = { collect: { width: 240, height: 104 }, review: { width: 240, height: 168 } }
+      const measurements = canvasMeasurements(sizes)
+      const routing = await savedRouting()
+      if (change === 'engine') (routing as { engine: string }).engine = 'old-engine'
+      if (change === 'sanitizer') (routing.routes['dependency:collect->review']!.points[0] as { x: number }).x = NaN
+      if (change === 'fingerprint') (routing as { fingerprint: string }).fingerprint = `sha256:${'a'.repeat(64)}`
+      const onLayoutChange = vi.fn(),
+        onPersistLayout = vi.fn()
+      const rendered = renderCanvas({ projection, layout: { ...layout, routing }, onLayoutChange, onPersistLayout })
+      try {
+        await measurements.publish()
+        if (change === 'dimensions' || change === 'invalid dimensions') {
+          await waitFor(() =>
+            expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+          )
+          sizes.review.height = change === 'invalid dimensions' ? 100 : 180
+          await measurements.publish()
+        }
+        await waitFor(() =>
+          expect(onLayoutChange).toHaveBeenCalledWith(
+            expect.objectContaining({ routing: undefined }),
+            expect.any(String),
+          ),
+        )
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+        await rendered.component.flushPersistence()
+        expect(onPersistLayout.mock.calls.at(-1)![0].routing).toBeUndefined()
+        expect(onPersistLayout.mock.calls.at(-1)![0].nodePositions).toEqual(layout.nodePositions)
+      } finally {
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it('[RG6] keeps a cloned stale routing echo invalidated after a drag with unchanged positions', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const props = { commandSurface: commandRegistry, projection, layout: { ...layout, routing } }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart'))
+      await rendered.rerender({ ...props, layout: structuredClone(props.layout) })
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', { detail: { id: 'collect', position: { x: 0, y: 0 } } }),
+      )
+      await measurements.publish()
+      const resolver = vi.spyOn(routedLayout, 'resolveCurrentRouting')
+      try {
+        await rendered.rerender({ ...props, layout: structuredClone(props.layout) })
+        await tick()
+        expect(resolver).not.toHaveBeenCalled()
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+      } finally {
+        resolver.mockRestore()
+      }
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('[RG6] keeps a delayed drag-start layout echo from resetting live pointer positions', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const props = { commandSurface: commandRegistry, projection, layout: { ...layout, routing } }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart'))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', { detail: { id: 'collect', position: { x: 60, y: 80 } } }),
+      )
+      await rendered.rerender({ ...props, layout: { ...layout } })
+      expect($canvasPositions.get().collect).toEqual({ x: 60, y: 80 })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it.each(['workflow', 'generation', 'scope', 'positions', 'cache removal', 'drag', 'destroy'])(
+    '[RG8] discards cache activation superseded by %s',
+    async (replacement) => {
+      const measurements = canvasMeasurements()
+      const routing = await savedRouting()
+      let release!: (routing: ScopeRoutingV1) => void
+      const resolving = vi.spyOn(routedLayout, 'resolveCurrentRouting').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve
+          }),
+      )
+      const onLayoutChange = vi.fn(),
+        onPersistLayout = vi.fn()
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        workflowIdentity: 'active',
+        pairGeneration: 1,
+        layout: { ...layout, routing },
+        onLayoutChange,
+        onPersistLayout,
+      }
+      const rendered = renderCanvas(props)
+      try {
+        await measurements.publish()
+        await waitFor(() => expect(resolving).toHaveBeenCalledOnce())
+        if (replacement === 'destroy') rendered.unmount()
+        else if (replacement === 'drag')
+          await fireEvent(screen.getByTestId('workflow-canvas'), new CustomEvent('workflowdragstart'))
+        else
+          await rendered.rerender({
+            ...props,
+            layout: {
+              ...layout,
+              ...(replacement === 'positions'
+                ? { nodePositions: { ...layout.nodePositions, collect: { x: 50, y: 50 } } }
+                : {}),
+            },
+            ...(replacement === 'workflow' ? { workflowIdentity: 'other' } : {}),
+            ...(replacement === 'generation' ? { pairGeneration: 2 } : {}),
+            ...(replacement === 'scope'
+              ? { projection: { ...projection, scope: { ...projection.scope, key: 'loop-group:other' } } }
+              : {}),
+          } as never)
+        const before = $canvasPositions.get()
+        onLayoutChange.mockClear()
+        release(routing)
+        await tick()
+        await Promise.resolve()
+        await tick()
+        expect($canvasPositions.get()).toBe(before)
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+        expect(onLayoutChange).not.toHaveBeenCalled()
+        expect(onPersistLayout).not.toHaveBeenCalled()
+      } finally {
+        if (replacement !== 'destroy') rendered.unmount()
+        measurements.restore()
+        resolving.mockRestore()
+      }
+    },
+  )
+
+  it('[RG7] preserves matching routes across content, selection, viewport, panels and navigation', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const onLayoutChange = vi.fn(),
+      onPersistLayout = vi.fn()
+    const props = {
+      commandSurface: commandRegistry,
+      projection,
+      layout: { ...layout, routing },
+      onLayoutChange,
+      onPersistLayout,
+    }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const edited = { ...projection, nodes: projection.nodes.map((node) => ({ ...node, value: 'Updated content' })) }
+      await rendered.rerender({
+        ...props,
+        projection: edited,
+        layout: {
+          ...props.layout,
+          selectedNodeIds: ['review'],
+          focusTarget: { nodeId: 'review' },
+          viewport: { x: 20, y: 40, zoom: 0.8 },
+          inspector: { tab: 'Advanced', scrollTop: 20 },
+          auxiliaryTab: 'yaml',
+        },
+      } as never)
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      await rendered.rerender({ ...props, projection: edited, surfaceActive: false })
+      await rendered.rerender({ ...props, projection: edited, surfaceActive: true })
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('[RG11] restores independently arranged root and two body scopes without new worker work', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const scopes = ['root', 'loop-group:first', 'loop-group:second'] as const
+    const graphs = scopes.map((key) => ({ ...projection, scope: { ...projection.scope, key } }))
+    const saved = new Map<string, ScopeLayoutV1>()
+    const paths = new Map<string, string | null>()
+    const onLayoutChange = (next: Partial<ScopeLayoutV1>, identity: string) =>
+      saved.set(identity, { ...(saved.get(identity) ?? layout), ...next })
+    const props = {
+      commandSurface: commandRegistry,
+      projection,
+      workflowIdentity: 'root',
+      layout,
+      layoutClient: client,
+      onLayoutChange,
+    }
+    const rendered = renderCanvas(props)
+    try {
+      for (const graph of graphs) {
+        await rendered.rerender({ ...props, projection: graph, workflowIdentity: graph.scope.key })
+        await measurements.publish()
+        const arranging = rendered.component.arrange()
+        await waitFor(() => expect(client.requests.at(-1)?.identity.scopeKey).toBe(graph.scope.key))
+        client.resolve(successfulArrangement(client.requests.at(-1)!))
+        await arranging
+        await rendered.component.flushPersistence()
+        paths.set(graph.scope.key, rendered.container.querySelector('.workflow-edge')!.getAttribute('d'))
+      }
+      for (const graph of [graphs[0]!, graphs[2]!, graphs[1]!, graphs[0]!]) {
+        await rendered.rerender({
+          ...props,
+          projection: graph,
+          workflowIdentity: graph.scope.key,
+          layout: saved.get(graph.scope.key)!,
+        })
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe(
+            paths.get(graph.scope.key),
+          ),
+        )
+      }
+      expect(client.requests).toHaveLength(3)
+      expect(new Set([...saved.values()].map(({ routing }) => routing?.fingerprint)).size).toBe(3)
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
   })
 
   it('RG5 RG8 waits for a rendered frame, posts exact measurements once, and publishes routes and positions together', async () => {
@@ -741,7 +1136,7 @@ describe('GraphCanvas', () => {
   )
 
   it.each(['immediate', 'queued'])(
-    'does not fit or persist obsolete positions superseded by the %s atomic publication callback',
+    'discards obsolete fitting and persists replacement positions without routing after the %s publication callback',
     async (timing) => {
       const measurements = canvasMeasurements()
       const client = new DeferredLayoutClient()
@@ -769,11 +1164,14 @@ describe('GraphCanvas', () => {
         const camera = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
         if (timing === 'immediate') expect(camera).toBe(before)
         expect(camera).toContain('scale(1)')
-        expect(onLayoutChange).toHaveBeenCalledTimes(1)
+        expect(onLayoutChange).toHaveBeenCalledTimes(2)
+        expect(onLayoutChange.mock.calls[1]![0]).toMatchObject({ nodePositions: replacement, routing: undefined })
         expect(screen.queryByText('Arranging graph…')).not.toBeInTheDocument()
         expect(screen.getByText(arrangeFailure)).toBeVisible()
         await rendered.component.flushPersistence()
-        expect(onPersistLayout).not.toHaveBeenCalled()
+        expect(onPersistLayout).toHaveBeenCalledOnce()
+        expect(onPersistLayout.mock.calls[0]![0]).toMatchObject({ nodePositions: replacement })
+        expect(onPersistLayout.mock.calls[0]![0].routing).toBeUndefined()
       } finally {
         rendered.unmount()
         measurements.restore()

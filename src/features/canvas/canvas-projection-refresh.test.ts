@@ -28,6 +28,12 @@ describe('shouldRefreshCanvasProjection', () => {
     expect(shouldRefreshCanvasProjection(snapshot(), snapshot(), { ...positions }, positions)).toBe(false)
   })
 
+  it('[RG5] preserves routed persistence echoes and refreshes removed routing', () => {
+    const routed = snapshot({ routingFingerprint: `sha256:${'a'.repeat(64)}` })
+    expect(shouldRefreshCanvasProjection(routed, { ...routed }, { ...positions }, positions)).toBe(false)
+    expect(shouldRefreshCanvasProjection(routed, snapshot(), positions, positions)).toBe(true)
+  })
+
   it('refreshes when incoming layout positions differ from the live canvas', () => {
     expect(
       shouldRefreshCanvasProjection(snapshot(), snapshot(), { ...positions, collect: { x: 640, y: 480 } }, positions),
@@ -35,6 +41,7 @@ describe('shouldRefreshCanvasProjection', () => {
   })
 
   it.each([
+    ['routing added', snapshot({ routingFingerprint: `sha256:${'a'.repeat(64)}` })],
     ['projection', snapshot({ projection: {} as ProjectedGraph })],
     ['diagnostics', snapshot({ issues: [{} as ValidationIssue] })],
     ['stale state', snapshot({ stale: true })],

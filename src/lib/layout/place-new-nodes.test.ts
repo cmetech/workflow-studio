@@ -231,7 +231,7 @@ describe('layout reconciliation', () => {
     expect(migrated.routing).toBeUndefined()
   })
 
-  it('preserves routing when dependency order changes without changing topology', () => {
+  it('[RG7] invalidates routing when dependency port order changes', () => {
     const saved = {
       ...baseLayout,
       nodePositions: { ...baseLayout.nodePositions, other: { x: 0, y: 160 } },
@@ -239,7 +239,13 @@ describe('layout reconciliation', () => {
     const before = projection([{ id: 'build' }, { id: 'removed' }, { id: 'other', dependsOn: ['build', 'removed'] }])
     const after = projection([{ id: 'build' }, { id: 'removed' }, { id: 'other', dependsOn: ['removed', 'build'] }])
 
-    expect(migrateManualYamlNodeRename(saved, before, after).routing).toBe(routing)
+    expect(migrateManualYamlNodeRename(saved, before, after).routing).toBeUndefined()
+  })
+
+  it('[RG7] invalidates routing when definition order changes', () => {
+    const before = projection([{ id: 'build' }, { id: 'removed' }])
+    const after = projection([{ id: 'removed' }, { id: 'build' }])
+    expect(migrateManualYamlNodeRename(baseLayout, before, after).routing).toBeUndefined()
   })
 
   it('invalidates changed root and loop-body routing while retaining an unaffected sibling scope by identity', () => {
@@ -271,6 +277,41 @@ describe('layout reconciliation', () => {
     expect(reconciled.scopeLayouts['loop-group:first']?.routing).toBeUndefined()
     expect(reconciled.scopeLayouts['loop-group:sibling']).toBe(sibling)
     expect(reconciled.scopeLayouts['loop-group:sibling']?.routing).toBe(routing)
+  })
+
+  it.each([
+    ['edge added', [{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }]],
+    ['edge removed', [{ id: 'build' }, { id: 'removed' }]],
+    ['edge reconnected', [{ id: 'build', dependsOn: ['removed'] }, { id: 'removed' }]],
+    ['node added', [{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }, { id: 'added' }]],
+    ['node deleted', [{ id: 'build' }]],
+    ['node duplicated', [{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }, { id: 'build-copy' }]],
+    ['node renamed', [{ id: 'renamed' }, { id: 'removed', dependsOn: ['renamed'] }]],
+  ] as const)('[RG7] preserves root and sibling scope identities when only a body has its %s', (change, nodes) => {
+    const unchangedNodes = [{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }]
+    const previousBody = change === 'edge added' ? [{ id: 'build' }, { id: 'removed' }] : unchangedNodes
+    const before = workflow([
+      { key: 'root', nodes: unchangedNodes },
+      { key: 'loop-group:first', groupId: 'build', nodes: previousBody },
+      { key: 'loop-group:sibling', groupId: 'removed', nodes: unchangedNodes },
+    ])
+    const after = workflow([
+      { key: 'root', nodes: unchangedNodes },
+      { key: 'loop-group:first', groupId: 'build', nodes },
+      { key: 'loop-group:sibling', groupId: 'removed', nodes: unchangedNodes },
+    ])
+    const saved = workflowLayout({
+      root: baseLayout,
+      'loop-group:first': {
+        ...baseLayout,
+        ...(change === 'edge added' ? { routing: { ...routing, routes: {} } } : {}),
+      },
+      'loop-group:sibling': { ...baseLayout },
+    })
+    const result = reconcileWorkflowLayout(after, saved, before)
+    expect(result.scopeLayouts.root).toBe(saved.scopeLayouts.root)
+    expect(result.scopeLayouts['loop-group:sibling']).toBe(saved.scopeLayouts['loop-group:sibling'])
+    expect(result.scopeLayouts['loop-group:first']!.routing).toBeUndefined()
   })
 
   it('invalidates root and migrated body routing when a loop owner is renamed', () => {

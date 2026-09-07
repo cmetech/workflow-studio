@@ -14,8 +14,14 @@
     type LayoutClientLike,
   } from '$src/workers/layout-client'
   import type { LayoutWorkerRequest, LayoutWorkerNode, LayoutWorkerSuccess } from '$src/workers/layout-worker-protocol'
-  import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
-  import { graphFingerprint, routingFingerprint, validateRoutedLayout, MAX_ROUTING_COORDINATE } from './routed-layout'
+  import { ROUTING_ENGINE, sanitizeScopeRouting, withoutRouting, type ScopeRoutingV1 } from '$src/lib/layout/routing'
+  import {
+    graphFingerprint,
+    routingFingerprint,
+    resolveCurrentRouting,
+    validateRoutedLayout,
+    MAX_ROUTING_COORDINATE,
+  } from './routed-layout'
   import CanvasViewportController from './CanvasViewportController.svelte'
   import type { ScopeLayoutV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
@@ -160,7 +166,28 @@
     openLoopGroup: (groupId, invoker) => onOpenLoopGroup?.(groupId, invoker),
   }
   setContext(CANVAS_SCOPE_RELATIONSHIP, scopeRelationship)
-  let activeRouting: { projection: ProjectedGraph; routing: ScopeRoutingV1 } | undefined
+  interface ActiveRouting {
+    projection: ProjectedGraph
+    workflowIdentity: string
+    generation: number
+    routing: ScopeRoutingV1
+    dimensions: string
+    positions: ScopeLayoutV1['nodePositions']
+  }
+  let activeRouting: ActiveRouting | undefined
+  // Keep a local publication authoritative until the parent echoes it, including routing removal.
+  let routingPublication:
+    | {
+        projection: ProjectedGraph
+        workflowIdentity: string
+        generation: number
+        incomingRouting: ScopeRoutingV1 | undefined
+        incomingPositions: ScopeLayoutV1['nodePositions']
+        routing: ScopeRoutingV1 | undefined
+      }
+    | undefined
+  let routingActivation = 0
+  let dragging = $state(false)
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -389,7 +416,7 @@
       stale,
       readOnly: readOnly || transitionLocked,
       groupSummaries,
-      ...(activeRouting?.projection === projection ? { routing: activeRouting.routing } : {}),
+      ...(currentActiveRouting() ? { routing: activeRouting!.routing } : {}),
     })
   }
 
@@ -402,6 +429,7 @@
       stale,
       readOnly,
       transitionLocked,
+      routingFingerprint: layout.routing?.fingerprint,
     }
     if (
       !shouldRefreshCanvasProjection(
@@ -413,6 +441,12 @@
     ) {
       return
     }
+    if (
+      untrack(() => dragging) &&
+      previousProjectionRefresh?.projection === projection &&
+      previousProjectionRefresh.workflowIdentity === workflowIdentity
+    )
+      return
     const projected = deriveCanvas()
     const currentNodes = untrack(() => flowNodes)
     const nextNodes = withAuthoritativeSelection(projected.nodes, currentNodes)
@@ -422,6 +456,148 @@
     if (nextEdges !== currentEdges) flowEdges = nextEdges
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
+  })
+
+  // This primitive changes only when measurements change, never for drag positions or selection.
+  const routingDimensions = $derived(
+    JSON.stringify(flowNodes.map(({ id, measured }) => [id, measured?.width, measured?.height])),
+  )
+
+  function currentActiveRouting(): boolean {
+    return (
+      activeRouting?.projection === projection &&
+      activeRouting.workflowIdentity === workflowIdentity &&
+      activeRouting.generation === pairGeneration
+    )
+  }
+
+  function routingCandidate(): ScopeRoutingV1 | undefined {
+    const publication = routingPublication
+    return publication?.projection === projection &&
+      publication.workflowIdentity === workflowIdentity &&
+      publication.generation === pairGeneration &&
+      (publication.incomingRouting === layout.routing ||
+        (publication.routing === undefined &&
+          publication.incomingRouting?.fingerprint === layout.routing?.fingerprint)) &&
+      samePositions(publication.incomingPositions, layout.nodePositions)
+      ? publication.routing
+      : layout.routing
+  }
+
+  function rememberRoutingPublication(routing: ScopeRoutingV1 | undefined): void {
+    routingPublication = {
+      projection,
+      workflowIdentity,
+      generation: pairGeneration,
+      incomingRouting: layout.routing,
+      incomingPositions: layout.nodePositions,
+      routing,
+    }
+  }
+
+  function clearRenderedRouting(): void {
+    activeRouting = undefined
+    flowEdges = flowEdges.map((edge) => {
+      if (!edge.data?.route) return edge
+      const data = { ...edge.data }
+      delete data.route
+      return { ...edge, data }
+    })
+  }
+
+  function invalidateRouting(persist: boolean): void {
+    routingActivation += 1
+    rememberRoutingPublication(undefined)
+    clearRenderedRouting()
+    if (persist) schedulePersist(withoutRouting(layoutWithPositions()))
+    else {
+      if (persistTimer) clearTimeout(persistTimer)
+      persistTimer = undefined
+      if (pendingLayout?.identity === workflowIdentity) pendingLayout.scope = withoutRouting(pendingLayout.scope)
+      onLayoutChange({ routing: undefined }, workflowIdentity)
+    }
+  }
+
+  $effect(() => {
+    const inputs = {
+      projection,
+      workflowIdentity,
+      generation: pairGeneration,
+      positions: layout.nodePositions,
+      routing: layout.routing,
+      dimensions: routingDimensions,
+    }
+    const paused = !surfaceActive || dragging || arrangeBusy
+    untrack(() => {
+      const activation = ++routingActivation
+      if (paused) return
+      const candidate = routingCandidate()
+      const nodes = measuredLayoutNodes()
+      const positions = canvasPositionsStore.get()
+      if (!candidate) {
+        clearRenderedRouting()
+        return
+      }
+      const sanitized = sanitizeScopeRouting(candidate)
+      if (!sanitized) {
+        invalidateRouting(true)
+        return
+      }
+      if (
+        currentActiveRouting() &&
+        activeRouting!.dimensions === inputs.dimensions &&
+        samePositions(activeRouting!.positions, positions) &&
+        JSON.stringify(activeRouting!.routing) === JSON.stringify(sanitized)
+      )
+        return
+      clearRenderedRouting()
+      // Absence of measurements is temporary, not evidence of a stale cache.
+      if (!nodes) {
+        if (
+          flowNodes.length === projection.nodes.length &&
+          flowNodes.every(({ measured }) => measured?.width !== undefined && measured?.height !== undefined)
+        )
+          invalidateRouting(true)
+        return
+      }
+      const revision = layoutRevision
+      const isCurrent = () =>
+        !destroyed &&
+        !dragging &&
+        !arrangeBusy &&
+        surfaceActive &&
+        routingActivation === activation &&
+        layoutRevision === revision &&
+        projection === inputs.projection &&
+        workflowIdentity === inputs.workflowIdentity &&
+        pairGeneration === inputs.generation &&
+        projection.scope.key === inputs.projection.scope.key &&
+        routingDimensions === inputs.dimensions &&
+        routingCandidate() === candidate &&
+        samePositions(layout.nodePositions, inputs.positions) &&
+        samePositions(canvasPositionsStore.get(), positions)
+      void resolveCurrentRouting(inputs.projection, positions, nodes, sanitized)
+        .then((routing) => {
+          if (!isCurrent()) return
+          if (!routing) {
+            invalidateRouting(true)
+            return
+          }
+          activeRouting = {
+            projection,
+            workflowIdentity,
+            generation: pairGeneration,
+            routing,
+            dimensions: inputs.dimensions,
+            positions,
+          }
+          const projected = deriveCanvas()
+          flowEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
+        })
+        .catch(() => {
+          if (isCurrent()) invalidateRouting(true)
+        })
+    })
   })
 
   $effect(() => {
@@ -464,6 +640,13 @@
     })
   })
 
+  function handleDragStart(): void {
+    if (!canAuthor()) return
+    dragging = true
+    layoutRevision += 1
+    invalidateRouting(false)
+  }
+
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
     if (!canAuthor()) return
@@ -473,7 +656,10 @@
 
   function handleDragStop(detail: CanvasDragDetail): void {
     recordEditorMetric('dragCompletions')
+    dragging = false
     if (!canAuthor()) return
+    rememberRoutingPublication(undefined)
+    clearRenderedRouting()
     layoutRevision += 1
     const updates = draggedPositions(detail)
     if (updates.length === 0) return
@@ -726,7 +912,15 @@
       const nextEdges = withSurfaceEdgeSelection(projected.edges, flowEdges)
       // Everything above is preparation. Publish the complete accepted scope in one turn.
       attempt.published = true
-      activeRouting = { projection, routing: next.routing! }
+      rememberRoutingPublication(next.routing)
+      activeRouting = {
+        projection,
+        workflowIdentity,
+        generation: pairGeneration,
+        routing: next.routing!,
+        dimensions: routingDimensions,
+        positions: next.nodePositions,
+      }
       flowNodes = nextNodes
       flowEdges = nextEdges
       replaceCanvasPositions(next.nodePositions)
@@ -923,6 +1117,7 @@
 
   export function nudge(larger: boolean, direction: 'up' | 'down' | 'left' | 'right'): void {
     if (!canAuthor() || selection.length === 0) return
+    invalidateRouting(false)
     const amount = larger ? 20 : 5
     const delta =
       direction === 'up'
@@ -1235,8 +1430,9 @@
 
   function layoutWithPositions(): ScopeLayoutV1 {
     return {
-      ...layout,
-      ...(activeRouting?.projection === projection ? { routing: activeRouting.routing } : {}),
+      ...withoutRouting(layout),
+      ...(routingCandidate() ? { routing: routingCandidate()! } : {}),
+      ...(currentActiveRouting() ? { routing: activeRouting!.routing } : {}),
       nodePositions: Object.fromEntries(
         Object.entries(canvasPositionsStore.get()).map(([id, position]) => [id, { ...position }]),
       ),
@@ -1250,7 +1446,7 @@
   }
 
   function schedulePersist(next: ScopeLayoutV1): void {
-    onLayoutChange(next, workflowIdentity)
+    onLayoutChange({ ...next, routing: next.routing }, workflowIdentity)
     pendingLayout = { scope: structuredClone(next), identity: workflowIdentity }
     schedulePersistenceFlush()
   }
@@ -1331,6 +1527,7 @@
     root.addEventListener('contextmenu', openNodeMenu, true)
     root.addEventListener('keydown', handleNodeMenuKeydown, true)
     window.addEventListener('pointerdown', outsideNodeMenu, true)
+    root.addEventListener('workflowdragstart', handleDragStart)
     root.addEventListener('workflowdragmove', drag)
     root.addEventListener('workflowdragstop', stop)
     root.addEventListener('workflowconnect', connect)
@@ -1356,6 +1553,7 @@
       root.removeEventListener('contextmenu', openNodeMenu, true)
       root.removeEventListener('keydown', handleNodeMenuKeydown, true)
       window.removeEventListener('pointerdown', outsideNodeMenu, true)
+      root.removeEventListener('workflowdragstart', handleDragStart)
       root.removeEventListener('workflowdragmove', drag)
       root.removeEventListener('workflowdragstop', stop)
       root.removeEventListener('workflowconnect', connect)
@@ -1459,6 +1657,7 @@
       minZoom={0.1}
       maxZoom={4}
       fitViewOptions={{ padding: 0.18, duration: 0 }}
+      onnodedragstart={handleDragStart}
       onnodedrag={({ targetNode, nodes }) => {
         handleDrag(dragDetail(nodes, targetNode))
       }}

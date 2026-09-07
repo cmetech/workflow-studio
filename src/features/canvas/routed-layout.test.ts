@@ -1,11 +1,17 @@
+import type { ProjectedGraph } from '$src/lib/projection/types'
 import { describe, expect, it, vi } from 'vitest'
 import {
   countOrthogonalCrossings,
+  resolveCurrentRouting,
+  graphFingerprint,
+  routingFingerprint,
   validateRoutedLayout,
   type RoutedLayoutInput,
   type RoutedLayoutValidation,
 } from './routed-layout'
 import {
+  ROUTING_ENGINE,
+  type ScopeRoutingV1,
   MAX_ROUTE_POINTS_PER_EDGE,
   MAX_SERIALIZED_ROUTING_BYTES,
   MAX_TOTAL_ROUTE_POINTS,
@@ -643,3 +649,84 @@ function routeRecord(
 ): Readonly<Record<string, EdgeRouteV1>> {
   return Object.fromEntries(entries.map(([edgeId, points]) => [edgeId, { edgeId, points }]))
 }
+
+// A cache must match the whole graph, exact measurements and positions before rendering.
+describe('resolveCurrentRouting', () => {
+  const nodes = baseNodes.map((node) => ({ ...node, width: 216, height: 104 }))
+  const positions = { source: { x: 0, y: 0 }, target: { x: 400, y: 0 } }
+  const graph = {
+    scope: { key: 'root', kind: 'root', workflow: { name: 'Release', profile: 'hermes-legacy' } },
+    nodes: nodes.map(({ id }) => ({
+      id,
+      kind: 'command',
+      value: 'Run',
+      dependsOn: id === 'target' ? ['source'] : [],
+      options: {},
+      source: { path: '', start: 0, end: 0 },
+    })),
+    edges: baseEdges,
+    editorNodePrefix: '',
+    sourcePath: ['nodes'],
+    sourceRange: { start: 0, end: 0 },
+    definitionOrder: ['source', 'target'],
+    outerInputs: [],
+    issues: [],
+    capacity: { status: 'visual', nodeCount: 2, edgeCount: 1 },
+  } satisfies ProjectedGraph
+  async function cache(): Promise<ScopeRoutingV1> {
+    return {
+      schemaVersion: 1,
+      engine: ROUTING_ENGINE,
+      fingerprint: await routingFingerprint({
+        graphFingerprint: await graphFingerprint({ engine: ROUTING_ENGINE, scopeKey: 'root', nodes, edges: baseEdges }),
+        positions,
+      }),
+      routes: {
+        'dependency:source->target': {
+          edgeId: 'dependency:source->target',
+          points: [
+            { x: 216, y: 52 },
+            { x: 400, y: 52 },
+          ],
+        },
+      },
+    }
+  }
+
+  it('[RG5] accepts a complete current cache and preserves its exact routes', async () => {
+    const routing = await cache()
+    expect(await resolveCurrentRouting(graph, positions, nodes, routing)).toEqual(routing)
+  })
+
+  it.each(['position', 'dimension', 'unmeasured', 'order', 'edge', 'scope', 'partial', 'geometry', 'engine'])(
+    '[RG7] rejects the complete cache for %s mismatch',
+    async (change) => {
+      const routing = await cache()
+      const currentPositions = change === 'position' ? { ...positions, source: { x: 1, y: 0 } } : positions
+      const measured =
+        change === 'unmeasured'
+          ? undefined
+          : nodes.map((node, order) => ({
+              ...node,
+              ...(change === 'dimension' ? { height: 180 } : {}),
+              ...(change === 'order' ? { order: 1 - order } : {}),
+            }))
+      const currentGraph =
+        change === 'scope'
+          ? { ...graph, scope: { ...graph.scope, key: 'loop-group:body' as const } }
+          : change === 'edge'
+            ? { ...graph, edges: [] }
+            : graph
+      if (change === 'partial') (routing as { routes: object }).routes = {}
+      if (change === 'geometry') (routing.routes['dependency:source->target']!.points[0] as { x: number }).x = 0
+      if (change === 'engine') (routing as { engine: string }).engine = 'old-engine'
+      expect(await resolveCurrentRouting(currentGraph, currentPositions, measured, routing)).toBeUndefined()
+    },
+  )
+
+  it('[RG7] retains content-only changes to the same geometry', async () => {
+    const routing = await cache()
+    const edited = { ...graph, nodes: graph.nodes.map((node) => ({ ...node, value: 'Edited text' })) }
+    expect(await resolveCurrentRouting(edited, positions, nodes, routing)).toEqual(routing)
+  })
+})
