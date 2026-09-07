@@ -161,9 +161,34 @@ export class LayoutClient {
 }
 
 function snapshotRequest(request: LayoutWorkerRequest): LayoutWorkerRequest {
-  const identity = Object.freeze({ ...request.identity })
-  const nodes = Object.freeze(request.nodes.map((node) => Object.freeze({ ...node })))
-  const edges = Object.freeze(request.edges.map((edge) => Object.freeze({ ...edge })))
+  const identity = Object.freeze({
+    requestId: request.identity.requestId,
+    workflowIdentity: request.identity.workflowIdentity,
+    pairGeneration: request.identity.pairGeneration,
+    scopeKey: request.identity.scopeKey,
+    graphFingerprint: request.identity.graphFingerprint,
+    layoutRevision: request.identity.layoutRevision,
+  })
+  const nodes = Object.freeze(
+    request.nodes.map((node) =>
+      Object.freeze({
+        id: node.id,
+        order: node.order,
+        width: node.width,
+        height: node.height,
+      }),
+    ),
+  )
+  const edges = Object.freeze(
+    request.edges.map((edge) =>
+      Object.freeze({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        order: edge.order,
+      }),
+    ),
+  )
   return Object.freeze({ type: 'layout', identity, nodes, edges })
 }
 

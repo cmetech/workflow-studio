@@ -153,6 +153,55 @@ describe('LayoutClient', () => {
     client.destroy()
   })
 
+  it('posts only declared protocol fields from structurally compatible caller objects', async () => {
+    const worker = new FakeWorker()
+    const client = new LayoutClient(() => worker)
+    const callerIdentity = {
+      ...identity(),
+      yamlState: { text: 'name: must-not-cross-worker-boundary' },
+      callback: () => 'must-not-cross-worker-boundary',
+    }
+    const callerNodes = [
+      {
+        id: 'first',
+        order: 0,
+        width: 216,
+        height: 104,
+        applicationState: { selected: true },
+        callback: () => 'must-not-cross-worker-boundary',
+      },
+    ]
+    const callerEdges = [
+      {
+        id: 'first->second',
+        source: 'first',
+        target: 'second',
+        order: 0,
+        yamlState: { path: ['nodes', 0, 'depends_on'] },
+        callback: () => 'must-not-cross-worker-boundary',
+      },
+    ]
+    const input: LayoutWorkerRequest = {
+      type: 'layout',
+      identity: callerIdentity,
+      nodes: callerNodes,
+      edges: callerEdges,
+    }
+    const pending = client.arrange(input)
+    const expected: LayoutWorkerRequest = {
+      type: 'layout',
+      identity: identity(),
+      nodes: [{ id: 'first', order: 0, width: 216, height: 104 }],
+      edges: [{ id: 'first->second', source: 'first', target: 'second', order: 0 }],
+    }
+
+    expect(worker.messages).toEqual([expected])
+
+    worker.emit(successFor(expected))
+    await expect(pending).resolves.toEqual(successFor(expected))
+    client.destroy()
+  })
+
   it('resolves a success only when the complete identity passes through unchanged', async () => {
     const worker = new FakeWorker()
     const client = new LayoutClient(() => worker)
