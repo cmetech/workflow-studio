@@ -1,6 +1,7 @@
 import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
 import { emptyScopeLayout, type LayoutRecordV2 } from './types'
 import type { LayoutNodeProjection, LayoutProjection, ScopeLayoutV1 } from './types'
+import { withoutRouting } from './routing'
 
 export const LAYOUT_COLUMN_WIDTH = 320
 export const LAYOUT_ROW_HEIGHT = 160
@@ -37,10 +38,11 @@ export function reconcileLayout(projection: LayoutProjection, saved: ScopeLayout
   const selectionUnchanged = selection.length === saved.selectedNodeIds.length
   const staleFocus = saved.focusTarget?.nodeId !== undefined && !nodeIds.has(saved.focusTarget.nodeId)
   if (positionsUnchanged && selectionUnchanged && !staleFocus) return saved
+  const source = positionsUnchanged ? saved : withoutRouting(saved)
   const result = {
-    ...saved,
-    nodePositions: positionsUnchanged ? saved.nodePositions : nodePositions,
-    selectedNodeIds: selectionUnchanged ? saved.selectedNodeIds : selection,
+    ...source,
+    nodePositions: positionsUnchanged ? source.nodePositions : nodePositions,
+    selectedNodeIds: selectionUnchanged ? source.selectedNodeIds : selection,
   }
   if (staleFocus) delete result.focusTarget
   return result
@@ -68,7 +70,7 @@ export function migrateVisualNodeRename(saved: ScopeLayoutV1, from: string, to: 
       .concat([[to, { ...saved.nodePositions[from]! }]]),
   )
   return {
-    ...saved,
+    ...withoutRouting(saved),
     nodePositions,
     selectedNodeIds: saved.selectedNodeIds.includes(from)
       ? saved.selectedNodeIds.map((id) => (id === from ? to : id))
@@ -92,7 +94,8 @@ export function migrateManualYamlNodeRename(
     sameNodeShapeAfterRename(removed[0]!, added[0]!, removed[0]!.id, added[0]!.id)
       ? [{ from: removed[0]!.id, to: added[0]!.id }]
       : []
-  const migrated = matches.length === 1 ? migrateVisualNodeRename(saved, matches[0]!.from, matches[0]!.to) : saved
+  const source = sameDependencyTopology(before, after) ? saved : withoutRouting(saved)
+  const migrated = matches.length === 1 ? migrateVisualNodeRename(source, matches[0]!.from, matches[0]!.to) : source
   return reconcileLayout(after, migrated)
 }
 
@@ -128,7 +131,10 @@ export function reconcileWorkflowLayout(
       renamed = { from: oldGraph.scope.key, to: newGraph.scope.key }
       const scope = saved.scopeLayouts[renamed.from]
       if (scope && !saved.scopeLayouts[renamed.to]) {
-        const scopeLayouts: LayoutRecordV2['scopeLayouts'] = { ...saved.scopeLayouts, [renamed.to]: scope }
+        const scopeLayouts: LayoutRecordV2['scopeLayouts'] = {
+          ...saved.scopeLayouts,
+          [renamed.to]: withoutRouting(scope),
+        }
         delete scopeLayouts[renamed.from]
         source = {
           ...saved,
@@ -160,6 +166,14 @@ export function reconcileWorkflowLayout(
 
 function semanticNode(node: LayoutNodeProjection) {
   return { id: node.id, kind: node.kind, value: node.value, options: node.options, dependsOn: node.dependsOn }
+}
+
+function sameDependencyTopology(before: LayoutProjection, after: LayoutProjection): boolean {
+  const dependencies = (projection: LayoutProjection) =>
+    projection.nodes
+      .map(({ id, dependsOn }) => ({ id, dependsOn: [...dependsOn].sort(compareText) }))
+      .sort((left, right) => compareText(left.id, right.id))
+  return stableValue(dependencies(before)) === stableValue(dependencies(after))
 }
 
 function placeNode(node: LayoutNodeProjection, positions: ReadonlyMap<string, Position>): Position {

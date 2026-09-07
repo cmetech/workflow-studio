@@ -1,7 +1,29 @@
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
-import type { LayoutProjection, ScopeLayoutV1 } from './types'
-import { migrateManualYamlNodeRename, migrateVisualNodeRename, reconcileLayout } from './place-new-nodes'
+import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
+import type { LayoutProjection, LayoutRecordV2, ScopeLayoutV1 } from './types'
+import {
+  migrateManualYamlNodeRename,
+  migrateVisualNodeRename,
+  reconcileLayout,
+  reconcileWorkflowLayout,
+} from './place-new-nodes'
+import { ROUTING_ENGINE, type ScopeRoutingV1 } from './routing'
+
+const routing: ScopeRoutingV1 = {
+  schemaVersion: 1,
+  engine: ROUTING_ENGINE,
+  fingerprint: `sha256:${'d'.repeat(64)}`,
+  routes: {
+    'dependency:build->removed': {
+      edgeId: 'dependency:build->removed',
+      points: [
+        { x: 536, y: 52 },
+        { x: 640, y: 52 },
+      ],
+    },
+  },
+}
 
 const baseLayout: ScopeLayoutV1 = {
   selectedNodeIds: [],
@@ -12,6 +34,7 @@ const baseLayout: ScopeLayoutV1 = {
     removed: { x: 640, y: 0 },
   },
   viewport: { x: 12, y: -4, zoom: 1.25 },
+  routing,
 }
 
 function projection(nodes: readonly Partial<LayoutProjection['nodes'][number]>[]): LayoutProjection {
@@ -26,7 +49,90 @@ function projection(nodes: readonly Partial<LayoutProjection['nodes'][number]>[]
   }
 }
 
+function workflow(
+  scopes: readonly {
+    key: GraphScopeKey
+    groupId?: string
+    nodes: readonly Partial<LayoutProjection['nodes'][number]>[]
+  }[],
+): WorkflowProjection {
+  return {
+    name: 'release',
+    profile: 'hermes-legacy',
+    definition: {},
+    graphs: scopes.map(({ key, groupId, nodes }) => ({
+      scope: {
+        key,
+        kind: key === 'root' ? 'root' : 'loop-group',
+        workflow: { name: 'release', profile: 'hermes-legacy' },
+        ...(groupId ? { groupId } : {}),
+      },
+      editorNodePrefix: key === 'root' ? 'nodes' : `${key}.nodes`,
+      sourcePath: [],
+      sourceRange: { start: 0, end: 0 },
+      nodes: projection(nodes).nodes.map((node) => ({ ...node, source: { path: '', start: 0, end: 0 } })),
+      edges: [],
+      definitionOrder: nodes.map((node) => node.id ?? ''),
+      outerInputs: [],
+      issues: [],
+      capacity: { status: 'visual', nodeCount: nodes.length, edgeCount: 0 },
+    })),
+  }
+}
+
+function workflowLayout(scopeLayouts: LayoutRecordV2['scopeLayouts']): LayoutRecordV2 {
+  return {
+    schemaVersion: 2,
+    workspaceId: 'workspace',
+    workflowPath: 'release.yaml',
+    activeScopeKey: 'root',
+    scopeLayouts,
+    panels: { left: 260, right: 320, problems: 180 },
+    collapsedPanels: { left: false, right: false },
+    editorMode: 'visual',
+    updatedAt: '2026-09-07T12:00:00.000Z',
+  }
+}
+
 describe('layout reconciliation', () => {
+  it('[RG7] preserves routing and scope identity when node membership and positions are unchanged', () => {
+    const reconciled = reconcileLayout(projection([{ id: 'build' }, { id: 'removed' }]), baseLayout)
+
+    expect(reconciled).toBe(baseLayout)
+    expect(reconciled.routing).toBe(routing)
+  })
+
+  it('preserves routing while reconciling selection and focus state', () => {
+    const saved: ScopeLayoutV1 = {
+      ...baseLayout,
+      selectedNodeIds: ['build', 'missing'],
+      focusTarget: { kind: 'node', nodeId: 'missing' },
+    }
+
+    const reconciled = reconcileLayout(projection([{ id: 'build' }, { id: 'removed' }]), saved)
+
+    expect(reconciled).not.toBe(saved)
+    expect(reconciled.selectedNodeIds).toEqual(['build'])
+    expect(reconciled.focusTarget).toBeUndefined()
+    expect(reconciled.routing).toBe(routing)
+  })
+
+  it.each([
+    ['adds and automatically places a node', [{ id: 'build' }, { id: 'removed' }, { id: 'added' }]],
+    ['removes a node', [{ id: 'build' }]],
+  ])('invalidates routing when reconciliation %s', (_name, nodes) => {
+    expect(reconcileLayout(projection(nodes), baseLayout).routing).toBeUndefined()
+  })
+
+  it('invalidates routing when a formerly invalid saved position is automatically replaced', () => {
+    const saved = {
+      ...baseLayout,
+      nodePositions: { ...baseLayout.nodePositions, removed: { x: Number.NaN, y: 0 } },
+    }
+
+    expect(reconcileLayout(projection([{ id: 'build' }, { id: 'removed' }]), saved).routing).toBeUndefined()
+  })
+
   it('retains existing node positions, prunes removed nodes, and places roots in the first free column', () => {
     const reconciled = reconcileLayout(projection([{ id: 'build' }, { id: 'lint' }, { id: 'test' }]), baseLayout)
 
@@ -95,6 +201,7 @@ describe('layout reconciliation', () => {
 
     expect(migrated.nodePositions.compile).toEqual({ x: 320, y: 0 })
     expect(migrated.nodePositions.build).toBeUndefined()
+    expect(migrated.routing).toBeUndefined()
   })
 
   it('migrates one unambiguous manual YAML rename by semantic shape after ID substitution', () => {
@@ -111,6 +218,79 @@ describe('layout reconciliation', () => {
 
     expect(migrated.nodePositions.compile).toEqual({ x: 320, y: 0 })
     expect(migrated.nodePositions.build).toBeUndefined()
+    expect(migrated.routing).toBeUndefined()
+  })
+
+  it('invalidates routing for a dependency-topology change with unchanged IDs and positions', () => {
+    const before = projection([{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }])
+    const after = projection([{ id: 'build', dependsOn: ['removed'] }, { id: 'removed' }])
+
+    const migrated = migrateManualYamlNodeRename(baseLayout, before, after)
+
+    expect(migrated.nodePositions).toBe(baseLayout.nodePositions)
+    expect(migrated.routing).toBeUndefined()
+  })
+
+  it('preserves routing when dependency order changes without changing topology', () => {
+    const saved = {
+      ...baseLayout,
+      nodePositions: { ...baseLayout.nodePositions, other: { x: 0, y: 160 } },
+    }
+    const before = projection([{ id: 'build' }, { id: 'removed' }, { id: 'other', dependsOn: ['build', 'removed'] }])
+    const after = projection([{ id: 'build' }, { id: 'removed' }, { id: 'other', dependsOn: ['removed', 'build'] }])
+
+    expect(migrateManualYamlNodeRename(saved, before, after).routing).toBe(routing)
+  })
+
+  it('invalidates changed root and loop-body routing while retaining an unaffected sibling scope by identity', () => {
+    const root = { ...baseLayout }
+    const first = {
+      ...baseLayout,
+      nodePositions: { child: { x: 0, y: 0 }, next: { x: 320, y: 0 } },
+    }
+    const sibling = { ...baseLayout, nodePositions: { sibling: { x: 0, y: 0 } } }
+    const saved = workflowLayout({
+      root,
+      'loop-group:first': first,
+      'loop-group:sibling': sibling,
+    })
+    const before = workflow([
+      { key: 'root', nodes: [{ id: 'build' }, { id: 'removed', dependsOn: ['build'] }] },
+      { key: 'loop-group:first', groupId: 'removed', nodes: [{ id: 'child' }, { id: 'next', dependsOn: ['child'] }] },
+      { key: 'loop-group:sibling', groupId: 'build', nodes: [{ id: 'sibling' }] },
+    ])
+    const after = workflow([
+      { key: 'root', nodes: [{ id: 'build', dependsOn: ['removed'] }, { id: 'removed' }] },
+      { key: 'loop-group:first', groupId: 'removed', nodes: [{ id: 'child', dependsOn: ['next'] }, { id: 'next' }] },
+      { key: 'loop-group:sibling', groupId: 'build', nodes: [{ id: 'sibling' }] },
+    ])
+
+    const reconciled = reconcileWorkflowLayout(after, saved, before)
+
+    expect(reconciled.scopeLayouts.root.routing).toBeUndefined()
+    expect(reconciled.scopeLayouts['loop-group:first']?.routing).toBeUndefined()
+    expect(reconciled.scopeLayouts['loop-group:sibling']).toBe(sibling)
+    expect(reconciled.scopeLayouts['loop-group:sibling']?.routing).toBe(routing)
+  })
+
+  it('invalidates root and migrated body routing when a loop owner is renamed', () => {
+    const body = { ...baseLayout, nodePositions: { child: { x: 0, y: 0 } } }
+    const saved = workflowLayout({ root: baseLayout, 'loop-group:removed': body })
+    const before = workflow([
+      { key: 'root', nodes: [{ id: 'build' }, { id: 'removed', kind: 'loop', value: 'repeat' }] },
+      { key: 'loop-group:removed', groupId: 'removed', nodes: [{ id: 'child' }] },
+    ])
+    const after = workflow([
+      { key: 'root', nodes: [{ id: 'build' }, { id: 'renamed', kind: 'loop', value: 'repeat' }] },
+      { key: 'loop-group:renamed', groupId: 'renamed', nodes: [{ id: 'child' }] },
+    ])
+
+    const reconciled = reconcileWorkflowLayout(after, saved, before)
+
+    expect(reconciled.scopeLayouts.root.routing).toBeUndefined()
+    expect(reconciled.scopeLayouts['loop-group:removed']).toBeUndefined()
+    expect(reconciled.scopeLayouts['loop-group:renamed']?.nodePositions).toEqual(body.nodePositions)
+    expect(reconciled.scopeLayouts['loop-group:renamed']?.routing).toBeUndefined()
   })
 
   it('does not guess an ambiguous manual YAML rename and uses ordinary new-node placement', () => {

@@ -2,10 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 import { emptyScopeLayout, type LayoutContentHashes, type LayoutRecordV1, type LayoutRecordV2 } from './types'
 import { createLayoutStore, LayoutPersistenceController } from './layout-store'
+import { ROUTING_ENGINE, type ScopeRoutingV1 } from './routing'
 
 const hashes: LayoutContentHashes = {
   definition: 'a'.repeat(64),
   companion: 'b'.repeat(64),
+}
+
+const routeId = 'dependency:build->release'
+const routing: ScopeRoutingV1 = {
+  schemaVersion: 1,
+  engine: ROUTING_ENGINE,
+  fingerprint: `sha256:${'c'.repeat(64)}`,
+  routes: {
+    [routeId]: {
+      edgeId: routeId,
+      points: [
+        { x: 216, y: 52 },
+        { x: 320, y: 52 },
+      ],
+    },
+  },
 }
 
 function legacyRecord(overrides: Partial<LayoutRecordV1> = {}): LayoutRecordV1 {
@@ -45,6 +62,98 @@ function nativeWith(content: string | null = null) {
 }
 
 describe('layout app-data store', () => {
+  it('[RG5] round-trips routed scopes byte-for-byte through save, load, and defensive cloning', async () => {
+    const native = nativeWith()
+    const store = createLayoutStore(native)
+    const layout = record()
+    layout.scopeLayouts.root.routing = routing
+
+    await store.saveLayout(layout, hashes)
+    const first = await store.loadLayout(layout)
+
+    expect(JSON.stringify(first?.scopeLayouts.root.routing)).toBe(JSON.stringify(routing))
+    expect(first?.scopeLayouts.root.routing).not.toBe(routing)
+    ;(first!.scopeLayouts.root.routing!.routes[routeId]!.points as { x: number; y: number }[])[0]!.x = 999
+    const second = await store.loadLayout(layout)
+    expect(JSON.stringify(second?.scopeLayouts.root.routing)).toBe(JSON.stringify(routing))
+  })
+
+  it.each([
+    ['schema', { ...routing, schemaVersion: 2 }],
+    ['engine', { ...routing, engine: 'other-engine' }],
+    ['digest', { ...routing, fingerprint: 'sha256:short' }],
+    [
+      'record key',
+      {
+        ...routing,
+        routes: {
+          '': {
+            edgeId: '',
+            points: [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+            ],
+          },
+        },
+      },
+    ],
+    ['edge ID', { ...routing, routes: { [routeId]: { ...routing.routes[routeId]!, edgeId: 'other' } } }],
+    [
+      'coordinate',
+      {
+        ...routing,
+        routes: {
+          [routeId]: {
+            edgeId: routeId,
+            points: [
+              { x: 0, y: 0 },
+              { x: 1_000_001, y: 0 },
+            ],
+          },
+        },
+      },
+    ],
+    [
+      'point count',
+      {
+        ...routing,
+        routes: { [routeId]: { edgeId: routeId, points: Array.from({ length: 65 }, (_, x) => ({ x, y: 0 })) } },
+      },
+    ],
+    [
+      'route count',
+      {
+        ...routing,
+        routes: Object.fromEntries(
+          Array.from({ length: 501 }, (_, index) => {
+            const id = `edge-${index}`
+            return [
+              id,
+              {
+                edgeId: id,
+                points: [
+                  { x: 0, y: index },
+                  { x: 1, y: index },
+                ],
+              },
+            ]
+          }),
+        ),
+      },
+    ],
+  ])('drops only malformed routing from an otherwise valid v2 scope: %s', async (_name, malformed) => {
+    const layout = record()
+    layout.scopeLayouts.root = { ...layout.scopeLayouts.root, routing: malformed as ScopeRoutingV1 }
+    const native = nativeWith(JSON.stringify([{ schemaVersion: 2, layout, savedHashes: hashes }]))
+
+    const loaded = await createLayoutStore(native).loadLayout(layout)
+
+    expect(loaded).not.toBeNull()
+    expect(loaded?.scopeLayouts.root.routing).toBeUndefined()
+    expect(loaded?.scopeLayouts.root.nodePositions).toEqual(layout.scopeLayouts.root.nodePositions)
+    expect(loaded?.scopeLayouts.root.viewport).toEqual(layout.scopeLayouts.root.viewport)
+  })
+
   it('round-trips valid collapsed panels without aliasing saved or loaded state', async () => {
     const native = nativeWith()
     const store = createLayoutStore(native)

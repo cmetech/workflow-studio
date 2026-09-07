@@ -1,6 +1,7 @@
 import type { GraphScopeKey } from '$src/lib/projection/types'
 import { emptyScopeLayout, type ScopeLayoutV1 } from './types'
 import { validPosition } from './place-new-nodes'
+import { sanitizeScopeRouting } from './routing'
 import type { LayoutContentHashes, LayoutLoadRequest, LayoutRecordV2 } from './types'
 
 const MIN_ZOOM = 0.05
@@ -374,6 +375,7 @@ function sanitizeScopeLayout(value: unknown): ScopeLayoutV1 | null {
       (focus.nodeId !== undefined && !nonEmptyString(focus.nodeId)))
   )
     return null
+  const routing = sanitizeScopeRouting(value.routing)
   return {
     nodePositions: Object.fromEntries(
       Object.entries(value.nodePositions)
@@ -396,6 +398,7 @@ function sanitizeScopeLayout(value: unknown): ScopeLayoutV1 | null {
       ? { auxiliaryTab: value.auxiliaryTab }
       : {}),
     referencesScroll: scrollCoordinate(value.referencesScroll) ? value.referencesScroll : 0,
+    ...(routing ? { routing } : {}),
   }
 }
 

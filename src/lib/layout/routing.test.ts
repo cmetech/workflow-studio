@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import { graphFingerprint, normalizeRoute, routingFingerprint } from '$src/features/canvas/routed-layout'
-import { ROUTING_ENGINE, type EdgeRoutePointV1 } from './routing'
+import { emptyScopeLayout } from './types'
+import {
+  MAX_ROUTE_POINTS_PER_EDGE,
+  MAX_SERIALIZED_ROUTING_BYTES,
+  ROUTING_ENGINE,
+  sanitizeScopeRouting,
+  withoutRouting,
+  type EdgeRoutePointV1,
+  type ScopeRoutingV1,
+} from './routing'
+
+const edgeId = 'dependency:collect->review'
+const validRouting: ScopeRoutingV1 = {
+  schemaVersion: 1,
+  engine: ROUTING_ENGINE,
+  fingerprint: `sha256:${'a'.repeat(64)}`,
+  routes: {
+    [edgeId]: {
+      edgeId,
+      points: [
+        { x: 216, y: 52 },
+        { x: 320, y: 52 },
+      ],
+    },
+  },
+}
 
 describe('routed layout normalization', () => {
   it('[RG2] removes consecutive duplicate and axis-collinear interior points without mutating input', () => {
@@ -174,5 +199,191 @@ describe('routed layout fingerprints', () => {
         positions: { ...positions, review: { ...positions.review, x: positions.review.x + 1 } },
       }),
     ).not.toBe(first)
+  })
+})
+
+describe('persisted scope routing', () => {
+  it('[RG5] sanitizes a complete route record without retaining caller-owned objects', () => {
+    const sanitized = sanitizeScopeRouting(validRouting)
+
+    expect(sanitized).toEqual(validRouting)
+    expect(sanitized).not.toBe(validRouting)
+    expect(sanitized?.routes).not.toBe(validRouting.routes)
+    expect(sanitized?.routes[edgeId]).not.toBe(validRouting.routes[edgeId])
+    expect(sanitized?.routes[edgeId]?.points).not.toBe(validRouting.routes[edgeId]?.points)
+  })
+
+  it.each([
+    ['schema version', { ...validRouting, schemaVersion: 2 }],
+    ['engine', { ...validRouting, engine: 'elk-layered-orthogonal-v2' }],
+    ['digest prefix', { ...validRouting, fingerprint: `sha512:${'a'.repeat(64)}` }],
+    ['uppercase digest', { ...validRouting, fingerprint: `sha256:${'A'.repeat(64)}` }],
+    [
+      'empty record key',
+      { ...validRouting, routes: { '': { edgeId: '', points: validRouting.routes[edgeId]!.points } } },
+    ],
+    [
+      'mismatched edge ID',
+      { ...validRouting, routes: { [edgeId]: { ...validRouting.routes[edgeId]!, edgeId: 'dependency:other' } } },
+    ],
+    ['non-string edge ID', { ...validRouting, routes: { [edgeId]: { ...validRouting.routes[edgeId]!, edgeId: 42 } } }],
+    [
+      'coordinate above the layout bound',
+      {
+        ...validRouting,
+        routes: {
+          [edgeId]: {
+            edgeId,
+            points: [
+              { x: 0, y: 0 },
+              { x: 1_000_001, y: 0 },
+            ],
+          },
+        },
+      },
+    ],
+    [
+      'non-finite coordinate',
+      {
+        ...validRouting,
+        routes: {
+          [edgeId]: {
+            edgeId,
+            points: [
+              { x: 0, y: 0 },
+              { x: Number.NaN, y: 0 },
+            ],
+          },
+        },
+      },
+    ],
+    ['one-point route', { ...validRouting, routes: { [edgeId]: { edgeId, points: [{ x: 0, y: 0 }] } } }],
+    [
+      'route above the per-edge point limit',
+      {
+        ...validRouting,
+        routes: {
+          [edgeId]: {
+            edgeId,
+            points: Array.from({ length: MAX_ROUTE_POINTS_PER_EDGE + 1 }, (_, x) => ({ x, y: 0 })),
+          },
+        },
+      },
+    ],
+    [
+      'route count above the limit',
+      {
+        ...validRouting,
+        routes: Object.fromEntries(
+          Array.from({ length: 501 }, (_, index) => {
+            const id = `edge-${index}`
+            return [
+              id,
+              {
+                edgeId: id,
+                points: [
+                  { x: 0, y: index },
+                  { x: 1, y: index },
+                ],
+              },
+            ]
+          }),
+        ),
+      },
+    ],
+    [
+      'total point count above the limit',
+      {
+        ...validRouting,
+        routes: Object.fromEntries(
+          Array.from({ length: 501 }, (_, index) => {
+            const id = `dense-edge-${index}`
+            return [
+              id,
+              {
+                edgeId: id,
+                points: Array.from({ length: MAX_ROUTE_POINTS_PER_EDGE }, (_, x) => ({ x, y: index })),
+              },
+            ]
+          }),
+        ),
+      },
+    ],
+    [
+      'single record key above the serialized bound',
+      (() => {
+        const id = 'e'.repeat(MAX_SERIALIZED_ROUTING_BYTES + 1)
+        return {
+          ...validRouting,
+          routes: {
+            [id]: {
+              edgeId: id,
+              points: [
+                { x: 0, y: 0 },
+                { x: 1, y: 0 },
+              ],
+            },
+          },
+        }
+      })(),
+    ],
+    [
+      'canonical routing payload above the serialized bound',
+      (() => {
+        const prefix = 'x'.repeat(Math.ceil(MAX_SERIALIZED_ROUTING_BYTES / 4))
+        const routes = Object.fromEntries(
+          Array.from({ length: 3 }, (_, index) => {
+            const id = `${prefix}-${index}`
+            return [
+              id,
+              {
+                edgeId: id,
+                points: [
+                  { x: 0, y: index },
+                  { x: 1, y: index },
+                ],
+              },
+            ]
+          }),
+        )
+        return { ...validRouting, routes }
+      })(),
+    ],
+  ])('rejects a malformed %s', (_name, routing) => {
+    expect(sanitizeScopeRouting(routing)).toBeUndefined()
+  })
+
+  it('rejects duplicate edge IDs even when the record keys differ', () => {
+    expect(
+      sanitizeScopeRouting({
+        ...validRouting,
+        routes: {
+          first: {
+            edgeId: 'first',
+            points: [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+            ],
+          },
+          second: {
+            edgeId: 'first',
+            points: [
+              { x: 0, y: 1 },
+              { x: 1, y: 1 },
+            ],
+          },
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  it('removes routing only when present and otherwise preserves scope identity', () => {
+    const plain = emptyScopeLayout()
+    const routed = { ...plain, routing: validRouting }
+
+    expect(withoutRouting(plain)).toBe(plain)
+    const cleared = withoutRouting(routed)
+    expect(cleared).toEqual(plain)
+    expect(cleared).not.toBe(routed)
   })
 })
