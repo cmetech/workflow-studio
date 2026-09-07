@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '2.0.0'
+const RELEASE_VERSION = '2.0.1'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
@@ -68,7 +68,7 @@ describe('version two release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 2.0.0', () => {
+  it('keeps every package and native release version synchronized at 2.0.1', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -80,8 +80,8 @@ describe('version two release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "2\.0\.0"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "2\.0\.0"/)
+    expect(cargoManifest).toMatch(/^version = "2\.0\.1"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "2\.0\.1"/)
   })
 
   it('changes the npm lockfile only for the synchronized version and pinned local Geist packages', () => {
@@ -118,7 +118,7 @@ describe('version two release metadata', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "2.0.0"',
+      'name = "workflow-studio"\nversion = "2.0.1"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
@@ -141,7 +141,8 @@ describe('version two release metadata', () => {
     expect(installing).toContain('v1.0.6 is the latest published release')
     expect(installing).toContain('v1.0.7 documentation-and-shortcuts draft')
     expect(installing).toContain('v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release')
-    expect(installing).toContain('v2.0.0 loop-group visual-authoring and compatibility release candidate')
+    expect(installing).toContain('v2.0.0 verified unpublished draft')
+    expect(installing).toContain('v2.0.1 UI customization recovery candidate')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -154,7 +155,7 @@ describe('version two release metadata', () => {
     expect(installing).not.toContain('/v1.0.4/scripts/install')
   })
 
-  it('preserves version-one history and records the v2.0.0 candidate boundary separately', () => {
+  it('preserves release history and records the v2.0.1 candidate boundary separately', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
@@ -188,16 +189,41 @@ describe('version two release metadata', () => {
     const readme = readFileSync('README.md', 'utf8')
     expect(readme).toContain('[version 2 release acceptance record](docs/verification/version-2-release-acceptance.md)')
     const acceptance = readFileSync('docs/verification/version-2-release-acceptance.md', 'utf8')
-    expect(acceptance).toContain('Version/tag: `2.0.0` / `v2.0.0`')
-    expect(acceptance).toContain('7d1a57f')
-    expect(acceptance).toMatch(/v2\.0\.0[^\n]*tag[^\n]*does not exist/i)
-    expect(acceptance).toMatch(/v2\.0\.0[^\n]*draft[^\n]*does not exist/i)
+    expect(acceptance).toContain('Version/tag: `2.0.1` / `v2.0.1`')
+    expect(acceptance).toContain('7a385e41bb58cf693b83f9b6cbfae4b0539cbe32')
+    expect(acceptance).toMatch(/v2\.0\.1[^\n]*tag[^\n]*does not exist/i)
+    expect(acceptance).toMatch(/v2\.0\.1[^\n]*(?:draft|release)[^\n]*does not exist/i)
     expect(acceptance).toContain(
-      '- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v2.0.0 draft bytes.',
+      '- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v2.0.1 draft bytes.',
     )
     expect(acceptance).toContain('- [x] No unresolved Critical/Important review finding remains.')
     expect(acceptance).toContain('- [ ] Release approved for manual publication.')
     expect(acceptance).toMatch(/Windows[^\n]*installed-app[^\n]*(?:not performed|open)/i)
+    expect(acceptance).toContain('aa91baac4081f0ca585b10fb3fb65b966a7ec24c')
+    expect(acceptance).toContain('34042847222')
+    expect(acceptance).toMatch(/v2\.0\.0[^\n]*annotated tag/i)
+    expect(acceptance).toMatch(/v2\.0\.0[^\n]*verified unpublished[^\n]*ten-asset draft/i)
+    expect(acceptance).toContain('1,837 tests across 160 files')
+    expect(acceptance).toContain('328/328')
+    expect(acceptance).toContain('8f07bdb4bdf30b56a582ef46de00a3485f818c3fe29b11dc40bdd983078337d6')
+    expect(acceptance).toContain('62258a58aec8b96874fd1f761d1ae5bb1684d91a0080aba4e74e5c39f5645141')
+    expect(acceptance).toContain('docs/mockups/ui-collapsed-panels-problems.png')
+    expect(acceptance).toContain('docs/mockups/ui-expanded-panels-problems.png')
+    expect(acceptance).toContain('docs/mockups/ui-theme-customization.png')
+    expect(acceptance).toMatch(/unresolved status blocks release tagging/i)
+    expect(acceptance).toMatch(/workflow-studio-modern-workbench[^\n]*clean/i)
+    expect(acceptance).toMatch(/ui-customization-recovery[^\n]*clean/i)
+    expect(acceptance).toMatch(/ui-customization-panels[^\n]*superseded/i)
+
+    const releasing = readFileSync('docs/releasing.md', 'utf8')
+    expect(releasing).toMatch(/v2\.0\.0[^\n]*annotated tag[^\n]*aa91baa/i)
+    expect(releasing).toMatch(/v2\.0\.0[^\n]*verified unpublished[^\n]*ten-asset draft/i)
+    expect(releasing).toContain('34042847222')
+    expect(releasing).toContain('v2.0.1 UI customization recovery candidate')
+
+    const currentPlan = readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')
+    expect(currentPlan).toContain('Workflow Studio v2.0.1 Local Release Preparation Plan')
+    expect(currentPlan).toMatch(/push, tag, workflow dispatch, draft creation, and publication require a later/i)
   })
 
   it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {
@@ -219,7 +245,7 @@ describe('version two release metadata', () => {
     const releasing = readFileSync('docs/releasing.md', 'utf8')
     const preflightIndex = releasing.indexOf('## Local worktree preflight')
     const tagInstructionIndex = releasing.indexOf(
-      '4. Create an annotated `v2.0.0` tag on a commit contained in `origin/base`, then push that exact tag.',
+      '4. Create an annotated `v2.0.1` tag on a commit contained in `origin/base`, then push that exact tag.',
     )
 
     expect(preflightIndex).toBeGreaterThanOrEqual(0)
