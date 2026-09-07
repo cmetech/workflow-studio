@@ -258,7 +258,7 @@ function publishSemanticColors(
   for (const [name, backdrop] of [
     ['page', background],
     ['panel', surface],
-    ['rail', yamlGutter],
+    ['gutter', yamlGutter],
   ] as const) {
     const selectedSurface = compositeColor(preferredSelectedSurface, backdrop)
     root.style.setProperty(`--color-selection-${name}`, selectedSurface)

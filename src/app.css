@@ -98,8 +98,8 @@ button[data-variant='danger']:hover:not(:disabled) {
 
 button[data-variant='ghost'][aria-pressed='true']:hover:not(:disabled) {
   border-color: var(--color-focus);
-  color: var(--color-text);
-  background: color-mix(in srgb, var(--color-node-selected) 78%, var(--color-accent));
+  color: var(--color-primary-hover-contrast);
+  background: var(--color-primary-hover);
 }
 
 button[data-variant='primary']:active:not(:disabled) {

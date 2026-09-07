@@ -131,7 +131,6 @@
 
   .workflow-node.stale {
     border-style: dashed;
-    opacity: 0.78;
   }
 
   header {

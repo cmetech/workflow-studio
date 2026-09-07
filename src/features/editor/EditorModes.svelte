@@ -214,10 +214,12 @@
     background: transparent;
   }
 
-  .yaml-tabs button[aria-selected='true'] {
+  .yaml-tabs button[aria-selected='true'],
+  .yaml-tabs button[aria-selected='true']:hover:not(:disabled),
+  .yaml-tabs button[aria-selected='true']:active:not(:disabled) {
     border-color: var(--color-accent);
-    color: var(--color-text);
-    background: var(--color-node-selected);
+    color: var(--color-selection-gutter-foreground);
+    background: var(--color-selection-gutter);
   }
 
   [role='tabpanel'] {

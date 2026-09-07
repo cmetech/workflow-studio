@@ -927,6 +927,35 @@ test('real palette and port gestures commit a dependency and reject a cycle with
   await expect(stalePath).toHaveClass(/stale/)
   const staleDash = await stalePath.evaluate((path) => getComputedStyle(path).strokeDasharray)
   expect(staleDash.replaceAll('px', '').replaceAll(',', '').trim().replace(/\s+/g, ' ')).toBe('5 4')
+  expect(await stalePath.evaluate((path) => getComputedStyle(path).opacity)).toBe('1')
+  expect(
+    await page
+      .locator('.workflow-node.stale')
+      .first()
+      .evaluate((node) => getComputedStyle(node).opacity),
+  ).toBe('1')
+  const staleContrast = await page.evaluate(() => {
+    const luminance = (value: string): number => {
+      const channels = (value.match(/[\d.]+/g) ?? [])
+        .slice(0, 3)
+        .map((channel) => Number(channel) / 255)
+        .map((channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4))
+      return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+    }
+    const ratio = (first: string, second: string): number =>
+      (Math.max(luminance(first), luminance(second)) + 0.05) / (Math.min(luminance(first), luminance(second)) + 0.05)
+    const edge = document.querySelector<SVGPathElement>('path.workflow-edge.selected.stale')
+    const canvas = document.querySelector<HTMLElement>('.graph-canvas')
+    const node = document.querySelector<HTMLElement>('.workflow-node.stale')
+    const kind = node?.querySelector<HTMLElement>('.kind')
+    if (!edge || !canvas || !node || !kind) throw new Error('Expected stale semantic paint consumers.')
+    return {
+      edge: ratio(getComputedStyle(edge).stroke, getComputedStyle(canvas).backgroundColor),
+      nodeKind: ratio(getComputedStyle(kind).color, getComputedStyle(node).backgroundColor),
+    }
+  })
+  expect(staleContrast.edge).toBeGreaterThanOrEqual(3)
+  expect(staleContrast.nodeKind).toBeGreaterThanOrEqual(4.5)
 })
 
 test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and reopens', async ({ page }) => {

@@ -37,7 +37,7 @@ The fixed theme-token schema remains unchanged so existing runtime brand packs r
 | `surface` | `#11141C` | `#FFFFFF` |
 | `surface-elevated` | `#181C27` | `#F8F9FD` |
 | `text` | `#F4F6FA` | `#171A23` |
-| `text-muted` | `#98A2B3` | `#667085` |
+| `text-muted` | `#98A2B3` | `#636D80` |
 | `accent` | `#5B50E6` | `#5145CD` |
 | `accent-strong` | `#766DF0` | `#4037A8` |
 | `accent-contrast` | `#FFFFFF` | `#FFFFFF` |

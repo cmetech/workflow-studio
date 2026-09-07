@@ -33,7 +33,7 @@ themes:
     surface: '#FFFFFF'
     surface-elevated: '#F8F9FD'
     text: '#171A23'
-    text-muted: '#667085'
+    text-muted: '#636D80'
     accent: '#5145CD'
     accent-strong: '#4037A8'
     accent-contrast: '#FFFFFF'

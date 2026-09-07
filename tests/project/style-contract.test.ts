@@ -14,8 +14,8 @@ const rendererDerivedColorTokens = new Set([
   'selection-page-foreground',
   'selection-panel',
   'selection-panel-foreground',
-  'selection-rail',
-  'selection-rail-foreground',
+  'selection-gutter',
+  'selection-gutter-foreground',
   'node-kind',
   'node-kind-selected',
   'primary',
@@ -79,6 +79,26 @@ describe('offline visual style contract', () => {
       'src/features/branding/Loop24Mark.svelte:fill:accent',
       'src/features/branding/Loop24Mark.svelte:fill:accent-contrast',
     ])
+  })
+
+  it('keeps selected subcontrols and stale canvas paint on their semantic contrast pairs', () => {
+    const appCss = readFileSync('src/app.css', 'utf8')
+    const editorModes = readFileSync('src/features/editor/EditorModes.svelte', 'utf8')
+    const explorer = readFileSync('src/features/workspace/Explorer.svelte', 'utf8')
+    const workflowEdge = readFileSync('src/features/canvas/WorkflowEdge.svelte', 'utf8')
+    const workflowNode = readFileSync('src/features/canvas/WorkflowNode.svelte', 'utf8')
+
+    expect(editorModes).toMatch(
+      /\.yaml-tabs button\[aria-selected='true'\][^{]*\{[^}]*color: var\(--color-selection-gutter-foreground\);[^}]*background: var\(--color-selection-gutter\);/,
+    )
+    expect(appCss).toMatch(
+      /button\[data-variant='ghost'\]\[aria-pressed='true'\]:hover:not\(:disabled\)[^{]*\{[^}]*color: var\(--color-primary-hover-contrast\);[^}]*background: var\(--color-primary-hover\);/,
+    )
+    expect(explorer).toMatch(
+      /button\.active\[role='treeitem'\] \.badges[^{]*\{[^}]*color: var\(--color-selection-panel-foreground\);/,
+    )
+    expect(workflowEdge).not.toMatch(/\.workflow-edge\.stale[^}]*opacity:/s)
+    expect(workflowNode).not.toMatch(/\.workflow-node\.stale[^}]*opacity:/s)
   })
 
   it('applies the two-tone focus ring to native controls and focusable structural hosts', () => {

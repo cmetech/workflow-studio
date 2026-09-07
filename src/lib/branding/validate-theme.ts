@@ -216,21 +216,52 @@ export function contrastRatio(foreground: string, background: string): number {
 
 function contrastIssues(manifest: BrandManifest): BrandValidationIssue[] {
   const issues: BrandValidationIssue[] = []
-  const required = [
-    ['text', 'background', 4.5],
-    ['text', 'surface', 4.5],
+  const directPairs = [
     ['accent-contrast', 'accent', 4.5],
     ['focus', 'background', 3],
-    ['error', 'background', 4.5],
+  ] as const
+  const productionPairs = [
+    ['text', ['background', 'surface', 'surface-elevated', 'node', 'node-selected', 'yaml-gutter']],
+    ['text-muted', ['background', 'surface', 'surface-elevated', 'node', 'node-selected', 'yaml-gutter']],
+    ['warning', ['surface']],
+    ['error', ['surface', 'surface-elevated', 'node', 'node-selected']],
   ] as const
   for (const mode of THEME_KEYS) {
     const theme = manifest.themes[mode]
-    for (const [foreground, background, minimum] of required) {
-      if (contrastRatio(theme[foreground], theme[background]) + Number.EPSILON < minimum) {
+    const background = canonicalColor(
+      opaque(parseColor(theme.background)!, { red: 255, green: 255, blue: 255, alpha: 255 }),
+    )
+    const composite = (value: string, backdrop: string): string =>
+      canonicalColor(opaque(parseColor(value)!, parseColor(backdrop)!))
+    const surface = composite(theme.surface, background)
+    const surfaceElevated = composite(theme['surface-elevated'], surface)
+    const canvas = composite(theme.canvas, background)
+    const editorSurface = composite(theme.surface, surfaceElevated)
+    const surfaces = {
+      background,
+      surface,
+      'surface-elevated': surfaceElevated,
+      node: composite(theme.node, canvas),
+      'node-selected': composite(theme['node-selected'], canvas),
+      'yaml-gutter': composite(theme['yaml-gutter'], editorSurface),
+    } as const
+    for (const [foreground, pairBackground, minimum] of directPairs) {
+      if (contrastRatio(theme[foreground], theme[pairBackground]) + Number.EPSILON < minimum) {
         issues.push({
-          code: `brand_contrast_${foreground.replaceAll('-', '_')}_${background.replaceAll('-', '_')}`,
+          code: `brand_contrast_${foreground.replaceAll('-', '_')}_${pairBackground.replaceAll('-', '_')}`,
           severity: 'error',
-          message: `${mode} ${foreground}/${background} contrast must be at least ${minimum}:1.`,
+          message: `${mode} ${foreground}/${pairBackground} contrast must be at least ${minimum}:1.`,
+          mode,
+        })
+      }
+    }
+    for (const [foreground, surfaceNames] of productionPairs) {
+      for (const surfaceName of surfaceNames) {
+        if (contrastRatio(theme[foreground], surfaces[surfaceName]) + Number.EPSILON >= 4.5) continue
+        issues.push({
+          code: `brand_contrast_${foreground.replaceAll('-', '_')}_${surfaceName.replaceAll('-', '_')}`,
+          severity: 'error',
+          message: `${mode} ${foreground}/${surfaceName} contrast must be at least 4.5:1.`,
           mode,
         })
       }

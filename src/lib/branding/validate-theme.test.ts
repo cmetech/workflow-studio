@@ -127,6 +127,37 @@ describe('validateBrandPack', () => {
     )
   })
 
+  it('rejects semantic foregrounds that disappear on their accepted production surfaces', () => {
+    const blocked = mutableBrand()
+    blocked.id = 'surface-contrast-blocked'
+    Object.assign(blocked.themes.dark, {
+      background: '#FFFFFF',
+      surface: '#FFFFFF',
+      'surface-elevated': '#000000',
+      text: '#000000',
+      'text-muted': '#000000',
+      success: '#000000',
+      warning: '#FFFFFF',
+      node: '#000000',
+      'node-selected': '#000000',
+      'yaml-gutter': '#000000',
+      focus: '#000000',
+      error: '#000000',
+    })
+
+    const result = validateBrandPack(stringify(blocked), assets())
+
+    expect(result.canActivate).toBe(false)
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'brand_contrast_text_surface_elevated', severity: 'error' }),
+        expect.objectContaining({ code: 'brand_contrast_text_node', severity: 'error' }),
+        expect.objectContaining({ code: 'brand_contrast_text_muted_surface_elevated', severity: 'error' }),
+        expect.objectContaining({ code: 'brand_contrast_warning_surface', severity: 'error' }),
+      ]),
+    )
+  })
+
   it('rejects incomplete token maps and CSS-capable color payloads', () => {
     const missing = mutableBrand() as unknown as {
       id: string

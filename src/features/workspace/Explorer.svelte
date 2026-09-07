@@ -374,6 +374,11 @@
     color: var(--color-warning);
   }
 
+  button.active[role='treeitem'] .badges,
+  button.active[role='treeitem'] .badges .warning {
+    color: var(--color-selection-panel-foreground);
+  }
+
   .read-only {
     color: var(--color-text-muted);
   }

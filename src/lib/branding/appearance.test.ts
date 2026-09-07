@@ -25,7 +25,7 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem'> {
 
 const SVG_BYTES = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z"/></svg>')
 
-function validatedImportedBrand(themeOverrides: Record<string, string>) {
+function parsedImportedBrand(themeOverrides: Record<string, string>) {
   const source = structuredClone(loadBundledBrand()) as unknown as {
     id: string
     displayName: string
@@ -38,7 +38,6 @@ function validatedImportedBrand(themeOverrides: Record<string, string>) {
     'logo.svg': SVG_BYTES,
     'mark.svg': SVG_BYTES,
   })
-  expect(validated.canActivate).toBe(true)
   return validated.manifest
 }
 
@@ -132,7 +131,7 @@ describe('appearance preferences', () => {
       expect(contrastRatio(token('--color-node-kind-selected'), token('--color-node-selected'))).toBeGreaterThanOrEqual(
         4.5,
       )
-      for (const surface of ['page', 'panel', 'rail']) {
+      for (const surface of ['page', 'panel', 'gutter']) {
         expect(
           contrastRatio(token(`--color-selection-${surface}-foreground`), token(`--color-selection-${surface}`)),
         ).toBeGreaterThanOrEqual(4.5)
@@ -151,7 +150,7 @@ describe('appearance preferences', () => {
 
   it('derives independent 4.5:1 node-kind foregrounds for incompatible imported node surfaces', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': '#000000',
@@ -177,7 +176,7 @@ describe('appearance preferences', () => {
 
   it('derives semantic accent foregrounds from each composited consumer surface', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#FFFFFF',
       surface: 'rgba(0, 0, 0, 0.2)',
       'surface-elevated': 'rgba(0, 0, 0, 0.2)',
@@ -205,7 +204,7 @@ describe('appearance preferences', () => {
     for (const [surface, expectedBackground] of [
       ['page', '#CCCCCC'],
       ['panel', '#A3A3A3'],
-      ['rail', '#000000'],
+      ['gutter', '#000000'],
     ] as const) {
       const background = root.style.getPropertyValue(`--color-selection-${surface}`)
       expect(background).toBe(expectedBackground)
@@ -261,7 +260,7 @@ describe('appearance preferences', () => {
     ['translucent rgba', 'rgba(255, 255, 255, 0.1)', '#1A1A1A'],
   ])('composites an imported %s focus surface against its semantic backdrop', (_case, surface, effectiveSurface) => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': surface,
@@ -281,7 +280,7 @@ describe('appearance preferences', () => {
 
   it('models the final CodeMirror surface through both translucent editor wrappers', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#FFFFFF66',
       'surface-elevated': '#FFFFFF33',
@@ -304,7 +303,7 @@ describe('appearance preferences', () => {
 
   it('selects a deterministic gray that clears 3:1 against mixed black and white focus hosts', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': '#000000',
@@ -327,7 +326,7 @@ describe('appearance preferences', () => {
 
   it('uses deterministic max-min contrast when no focus color can clear 3:1 across every host', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': '#000000',
@@ -348,7 +347,7 @@ describe('appearance preferences', () => {
 
   it('publishes a two-tone focus pair for incompatible active-line and elevated toolbar hosts', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': 'rgba(255, 255, 255, 0.65)',
@@ -374,7 +373,7 @@ describe('appearance preferences', () => {
 
   it('derives the default imported focus pair against every modeled host surface', () => {
     const root = document.createElement('div')
-    const brand = validatedImportedBrand({
+    const brand = parsedImportedBrand({
       background: '#000000',
       surface: '#000000',
       'surface-elevated': '#333333',
