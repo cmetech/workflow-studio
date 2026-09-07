@@ -64,7 +64,7 @@ Do not edit `README.md`, `.github/workflows/release.yml`, installer scripts, gen
 Run:
 
 ```bash
-npx vitest run tests/project/release-version.test.ts tests/installers/release-state.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1
+npx vitest run tests/project/release-version.test.ts tests/installers/release-state.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1 --exclude '.worktrees/**'
 npx playwright test tests/e2e/workbench-containment.spec.ts --project=chromium --project=webkit --grep "keeps Git, version"
 npm run format:check
 npm run lint
