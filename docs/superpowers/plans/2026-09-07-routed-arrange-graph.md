@@ -107,7 +107,6 @@ export interface RoutingFingerprintEdge {
 ```ts
 export function graphFingerprint(input: {
   readonly engine: typeof ROUTING_ENGINE
-  readonly spacingProfile: 'normal' | 'expanded'
   readonly scopeKey: GraphScopeKey
   readonly nodes: readonly RoutingFingerprintNode[]
   readonly edges: readonly RoutingFingerprintEdge[]
@@ -123,7 +122,7 @@ export function routingFingerprint(input: {
 
 Add table-driven tests for duplicate-point removal, collinear-point collapse, the 0.5px geometry tolerance, finite coordinate bounds, 2–64 points per route, the 32,000-point aggregate limit, the 4MiB serialized-routing limit, exact edge membership, exact node-position membership, orthogonal segments, correct source/target rectangle boundaries, node overlap, expanded unrelated-node intersection, and coincident segments longer than 24px outside a 24px endpoint fan zone. Add crossing-count fixtures for a straight chain, diamond, fan-out/fan-in, and one unavoidable crossing.
 
-Add fingerprint tests that reverse object insertion order and expect the same `sha256:<64 lowercase hex>` result. Changing engine, spacing profile, scope, node definition order, dimensions, or topology must change `graphFingerprint`; changing that digest or any arranged position must change `routingFingerprint`.
+Add fingerprint tests that reverse object insertion order and expect the same `sha256:<64 lowercase hex>` result. Changing engine, scope, node definition order, dimensions, or topology must change `graphFingerprint`; changing that digest or any arranged position must change `routingFingerprint`. The bounded expanded-spacing retry is an internal strategy of `elk-layered-orthogonal-v1`; the accepted positions already distinguish its result and no second persisted engine identity is introduced.
 
 - [ ] **Step 2: Run the tests and confirm the expected RED state**
 
@@ -256,7 +255,7 @@ export interface LayoutWorkerEdge {
 
 `LayoutWorkerNode` and `LayoutWorkerEdge` structurally extend the `RoutingFingerprintNode` and `RoutingFingerprintEdge` inputs created in Task 1, keeping hashing independent of worker lifecycle code.
 
-The request is `{ type: 'layout', identity, nodes, edges, spacingProfile: 'normal' | 'expanded' }`. Success repeats the exact identity and returns the accepted spacing profile, finite node positions, complete normalized routes, bounds, and `durationMs`. Raw ELK sections never cross the worker boundary. Failure repeats identity and uses a stable code from `invalid_request`, `layout_failed`, `invalid_result`, `worker_runtime_error`, `worker_message_error`, or `worker_timeout`.
+The request is `{ type: 'layout', identity, nodes, edges }`. Success repeats the exact identity and returns the accepted internal spacing profile, finite node positions, complete normalized routes, bounds, and `durationMs`. Raw ELK sections never cross the worker boundary. Failure repeats identity and uses a stable code from `invalid_request`, `layout_failed`, `invalid_result`, `worker_runtime_error`, `worker_message_error`, or `worker_timeout`.
 
 `LayoutClient` lazily creates an endpoint through an injected `workerFactory`, permits one current request, rejects superseded responses, terminates and replaces a timed-out worker, and exposes `arrange(request): Promise<LayoutWorkerResult>` plus `destroy()`.
 
@@ -440,7 +439,7 @@ git commit -m "feat: render routed workflow edges"
 
 **Interfaces:**
 
-`GraphCanvas` accepts optional injectable `layoutClient?: LayoutClientLike` and `onArrangeBusyChange?: (busy: boolean, identity: string) => void` props for tests and App coordination, and exports `arrange(): Promise<void>`. Production creates the client lazily with:
+`GraphCanvas` accepts optional injectable `layoutClient?: LayoutClientLike`, `pairGeneration?: number`, and `onArrangeBusyChange?: (busy: boolean, identity: string) => void` props for tests and App coordination, and exports `arrange(): Promise<void>`. `pairGeneration` defaults to zero in isolated component tests; App must pass `$documentSessionStore.pair?.generation ?? 0`. Production creates the client lazily with:
 
 ```ts
 () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' })
@@ -507,6 +506,8 @@ git commit -m "feat: arrange canvas asynchronously"
 ### Task 7: Enforce route-cache validity across drag, topology, dimensions, and scopes
 
 **Files:**
+- Modify: `src/features/canvas/routed-layout.ts`
+- Modify: `src/features/canvas/routed-layout.test.ts`
 - Modify: `src/features/canvas/canvas-projection-refresh.ts`
 - Modify: `src/features/canvas/canvas-projection-refresh.test.ts`
 - Modify: `src/features/canvas/GraphCanvas.svelte`
@@ -518,7 +519,7 @@ git commit -m "feat: arrange canvas asynchronously"
 
 **Interfaces:**
 
-Add a pure asynchronous `resolveCurrentRouting(projection, positions, measuredNodes, routing)` helper that returns the complete routing only when its recomputed fingerprint matches; otherwise it returns `undefined`. `CanvasProjectionRefreshSnapshot` records the routing fingerprint so a persistence echo does not spuriously refresh the canvas.
+Add `resolveCurrentRouting(projection, positions, measuredNodes, routing)` to `routed-layout.ts`. This pure asynchronous helper returns the complete routing only when its recomputed fingerprint matches; otherwise it returns `undefined`. `CanvasProjectionRefreshSnapshot` records the routing fingerprint so a persistence echo does not spuriously refresh the canvas.
 
 - [ ] **Step 1: Write failing invalidation and preservation tests**
 
@@ -555,7 +556,7 @@ Expected: PASS; pointer-move metrics remain at zero for every prohibited operati
 Review route activation races, drag-start persistence timing, topology coverage, sibling-scope identity preservation, and the absence of worker work in pointer frames. Resolve validated findings, rerun Step 4, then commit:
 
 ```bash
-git add src/features/canvas/canvas-projection-refresh.ts src/features/canvas/canvas-projection-refresh.test.ts src/features/canvas/GraphCanvas.svelte src/features/canvas/GraphCanvas.test.ts src/features/canvas/project-canvas.ts src/features/canvas/project-canvas.test.ts src/lib/layout/place-new-nodes.ts src/lib/layout/place-new-nodes.test.ts
+git add src/features/canvas/routed-layout.ts src/features/canvas/routed-layout.test.ts src/features/canvas/canvas-projection-refresh.ts src/features/canvas/canvas-projection-refresh.test.ts src/features/canvas/GraphCanvas.svelte src/features/canvas/GraphCanvas.test.ts src/features/canvas/project-canvas.ts src/features/canvas/project-canvas.test.ts src/lib/layout/place-new-nodes.ts src/lib/layout/place-new-nodes.test.ts
 git commit -m "fix: invalidate stale canvas routes"
 ```
 
@@ -739,6 +740,8 @@ git commit -m "test: verify routed layout capacity"
 - Modify: `docs/app-guides/dag-dependencies.md`
 - Modify: `docs/superpowers/specs/2026-09-07-routed-arrange-graph-design.md`
 - Modify: `docs/superpowers/plans/2026-09-07-routed-arrange-graph.md`
+- Modify: `src/lib/docs/build-index.test.ts`
+- Modify: `tests/project/routed-layout-boundary.test.ts`
 - Create: `docs/reviews/2026-09-07-routed-arrange-graph-code-review-prompt.md`
 - Create: `docs/reviews/2026-09-07-routed-arrange-graph-adversarial-code-review.md`
 
