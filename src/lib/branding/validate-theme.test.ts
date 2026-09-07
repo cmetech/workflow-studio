@@ -187,6 +187,35 @@ describe('validateBrandPack', () => {
     )
   })
 
+  it('checks the nested CodeMirror gutter through its surface and elevated wrappers', () => {
+    const blocked = mutableBrand()
+    blocked.id = 'codemirror-gutter-contrast-blocked'
+    Object.assign(blocked.themes.dark, {
+      background: '#D8D8D8',
+      surface: 'rgba(152, 152, 152, 0.1)',
+      'surface-elevated': 'rgba(112, 112, 112, 0.8)',
+      text: '#000000',
+      'text-muted': '#000000',
+      canvas: '#E9E9E9',
+      node: '#D8D8D8',
+      'node-selected': '#D8D8D8',
+      'yaml-gutter': 'rgba(7, 7, 7, 0.3)',
+      focus: '#000000',
+      warning: '#000000',
+      error: '#000000',
+    })
+
+    const result = validateBrandPack(stringify(blocked), assets())
+
+    expect(result.canActivate).toBe(false)
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'brand_contrast_text_yaml_gutter', severity: 'error' }),
+        expect.objectContaining({ code: 'brand_contrast_text_muted_yaml_gutter', severity: 'error' }),
+      ]),
+    )
+  })
+
   it('does not block imported packs on the built-in mark accent pair', () => {
     const imported = mutableBrand()
     imported.id = 'independent-image-assets'

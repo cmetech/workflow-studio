@@ -241,9 +241,12 @@ function contrastIssues(manifest: BrandManifest): BrandValidationIssue[] {
       composite(theme.surface, surfaceOnBackground),
       composite(theme.surface, surfaceOnCanvas),
     ]
+    const editorSurfaceElevated = composite(theme['surface-elevated'], surfaceOnCanvas)
+    const codeMirrorSurface = composite(theme.surface, editorSurfaceElevated)
     const yamlGutterVariants = [
       composite(theme['yaml-gutter'], background),
       ...surfaceVariants.map((backdrop) => composite(theme['yaml-gutter'], backdrop)),
+      composite(theme['yaml-gutter'], codeMirrorSurface),
     ]
     const surfaceElevatedVariants = [
       background,
