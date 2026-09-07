@@ -1,4 +1,5 @@
 import type { GraphScopeKey } from '$src/lib/projection/types'
+import type { ScopeRoutingV1 } from './routing'
 
 export interface LayoutRecordV1 {
   schemaVersion: 1
@@ -67,6 +68,7 @@ export interface ScopeLayoutV1 {
   /** Omitted until the first visit chooses a tab from current blocking issues. */
   auxiliaryTab?: AuxiliaryTab
   referencesScroll?: number
+  routing?: ScopeRoutingV1
 }
 export interface LayoutRecordV2 {
   schemaVersion: 2
