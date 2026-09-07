@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   countOrthogonalCrossings,
   validateRoutedLayout,
@@ -82,6 +82,39 @@ describe('validateRoutedLayout', () => {
       expect(result.layout.positions).not.toBe(candidate.positions)
       expect(result.layout.routes).not.toBe(candidate.routes)
     }
+  })
+
+  it('preserves own __proto__ node and edge IDs in successful output records', () => {
+    const nodes = [
+      { id: '__proto__', order: 0, width: 100, height: 60 },
+      { id: 'target', order: 1, width: 100, height: 60 },
+    ]
+    const edges = [{ id: '__proto__', source: '__proto__', target: 'target', order: 0 }]
+    const positions = Object.fromEntries([
+      ['__proto__', { x: 0, y: 0 }],
+      ['target', { x: 200, y: 0 }],
+    ])
+    const routes = Object.fromEntries([
+      [
+        '__proto__',
+        {
+          edgeId: '__proto__',
+          points: [
+            { x: 100, y: 30 },
+            { x: 200, y: 30 },
+          ],
+        },
+      ],
+    ])
+
+    const result = validateRoutedLayout({ nodes, edges, positions, routes })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(Object.hasOwn(result.layout.positions, '__proto__')).toBe(true)
+    expect(Object.hasOwn(result.layout.routes, '__proto__')).toBe(true)
+    expect(result.layout.positions.__proto__).toEqual({ x: 0, y: 0 })
+    expect(result.layout.routes.__proto__?.edgeId).toBe('__proto__')
   })
 
   it.each([
@@ -249,14 +282,51 @@ describe('validateRoutedLayout', () => {
     expect(failureCode(validateRoutedLayout(input({ routes })))).toBe('total_route_point_count')
   })
 
-  it('rejects routing whose canonical serialized representation exceeds 4MiB', () => {
+  it('accepts exactly 4MiB of canonical routing and rejects the next complete identifier', () => {
+    // The route JSON contributes 80 fixed bytes and contains the identifier twice.
+    const exactId = 'x'.repeat((MAX_SERIALIZED_ROUTING_BYTES - 80) / 2)
+    const candidate = (id: string): RoutedLayoutInput => ({
+      ...input(),
+      edges: [{ id, source: 'source', target: 'target', order: 0 }],
+      routes: {
+        [id]: {
+          edgeId: id,
+          points: [
+            { x: 100, y: 30 },
+            { x: 100, y: 31 },
+            { x: 200, y: 31 },
+          ],
+        },
+      },
+    })
+
+    expect(validateRoutedLayout(candidate(exactId)).ok).toBe(true)
+    expect(failureCode(validateRoutedLayout(candidate(`${exactId}x`)))).toBe('serialized_routing_too_large')
+  })
+
+  it('rejects oversized identifiers without materializing a canonical payload above the byte cap', () => {
     const oversizedId = `dependency:${'x'.repeat(Math.ceil(MAX_SERIALIZED_ROUTING_BYTES / 2))}`
     const edges = [{ id: oversizedId, source: 'source', target: 'target', order: 0 }]
     const routes = {
       [oversizedId]: { edgeId: oversizedId, points: baseRoutes['dependency:source->target'].points },
     }
+    const encode = TextEncoder.prototype.encode
+    const encoding = vi.spyOn(TextEncoder.prototype, 'encode').mockImplementation(function (
+      this: TextEncoder,
+      value = '',
+    ) {
+      if (value.length > MAX_SERIALIZED_ROUTING_BYTES) throw new RangeError('oversized allocation')
+      return encode.call(this, value)
+    })
 
-    expect(failureCode(validateRoutedLayout(input({ edges, routes })))).toBe('serialized_routing_too_large')
+    try {
+      expect(validateRoutedLayout(input({ edges, routes }))).toEqual({
+        ok: false,
+        code: 'serialized_routing_too_large',
+      })
+    } finally {
+      encoding.mockRestore()
+    }
   })
 
   it('rejects a segment that is diagonal beyond the geometry tolerance', () => {

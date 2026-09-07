@@ -61,11 +61,16 @@ interface Segment {
 
 export function normalizeRoute(points: readonly EdgeRoutePointV1[]): readonly EdgeRoutePointV1[] | null {
   const deduplicated: EdgeRoutePointV1[] = []
-  for (const point of points) {
+  for (const [index, point] of points.entries()) {
     if (!finitePoint(point)) return null
     const copy = { x: point.x, y: point.y }
     const previous = deduplicated.at(-1)
-    if (!previous || !samePoint(previous, copy)) deduplicated.push(copy)
+    if (!previous || !samePoint(previous, copy)) {
+      deduplicated.push(copy)
+    } else if (index === points.length - 1 && !sameExactPoint(previous, copy)) {
+      if (deduplicated.length === 1) deduplicated.push(copy)
+      else deduplicated[deduplicated.length - 1] = copy
+    }
   }
 
   for (let index = 1; index < deduplicated.length; index += 1) {
@@ -80,6 +85,8 @@ export function normalizeRoute(points: readonly EdgeRoutePointV1[]): readonly Ed
     ) {
       normalized.pop()
     }
+    const previous = normalized.at(-1)
+    if (previous && !segmentOrientation(previous, point)) return null
     normalized.push(point)
   }
   return normalized
@@ -90,7 +97,7 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
   if (!exactMembership(nodeIds, Object.keys(input.positions))) return failure('node_membership_mismatch')
 
   const rectangles = new Map<string, Rectangle>()
-  const positions: Record<string, CanvasPosition> = {}
+  const positionEntries: [string, CanvasPosition][] = []
   for (const node of input.nodes) {
     const position = input.positions[node.id]!
     if (!validDimension(node.width) || !validDimension(node.height) || !finitePoint(position)) {
@@ -106,8 +113,9 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
       return failure('coordinate_out_of_bounds')
     }
     rectangles.set(node.id, rectangle)
-    positions[node.id] = { x: position.x, y: position.y }
+    positionEntries.push([node.id, { x: position.x, y: position.y }])
   }
+  const positions = Object.fromEntries(positionEntries)
 
   const rectangleValues = [...rectangles.values()]
   for (let index = 0; index < rectangleValues.length; index += 1) {
@@ -136,7 +144,7 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
     if (rawPointCount > MAX_TOTAL_ROUTE_POINTS) return failure('total_route_point_count')
   }
 
-  const routes: Record<string, EdgeRouteV1> = {}
+  const routeEntries: [string, EdgeRouteV1][] = []
   let totalPointCount = 0
   for (const edge of input.edges) {
     const route = input.routes[edge.id]!
@@ -150,11 +158,13 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
     if (points.length < 2 || points.length > MAX_ROUTE_POINTS_PER_EDGE) return failure('route_point_count')
     totalPointCount += points.length
     if (totalPointCount > MAX_TOTAL_ROUTE_POINTS) return failure('total_route_point_count')
-    routes[edge.id] = { edgeId: edge.id, points }
+    routeEntries.push([edge.id, { edgeId: edge.id, points }])
   }
+  const routes = Object.fromEntries(routeEntries)
 
-  const serializedBytes = new TextEncoder().encode(canonicalizeJsonValue(routes)).byteLength
-  if (serializedBytes > MAX_SERIALIZED_ROUTING_BYTES) return failure('serialized_routing_too_large')
+  if (canonicalJsonByteLengthExceeds(routes, MAX_SERIALIZED_ROUTING_BYTES)) {
+    return failure('serialized_routing_too_large')
+  }
 
   for (const edge of input.edges) {
     const points = routes[edge.id]!.points
@@ -256,6 +266,10 @@ function boundedCoordinate(value: number): boolean {
 
 function samePoint(left: EdgeRoutePointV1, right: EdgeRoutePointV1): boolean {
   return nearlyEqual(left.x, right.x) && nearlyEqual(left.y, right.y)
+}
+
+function sameExactPoint(left: EdgeRoutePointV1, right: EdgeRoutePointV1): boolean {
+  return left.x === right.x && left.y === right.y
 }
 
 function nearlyEqual(left: number, right: number): boolean {
@@ -397,4 +411,72 @@ function segmentsCross(left: Segment, right: Segment): boolean {
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
+}
+
+function canonicalJsonByteLengthExceeds(value: unknown, limit: number): boolean {
+  let byteLength = 0
+
+  const add = (amount: number): boolean => {
+    byteLength += amount
+    return byteLength > limit
+  }
+
+  const addString = (text: string): boolean => {
+    if (add(2)) return true
+    for (let index = 0; index < text.length; index += 1) {
+      const codeUnit = text.charCodeAt(index)
+      if (codeUnit === 0x22 || codeUnit === 0x5c) {
+        if (add(2)) return true
+      } else if (codeUnit <= 0x1f) {
+        const shortEscape =
+          codeUnit === 0x08 || codeUnit === 0x09 || codeUnit === 0x0a || codeUnit === 0x0c || codeUnit === 0x0d
+        if (add(shortEscape ? 2 : 6)) return true
+      } else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        const next = text.charCodeAt(index + 1)
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          index += 1
+          if (add(4)) return true
+        } else if (add(6)) return true
+      } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+        if (add(6)) return true
+      } else if (codeUnit <= 0x7f) {
+        if (add(1)) return true
+      } else if (codeUnit <= 0x7ff) {
+        if (add(2)) return true
+      } else if (add(3)) return true
+    }
+    return false
+  }
+
+  const visit = (current: unknown): boolean => {
+    if (current === null) return add(4)
+    if (typeof current === 'string') return addString(current)
+    if (typeof current === 'boolean') return add(current ? 4 : 5)
+    if (typeof current === 'number') {
+      if (!Number.isFinite(current)) throw new TypeError('Canonical JSON does not support non-finite numbers')
+      return add(JSON.stringify(current).length)
+    }
+    if (Array.isArray(current)) {
+      if (add(1)) return true
+      for (let index = 0; index < current.length; index += 1) {
+        if (index > 0 && add(1)) return true
+        if (visit(current[index])) return true
+      }
+      return add(1)
+    }
+    if (typeof current === 'object') {
+      if (add(1)) return true
+      const object = current as Record<string, unknown>
+      const keys = Object.keys(object)
+      for (let index = 0; index < keys.length; index += 1) {
+        if (index > 0 && add(1)) return true
+        const key = keys[index]!
+        if (addString(key) || add(1) || visit(object[key])) return true
+      }
+      return add(1)
+    }
+    throw new TypeError(`Canonical JSON does not support ${typeof current} values`)
+  }
+
+  return visit(value)
 }

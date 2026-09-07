@@ -62,6 +62,31 @@ describe('routed layout normalization', () => {
       { x: 20, y: 0 },
     ])
   })
+
+  it('rejects a route when collinear collapse would create a diagonal replacement segment', () => {
+    expect(
+      normalizeRoute([
+        { x: 100, y: 30 },
+        { x: 150, y: 30.5 },
+        { x: 200, y: 31 },
+      ]),
+    ).toBeNull()
+  })
+
+  it('preserves exact first and final coordinates when endpoint-adjacent points are tolerance duplicates', () => {
+    expect(
+      normalizeRoute([
+        { x: 0, y: 0 },
+        { x: 0.5, y: 0 },
+        { x: 50, y: 0 },
+        { x: 100, y: 0 },
+        { x: 100.5, y: 0 },
+      ]),
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 100.5, y: 0 },
+    ])
+  })
 })
 
 describe('routed layout fingerprints', () => {
