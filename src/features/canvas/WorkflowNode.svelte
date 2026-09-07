@@ -141,7 +141,6 @@
   }
 
   .workflow-node.edge-emphasized {
-    border-width: 2px;
     border-color: var(--color-edge-selected);
     box-shadow:
       0 0 0 2px color-mix(in srgb, var(--color-edge-selected) 24%, transparent),
@@ -149,7 +148,7 @@
   }
 
   .workflow-node.edges-deemphasized:not(.selected):not(:focus-within) {
-    opacity: 0.7;
+    box-shadow: none;
   }
 
   .workflow-node.read-only {
@@ -288,10 +287,8 @@
       outline-offset: 2px;
     }
 
-    .workflow-node.edges-deemphasized,
     .workflow-node.read-only {
       color: GrayText;
-      opacity: 1;
       filter: none;
     }
 

@@ -395,6 +395,52 @@ describe('GraphCanvas', () => {
     measurements.restore()
   })
 
+  it('raises a hovered edge above a different selected edge', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const { container } = renderCanvas({ projection: denseProjection, layout: denseLayout })
+    await measurements.publish()
+    const selected = container.querySelector<SVGGElement>('.svelte-flow__edge[data-id="dependency:collect->review"]')!
+    const hovered = container.querySelector<SVGGElement>('.svelte-flow__edge[data-id="dependency:collect->publish"]')!
+
+    await fireEvent.click(selected)
+    await fireEvent.pointerEnter(hovered)
+    await tick()
+
+    expect(selected.querySelector('.workflow-edge')).toHaveClass('selected', 'deemphasized')
+    expect(hovered.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    expect(Number(getComputedStyle(hovered.closest('svg')!).zIndex)).toBeGreaterThan(
+      Number(getComputedStyle(selected.closest('svg')!).zIndex),
+    )
+    measurements.restore()
+  })
+
+  it('clears pointer emphasis through canvas cancellation when keyboard focus is on a node', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const { container, component } = renderCanvas({ projection: denseProjection, layout: denseLayout })
+    await measurements.publish()
+    const edge = container.querySelector<SVGGElement>('.svelte-flow__edge[data-id="dependency:collect->review"]')!
+    const node = container.querySelector<HTMLElement>('.svelte-flow__node[data-id="publish"]')!
+    await fireEvent.pointerEnter(edge)
+    node.focus()
+    await tick()
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    expect(component.cancel()).toBe(true)
+    await tick()
+
+    expect(container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
+    expect(node).toHaveFocus()
+    measurements.restore()
+  })
+
   it('clears incident edge emphasis as soon as a node deletion begins', async () => {
     const measurements = canvasMeasurements({
       collect: { width: 216, height: 104 },

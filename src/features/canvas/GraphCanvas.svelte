@@ -1195,7 +1195,13 @@
     if (cancelArrange()) return true
     if (closeNodeMenu(true)) return true
     if (cancelEdge()) return true
+    if (currentEmphasizedEdgeId() && selection.length === 0 && edgeSelectionState.edgeIds.length === 0) {
+      clearEdgeEmphasis()
+      return true
+    }
     if (selection.length === 0 && edgeSelectionState.edgeIds.length === 0) return false
+    hoveredEdgeId = null
+    focusedEdgeId = null
     clearSurfaceSelection()
     return true
   }
@@ -1771,6 +1777,7 @@
       onlyRenderVisibleElements={!arrangeBusy && projection.capacity.nodeCount !== 1}
       nodesFocusable={true}
       edgesFocusable={true}
+      elevateEdgesOnSelect={false}
       selectionOnDrag={true}
       selectionMode={SelectionMode.Partial}
       selectionKey="Shift"

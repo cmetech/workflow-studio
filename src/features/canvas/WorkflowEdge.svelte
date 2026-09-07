@@ -73,7 +73,7 @@
   }
 
   :global(.svelte-flow__edge-path.workflow-edge.deemphasized) {
-    opacity: var(--workflow-edge-subdued-opacity, 0.38);
+    stroke-width: var(--workflow-edge-subdued-width, 1.5);
   }
 
   :global(.svelte-flow__edge:focus-visible .svelte-flow__edge-path.workflow-edge) {
@@ -107,8 +107,8 @@
     }
 
     :global(.svelte-flow__edge-path.workflow-edge.deemphasized) {
-      stroke: GrayText;
-      opacity: 1;
+      stroke: CanvasText;
+      stroke-width: 1px;
     }
 
     :global(.svelte-flow__edge-path.workflow-edge.emphasized) {

@@ -59,6 +59,7 @@ describe('WorkflowNode edge emphasis', () => {
 
     expect(node).toHaveClass('edge-emphasized')
     expect(node).toHaveAttribute('aria-label', 'command node collect')
+    expect(workflowNodeSource).not.toMatch(/\.workflow-node\.edge-emphasized\s*\{[^}]*border-width/)
   })
 
   it('keeps non-endpoint cards visible and exposes separate stale, read-only, and subdued hooks', () => {
@@ -67,6 +68,7 @@ describe('WorkflowNode edge emphasis', () => {
 
     expect(node).toHaveClass('stale', 'read-only', 'edges-deemphasized')
     expect(node).not.toHaveAttribute('hidden')
+    expect(workflowNodeSource).not.toMatch(/\.workflow-node\.edges-deemphasized[^}]*opacity/)
     expect(workflowNodeSource).toContain('.workflow-node:hover')
     expect(workflowNodeSource).toContain('.svelte-flow__node:focus-visible')
     expect(workflowNodeSource).toContain('@media (forced-colors: active)')

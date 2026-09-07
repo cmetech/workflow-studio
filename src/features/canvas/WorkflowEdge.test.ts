@@ -98,6 +98,7 @@ describe('WorkflowEdge routed rendering', () => {
     expect(subdued.container.querySelector('.workflow-edge')).toHaveClass('deemphasized')
     expect(subdued.container.querySelector('.workflow-edge')).not.toHaveAttribute('hidden')
     expect(subdued.container.querySelector('.workflow-edge')).not.toHaveAttribute('aria-hidden', 'true')
+    expect(workflowEdgeSource).not.toMatch(/\.workflow-edge\.deemphasized\)\s*\{[^}]*opacity/)
   })
 
   it('keeps forced-colors treatment and does not animate routed paths', () => {
@@ -107,7 +108,7 @@ describe('WorkflowEdge routed rendering', () => {
     expect(workflowEdgeSource).toContain('CanvasText')
     expect(workflowEdgeSource).toContain('Highlight')
     expect(workflowEdgeSource).toContain('GrayText')
-    expect(workflowEdgeSource).toContain('--workflow-edge-subdued-opacity')
+    expect(workflowEdgeSource).toContain('--workflow-edge-subdued-width')
     expect(workflowEdgeSource).toContain('@media (prefers-reduced-motion: reduce)')
     expect(container.querySelector('.workflow-edge')).not.toHaveClass('animated')
   })
