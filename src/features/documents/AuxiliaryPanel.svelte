@@ -46,12 +46,12 @@
   let referencesScrollOwner = $state<HTMLDivElement>()
 
   $effect(() => {
-    if (problemsScrollOwner && problemsScrollOwner.scrollTop !== problemsScroll)
+    if (selected === 'problems' && problemsScrollOwner && problemsScrollOwner.scrollTop !== problemsScroll)
       problemsScrollOwner.scrollTop = problemsScroll
   })
 
   $effect(() => {
-    if (referencesScrollOwner && referencesScrollOwner.scrollTop !== referencesScroll)
+    if (selected === 'references' && referencesScrollOwner && referencesScrollOwner.scrollTop !== referencesScroll)
       referencesScrollOwner.scrollTop = referencesScroll
   })
 

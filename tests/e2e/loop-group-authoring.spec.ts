@@ -485,6 +485,29 @@ test.describe('loop group visual authoring', () => {
     expect(String((await e2eSnapshot(page)).definitionText)).toBe(unknown)
   })
 
+  test('restores a saved References scroll after reentering a loop with Problems selected', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 500 })
+    await openSeededPair(page, { scenario: 'loop-group-state-restoration', pairName: 'release-demo.yaml' })
+    await page.locator('.svelte-flow__node[data-id="polish"]').getByRole('button', { name: 'Open loop body' }).click()
+    const referencesTab = page.getByRole('tab', { name: 'References' })
+    await expect(referencesTab).toHaveAttribute('aria-selected', 'true')
+    const referencesScroller = page.locator('[data-scroll-owner="references"]')
+    const savedScroll = await referencesScroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight
+      element.dispatchEvent(new Event('scroll'))
+      return element.scrollTop
+    })
+    expect(savedScroll).toBeGreaterThan(0)
+
+    await page.getByRole('tab', { name: 'Problems', exact: true }).click()
+    await page.getByRole('button', { name: 'Back to root workflow' }).click()
+    await page.locator('.svelte-flow__node[data-id="polish"]').getByRole('button', { name: 'Open loop body' }).click()
+    await expect(page.getByRole('tab', { name: 'Problems', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await referencesTab.click()
+
+    await expect.poll(() => referencesScroller.evaluate((element) => element.scrollTop)).toBe(savedScroll)
+  })
+
   test('routes scoped Problems without confusing repeated child IDs', async ({ page }) => {
     await openSeededPair(page, { scenario: 'loop-group-scoped-problems', pairName: 'release-demo.yaml' })
     await expect(page.locator('[data-issue-key]')).toHaveCount(3)

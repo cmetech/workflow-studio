@@ -92,6 +92,49 @@ describe('AuxiliaryPanel', () => {
     expect(screen.getByRole('tabpanel').scrollTop).toBe(83)
   })
 
+  it.each([
+    { inactive: 'references' as const, active: 'problems' as const, stored: 83 },
+    { inactive: 'problems' as const, active: 'references' as const, stored: 47 },
+  ])('waits to restore the $inactive panel until its tab becomes active', async ({ inactive, active, stored }) => {
+    const common = {
+      ...props,
+      onTabChange: vi.fn(),
+      problemsScroll: inactive === 'problems' ? 0 : 17,
+      referencesScroll: inactive === 'references' ? 0 : 43,
+    }
+    const { container, rerender } = render(AuxiliaryPanel, { ...common, activeTab: active })
+    const panel = container.querySelector<HTMLElement>(`[data-scroll-owner="${inactive}"]`)!
+    let renderedScrollTop = 0
+    const assignments: number[] = []
+    Object.defineProperty(panel, 'scrollTop', {
+      configurable: true,
+      get: () => renderedScrollTop,
+      set: (value: number) => {
+        assignments.push(value)
+        renderedScrollTop = value
+      },
+    })
+
+    await rerender({
+      ...common,
+      activeTab: active,
+      problemsScroll: inactive === 'problems' ? stored : 17,
+      referencesScroll: inactive === 'references' ? stored : 43,
+    })
+    expect(assignments).toEqual([])
+    expect(renderedScrollTop).toBe(0)
+
+    await rerender({
+      ...common,
+      activeTab: inactive,
+      problemsScroll: inactive === 'problems' ? stored : 17,
+      referencesScroll: inactive === 'references' ? stored : 43,
+    })
+    expect(screen.getByRole('tabpanel')).toBe(panel)
+    expect(assignments).toEqual([stored])
+    expect(panel.scrollTop).toBe(stored)
+  })
+
   it('previews pointer resizing, commits on release, and supports bounded keyboard resizing', async () => {
     const onHeightPreview = vi.fn()
     const onHeightCommit = vi.fn()
