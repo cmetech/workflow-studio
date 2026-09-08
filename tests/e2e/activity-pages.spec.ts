@@ -29,6 +29,16 @@ test('preserves exact authoring state across full-workbench page navigation', as
   const inspectorSelection = page.locator('aside[aria-label="Inspector"] strong').first()
   await expect(inspectorSelection).toHaveText('prepare')
   await expect.poll(async () => (await e2eSnapshot(page)).layout).not.toBeNull()
+  await expect
+    .poll(async () => {
+      const persisted = (await e2eSnapshot(page)).layout
+      if (typeof persisted !== 'string') return []
+      const records = JSON.parse(persisted) as Array<{
+        layout?: { scopeLayouts?: { root?: { selectedNodeIds?: string[] } } }
+      }>
+      return records.at(-1)?.layout?.scopeLayouts?.root?.selectedNodeIds ?? []
+    })
+    .toEqual(['prepare'])
   const layoutBefore = (await e2eSnapshot(page)).layout
   const splitPane = page.getByRole('group', { name: 'Split pane' })
   await splitPane.getByRole('button', { name: 'YAML' }).click()

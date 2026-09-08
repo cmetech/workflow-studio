@@ -20,6 +20,7 @@ import {
   settleRenderer,
   yamlSelection,
 } from './support'
+import { enforcePerceptualPerformance } from './performance-policy'
 
 // Trace DOM snapshots contaminate Chromium's renderer long-task observer.
 const performanceTest = test.extend({})
@@ -31,7 +32,7 @@ interface LongTaskState {
 }
 
 async function beginLongTaskPhase(page: import('@playwright/test').Page, browserName: string): Promise<number | null> {
-  if (browserName !== 'chromium') return null
+  if (!enforcePerceptualPerformance || browserName !== 'chromium') return null
   await settleRenderer(page)
   return page.evaluate(() => {
     const state = (window as unknown as { __LOOP_GROUP_LONG_TASKS__: LongTaskState }).__LOOP_GROUP_LONG_TASKS__
@@ -60,6 +61,18 @@ async function expectNoLongTasks(
     observation.phaseEntries.filter(({ duration }) => duration > 50),
     JSON.stringify({ label, ...observation }),
   ).toEqual([])
+}
+
+function expectNoNavigationAuthorityWork(metrics: Awaited<ReturnType<typeof editorMetrics>>): void {
+  expect(metrics).toMatchObject({
+    parseRequests: 0,
+    validationPasses: 0,
+    layouts: 0,
+    yamlTransactions: 0,
+    nativeCalls: 0,
+    gitCalls: 0,
+  })
+  expect(metrics.layoutSaves).toBeLessThanOrEqual(1)
 }
 
 async function expectVisibleFocusCue(control: Locator, visual = control): Promise<void> {
@@ -1190,7 +1203,7 @@ test.describe('loop group visual authoring', () => {
     const backPhase = await beginLongTaskPhase(page, browserName)
     await page.getByRole('button', { name: 'Back to root workflow' }).click()
     await expectSingleMountedScope(page, 'root')
-    expectNoPointerAuthorityWork(await editorMetrics(page))
+    expectNoNavigationAuthorityWork(await editorMetrics(page))
     const afterBack = await e2eSnapshot(page)
     expect(afterBack.definitionText).toBe(beforeBack.definitionText)
     expect(afterBack.companionText).toBe(beforeBack.companionText)
@@ -1201,7 +1214,7 @@ test.describe('loop group visual authoring', () => {
     await page.locator('.svelte-flow__node[data-id="root-000"]').focus()
     await page.keyboard.press('Enter')
     await expectSingleMountedScope(page, 'loop-group:root-000')
-    expectNoPointerAuthorityWork(await editorMetrics(page))
+    expectNoNavigationAuthorityWork(await editorMetrics(page))
     const afterReentry = await e2eSnapshot(page)
     expect(afterReentry.definitionText).toBe(beforeBack.definitionText)
     expect(afterReentry.companionText).toBe(beforeBack.companionText)

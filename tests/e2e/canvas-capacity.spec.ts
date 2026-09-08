@@ -11,6 +11,7 @@ import {
   LARGE_WORKFLOW_NODE_COUNT,
 } from '../performance/large-workflow'
 import { e2eSnapshot, openSeededPair } from './support'
+import { enforcePerceptualPerformance } from './performance-policy'
 
 interface LongTaskState {
   readonly entries: { readonly startTime: number; readonly duration: number }[]
@@ -74,7 +75,7 @@ async function settleRenderer(page: Page): Promise<void> {
 }
 
 async function beginLongTaskPhase(page: Page, browserName: string): Promise<number | null> {
-  if (browserName !== 'chromium') return null
+  if (!enforcePerceptualPerformance || browserName !== 'chromium') return null
   await settleRenderer(page)
   return page.evaluate(() => {
     const state = (window as unknown as { __WORKFLOW_STUDIO_LONG_TASKS__: LongTaskState })
@@ -520,7 +521,8 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   await expect.poll(async () => (await capacityProbe(page)).analysisCurrent).toBe(true)
   const yaml = (await e2eSnapshot(page)).definitionText
   expect(yaml).toBe(createLargeWorkflowFixture().yaml)
-  const session = browserName === 'chromium' ? await page.context().newCDPSession(page) : null
+  const session =
+    enforcePerceptualPerformance && browserName === 'chromium' ? await page.context().newCDPSession(page) : null
   if (session) await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
   for (let run = 0; run < 4; run++) {
     const phase = await beginLongTaskPhase(page, browserName)
@@ -536,7 +538,7 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     expect(state.runs[run]!.responseType).toBe('layout-result')
     expect(state.runs[run]!.points).toBeGreaterThanOrEqual(1_000)
     expect(state.runs[run]!.points).toBeLessThanOrEqual(32_000)
-    if (run > 0) expect(state.runs[run]!.durationMs).toBeLessThanOrEqual(3_000)
+    if (enforcePerceptualPerformance && run > 0) expect(state.runs[run]!.durationMs).toBeLessThanOrEqual(3_000)
     await page.keyboard.press('Escape')
   }
   const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
@@ -607,7 +609,8 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     })
     Object.assign(window, { __ROUTE_CONTENT_PROBE__: { observer, changes } })
   })
-  const contentSession = browserName === 'chromium' ? await page.context().newCDPSession(page) : null
+  const contentSession =
+    enforcePerceptualPerformance && browserName === 'chromium' ? await page.context().newCDPSession(page) : null
   if (contentSession)
     await contentSession.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
   const contentPhase = await beginLongTaskPhase(page, browserName)

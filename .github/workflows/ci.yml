@@ -53,7 +53,11 @@ jobs:
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium webkit
+      # Shared runners enforce deterministic module budgets in the quality job.
+      # Perceptual 50 ms / 3 s timing remains enabled on native reference machines.
       - run: npm run test:e2e
+        env:
+          WORKFLOW_STUDIO_PERCEPTUAL_PERFORMANCE: off
       - name: Upload Playwright failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
