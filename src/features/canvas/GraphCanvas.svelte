@@ -473,15 +473,31 @@
 
   function currentActiveRouting(): boolean {
     return (
-      activeRouting?.projection === projection &&
+      activeRouting !== undefined &&
+      sameRoutingTopology(activeRouting.projection, projection) &&
       activeRouting.workflowIdentity === workflowIdentity &&
       activeRouting.generation === pairGeneration
     )
   }
 
+  function sameRoutingTopology(left: ProjectedGraph, right: ProjectedGraph): boolean {
+    return (
+      left === right ||
+      (left.scope.key === right.scope.key &&
+        left.nodes.length === right.nodes.length &&
+        left.edges.length === right.edges.length &&
+        left.nodes.every((node, index) => node.id === right.nodes[index]!.id) &&
+        left.edges.every((edge, index) => {
+          const next = right.edges[index]!
+          return edge.id === next.id && edge.source === next.source && edge.target === next.target
+        }))
+    )
+  }
+
   function routingCandidate(): ScopeRoutingV1 | undefined {
     const publication = routingPublication
-    return publication?.projection === projection &&
+    return publication !== undefined &&
+      sameRoutingTopology(publication.projection, projection) &&
       publication.workflowIdentity === workflowIdentity &&
       publication.generation === pairGeneration &&
       (publication.incomingRouting === layout.routing ||
@@ -705,6 +721,7 @@
   }
 
   const ARRANGE_FAILURE = 'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.'
+  const ARRANGE_INTERRUPTED = 'Arrange Graph was interrupted after updating the canvas.'
 
   function arrangeIsCurrent(attempt: ArrangeAttempt): boolean {
     // The parent can echo our publication on the next render. Once observed,
@@ -768,7 +785,7 @@
     layoutRevision += 1
     attempt.cancelFrame?.()
     attempt.client.cancel()
-    if (!destroyed) authoringFeedback = ARRANGE_FAILURE
+    if (!destroyed) authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
     finishArrange(attempt)
     return true
   }
@@ -1009,7 +1026,7 @@
       onLayoutChange(next, attempt.workflowIdentity)
       await tick()
       if (!arrangeIsCurrent(attempt)) return
-      await viewportController?.fitGraph()
+      await viewportController?.fitGraph(result.bounds)
       if (!arrangeIsCurrent(attempt)) return
       arrangedViewport = viewportController?.viewport()
       if (arrangedViewport && pendingLayout?.owner === attempt) {
@@ -1026,12 +1043,21 @@
           : ARRANGE_FAILURE
     } finally {
       if (!destroyed && activeArrange === attempt && authoringFeedback === 'Arranging graph…')
-        authoringFeedback = ARRANGE_FAILURE
+        authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
       finishArrange(attempt)
     }
   }
 
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
+    // A new content projection does not unmeasure an existing card. Keep its
+    // observed footprint until ResizeObserver reports the actual new size.
+    if (currentNodes) {
+      const previous = new Map(currentNodes.map((node) => [node.id, node]))
+      nodes = nodes.map((node) => {
+        const measured = previous.get(node.id)?.measured
+        return node.measured || !measured ? node : { ...node, measured }
+      })
+    }
     const currentSelection = canvasSelectionStore.get()
     const reconciled = reconcileSelection(nodes, currentSelection, currentNodes, workflowIdentity)
     if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)

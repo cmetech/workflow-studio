@@ -542,10 +542,92 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
   const mainTasks = session ? await finishMainTaskTrace(session) : null
   if (mainTasks) expect(mainTasks.maximumMs).toBeLessThanOrEqual(50)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          Object.keys(window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').scope?.routing?.routes ?? {}).length,
+      ),
+    )
+    .toBe(500)
+  const rendering = await page.evaluate(async () => {
+    const modulePath = '/src/features/canvas/edge-route-path.ts'
+    const { roundedOrthogonalPath } = await import(/* @vite-ignore */ modulePath)
+    const routes = window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').scope!.routing!.routes
+    const rejected = Object.values(routes)
+      .filter((route) => !roundedOrthogonalPath(route.points))
+      .map((route) => route.edgeId)
+    const mounted = [...document.querySelectorAll('.svelte-flow__edge[data-id]')]
+    const fallback = mounted
+      .filter((edge) => {
+        const route = routes[edge.getAttribute('data-id')!]
+        const path = edge.querySelector('.workflow-edge')?.getAttribute('d') ?? ''
+        const first = route?.points[0],
+          last = route?.points.at(-1)
+        return !first || !last || !path.startsWith(`M ${first.x} ${first.y}`) || !path.endsWith(`${last.x} ${last.y}`)
+      })
+      .map((edge) => edge.getAttribute('data-id'))
+    return { rejected, fallback, mounted: mounted.length }
+  })
+  expect(rendering.rejected).toEqual([])
+  expect(rendering.fallback).toEqual([])
+  expect(rendering.mounted).toBeGreaterThan(0)
   const evidencePath = testInfo.outputPath('arrange-capacity.json')
-  await writeFile(evidencePath, JSON.stringify({ ...state, mainTasks }, null, 2))
+  await writeFile(evidencePath, JSON.stringify({ ...state, mainTasks, rendering }, null, 2))
   await testInfo.attach('arrange-capacity.json', { path: evidencePath, contentType: 'application/json' })
   expect((await e2eSnapshot(page)).definitionText).toBe(yaml)
+
+  // Exercise the real inspector/analysis path with all accepted routes active.
+  const node = page.locator('.svelte-flow__node[data-id]').first()
+  await node.focus()
+  await node.press('Enter')
+  const inspector = page.locator('aside[aria-label="Inspector"]')
+  await inspector.getByRole('textbox', { name: /Command.*Required/i }).fill('/capacity-edited')
+  const beforeRevision = (await capacityProbe(page)).definitionRevision
+  await page.evaluate(() => {
+    const paths = new Map(
+      [...document.querySelectorAll('.svelte-flow__edge[data-id]')].map((edge) => [
+        edge.getAttribute('data-id'),
+        edge.querySelector('.workflow-edge')?.getAttribute('d'),
+      ]),
+    )
+    const changes: string[] = []
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const path = record.target as Element
+        if (!path.matches('.workflow-edge')) continue
+        const id = path.closest('[data-id]')?.getAttribute('data-id') ?? ''
+        if (paths.has(id) && path.getAttribute('d') !== paths.get(id)) changes.push(id)
+      }
+    })
+    observer.observe(document.querySelector('.graph-canvas')!, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['d'],
+    })
+    Object.assign(window, { __ROUTE_CONTENT_PROBE__: { observer, changes } })
+  })
+  const contentSession = browserName === 'chromium' ? await page.context().newCDPSession(page) : null
+  if (contentSession)
+    await contentSession.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
+  const contentPhase = await beginLongTaskPhase(page, browserName)
+  await inspector.getByRole('button', { name: 'Apply Command' }).click()
+  await expect.poll(async () => (await capacityProbe(page)).definitionRevision).toBeGreaterThan(beforeRevision)
+  await expect.poll(async () => (await capacityProbe(page)).analysisCurrent).toBe(true)
+  await expectNoLongTasks(page, browserName, 'Routed content-only analysis', contentPhase)
+  const contentMainTasks = contentSession ? await finishMainTaskTrace(contentSession) : null
+  if (contentMainTasks) expect(contentMainTasks.maximumMs).toBeLessThanOrEqual(50)
+  const changedPaths = await page.evaluate(() => {
+    const probe = (window as unknown as { __ROUTE_CONTENT_PROBE__: { observer: MutationObserver; changes: string[] } })
+      .__ROUTE_CONTENT_PROBE__
+    probe.observer.disconnect()
+    return probe.changes
+  })
+  expect(changedPaths).toEqual([])
+  expect((await page.evaluate(() => window.__ARRANGE_CAPACITY__)).requests).toBe(4)
+  const contentEvidencePath = testInfo.outputPath('routed-content-capacity.json')
+  await writeFile(contentEvidencePath, JSON.stringify({ contentMainTasks, changedPaths }, null, 2))
+  await testInfo.attach('routed-content-capacity.json', { path: contentEvidencePath, contentType: 'application/json' })
 })
 
 test('[RG8] times out after 5,000ms without changing layout and recovers with a new worker', async ({ page }) => {

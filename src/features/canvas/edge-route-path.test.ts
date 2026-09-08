@@ -1,7 +1,46 @@
 import { describe, expect, it } from 'vitest'
 import { roundedOrthogonalPath } from './edge-route-path'
+import ELK from 'elkjs/lib/elk.bundled.js'
+import { arrangeWithElk } from './layout-graph'
+import { showcaseRoot } from './fixtures/routed-layout-cases'
+import { normalizeRoute } from './routed-layout'
 
 describe('roundedOrthogonalPath', () => {
+  it('[RG2] renders accepted sub-tolerance drift without changing either endpoint', () => {
+    for (const drift of [Number.EPSILON * 64, 0.25, 0.5]) {
+      const points = [
+        { x: 216, y: 52 },
+        { x: 400, y: 52 + drift },
+      ]
+      expect(normalizeRoute(points)).not.toBeNull()
+      expect(roundedOrthogonalPath(points)).toBe(`M 216 52 L 400 ${52 + drift}`)
+    }
+    expect(
+      roundedOrthogonalPath([
+        { x: 216, y: 52 },
+        { x: 400, y: 52.500001 },
+      ]),
+    ).toBe('')
+  })
+
+  it('[RG1] renders every accepted real ELK showcase route with unequal integer card heights', async () => {
+    const result = await arrangeWithElk(
+      {
+        ...showcaseRoot.request,
+        nodes: showcaseRoot.request.nodes.map((node, index) => ({ ...node, width: 216, height: 106 + index })),
+      },
+      new ELK(),
+    )
+    expect(result.type).toBe('layout-result')
+    if (result.type !== 'layout-result') throw new Error('Arrangement failed')
+    for (const route of Object.values(result.routes)) {
+      const path = roundedOrthogonalPath(route.points)
+      expect(path, route.edgeId).not.toBe('')
+      expect(path).toContain(`M ${route.points[0]!.x} ${route.points[0]!.y}`)
+      expect(path.endsWith(`${route.points.at(-1)!.x} ${route.points.at(-1)!.y}`)).toBe(true)
+    }
+  })
+
   it('renders horizontal and vertical turns with line and quadratic corner commands', () => {
     expect(
       roundedOrthogonalPath([

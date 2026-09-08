@@ -4,6 +4,7 @@ export const ROUTING_ENGINE = 'elk-layered-orthogonal-v1' as const
 export const MAX_ROUTE_POINTS_PER_EDGE = 64
 export const MAX_TOTAL_ROUTE_POINTS = 32_000
 export const MAX_SERIALIZED_ROUTING_BYTES = 4_194_304
+export const ROUTING_GEOMETRY_TOLERANCE = 0.5
 const MAX_ROUTING_ROUTES = 500
 const MAX_LAYOUT_COORDINATE = 1_000_000
 

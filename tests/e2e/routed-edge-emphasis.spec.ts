@@ -1,5 +1,27 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { editorMetrics, openSeededPair, resetEditorMetrics, settleRenderer } from './support'
+import { arrangeGraph, editorMetrics, openSeededPair, resetEditorMetrics, settleRenderer } from './support'
+
+test('[RG10] retains a non-color selection cue while another routed edge is hovered', async ({ page, browserName }) => {
+  await openSeededPair(page, { scenario: 'routed-showcase' })
+  await arrangeGraph(page, 7, 11)
+  const selected = page.locator('.svelte-flow__edge[data-id="dependency:load-brief->inspect-workspace"]')
+  const hovered = page.locator('.svelte-flow__edge[data-id="dependency:planning-cycle->implementation-cycle"]')
+  const ordinary = page.locator('.svelte-flow__edge[data-id="dependency:load-brief->planning-cycle"]')
+  for (const forcedColors of browserName === 'chromium' ? (['none', 'active'] as const) : (['none'] as const)) {
+    await page.emulateMedia({ forcedColors })
+    await selected.dispatchEvent('click')
+    await hovered.dispatchEvent('pointerenter')
+    await expect(selected.locator('.workflow-edge')).toHaveClass(/selected.*deemphasized/)
+    await expect(ordinary.locator('.workflow-edge')).toHaveClass(/deemphasized/)
+    const width = (edge: Locator) =>
+      edge.locator('.workflow-edge').evaluate((path) => parseFloat(getComputedStyle(path).strokeWidth))
+    expect(await width(selected)).toBeGreaterThan(await width(ordinary))
+    await hovered.dispatchEvent('pointerleave')
+    await expect(selected.locator('.workflow-edge')).toHaveClass(/selected/)
+    expect(await width(selected)).toBeGreaterThan(await width(ordinary))
+    await page.keyboard.press('Escape')
+  }
+})
 
 async function arrangeRoot(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'More canvas actions' }).click()

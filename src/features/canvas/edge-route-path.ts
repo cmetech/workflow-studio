@@ -1,4 +1,4 @@
-import { MAX_ROUTE_POINTS_PER_EDGE, type EdgeRoutePointV1 } from '$src/lib/layout/routing'
+import { MAX_ROUTE_POINTS_PER_EDGE, ROUTING_GEOMETRY_TOLERANCE, type EdgeRoutePointV1 } from '$src/lib/layout/routing'
 
 const MAX_ROUTE_COORDINATE = 1_000_000
 
@@ -61,11 +61,20 @@ function distance(left: EdgeRoutePointV1, right: EdgeRoutePointV1): number {
 }
 
 function orthogonal(left: EdgeRoutePointV1, right: EdgeRoutePointV1): boolean {
-  return left.x === right.x || left.y === right.y
+  // Keep the validated coordinates, including exact endpoints. ELK lane values
+  // can differ by floating-point roundoff; those routes must not become fallback.
+  return nearlyEqual(left.x, right.x) || nearlyEqual(left.y, right.y)
 }
 
 function collinear(previous: EdgeRoutePointV1, current: EdgeRoutePointV1, next: EdgeRoutePointV1): boolean {
-  return (previous.x === current.x && current.x === next.x) || (previous.y === current.y && current.y === next.y)
+  return (
+    (nearlyEqual(previous.x, current.x) && nearlyEqual(current.x, next.x)) ||
+    (nearlyEqual(previous.y, current.y) && nearlyEqual(current.y, next.y))
+  )
+}
+
+function nearlyEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= ROUTING_GEOMETRY_TOLERANCE
 }
 
 function boundedCoordinate(value: number): boolean {

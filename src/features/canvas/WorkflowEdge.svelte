@@ -82,6 +82,7 @@
 
   :global(.svelte-flow__edge-path.workflow-edge.selected) {
     stroke: var(--workflow-edge-selected-color, var(--color-edge-selected));
+    stroke-width: 3;
   }
 
   :global(.svelte-flow__edge-path.workflow-edge.stale) {
@@ -118,6 +119,7 @@
 
     :global(.svelte-flow__edge-path.workflow-edge.selected) {
       stroke: Highlight;
+      stroke-width: 3;
     }
 
     :global(.svelte-flow__edge:focus-visible .workflow-edge-focus-halo) {

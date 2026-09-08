@@ -796,6 +796,35 @@ describe('GraphCanvas', () => {
     }
   })
 
+  it('[RG7] keeps routes continuously visible without geometric revalidation after content-only projection changes', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const rendered = renderCanvas({ projection, layout: { ...layout, routing } })
+    const resolution = vi.spyOn(routedLayout, 'resolveCurrentRouting')
+    try {
+      await measurements.publish()
+      const path = () => rendered.container.querySelector('.workflow-edge')?.getAttribute('d')
+      await waitFor(() => expect(path()).toBe('M 240 40 L 320 40'))
+      resolution.mockClear()
+      await rendered.rerender({
+        projection: { ...projection, nodes: projection.nodes.map((node) => ({ ...node, value: 'Updated' })) },
+        layout: { ...layout, routing },
+      })
+      await measurements.publish()
+      expect(path()).toBe('M 240 40 L 320 40')
+      for (let frame = 0; frame < 3; frame++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+        await tick()
+        expect(path()).toBe('M 240 40 L 320 40')
+      }
+      expect(resolution).not.toHaveBeenCalled()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      resolution.mockRestore()
+    }
+  })
+
   it('[RG11] restores independently arranged root and two body scopes without new worker work', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()
@@ -1410,6 +1439,77 @@ describe('GraphCanvas', () => {
     },
   )
 
+  it.each([{ surfaceActive: false }, { readOnly: true }, { stale: true }])(
+    '[RG8] reports interrupted completion truthfully after publishing before %j',
+    async (replacement) => {
+      const measurements = canvasMeasurements()
+      const client = new DeferredLayoutClient()
+      let update: Promise<void> | undefined
+      const onLayoutChange = vi.fn((next: Partial<ScopeLayoutV1>) => {
+        if (next.routing) update = rendered.rerender({ ...props, layout: { ...layout, ...next }, ...replacement })
+      })
+      const props = { projection, layout, layoutClient: client, onLayoutChange }
+      const rendered = renderCanvas(props)
+      try {
+        await measurements.publish()
+        const before = $canvasPositions.get()
+        const arranging = rendered.component.arrange()
+        await waitFor(() => expect(client.requests).toHaveLength(1))
+        client.resolve(successfulArrangement(client.requests[0]!))
+        await arranging
+        await update
+        expect(onLayoutChange.mock.calls[0]![0].routing).toBeDefined()
+        expect($canvasPositions.get()).not.toEqual(before)
+        expect(screen.queryByText(arrangeFailure)).not.toBeInTheDocument()
+        expect(screen.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveTextContent(
+          'Arrange Graph was interrupted after updating the canvas.',
+        )
+      } finally {
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it('[RG5] fits the complete accepted route including lanes outside the node bounds', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const persisted = vi.fn()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onPersistLayout: persisted })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      const result = successfulArrangement(client.requests[0]!)
+      const edgeId = projection.edges[0]!.id
+      const route = {
+        edgeId,
+        points: [
+          { x: 272, y: 84 },
+          { x: 296, y: 84 },
+          { x: 296, y: -1000 },
+          { x: 408, y: -1000 },
+          { x: 408, y: 84 },
+          { x: 432, y: 84 },
+        ],
+      }
+      client.resolve({ ...result, routes: { [edgeId]: route }, bounds: { x: 32, y: -1000, width: 640, height: 1200 } })
+      await arranging
+      await rendered.component.flushPersistence()
+      expect(persisted).toHaveBeenCalledOnce()
+      const viewport = (persisted.mock.calls[0]![0] as ScopeLayoutV1).viewport
+      for (const point of route.points) {
+        expect(point.x * viewport.zoom + viewport.x).toBeGreaterThanOrEqual(0)
+        expect(point.x * viewport.zoom + viewport.x).toBeLessThanOrEqual(800)
+        expect(point.y * viewport.zoom + viewport.y).toBeGreaterThanOrEqual(0)
+        expect(point.y * viewport.zoom + viewport.y).toBeLessThanOrEqual(600)
+      }
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
   it.each(['immediate', 'queued'])(
     'discards obsolete fitting and persists replacement positions without routing after the %s publication callback',
     async (timing) => {
@@ -1442,7 +1542,7 @@ describe('GraphCanvas', () => {
         expect(onLayoutChange).toHaveBeenCalledTimes(2)
         expect(onLayoutChange.mock.calls[1]![0]).toMatchObject({ nodePositions: replacement, routing: undefined })
         expect(screen.queryByText('Arranging graph…')).not.toBeInTheDocument()
-        expect(screen.getByText(arrangeFailure)).toBeVisible()
+        expect(screen.getByText('Arrange Graph was interrupted after updating the canvas.')).toBeVisible()
         await rendered.component.flushPersistence()
         expect(onPersistLayout).toHaveBeenCalledOnce()
         expect(onPersistLayout.mock.calls[0]![0]).toMatchObject({ nodePositions: replacement })

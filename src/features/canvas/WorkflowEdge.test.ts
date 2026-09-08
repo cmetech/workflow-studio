@@ -75,7 +75,7 @@ describe('WorkflowEdge routed rendering', () => {
     expect(container.querySelector('.workflow-edge')).toHaveAttribute('d', expected)
   })
 
-  it('keeps the 32px interaction path and exposes selected, focused, stale, and read-only hooks', () => {
+  it('[RG10] keeps the 32px interaction path and exposes selected, focused, stale, and read-only hooks', () => {
     const { container } = renderEdge({ routed: true, selected: true, stale: true, readOnly: true })
 
     expect(container.querySelector('.workflow-edge')).toHaveClass('selected', 'stale', 'read-only')

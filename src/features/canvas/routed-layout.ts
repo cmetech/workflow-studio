@@ -5,6 +5,7 @@ import {
   MAX_SERIALIZED_ROUTING_BYTES,
   MAX_TOTAL_ROUTE_POINTS,
   ROUTING_ENGINE,
+  ROUTING_GEOMETRY_TOLERANCE as SHARED_GEOMETRY_TOLERANCE,
   sanitizeScopeRouting,
   type ScopeRoutingV1,
   type EdgeRoutePointV1,
@@ -14,7 +15,7 @@ import {
 } from '$src/lib/layout/routing'
 import { CANVAS_NODE_WIDTH, CANVAS_NODE_HEIGHT, type CanvasPosition } from './types'
 
-export const ROUTING_GEOMETRY_TOLERANCE = 0.5
+export const ROUTING_GEOMETRY_TOLERANCE = SHARED_GEOMETRY_TOLERANCE
 export const ROUTING_NODE_CLEARANCE = 24
 export const ROUTING_ENDPOINT_FAN_ZONE = 24
 export const MAX_ROUTING_COORDINATE = 1_000_000
