@@ -890,7 +890,9 @@ test('real palette and port gestures commit a dependency and reject a cycle with
     }
   })
   expect(selectedStyleContract.token).not.toBe('')
-  expect(selectedStyleContract.matchingStrokes).toContain('var(--color-edge-selected)')
+  expect(selectedStyleContract.matchingStrokes).toContain(
+    'var(--workflow-edge-selected-color, var(--color-edge-selected))',
+  )
   await expect(page.getByText('Open Inspector is unavailable.', { exact: true })).toHaveCount(0)
   await expect(page.locator('.svelte-flow__node.selected')).toHaveCount(0)
 
