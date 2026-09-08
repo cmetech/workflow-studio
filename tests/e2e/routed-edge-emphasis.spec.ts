@@ -1,5 +1,33 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { arrangeGraph, editorMetrics, openSeededPair, resetEditorMetrics, settleRenderer } from './support'
+import {
+  arrangeGraph,
+  editorMetrics,
+  openSeededPair,
+  replaceDefinitionYaml,
+  resetEditorMetrics,
+  settleRenderer,
+} from './support'
+
+test('[RG10] keeps selected stale read-only connections opaque in both themes', async ({ page, browserName }) => {
+  await openSeededPair(page, { scenario: 'routed-showcase' })
+  await arrangeGraph(page, 7, 11)
+  const dependency = page.getByRole('group', { name: 'Dependency from load-brief to inspect-workspace' })
+  await dependency.dispatchEvent('click')
+  await replaceDefinitionYaml(page, 'name: [\n')
+  await page.getByRole('button', { name: 'Visual', exact: true }).click()
+  await expect(page.getByText(/last valid graph.*read-only/i)).toBeVisible()
+  for (const theme of ['Light', 'Dark'] as const) {
+    await chooseTheme(page, theme)
+    const path = dependency.locator('.workflow-edge')
+    await expect(path).toHaveClass(/selected.*stale.*read-only/)
+    expect(await path.evaluate((element) => getComputedStyle(element).opacity), theme).toBe('1')
+    expect(await path.evaluate((element) => getComputedStyle(element).strokeDasharray)).toMatch(/5(?:px)?,?\s+4/)
+  }
+  if (browserName === 'chromium') {
+    await page.emulateMedia({ forcedColors: 'active' })
+    expect(await dependency.locator('.workflow-edge').evaluate((path) => getComputedStyle(path).opacity)).toBe('1')
+  }
+})
 
 test('[RG10] retains a non-color selection cue while another routed edge is hovered', async ({ page, browserName }) => {
   await openSeededPair(page, { scenario: 'routed-showcase' })
