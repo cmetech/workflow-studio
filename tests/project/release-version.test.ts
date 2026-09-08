@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '2.0.1'
+const RELEASE_VERSION = '3.0.0'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
@@ -24,7 +24,7 @@ function preReleaseFile(path: string): string {
   return result.stdout
 }
 
-describe('version two release metadata', () => {
+describe('version three release metadata', () => {
   it('checks out full Git history before running lockfile provenance tests in CI', () => {
     const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
       jobs?: { quality?: { steps?: Array<{ uses?: string; run?: string; with?: Record<string, unknown> }> } }
@@ -68,7 +68,7 @@ describe('version two release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 2.0.1', () => {
+  it('keeps every package and native release version synchronized at 3.0.0', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -80,8 +80,8 @@ describe('version two release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "2\.0\.1"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "2\.0\.1"/)
+    expect(cargoManifest).toMatch(/^version = "3\.0\.0"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.0"/)
   })
 
   it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and the Dagre-to-ELK replacement', () => {
@@ -130,7 +130,7 @@ describe('version two release metadata', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "2.0.1"',
+      'name = "workflow-studio"\nversion = "3.0.0"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
@@ -154,7 +154,8 @@ describe('version two release metadata', () => {
     expect(installing).toContain('v1.0.7 documentation-and-shortcuts draft')
     expect(installing).toContain('v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release')
     expect(installing).toContain('v2.0.0 verified unpublished draft')
-    expect(installing).toContain('v2.0.1 UI customization recovery candidate')
+    expect(installing).toMatch(/v2\.0\.1[^\n]*superseded[^\n]*without a tag or release/i)
+    expect(installing).toContain('v3.0.0 release candidate')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -167,7 +168,7 @@ describe('version two release metadata', () => {
     expect(installing).not.toContain('/v1.0.4/scripts/install')
   })
 
-  it('preserves release history and records the v2.0.1 candidate boundary separately', () => {
+  it('preserves release history and records the v3.0.0 candidate boundary separately', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
@@ -200,6 +201,7 @@ describe('version two release metadata', () => {
 
     const readme = readFileSync('README.md', 'utf8')
     expect(readme).toContain('[version 2 release acceptance record](docs/verification/version-2-release-acceptance.md)')
+    expect(readme).toContain('[version 3 release acceptance record](docs/verification/version-3-release-acceptance.md)')
     const acceptance = readFileSync('docs/verification/version-2-release-acceptance.md', 'utf8')
     expect(acceptance).toContain('Version/tag: `2.0.1` / `v2.0.1`')
     expect(acceptance).toContain('7a385e41bb58cf693b83f9b6cbfae4b0539cbe32')
@@ -231,11 +233,32 @@ describe('version two release metadata', () => {
     expect(releasing).toMatch(/v2\.0\.0[^\n]*annotated tag[^\n]*aa91baa/i)
     expect(releasing).toMatch(/v2\.0\.0[^\n]*verified unpublished[^\n]*ten-asset draft/i)
     expect(releasing).toContain('34042847222')
-    expect(releasing).toContain('v2.0.1 UI customization recovery candidate')
+    expect(releasing).toMatch(/v2\.0\.1[^\n]*superseded[^\n]*without a tag or release/i)
 
-    const currentPlan = readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')
-    expect(currentPlan).toContain('Workflow Studio v2.0.1 Local Release Preparation Plan')
-    expect(currentPlan).toMatch(/push, tag, workflow dispatch, draft creation, and publication require a later/i)
+    const versionThree = readFileSync('docs/verification/version-3-release-acceptance.md', 'utf8')
+    expect(versionThree).toContain('Version/tag: `3.0.0` / `v3.0.0`')
+    expect(versionThree).toContain('5cad28d843b83456b013d076786aa52ff2259135')
+    expect(versionThree).toMatch(/v3\.0\.0[^\n]*tag[^\n]*does not exist/i)
+    expect(versionThree).toMatch(/v3\.0\.0[^\n]*(?:draft|release)[^\n]*does not exist/i)
+    expect(versionThree).toContain(
+      '- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v3.0.0 draft bytes.',
+    )
+    expect(versionThree).toContain('- [x] No unresolved Critical/Important review finding remains.')
+    expect(versionThree).toContain('- [x] Release approved for publication after protected workflow verification.')
+    expect(versionThree).toContain('docs/mockups/ui-collapsed-panels-problems.png')
+    expect(versionThree).toContain('docs/mockups/ui-expanded-panels-problems.png')
+    expect(versionThree).toContain('docs/mockups/ui-theme-customization.png')
+    expect(versionThree).toContain('tests/scripts/test_whole_branch_fix_process_probe.py')
+    expect(versionThree).toMatch(/release-v3\.0\.0[^\n]*release preparation/i)
+
+    const currentPlan = readFileSync('docs/superpowers/plans/2026-09-08-workflow-studio-v3.0.0-release.md', 'utf8')
+    expect(currentPlan).toContain('Workflow Studio v3.0.0 Full Release Plan')
+    expect(currentPlan).toMatch(/approved[^\n]*2026-09-08/i)
+    expect(currentPlan).toMatch(/publish[^\n]*after[^\n]*protected[^\n]*verification/i)
+
+    expect(readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')).toContain(
+      'Workflow Studio v2.0.1 Local Release Preparation Plan',
+    )
   })
 
   it('keeps draft integrity gates before publication and clean-machine evidence after publication', () => {
@@ -257,7 +280,7 @@ describe('version two release metadata', () => {
     const releasing = readFileSync('docs/releasing.md', 'utf8')
     const preflightIndex = releasing.indexOf('## Local worktree preflight')
     const tagInstructionIndex = releasing.indexOf(
-      '4. Create an annotated `v2.0.1` tag on a commit contained in `origin/base`, then push that exact tag.',
+      '4. Create an annotated `v3.0.0` tag on a commit contained in `origin/base`, then push that exact tag.',
     )
 
     expect(preflightIndex).toBeGreaterThanOrEqual(0)
