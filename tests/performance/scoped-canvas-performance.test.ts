@@ -76,7 +76,7 @@ async function analyzeFixture(fixture = createScopedCapacityFixture()) {
   )
 }
 
-describe('scoped canvas performance contract', () => {
+describe('[RG12] scoped canvas performance contract', () => {
   it('builds one deterministic 250/500 root and three deterministic 250/500 bodies', () => {
     const first = createScopedCapacityFixture()
     const second = createScopedCapacityFixture()

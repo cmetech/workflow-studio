@@ -35,7 +35,7 @@
     setCanvasSelection,
   } from '$src/stores/canvas'
   import { createMemoizedCanvasProjector, projectCanvas } from './project-canvas'
-  import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
+  import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './types'
   import {
     CANVAS_INSPECTOR_RELATIONSHIP,
     type CanvasDragDetail,
@@ -203,6 +203,7 @@
   let emphasisWorkflowIdentity: string | null = null
   let authoringFeedback = $state('')
   let arrangeBusy = $state(false)
+  let arrangeMeasuring = $state(false)
   let layoutRevision = 0
   let destroyed = false
   let ownedLayoutClient: LayoutClientLike | undefined
@@ -219,6 +220,7 @@
     releasePersistence?: () => void
     readonly client: LayoutClientLike
     nodes?: readonly LayoutWorkerNode[]
+    restoreMeasurementVisibility?: () => void
     cancelFrame?: () => void
     published?: boolean
   }
@@ -753,7 +755,9 @@
     attempt.releasePersistence?.()
     delete attempt.releasePersistence
     if (activeArrange !== attempt) return
+    attempt.restoreMeasurementVisibility?.()
     activeArrange = undefined
+    arrangeMeasuring = false
     arrangeBusy = false
     onArrangeBusyChange(false, attempt.workflowIdentity)
   }
@@ -831,6 +835,66 @@
     )
   }
 
+  async function measurementFrame(attempt: ArrangeAttempt): Promise<void> {
+    await tick()
+    if (!arrangeIsCurrent(attempt)) return
+    await new Promise<void>((resolve) => {
+      const frame = requestAnimationFrame(() => {
+        delete attempt.cancelFrame
+        resolve()
+      })
+      attempt.cancelFrame = () => {
+        cancelAnimationFrame(frame)
+        delete attempt.cancelFrame
+        resolve()
+      }
+    })
+  }
+
+  function measurementVisibility<T extends { hidden?: boolean }>(element: T, hidden: boolean | undefined): T {
+    if (element.hidden === hidden) return element
+    const next = { ...element }
+    if (hidden === undefined) delete next.hidden
+    else next.hidden = hidden
+    return next
+  }
+
+  async function measureArrangement(attempt: ArrangeAttempt): Promise<void> {
+    // Mount offscreen cards in bounded batches. Existing visible cards and edges
+    // stay in place; the full node/edge topology remains bound throughout.
+    const mountedNodes = new Set(
+      [...root.querySelectorAll('.svelte-flow__node')].map((node) => node.getAttribute('data-id')),
+    )
+    const mountedEdges = new Set(
+      [...root.querySelectorAll('.svelte-flow__edge')].map((edge) => edge.getAttribute('data-id')),
+    )
+    const offscreen = flowNodes.filter((node) => !mountedNodes.has(node.id)).map((node) => node.id)
+    const hiddenNodes = new Map(flowNodes.map((node) => [node.id, node.hidden]))
+    const hiddenEdges = new Map(flowEdges.map((edge) => [edge.id, edge.hidden]))
+    const restore = () => {
+      flowNodes = flowNodes.map((node) => measurementVisibility(node, hiddenNodes.get(node.id)))
+      flowEdges = flowEdges.map((edge) => measurementVisibility(edge, hiddenEdges.get(edge.id)))
+      arrangeMeasuring = false
+      delete attempt.restoreMeasurementVisibility
+    }
+    attempt.restoreMeasurementVisibility = restore
+    arrangeMeasuring = true
+    flowEdges = flowEdges.map((edge) => (mountedEdges.has(edge.id) ? edge : { ...edge, hidden: true }))
+    // This local accumulator never participates in reactive state; flowNodes is reassigned per batch.
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const revealed = new Set(mountedNodes)
+    for (let offset = 0; offset < Math.max(1, offscreen.length); offset += 40) {
+      for (const id of offscreen.slice(offset, offset + 40)) revealed.add(id)
+      flowNodes = flowNodes.map((node) =>
+        measurementVisibility(node, revealed.has(node.id) ? hiddenNodes.get(node.id) : true),
+      )
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+    }
+    restore()
+    await tick()
+  }
+
   export async function arrange(): Promise<void> {
     if (!canAuthor() || !surfaceActive || !canvasMounted || arrangeBusy) return
     const client =
@@ -853,19 +917,7 @@
     authoringFeedback = 'Arranging graph…'
     onArrangeBusyChange(true, attempt.workflowIdentity)
     try {
-      await tick()
-      if (!arrangeIsCurrent(attempt)) return
-      await new Promise<void>((resolve) => {
-        const frame = requestAnimationFrame(() => {
-          delete attempt.cancelFrame
-          resolve()
-        })
-        attempt.cancelFrame = () => {
-          cancelAnimationFrame(frame)
-          delete attempt.cancelFrame
-          resolve()
-        }
-      })
+      await measureArrangement(attempt)
       if (!arrangeIsCurrent(attempt)) return
       const nodes = measuredLayoutNodes()
       if (!nodes) throw new Error('Canvas measurements unavailable.')
@@ -1784,7 +1836,7 @@
       nodesDraggable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
       nodesConnectable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
       elementsSelectable={!transitionLocked}
-      onlyRenderVisibleElements={!arrangeBusy && projection.capacity.nodeCount !== 1}
+      onlyRenderVisibleElements={!arrangeMeasuring && projection.capacity.nodeCount !== 1}
       nodesFocusable={true}
       edgesFocusable={true}
       elevateEdgesOnSelect={false}

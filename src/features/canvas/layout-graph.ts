@@ -47,7 +47,10 @@ export const ROUTING_ENGINE_OPTIONS: Readonly<Record<typeof ROUTING_ENGINE, Read
     'org.eclipse.elk.layered.spacing.edgeNodeBetweenLayers': '24',
     'org.eclipse.elk.spacing.edgeEdge': '14',
     'org.eclipse.elk.layered.spacing.edgeEdgeBetweenLayers': '14',
-    'org.eclipse.elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+    // Edge-model sorting becomes quadratic across long-edge dummy chains.
+    // Explicit sorted inputs/ports and fixed seeds retain deterministic ties.
+    'org.eclipse.elk.layered.considerModelOrder.strategy': 'NODES',
+    'org.eclipse.elk.layered.thoroughness': '1',
   }),
 }
 const EXPANDED_SPACING: Readonly<LayoutOptions> = Object.freeze({

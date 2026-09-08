@@ -1,3 +1,4 @@
+import { createLargeWorkflowFixture } from '../../tests/performance/large-workflow'
 import routedShowcaseSource from '../../tests/e2e/fixtures/loop-group-showcase.yaml?raw'
 import loop24ManifestSource from '../../brands/loop24/brand.yaml?raw'
 import archonContractSource from '../../contracts/archon-2026-07-v6.json?raw'
@@ -399,12 +400,15 @@ nodes:
     loop_group:
       nodes: []
 `
-  const largeCanvasLayout = scenario === 'large-canvas' ? capacityLayout() : null
+  const largeCanvasLayout = scenario === 'large-canvas' || scenario === 'routed-capacity' ? capacityLayout() : null
   const metrics = createEditorMetricsCollector()
   installEditorMetrics(metrics)
-  const largeCanvasDefinition = largeCanvasLayout
-    ? `${Array.from({ length: 8 }, (_, index) => `future_large_canvas_finding_${index + 1}: retained`).join('\n')}\n${capacityWorkflowYaml()}`
-    : null
+  const largeCanvasDefinition =
+    scenario === 'routed-capacity'
+      ? createLargeWorkflowFixture().yaml
+      : largeCanvasLayout
+        ? `${Array.from({ length: 8 }, (_, index) => `future_large_canvas_finding_${index + 1}: retained`).join('\n')}\n${capacityWorkflowYaml()}`
+        : null
   const loopGroupFiles = scopedCapacityFixture
     ? {
         [DEFINITION_PATH]: scopedCapacityFixture.definition,

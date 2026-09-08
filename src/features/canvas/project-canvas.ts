@@ -9,7 +9,7 @@ import {
   type ProjectedGraph,
   type WorkflowProjection,
 } from '$src/lib/projection/types'
-import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
+import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './types'
 import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition, LoopGroupNodeSummary } from './types'
 import type { ScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 

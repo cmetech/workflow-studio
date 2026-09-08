@@ -76,7 +76,8 @@ describe('ELK adapter', () => {
       'org.eclipse.elk.layered.spacing.edgeNodeBetweenLayers': '24',
       'org.eclipse.elk.spacing.edgeEdge': '14',
       'org.eclipse.elk.layered.spacing.edgeEdgeBetweenLayers': '14',
-      'org.eclipse.elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+      'org.eclipse.elk.layered.considerModelOrder.strategy': 'NODES',
+      'org.eclipse.elk.layered.thoroughness': '1',
     })
     expect(buildElkGraph({ ...request, nodes: [...request.nodes].reverse() })).toEqual(graph)
     expect(request).toEqual(before)

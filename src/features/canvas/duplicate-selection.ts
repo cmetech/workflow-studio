@@ -6,7 +6,7 @@ import type { GraphScopeKey } from '$src/lib/projection/types'
 import type { IndexedReferenceOccurrence } from '$src/lib/references/reference-index'
 import { codePointToEditorOffset } from '$src/lib/references/unicode'
 import type { CanvasPosition } from './types'
-import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './layout-graph'
+import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './types'
 import {
   commitPreparedDefinition,
   emptyIdentityChanges,

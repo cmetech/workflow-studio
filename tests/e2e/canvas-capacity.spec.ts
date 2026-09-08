@@ -1,5 +1,15 @@
-import { expect, test, type Page } from '@playwright/test'
-import { LARGE_WORKFLOW_EDGE_COUNT, LARGE_WORKFLOW_NODE_COUNT } from '../performance/large-workflow'
+import { writeFile, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createServer } from 'node:http'
+import type { LayoutWorkerRequest, LayoutWorkerResult } from '../../src/workers/layout-worker-protocol'
+import { expect, test, type Page, type CDPSession } from '@playwright/test'
+import {
+  createLargeWorkflowFixture,
+  LARGE_WORKFLOW_EDGE_COUNT,
+  LARGE_WORKFLOW_NODE_COUNT,
+} from '../performance/large-workflow'
 import { e2eSnapshot, openSeededPair } from './support'
 
 interface LongTaskState {
@@ -379,4 +389,287 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   expect(
     [...pageErrors, ...consoleMessages, ...resizeErrors].filter((message) => /ResizeObserver loop/i.test(message)),
   ).toEqual([])
+})
+
+interface ArrangeCapacityRun {
+  durationMs: number
+  points: number
+  responseType: string
+  elapsedMs: number
+}
+interface ArrangeCapacityState {
+  requests: number
+  responses: number
+  runs: ArrangeCapacityRun[]
+  dropNext: boolean
+  terminations: number
+}
+
+declare global {
+  interface Window {
+    __ARRANGE_CAPACITY__: ArrangeCapacityState
+  }
+}
+
+async function installArrangeCapacityProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const state: ArrangeCapacityState = { requests: 0, responses: 0, runs: [], dropNext: false, terminations: 0 }
+    window.__ARRANGE_CAPACITY__ = state
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private layoutWorker: boolean
+      private sentAt = 0
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.layoutWorker = String(url).includes('layout-worker')
+        if (this.layoutWorker) {
+          super.addEventListener('message', (event: MessageEvent) => {
+            state.responses++
+            const result = event.data
+            state.runs.push({
+              durationMs: result.durationMs ?? -1,
+              points: Object.values(result.routes ?? {}).reduce<number>(
+                (sum, route) => sum + (route as { points: unknown[] }).points.length,
+                0,
+              ),
+              responseType: result.type,
+              elapsedMs: performance.now() - this.sentAt,
+            })
+          })
+        }
+      }
+      override postMessage(message: unknown, transfer: Transferable[]): void
+      override postMessage(message: unknown, options?: StructuredSerializeOptions): void
+      override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions): void {
+        if (this.layoutWorker) {
+          state.requests++
+          this.sentAt = performance.now()
+          if (state.dropNext) {
+            state.dropNext = false
+            return
+          }
+        }
+        if (Array.isArray(options)) super.postMessage(message, options)
+        else super.postMessage(message, options)
+      }
+      override terminate(): void {
+        if (this.layoutWorker) state.terminations++
+        super.terminate()
+      }
+    }
+    const entries: { startTime: number; duration: number }[] = []
+    const observer = new PerformanceObserver((list) => {
+      entries.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))
+    })
+    if (PerformanceObserver.supportedEntryTypes.includes('longtask')) observer.observe({ type: 'longtask' })
+    Object.defineProperty(window, '__WORKFLOW_STUDIO_LONG_TASKS__', { value: { entries, observer } })
+  })
+}
+
+async function invokeArrange(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'More canvas actions' }).click()
+  await page.getByRole('menuitem', { name: 'Arrange Graph', exact: true }).click()
+}
+
+interface TraceEvent {
+  name: string
+  ph: string
+  tid: number
+  pid: number
+  dur?: number
+  args?: { name?: string }
+}
+
+async function finishMainTaskTrace(session: CDPSession): Promise<{ maximumMs: number; taskCount: number }> {
+  const completed = new Promise<{ stream: string }>((resolve) => session.once('Tracing.tracingComplete', resolve))
+  await session.send('Tracing.end')
+  const { stream } = await completed
+  let source = ''
+  for (;;) {
+    const chunk = await session.send('IO.read', { handle: stream })
+    source += chunk.data
+    if (chunk.eof) break
+  }
+  await session.send('IO.close', { handle: stream })
+  await session.detach()
+  const { traceEvents } = JSON.parse(source) as { traceEvents: TraceEvent[] }
+  const mainThreads = new Set(
+    traceEvents
+      .filter((event) => event.name === 'thread_name' && event.args?.name === 'CrRendererMain')
+      .map(({ pid, tid }) => `${pid}:${tid}`),
+  )
+  const durations = traceEvents
+    .filter(
+      (event) =>
+        mainThreads.has(`${event.pid}:${event.tid}`) &&
+        event.ph === 'X' &&
+        event.name === 'ThreadControllerImpl::RunTask',
+    )
+    .map((event) => event.dur! / 1000)
+  expect(durations.length, 'Chromium top-level renderer task trace must contain actual samples').toBeGreaterThan(0)
+  return { maximumMs: Math.max(...durations), taskCount: durations.length }
+}
+
+test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker response and no main-thread long task', async ({
+  page,
+  browserName,
+}, testInfo) => {
+  test.setTimeout(60_000)
+  await installArrangeCapacityProbe(page)
+  await openSeededPair(page, '?scenario=routed-capacity')
+  await expect.poll(async () => (await capacityProbe(page)).analysisCurrent).toBe(true)
+  const yaml = (await e2eSnapshot(page)).definitionText
+  expect(yaml).toBe(createLargeWorkflowFixture().yaml)
+  const session = browserName === 'chromium' ? await page.context().newCDPSession(page) : null
+  if (session) await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
+  for (let run = 0; run < 4; run++) {
+    const phase = await beginLongTaskPhase(page, browserName)
+    await invokeArrange(page)
+    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+      'Graph arranged: 250 nodes and 500 dependencies.',
+      { timeout: 10_000 },
+    )
+    await expectNoLongTasks(page, browserName, `Arrange ${run === 0 ? 'cold' : 'warmed'} ${run}`, phase)
+    const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
+    expect(state.requests).toBe(run + 1)
+    expect(state.responses).toBe(run + 1)
+    expect(state.runs[run]!.responseType).toBe('layout-result')
+    expect(state.runs[run]!.points).toBeGreaterThanOrEqual(1_000)
+    expect(state.runs[run]!.points).toBeLessThanOrEqual(32_000)
+    if (run > 0) expect(state.runs[run]!.durationMs).toBeLessThanOrEqual(3_000)
+    await page.keyboard.press('Escape')
+  }
+  const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
+  const mainTasks = session ? await finishMainTaskTrace(session) : null
+  if (mainTasks) expect(mainTasks.maximumMs).toBeLessThanOrEqual(50)
+  const evidencePath = testInfo.outputPath('arrange-capacity.json')
+  await writeFile(evidencePath, JSON.stringify({ ...state, mainTasks }, null, 2))
+  await testInfo.attach('arrange-capacity.json', { path: evidencePath, contentType: 'application/json' })
+  expect((await e2eSnapshot(page)).definitionText).toBe(yaml)
+})
+
+test('[RG8] times out after 5,000ms without changing layout and recovers with a new worker', async ({ page }) => {
+  test.setTimeout(25_000)
+  await installArrangeCapacityProbe(page)
+  await openSeededPair(page, '?scenario=large-canvas')
+  const before = await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.scopeSnapshot())
+  await page.evaluate(() => {
+    window.__ARRANGE_CAPACITY__.dropNext = true
+  })
+  const started = Date.now()
+  await invokeArrange(page)
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+    'Arrange Graph could not produce a safe routed layout. Your current layout was preserved.',
+    { timeout: 8_000 },
+  )
+  expect(Date.now() - started).toBeGreaterThanOrEqual(5_000)
+  expect(Date.now() - started).toBeLessThan(8_000)
+  const timedOut = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
+  expect(timedOut).toMatchObject({ requests: 1, responses: 0, terminations: 1 })
+  expect(await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.scopeSnapshot())).toEqual(before)
+  await page.keyboard.press('Escape')
+  await invokeArrange(page)
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+    'Graph arranged: 250 nodes and 500 dependencies.',
+    { timeout: 10_000 },
+  )
+  expect(await page.evaluate(() => window.__ARRANGE_CAPACITY__)).toMatchObject({
+    requests: 2,
+    responses: 1,
+    terminations: 1,
+  })
+})
+
+test('[RG13] arranges with the exact emitted production worker assets while external networking is blocked', async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(30_000)
+  const output = await mkdtemp(join(tmpdir(), 'workflow-studio-offline-routing-'))
+  const sources = new Map<string, string>()
+  const served: string[] = []
+  const server = createServer((request, response) => {
+    const path = request.url ?? '/'
+    if (path === '/') {
+      response.setHeader('Content-Type', 'text/html')
+      response.end('<!doctype html><title>Offline production layout</title>')
+    } else if (sources.has(path)) {
+      served.push(path)
+      response.setHeader('Content-Type', 'text/javascript')
+      response.end(sources.get(path))
+    } else response.writeHead(404).end()
+  })
+  try {
+    execFileSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--outDir', output], {
+      stdio: 'pipe',
+      timeout: 90_000,
+    })
+    const files = await readdir(join(output, 'assets'))
+    const worker = files.find((file) => /^layout-worker-.*\.js$/.test(file))!
+    const algorithm = files.find((file) => /^elk-engine-worker-.*\.js$/.test(file))!
+    expect(worker).toBeTruthy()
+    expect(algorithm).toBeTruthy()
+    for (const file of [worker, algorithm])
+      sources.set(`/assets/${file}`, await readFile(join(output, 'assets', file), 'utf8'))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Missing local fixture address')
+    const origin = `http://127.0.0.1:${address.port}`
+    const attempted: string[] = []
+    await context.route('**/*', async (route) => {
+      if (new URL(route.request().url()).origin !== origin) {
+        attempted.push(route.request().url())
+        await route.abort()
+      } else await route.continue()
+    })
+    await page.goto(origin)
+    const fixture = createLargeWorkflowFixture()
+    const request: LayoutWorkerRequest = {
+      type: 'layout',
+      identity: {
+        requestId: 'offline',
+        workflowIdentity: 'offline',
+        pairGeneration: 1,
+        scopeKey: 'root',
+        graphFingerprint: `sha256:${'a'.repeat(64)}`,
+        layoutRevision: 0,
+      },
+      nodes: fixture.projection.nodes.map(({ id }, order) => ({ id, order, width: 216, height: 104 })),
+      edges: fixture.projection.edges.map(({ id, source, target }, order) => ({ id, source, target, order })),
+    }
+    const result = await page.evaluate(
+      async ({ worker, request }) => {
+        const endpoint = new Worker(`/assets/${worker}`, { type: 'module' })
+        try {
+          return await new Promise<LayoutWorkerResult>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Offline worker timed out')), 5_000)
+            endpoint.onmessage = (event) => {
+              clearTimeout(timer)
+              resolve(event.data)
+            }
+            endpoint.onerror = (event) => {
+              clearTimeout(timer)
+              reject(new Error(event.message))
+            }
+            endpoint.postMessage(request)
+          })
+        } finally {
+          endpoint.terminate()
+        }
+      },
+      { worker, request },
+    )
+    expect(result.type).toBe('layout-result')
+    expect(result.identity).toEqual(request.identity)
+    if (result.type !== 'layout-result') return
+    expect(Object.keys(result.routes)).toHaveLength(500)
+    expect(Object.values(result.routes).reduce((count, route) => count + route.points.length, 0)).toBeLessThanOrEqual(
+      32_000,
+    )
+    expect(served.sort()).toEqual([`/assets/${worker}`, `/assets/${algorithm}`].sort())
+    expect(attempted).toEqual([])
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(output, { recursive: true, force: true })
+  }
 })

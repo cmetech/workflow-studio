@@ -1,3 +1,4 @@
+import { createLargeWorkflowFixture } from '../../../tests/performance/large-workflow'
 import { emptyIdentityChanges } from './canvas-actions'
 import type { YamlTransaction } from '$src/lib/documents/transactions'
 import { $activeLayout, activeScopeLayout, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
@@ -1248,6 +1249,48 @@ describe('GraphCanvas', () => {
     } finally {
       rendered.unmount()
       measurements.restore()
+    }
+  })
+
+  it('[RG8] [RG12] cancels a partial capacity measurement without posting or persisting layout', async () => {
+    const fixture = createLargeWorkflowFixture()
+    const measurements = canvasMeasurements(
+      Object.fromEntries(fixture.projection.nodes.map(({ id }) => [id, { width: 216, height: 104 }])),
+    )
+    const client = { arrange: vi.fn(), cancel: vi.fn(), destroy: vi.fn() }
+    const publish = vi.fn(),
+      persist = vi.fn()
+    const rendered = render(GraphCanvas, {
+      commandSurface: commandRegistry,
+      projection: fixture.projection,
+      layout: { ...fixture.layout, viewport: { x: 0, y: 0, zoom: 1 } },
+      layoutClient: client,
+      onLayoutChange: publish,
+      onPersistLayout: persist,
+    })
+    await measurements.publish()
+    const before = rendered.container.querySelectorAll('.svelte-flow__node').length
+    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockReturnValue(321)
+    const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    try {
+      const arranging = rendered.component.arrange()
+      await tick()
+      const during = rendered.container.querySelectorAll('.svelte-flow__node').length
+      expect(during).toBeGreaterThan(before)
+      expect(during).toBeLessThanOrEqual(before + 40)
+      expect(during).toBeLessThan(250)
+      expect(client.arrange).not.toHaveBeenCalled()
+      await waitFor(() => expect(frame).toHaveBeenCalled())
+      rendered.unmount()
+      await arranging
+      expect(cancel).toHaveBeenCalledWith(321)
+      expect(client.arrange).not.toHaveBeenCalled()
+      expect(publish).not.toHaveBeenCalled()
+      expect(persist).not.toHaveBeenCalled()
+    } finally {
+      measurements.restore()
+      frame.mockRestore()
+      cancel.mockRestore()
     }
   })
 

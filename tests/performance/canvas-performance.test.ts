@@ -84,7 +84,7 @@ describe('250-node canvas performance contract', () => {
     expect(second.yaml).toBe(first.yaml)
   })
 
-  it('keeps 1,000 pointer moves isolated and persists exactly one completed drag after the debounce', async () => {
+  it('[RG9] [RG12] keeps 1,000 pointer moves isolated and persists exactly one completed drag after the debounce', async () => {
     vi.useFakeTimers()
     const fixture = createLargeWorkflowFixture()
     const originalLayout = structuredClone(fixture.layout)

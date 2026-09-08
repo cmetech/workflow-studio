@@ -198,6 +198,10 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
     return failure('serialized_routing_too_large')
   }
 
+  const expandedRectangles = input.nodes.map(({ id }) => ({
+    id,
+    rectangle: expandedRectangle(rectangles.get(id)!, ROUTING_NODE_CLEARANCE),
+  }))
   for (const edge of input.edges) {
     const points = routes[edge.id]!.points
     const source = rectangles.get(edge.source)!
@@ -209,11 +213,12 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
       return failure('route_endpoint_mismatch')
     }
 
-    const unrelatedRectangles = input.nodes
-      .filter(({ id }) => id !== edge.source && id !== edge.target)
-      .map(({ id }) => expandedRectangle(rectangles.get(id)!, ROUTING_NODE_CLEARANCE))
     for (const segment of segments(points)) {
-      if (unrelatedRectangles.some((rectangle) => segmentEntersRectangle(segment, rectangle))) {
+      if (
+        expandedRectangles.some(
+          ({ id, rectangle }) => id !== edge.source && id !== edge.target && segmentEntersRectangle(segment, rectangle),
+        )
+      ) {
         return failure('route_intersects_node')
       }
     }
@@ -229,12 +234,12 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
 }
 
 export function countOrthogonalCrossings(routes: Readonly<Record<string, EdgeRouteV1>>): number {
-  const routeValues = Object.values(routes)
+  const routeValues = Object.values(routes).map((route) => segments(route.points))
   let count = 0
   for (let leftIndex = 0; leftIndex < routeValues.length; leftIndex += 1) {
-    const leftSegments = segments(routeValues[leftIndex]!.points)
+    const leftSegments = routeValues[leftIndex]!
     for (let rightIndex = leftIndex + 1; rightIndex < routeValues.length; rightIndex += 1) {
-      const rightSegments = segments(routeValues[rightIndex]!.points)
+      const rightSegments = routeValues[rightIndex]!
       for (const left of leftSegments) {
         for (const right of rightSegments) {
           if (segmentsCross(left, right)) count += 1
@@ -386,11 +391,11 @@ function segmentEntersRectangle(segment: Segment, rectangle: Rectangle): boolean
 }
 
 function hasLongCoincidentSegment(routes: Readonly<Record<string, EdgeRouteV1>>): boolean {
-  const routeValues = Object.values(routes)
+  const routeValues = Object.values(routes).map((route) => segments(route.points))
   for (let leftIndex = 0; leftIndex < routeValues.length; leftIndex += 1) {
-    const leftSegments = segments(routeValues[leftIndex]!.points)
+    const leftSegments = routeValues[leftIndex]!
     for (let rightIndex = leftIndex + 1; rightIndex < routeValues.length; rightIndex += 1) {
-      const rightSegments = segments(routeValues[rightIndex]!.points)
+      const rightSegments = routeValues[rightIndex]!
       for (const left of leftSegments) {
         for (const right of rightSegments) {
           if (coincidentLength(left, right) > ROUTING_ENDPOINT_FAN_ZONE + ROUTING_GEOMETRY_TOLERANCE) {

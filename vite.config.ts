@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => ({
       )
     }
   },
+  build: { manifest: true },
   server: {
     port: 1420,
     strictPort: true
