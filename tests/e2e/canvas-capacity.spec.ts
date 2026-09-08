@@ -11,7 +11,7 @@ import {
   LARGE_WORKFLOW_NODE_COUNT,
 } from '../performance/large-workflow'
 import { e2eSnapshot, openSeededPair } from './support'
-import { enforcePerceptualPerformance } from './performance-policy'
+import { enforcePerceptualPerformance, shouldRunReferenceCapacityScenario } from './performance-policy'
 
 interface LongTaskState {
   readonly entries: { readonly startTime: number; readonly duration: number }[]
@@ -515,6 +515,10 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   page,
   browserName,
 }, testInfo) => {
+  test.skip(
+    !shouldRunReferenceCapacityScenario(enforcePerceptualPerformance, browserName),
+    'Shared CI retains the Chromium capacity path; complete cross-engine acceptance runs on reference hardware.',
+  )
   test.setTimeout(60_000)
   await installArrangeCapacityProbe(page)
   await openSeededPair(page, '?scenario=routed-capacity')

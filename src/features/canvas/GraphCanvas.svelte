@@ -1187,7 +1187,10 @@
   }
 
   function clearEdgeEmphasisOnEscape(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && edgeIdFromTarget(event.target)) clearEdgeEmphasis(true)
+    if (event.key !== 'Escape' || !edgeIdFromTarget(event.target)) return
+    event.preventDefault()
+    if (selection.length > 0 || edgeSelectionState.edgeIds.length > 0) clearSurfaceSelection()
+    else clearEdgeEmphasis(true)
   }
 
   function nodeIds(): readonly string[] {

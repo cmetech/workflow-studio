@@ -2466,6 +2466,28 @@ describe('GraphCanvas', () => {
     expect(selectedNode).not.toHaveClass('selected')
   })
 
+  it('clears the authoritative node selection when Escape is pressed on a focused edge', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+    })
+    const rendered = renderCanvas({ projection, layout })
+    await measurements.publish()
+    const edge = rendered.container.querySelector<SVGGElement>('.svelte-flow__edge')!
+
+    setCanvasSelection(['review'])
+    await tick()
+    expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
+
+    edge.focus()
+    await fireEvent.keyDown(edge, { key: 'Escape' })
+    await tick()
+
+    expect($canvasSelection.get()).toEqual([])
+    expect(screen.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
+    measurements.restore()
+  })
+
   it('prunes a selected node removed while the authoring surface is inactive', async () => {
     const onOpenInspector = vi.fn()
     const rendered = renderCanvas({ projection, layout, onOpenInspector })

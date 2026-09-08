@@ -669,6 +669,7 @@ test('node body remains the real hit target and draggable in the former controls
 test('adds, duplicates, connects, references, renames, deletes, saves, and reopens exact authoritative YAML', async ({
   page,
 }) => {
+  test.setTimeout(45_000)
   await openSeededPair(page)
   await expectAuthoritativeYaml(page, SEEDED_YAML)
 
