@@ -1,13 +1,13 @@
 # Routed Arrange Graph Design
 
-**Status:** Approved direction; design awaiting user review  
-**Date:** 2026-09-07  
-**Branch:** `feat/routed-arrange-graph`  
+**Status:** Implemented; adversarial review approved; automated verification complete. Manual native offline UAT, signing, notarization, and release remain open.
+**Date:** 2026-09-07
+**Branch:** `feat/routed-arrange-graph`
 **Base:** `566b9d991399bcf874b02110d68ab1435c26a872` (`base`, local v2.0.1 evidence commit)
 
 ## 1. Problem and observed cause
 
-Workflow Studio currently uses Dagre only to position nodes when a user invokes **Arrange Graph**. The adapter in `src/features/canvas/layout-graph.ts` gives Dagre fixed node dimensions, runs the layout, and returns only node coordinates. Dagre's edge geometry is discarded. `src/features/canvas/WorkflowEdge.svelte` then derives every displayed connection independently from its source and target coordinates with Svelte Flow's generic `getSmoothStepPath` helper.
+At the feature base above, Workflow Studio used Dagre only to position nodes when a user invoked **Arrange Graph**. The adapter in `src/features/canvas/layout-graph.ts` gave Dagre fixed node dimensions, ran the layout, and returned only node coordinates. Dagre's edge geometry was discarded. `src/features/canvas/WorkflowEdge.svelte` then derived every displayed connection independently from its source and target coordinates with Svelte Flow's generic `getSmoothStepPath` helper.
 
 That separation prevents Arrange Graph from guaranteeing a clean diagram:
 
@@ -85,7 +85,9 @@ The next explicit Arrange Graph invocation creates a new clean layout. Root and 
 
 ### 5.3 Layout failure
 
-A worker error, timeout, malformed result, stale response, or route-quality failure leaves the current node positions, routes, selection, and viewport unchanged. The command becomes available again and the application reports `Arrange Graph could not produce a safe routed layout. Your current layout was preserved.` Technical details may be logged locally, but raw worker errors do not replace user-facing copy.
+A worker error, timeout, malformed result, stale response, or route-quality failure before publication leaves the current node positions, routes, selection, and viewport unchanged. The command becomes available again and the application reports `Arrange Graph could not produce a safe routed layout. Your current layout was preserved.` Technical details may be logged locally, but raw worker errors do not replace user-facing copy.
+
+An interruption after arranged positions and routes have been published reports `Arrange Graph was interrupted after updating the canvas.` It does not roll back the published geometry; any superseding edit or navigation remains authoritative. The interrupted attempt discards its held persistence and cannot apply an obsolete fit. This announcement does not claim the updated arrangement was saved. The user can invoke Arrange Graph again when the active canvas becomes available.
 
 ## 6. Layout engine boundary
 
@@ -97,6 +99,8 @@ Add a canvas-layout worker with the same narrow request/client discipline used b
 - `src/workers/layout-worker.ts` owns the ELK instance and validates every request before calling it.
 - `src/workers/layout-client.ts` owns request identity, stale-response rejection, error handling, timeout, and termination.
 - `src/features/canvas/layout-graph.ts` becomes the pure conversion and result-validation boundary rather than calling Dagre synchronously.
+
+The implemented worker uses the pinned package's supported `elk-api.js` with a local worker factory. The application layout worker creates one dedicated descendant, `src/workers/elk-engine-worker.ts`, which imports the official `elk-worker.min.js` dispatcher. Both assets are bundled locally. Request validation, the bounded ordering/routing passes, normalization, retry, and complete-result validation remain in the outer application worker; only final bounded application results reach the renderer. A real emitted-worker browser test caught the original `elk.bundled.js` startup failure inside `WorkerGlobalScope`, so no environment spoofing or custom dispatcher is used. Chromium verifies parent and descendant termination; Chromium and WebKit execute the local production assets.
 
 The worker is created lazily on the first Arrange Graph invocation. The ELK worker asset and all configuration are bundled with Workflow Studio so arranging remains fully offline. There is one in-flight request per client. A newer request supersedes an older one, and leaving a workflow or destroying the canvas prevents its response from publishing.
 
@@ -123,8 +127,8 @@ The initial ELK configuration is versioned as `elk-layered-orthogonal-v1`:
 | Edge routing | `ORTHOGONAL` |
 | Node dimensions | Exact dimensions measured by Svelte Flow; 216 × 104 remains the minimum card footprint |
 | Port constraints | `FIXED_ORDER`, with incoming ports on `WEST` and outgoing ports on `EAST` |
-| Model order | Prefer YAML definition order when it does not add crossings |
-| Port order | Stable dependency order, then edge ID |
+| Model order | Sorted YAML nodes/edges; `considerModelOrder.strategy: NODES` and `thoroughness: 1` |
+| Port order | Stable dependency order and edge-ID ties, refined by one bounded preliminary port-ordering pass |
 | Node spacing | 64 px within a layer |
 | Layer spacing | 136 px between node ranks |
 | Edge-to-node spacing | At least 24 px |
@@ -134,7 +138,11 @@ The initial ELK configuration is versioned as `elk-layered-orthogonal-v1`:
 
 Projection definition order is an explicit input. IDs break ties so repeated arrangements of identical content return byte-equivalent results. The configuration version is part of the fingerprint; future tuning intentionally invalidates older route caches.
 
-Arrange waits until every active node has a finite measured width and height. It does not substitute the minimum height for a taller loop-group or issue-bearing card. If measurements are not ready after the next rendered frame, the request fails safely and preserves the current layout.
+When a node has more than one incoming or outgoing port, one preliminary ELK pass uses `FIXED_SIDE` and seed 2 to choose a low-crossing port order. Strict intake accepts only complete, finite, bounded port coordinates for the expected nodes and ports. East-side ports use ascending preliminary Y and west-side ports descending Y; dependency order and edge ID break ties. The final pass always uses `FIXED_ORDER` and seed 1. Preliminary node positions and routes never publish. There is at most one preliminary ordering pass, one final routing pass, and the single permitted expanded-spacing routing retry. Graphs without fan-out/fan-in skip the preliminary pass.
+
+The `NODES` model-order option and thoroughness 1 were selected only after the fixed-seed 250/500 benchmark reproduced a timeout under `NODES_AND_EDGES`. Stable sorted input and seeds remain, and every reviewed zero-crossing fixture continues to pass. These pre-release refinements are part of `elk-layered-orthogonal-v1`; later changes to the engine configuration must bump that identity.
+
+Arrange waits for finite Svelte Flow measurements at or above 216 × 104. Offscreen cards mount temporarily in batches of 40 across rendered frames, retaining the full graph and already-visible edges. Cancellation restores normal visibility. The worker request is posted only when all exact dimensions are ready; an unmeasured or invalid card fails safely. This does not substitute 104px for a taller loop-group or issue-bearing card.
 
 Every dependency receives a stable source and target port. ELK may distribute these ports along the correct side of the node, preventing three fan-out edges from occupying the same centerline. The existing large centered handles remain the pointer targets for creating a dependency. Published dependencies render from their computed visual ports, so readable edge endpoints do not make connection gestures smaller.
 
@@ -208,6 +216,10 @@ The routing fingerprint covers:
 - the complete arranged node-position record.
 
 The canvas uses persisted routes only when the fingerprint recomputed from the active projection and positions matches exactly. Any mismatch discards the complete scope route set; it never mixes old and new routes.
+
+Initial saved-cache activation waits two rendered frames for natural card measurements to replace the temporary initial footprint. Already-active routes invalidate immediately when actual dimensions change. Both activation and Arrange recheck workflow, pair generation, scope, projection, positions, and measurement ownership after asynchronous work.
+
+Positions and routes publish in one scope update. Persistence is held through the immediate, duration-zero fit; a guarded viewport-only update then saves the complete scope once with the fitted camera. Manual auto-pan remains visible during a held node drag, while layout publication and persistence wait for drag completion.
 
 Manual drag, accepted topology change, node-dimension change, route sanitizer rejection, or engine-version change clears routing for that scope in the same layout publication that changes positions or projection. Navigating between scopes, changing selection, changing panels, editing node content, and changing the viewport do not clear valid routes.
 
@@ -307,3 +319,17 @@ Arrange a deterministic 250-node/500-edge fixture. The UI remains responsive, th
 7. Add root, loop-body, manual-drag, failure, persistence, accessibility, and capacity coverage.
 8. Verify production and native bundles remain offline and record dependency-size impact.
 9. Perform focused code review followed by full release verification.
+
+## 16. Implementation evidence and remaining acceptance
+
+Tasks 1–10 are committed through `01236d5` and their focused reviews have no open findings. The [plan completion evidence](../plans/2026-09-07-routed-arrange-graph.md#completion-evidence) records commits, observed RED/GREEN checks, review corrections, and the concrete RG1–RG14 test locations. The [size and performance evidence](../../reviews/2026-09-07-routed-arrange-graph-size-and-performance.md) preserves the historical Task 10 production worker boundary, exact native payload/resource inspection, bundled ELK notices, and fixed-seed 250-node/500-edge benchmark. Both independent adversarial reviewers approved the corrected branch through `da22a07`; subsequent verification corrections through `dcb6551` also received clean focused review. Final automated verification and rebuilt package evidence are recorded below; native manual acceptance and release remain open.
+
+On the recorded verification host, Chromium's worst warmed worker duration was 988.8ms with 2,086 route points; its maximum observed renderer task was 48.729ms. WebKit's worst warmed worker duration was 1,137ms. These are fixture/host measurements within the unchanged 3,000ms worker and 50ms renderer limits, not guarantees for every graph or machine.
+
+Independent Claude/Codex whole-branch review found five product defects and one review-freeze defect. The [consolidated dispositions](../../reviews/2026-09-07-routed-arrange-graph-adversarial-code-review.md) record each original reviewer ID and its independently executed evidence. Product fixes are committed in `e9a30d1`: rendering shares the validator's existing tolerance, selected routes retain a non-color cue under other-edge hover, content-only projections preserve validated routes continuously, interruption feedback reflects whether publication occurred, and fitting includes accepted route bounds. Post-fix capacity checks render all 500 accepted routes in both browsers; Chromium's maximum Arrange task was 47.305ms, its worst warm worker was 986.4ms, and the content-only edit maximum task was 16.932ms with no changed route paths. WebKit's worst warm worker was 1,221ms.
+
+The two subsequent Minor findings are also resolved: §5.3/offline guidance defines interruption accurately, and `da22a07` isolates measured footprints across workflow/scope identity changes. Both final focused reviewers approve with **0 Critical / 0 Important / 0 Minor** findings. Codex independently passed 201 tests in five files and four Chromium/WebKit capacity/scope checks; its fresh maximum Chromium Arrange task was 48.37ms and content-edit task 17.99ms, with all 500 routes renderable and no content-edit path changes. Claude independently verified real-module behavior and all 665 archived source files, while its sandbox prevented suite/browser execution. Exact verdicts, report hashes, measurements, and evidence limits are in the consolidated review.
+
+Late verification corrected the selected-color test oracle, preserved opaque dashed stale edges, and retained forced-colors Highlight for selected/emphasized read-only edges through zero-specificity stale exclusions. Fresh verification of source `dcb65517503226ef47a01eab623ea872777d7ff7` passes 2,299 unit tests in 174 files, 270 Rust tests, 201 Chromium tests, and 198 WebKit tests with three documented Chromium-only skips. Format, lint, Svelte/TypeScript check (0 errors / 0 warnings), contracts, examples, 42 bundled resources, and production build pass. The [final verification record](../../reviews/2026-09-07-routed-arrange-graph-adversarial-code-review.md#final-source-verification-and-rebuilt-native-artifacts) distinguishes these fresh results from historical measurements.
+
+Production worker execution with external requests blocked and byte-level app/DMG inspection are verified for the historical Task 10 candidate. After all review fixes, the app, DMG, and updater archive were rebuilt at version 2.0.1. The ordinary Tauri command generated artifacts but exited 1 solely because `TAURI_SIGNING_PRIVATE_KEY` was unavailable; the local `--no-sign` command exited 0. Current artifact sizes and hashes are recorded separately from Task 10's unchanged comparison table. A packaged macOS WKWebView Arrange click-through with operating-system networking disabled remains manual UAT because no callable packaged-WebView automation driver is available. Updater signing, signed-package acceptance, notarization, installation, and release are not claimed. Merge, release, version changes, and attribution removal require separate user approval.

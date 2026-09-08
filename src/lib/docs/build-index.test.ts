@@ -322,6 +322,25 @@ describe('buildDocumentationIndex', () => {
     )
   })
 
+  it('finds routed Arrange Graph guidance in the offline index for either workflow profile', async () => {
+    const network = vi.fn(() => Promise.reject(new Error('offline')))
+    vi.stubGlobal('fetch', network)
+    try {
+      for (const activeContract of await loadBundledAuthoringContracts()) {
+        const index = buildDocumentationIndex(activeContract, bundledGuideFixtures())
+        for (const query of ['Arrange Graph', 'routed dependencies', 'manual placement']) {
+          const topic = searchDocumentation(index, query, { mode: 'guides' })[0]
+          expect(topic?.id, `${activeContract.profile}: ${query}`).toBe('guide:dag-dependencies')
+          expect(topic?.body).toContain('active canvas')
+          expect(topic?.body).toContain('YAML')
+        }
+      }
+      expect(network).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('derives complete node topics from each bundled contract descriptor and schema', async () => {
     for (const activeContract of await loadBundledAuthoringContracts()) {
       const index = buildDocumentationIndex(activeContract)

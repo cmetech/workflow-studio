@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import ts from 'typescript'
 
 let output: string
 let assets: Map<string, string>
@@ -22,6 +23,90 @@ beforeAll(() => {
 }, 100_000)
 afterAll(() => {
   if (output) rmSync(output, { recursive: true, force: true })
+})
+
+describe('routed-layout requirement traceability', () => {
+  it('defines each Arrange failure announcement in the authoritative feedback section and explains interruption offline', () => {
+    const canvas = readFileSync('src/features/canvas/GraphCanvas.svelte', 'utf8')
+    const script = canvas.match(/<script[^>]*>([^]*?)<\/script>/)![1]!
+    const source = ts.createSourceFile('GraphCanvas.ts', script, ts.ScriptTarget.Latest, true)
+    const messages: string[] = []
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text.startsWith('ARRANGE_') &&
+        node.initializer &&
+        ts.isStringLiteralLike(node.initializer)
+      )
+        messages.push(node.initializer.text)
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(messages.length).toBeGreaterThan(0)
+    const spec = readFileSync('docs/superpowers/specs/2026-09-07-routed-arrange-graph-design.md', 'utf8')
+    const feedback = spec.split('### 5.3 Layout failure')[1]!.split('## 6.')[0]!
+    for (const message of messages) expect(feedback).toContain(message)
+    const guide = readFileSync('docs/app-guides/dag-dependencies.md', 'utf8')
+    expect(guide).toContain('Arrange Graph was interrupted after updating the canvas.')
+    expect(guide).toContain('does not finish saving its layout')
+  })
+
+  it('links each approved plan and design requirement to an active behavior test title', () => {
+    const required = [
+      'RG1',
+      'RG2',
+      'RG3',
+      'RG4',
+      'RG5',
+      'RG6',
+      'RG7',
+      'RG8',
+      'RG9',
+      'RG10',
+      'RG11',
+      'RG12',
+      'RG13',
+      'RG14',
+    ]
+    for (const path of [
+      'docs/superpowers/specs/2026-09-07-routed-arrange-graph-design.md',
+      'docs/superpowers/plans/2026-09-07-routed-arrange-graph.md',
+    ]) {
+      const rows = [...readFileSync(path, 'utf8').matchAll(/^\| (RG\d+)\b.*\|$/gm)].map((row) => row[1])
+      expect(new Set(rows), path).toEqual(new Set(required))
+    }
+
+    const evidence = new Set<string>()
+    // Read test declarations, not comments, helper strings, or this project's own requirement list.
+    for (const root of ['src', 'tests/e2e', 'tests/performance', 'tests/accessibility']) {
+      for (const file of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+        if (!/\.(test|spec)\.ts$/.test(file)) continue
+        const path = join(root, file)
+        const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true)
+        const visit = (node: ts.Node): void => {
+          if (
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            ['it', 'test'].includes(node.expression.text)
+          ) {
+            const [title, body] = node.arguments
+            if (
+              title &&
+              ts.isStringLiteralLike(title) &&
+              body &&
+              (ts.isArrowFunction(body) || ts.isFunctionExpression(body))
+            ) {
+              for (const match of title.text.matchAll(/\[(RG\d+)\]/g)) evidence.add(match[1]!)
+            }
+          }
+          ts.forEachChild(node, visit)
+        }
+        visit(source)
+      }
+    }
+    for (const id of required) expect(evidence.has(id), `${id} has no active behavior test title`).toBe(true)
+  })
 })
 
 describe('[RG13] production routed-layout asset boundary', () => {
