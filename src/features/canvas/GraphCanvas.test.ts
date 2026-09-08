@@ -825,6 +825,64 @@ describe('GraphCanvas', () => {
     }
   })
 
+  it.each(['workflow', 'scope'])(
+    '[RG11] waits for new measurements across a %s change with every node ID colliding',
+    async (change) => {
+      const sizes = { collect: { width: 240, height: 240 }, review: { width: 240, height: 280 } }
+      const measurements = canvasMeasurements(sizes)
+      const onLayoutChange = vi.fn(),
+        onPersistLayout = vi.fn()
+      const props = { projection, workflowIdentity: 'first/root', layout, onLayoutChange, onPersistLayout }
+      const rendered = renderCanvas(props)
+      const resolution = vi.spyOn(routedLayout, 'resolveCurrentRouting')
+      try {
+        await measurements.publish()
+        const nextProjection: ProjectedGraph = {
+          ...projection,
+          ...(change === 'scope'
+            ? {
+                scope: { ...projection.scope, key: 'loop-group:other', kind: 'loop-group', groupId: 'other' },
+                editorNodePrefix: 'other/',
+                sourcePath: ['nodes', 2, 'nodes'],
+              }
+            : {}),
+        }
+        const routing = await savedRouting(nextProjection)
+        sizes.collect.height = 104
+        sizes.review.height = 168
+        resolution.mockClear()
+        onLayoutChange.mockClear()
+        onPersistLayout.mockClear()
+        await rendered.rerender({
+          ...props,
+          projection: nextProjection,
+          workflowIdentity: change === 'workflow' ? 'second/root' : 'first/loop-group:other',
+          layout: { ...layout, routing },
+        })
+        for (let frame = 0; frame < 3; frame++) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+          await tick()
+        }
+        expect.soft(resolution).not.toHaveBeenCalled()
+        expect
+          .soft(onLayoutChange)
+          .not.toHaveBeenCalledWith(expect.objectContaining({ routing: undefined }), expect.any(String))
+        await rendered.component.flushPersistence()
+        expect.soft(onPersistLayout).not.toHaveBeenCalled()
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+        )
+        expect(onLayoutChange).not.toHaveBeenCalled()
+        expect(onPersistLayout).not.toHaveBeenCalled()
+      } finally {
+        rendered.unmount()
+        measurements.restore()
+        resolution.mockRestore()
+      }
+    },
+  )
+
   it('[RG11] restores independently arranged root and two body scopes without new worker work', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()

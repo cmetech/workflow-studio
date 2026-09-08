@@ -456,7 +456,12 @@
       return
     const projected = deriveCanvas()
     const currentNodes = untrack(() => flowNodes)
-    const nextNodes = withAuthoritativeSelection(projected.nodes, currentNodes)
+    const measuredNodes =
+      previousProjectionRefresh?.workflowIdentity === workflowIdentity &&
+      sameRoutingTopology(previousProjectionRefresh.projection, projection)
+        ? withCurrentMeasurements(projected.nodes, currentNodes)
+        : projected.nodes
+    const nextNodes = withAuthoritativeSelection(measuredNodes, currentNodes)
     if (nextNodes !== currentNodes) flowNodes = nextNodes
     const currentEdges = untrack(() => flowEdges)
     const nextEdges = withSurfaceEdgeSelection(projected.edges, currentEdges)
@@ -1048,16 +1053,17 @@
     }
   }
 
+  function withCurrentMeasurements(nodes: CanvasNode[], currentNodes: CanvasNode[]): CanvasNode[] {
+    // Same-scope content changes keep their observed footprint until the next
+    // ResizeObserver update. Other workflows/scopes must obtain their own sizes.
+    const previous = new Map(currentNodes.map((node) => [node.id, node]))
+    return nodes.map((node) => {
+      const measured = previous.get(node.id)?.measured
+      return node.measured || !measured ? node : { ...node, measured }
+    })
+  }
+
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
-    // A new content projection does not unmeasure an existing card. Keep its
-    // observed footprint until ResizeObserver reports the actual new size.
-    if (currentNodes) {
-      const previous = new Map(currentNodes.map((node) => [node.id, node]))
-      nodes = nodes.map((node) => {
-        const measured = previous.get(node.id)?.measured
-        return node.measured || !measured ? node : { ...node, measured }
-      })
-    }
     const currentSelection = canvasSelectionStore.get()
     const reconciled = reconcileSelection(nodes, currentSelection, currentNodes, workflowIdentity)
     if (reconciled.selection.length !== currentSelection.length) setCanvasSelection(reconciled.selection)
