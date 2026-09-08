@@ -57,6 +57,16 @@
       "maxBytes": 2097152
     },
     {
+      "path": "docs/licenses/ELK-EPL-2.0.txt",
+      "sha256": "637e81f4a1b6b4079535c499fca05e238cf7605c1ff5b76d60d7da7ce96700c9",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "docs/licenses/ELK-NOTICE.txt",
+      "sha256": "783adac29d907bd1fe7db4bf1e6192866432ddb1d0e69a0f14883709a6aece3b",
+      "maxBytes": 2097152
+    },
+    {
       "path": "docs/licenses/Geist-Mono-OFL-1.1.txt",
       "sha256": "cc815ed4fc045f0e991abb10395b7932bd028c6a067deb13316d6002105074e6",
       "maxBytes": 2097152

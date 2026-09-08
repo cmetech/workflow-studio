@@ -1,6 +1,6 @@
 # Routed Arrange Graph size and performance evidence
 
-Date: 2026-09-07. Feature: `feat/routed-arrange-graph`. Task 10 starts at `0786e5023c38347d43302a99477ec1917ff8bb19`. This evidence covers the Task 10 source committed with this document; final whole-branch verification remains Task 11.
+Date: 2026-09-07. Feature: `feat/routed-arrange-graph`. Task 10 starts at `0786e5023c38347d43302a99477ec1917ff8bb19`. This evidence covers Task 10 and its ELK distribution-notice fix after focused review; final whole-branch verification remains Task 11. The notice fix changes packaging and tests only; worker and renderer JavaScript hashes remain unchanged.
 
 ## Host and method
 
@@ -24,14 +24,14 @@ Chromium evidence, milliseconds:
 
 | Measure | Cold | Warm 1 | Warm 2 | Warm 3 |
 | --- | ---: | ---: | ---: | ---: |
-| Complete worker duration | 1,289.5 | 981.0 | 960.8 | 956.6 |
-| Raw message round trip | 1,306.6 | 981.8 | 961.6 | 957.3 |
+| Complete worker duration | 1,276.2 | 988.8 | 972.6 | 973.8 |
+| Raw message round trip | 1,286.3 | 989.5 | 973.3 | 974.6 |
 
-Warmed worker median: **960.8 ms**; worst: **981.0 ms**, versus the unchanged **3,000 ms** requirement. Maximum observed renderer task: **48.684 ms** across **890** traced tasks, versus **50 ms**. No observer long task exceeded 50 ms. Timings are host-specific measurements, not a guarantee for every machine or every possible 250/500 graph.
+Warmed worker median: **973.8 ms**; worst: **988.8 ms**, versus the unchanged **3,000 ms** requirement. Maximum observed renderer task: **48.729 ms** across **892** traced tasks, versus **50 ms**. No observer long task exceeded 50 ms. Timings are host-specific measurements, not a guarantee for every machine or every possible 250/500 graph.
 
 The capacity browser tests also prove the real 5,000 ms default timeout, preserve positions/viewport/selection on timeout, observe worker termination, and successfully Arrange with a replacement worker. Existing root and loop-body 1,000-pointer-move tests retain zero parse, validation, layout, YAML transaction, Git/native work, and persistence during movement. A new component regression cancels a partial measurement batch without posting a request or persisting anything.
 
-The same 24-test matrix passed in Chromium and WebKit (24/24 total). WebKit observed cold 1,413 ms and warmed 1,117 / 1,068 / 1,047 ms (median 1,068 ms, worst 1,117 ms), with the same 2,086 points.
+The same 24-test matrix passed in Chromium and WebKit (24/24 total). WebKit observed cold 1,426 ms and warmed 1,137 / 1,080 / 1,076 ms (median 1,080 ms, worst 1,137 ms), with the same 2,086 points.
 
 Raw browser evidence is attached as `arrange-capacity.json` in the Playwright test output and copied to the ignored Task 10 evidence directory during execution.
 
@@ -66,23 +66,26 @@ A separate `npm run build -- --manifest` in the base extraction obtains its impo
 | Lazy layout/validation worker | 0 | 20,828 | +20,828 |
 | Lazy ELK algorithm worker | 0 | 1,426,474 | +1,426,474 |
 | All CSS | 114,128 | 116,168 | +2,040 |
-| Complete production `dist` | 3,749,434 | 5,190,820 | +1,441,386 |
-| Native app contents, 43 regular files | 18,596,956 | 18,960,220 | +363,264 |
-| Native executable | 17,724,816 | 18,088,080 | +363,264 |
-| DMG | 6,314,730 | 6,691,399 | +376,669 |
+| ELK license and notice assets | 0 | 20,135 | +20,135 |
+| Complete production `dist` | 3,749,434 | 5,210,955 | +1,461,521 |
+| Native app contents, 43 base / 45 current regular files | 18,596,956 | 18,996,867 | +399,911 |
+| Native executable | 17,724,816 | 18,104,592 | +379,776 |
+| DMG | 6,314,730 | 6,705,874 | +391,144 |
 
 The raw renderer arithmetic is exact:
 
 ```text
 −13,044 renderer JS + 20,828 layout worker + 1,426,474 algorithm worker
-+ 2,040 CSS + 5,088 manifest = +1,441,386 total dist bytes
++ 2,040 CSS + 5,088 manifest + 20,135 notices = +1,461,521 total dist bytes
+
+20,135 native notice resources + 379,776 executable = +399,911 app bytes
 ```
 
-Fonts, the document worker, index HTML, and other assets are unchanged. The app embeds compressed frontend assets, explaining why its increase is much smaller than raw `dist`. Both Vite candidates emit the existing large-App-chunk warning; no arbitrary byte-growth threshold was used to waive a performance limit.
+Fonts, the document worker, index HTML, and pre-existing notice assets are unchanged. Compared with the initial Task 10 build, the notice fix adds exactly 20,135 bytes to dist, 16,512 bytes to the native executable, 20,135 standalone native resource bytes, and 36,647 total app bytes. Native executable growth also reflects its embedded resource-integrity manifest and compressed frontend assets. The app embeds compressed frontend assets, explaining why its increase is much smaller than raw `dist`. Both Vite candidates emit the existing large-App-chunk warning; no arbitrary byte-growth threshold was used to waive a performance limit.
 
 Base DMG SHA-256: `402ad7017067ff8c8a3450227cdc6ed97f543b55d2adcaa0f3ed8d9d840e3c05`.
 
-Current DMG SHA-256: `79140aaa652f5a4e44704bc95e32a6c7e793e544e1995d479428221c0a717df5`.
+Current DMG SHA-256: `5dc69c75d1ee58078456312c1ba09064c5588358ae88f48c523205ea7b82c646`.
 
 ## Offline and native package boundary
 
@@ -97,7 +100,18 @@ Native inspection verifies each emitted worker byte-for-byte against a Brotli-de
 | `layout-worker-Bk-P3caT.js` | 20,828 | 6,804 | `6764674da696a4fe081dc3cc7499652dfaa9dc5a59bb7d087af7f2ee9edd131c` |
 | `elk-engine-worker-Csg8cUd2.js` | 1,426,474 | 369,797 | `7bbf686d45d9d4624f567ff7f2a27e43635780c1f7cbe3c5b895dc70e9ff418c` |
 
-The current DMG was mounted read-only without opening the app; its complete 43-file app tree matched the built `.app` by per-file SHA-256. It was detached after inspection.
+The review identified a valid packaging omission: the emitted engine did **not** preserve the complete ELK distribution license or notice. The earlier Task 10 implementer-report claim has been corrected. `docs/licenses/ELK-EPL-2.0.txt` is byte-identical to the installed `elkjs@0.12.0/LICENSE.md` and its [official release license](https://github.com/kieler/elkjs/blob/0.12.0/LICENSE.md). `ELK-NOTICE.txt` preserves both copyright/license blocks from the distributed `lib/elk-api.js`, plus the upstream [ELK project notice](https://github.com/eclipse-elk/elk/blob/v0.12.0/NOTICE.md). It identifies the chosen EPL-2.0 distribution, exact npm archive, npm `gitHead` source commit, downloadable source archives, and Java source release. The elkjs release does not record an exact ELK Java build commit; the notice states that limit explicitly instead of claiming reproducibility from an invented revision.
+
+The exact license and notice bytes ship in `dist/licenses/` and in native `Contents/Resources/_up_/docs/licenses/`. The native integrity manifest now verifies 42 resource files. The regression tests failed before the fix because both manifest entries and production notices were absent; they now require exact upstream license bytes, preserved notices/source information, identical public/production copies, and rejection of missing or modified native resource copies.
+
+| Notice asset | Source / native resource bytes | Embedded compressed bytes | SHA-256 |
+| --- | ---: | ---: | --- |
+| `ELK-EPL-2.0.txt` | 14,443 | 4,926 | `637e81f4a1b6b4079535c499fca05e238cf7605c1ff5b76d60d7da7ce96700c9` |
+| `ELK-NOTICE.txt` | 5,692 | 1,735 | `783adac29d907bd1fe7db4bf1e6192866432ddb1d0e69a0f14883709a6aece3b` |
+
+Both notice assets were independently matched to decompressed Tauri codegen payloads, and their compressed bytes physically occur in the packaged executable. Both standalone native resource files also match their documented source bytes exactly. No network retrieval is needed to read the bundled notices or run Arrange; source-acquisition URLs are inert text.
+
+The current DMG was mounted read-only without opening the app; its complete 45-file app tree matched the built `.app` by per-file SHA-256. It was detached after inspection.
 
 The exact requested `npm run tauri build -- --bundles app,dmg` produced the app and DMG, then exited 1 at updater signing: “A public key has been found, but no private key.” The established local `--no-sign` variant subsequently completed with exit 0. These are unsigned local arm64 build artifacts; no release publication, notarization, updater signature, installation, or other-platform acceptance is claimed.
 
@@ -106,7 +120,10 @@ There is no callable macOS packaged-WebView automation driver in this environmen
 ## Verification commands
 
 ```sh
-npm test -- tests/performance/canvas-performance.test.ts tests/performance/scoped-canvas-performance.test.ts src/features/canvas/GraphCanvas.test.ts src/features/canvas/layout-graph.test.ts src/features/canvas/routed-layout.test.ts tests/project/routed-layout-boundary.test.ts
+npm test -- tests/performance/canvas-performance.test.ts tests/performance/scoped-canvas-performance.test.ts src/features/canvas/GraphCanvas.test.ts src/features/canvas/layout-graph.test.ts src/features/canvas/routed-layout.test.ts tests/project/routed-layout-boundary.test.ts tests/installers/release-package.test.ts
+npm run test:unit
+npm run resources:verify
+cargo test --manifest-path src-tauri/Cargo.toml setup_spec
 npm run check
 npm run lint
 npm run format:check
@@ -114,4 +131,4 @@ npm run build
 npm run tauri build -- --bundles app,dmg --no-sign
 ```
 
-Focused verification: 225 tests across six files; full unit verification: 2,284 tests across 174 files; Svelte/TypeScript reports zero errors and zero warnings. Complete branch review, release gates, and any final documentation changes remain Task 11.
+Focused verification: 253 tests across seven files; full unit verification: 2,287 tests across 174 files; Svelte/TypeScript reports zero errors and zero warnings. Complete branch review, release gates, and any final documentation changes remain Task 11.

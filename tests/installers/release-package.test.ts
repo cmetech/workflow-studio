@@ -103,10 +103,29 @@ function verifyPackagedResourcesWithPe(root: string, manifestPath: string, execu
 }
 
 describe('packaged resource verification', () => {
-  it('accepts the exact 40-file packaged resource tree', async () => {
+  it.each(['ELK-EPL-2.0.txt', 'ELK-NOTICE.txt'])(
+    'requires intact bundled ELK distribution resource %s',
+    async (name) => {
+      const { cleanupRoot, root, manifest, manifestPath } = materializeResourceRoot()
+      try {
+        const path = `docs/licenses/${name}`
+        expect(manifest.files.map((entry) => entry.path)).toContain(path)
+        const target = join(root, path)
+        const original = readFileSync(target)
+        writeFileSync(target, `${original.toString()}altered\n`)
+        await expect(verifier()(root, manifestPath)).rejects.toThrow(/sha-256 mismatch/i)
+        unlinkSync(target)
+        await expect(verifier()(root, manifestPath)).rejects.toThrow(/missing/i)
+      } finally {
+        rmSync(cleanupRoot, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('accepts the exact 42-file packaged resource tree', async () => {
     const { cleanupRoot, root, manifestPath } = materializeResourceRoot()
     try {
-      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 40 })
+      await expect(verifier()(root, manifestPath)).resolves.toEqual({ verifiedFiles: 42 })
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }
@@ -120,8 +139,8 @@ describe('packaged resource verification', () => {
     const changed = join(root, 'changed.json')
     try {
       for (const directory of RESOURCE_DIRECTORIES) cpSync(directory, join(source, directory), { recursive: true })
-      await expect(writer()(source, first)).resolves.toEqual({ writtenFiles: 40 })
-      await expect(writer()(source, second)).resolves.toEqual({ writtenFiles: 40 })
+      await expect(writer()(source, first)).resolves.toEqual({ writtenFiles: 42 })
+      await expect(writer()(source, second)).resolves.toEqual({ writtenFiles: 42 })
       expect(readFileSync(first)).toEqual(readFileSync(second))
       const firstManifest = JSON.parse(readFileSync(first, 'utf8')) as {
         files: Array<{ path: string; sha256: string }>
@@ -268,7 +287,7 @@ describe('packaged resource verification', () => {
         { encoding: 'utf8' },
       )
       expect(verification.status, verification.stderr).toBe(0)
-      expect(verification.stdout).toContain('Verified 40 packaged resource files')
+      expect(verification.stdout).toContain('Verified 42 packaged resource files')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -284,7 +303,7 @@ describe('Windows packaged executable verification', () => {
 
       const result = verifyPackagedResourcesWithPe(root, manifestPath, executable)
       expect(result.status, result.stderr).toBe(0)
-      expect(result.stdout).toContain('Verified 40 packaged resource files')
+      expect(result.stdout).toContain('Verified 42 packaged resource files')
     } finally {
       rmSync(cleanupRoot, { recursive: true, force: true })
     }

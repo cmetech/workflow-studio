@@ -3,4 +3,7 @@
 /examples/** text=auto eol=lf
 /docs/licenses/** text=auto eol=lf
 /public/licenses/** text=auto eol=lf
+# Preserve spacing in verbatim upstream copyright comment blocks.
+/docs/licenses/ELK-NOTICE.txt whitespace=-blank-at-eol
+/public/licenses/ELK-NOTICE.txt whitespace=-blank-at-eol
 /src-tauri/resources/*.json text=auto eol=lf

@@ -25,6 +25,24 @@ afterAll(() => {
 })
 
 describe('[RG13] production routed-layout asset boundary', () => {
+  it('ships the exact ELK license, upstream notices, and pinned source acquisition information offline', () => {
+    const upstreamLicense = readFileSync('node_modules/elkjs/LICENSE.md')
+    const upstreamApi = readFileSync('node_modules/elkjs/lib/elk-api.js', 'utf8')
+    const upstreamNotices = upstreamApi.match(/\/\*\*[^]*?Copyright[^]*?\*\//g)!
+    expect(upstreamNotices.length).toBeGreaterThan(0)
+    const notice = readFileSync('docs/licenses/ELK-NOTICE.txt', 'utf8')
+    for (const upstreamNotice of upstreamNotices) expect(notice).toContain(upstreamNotice)
+    expect(notice).toContain('elkjs 0.12.0')
+    expect(notice).toContain('Source Code is available under the Eclipse Public License 2.0')
+    expect(notice).toContain('https://registry.npmjs.org/elkjs/-/elkjs-0.12.0.tgz')
+    expect(notice).toContain('https://github.com/kieler/elkjs/tree/ff5771d7165445c42c408bb8a090c8035272218c')
+    expect(notice).toContain('https://github.com/eclipse-elk/elk/tree/v0.12.0')
+    for (const root of ['docs/licenses', 'public/licenses', join(output, 'licenses')]) {
+      expect(readFileSync(join(root, 'ELK-EPL-2.0.txt'))).toEqual(upstreamLicense)
+      expect(readFileSync(join(root, 'ELK-NOTICE.txt'), 'utf8')).toBe(notice)
+    }
+  })
+
   it('keeps ELK exclusively in the lazy descendant worker, outside the initial renderer manifest closure', () => {
     const manifest = JSON.parse(readFileSync(join(output, '.vite/manifest.json'), 'utf8')) as Record<
       string,

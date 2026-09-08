@@ -33,6 +33,8 @@ const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'contracts/hermes-legacy-v2.json',
   'contracts/manifest.json',
   'contracts/resource-root',
+  'docs/licenses/ELK-EPL-2.0.txt',
+  'docs/licenses/ELK-NOTICE.txt',
   'docs/licenses/Geist-Mono-OFL-1.1.txt',
   'docs/licenses/Geist-OFL-1.1.txt',
   'examples/README.md',
