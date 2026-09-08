@@ -85,13 +85,12 @@
     stroke-width: 3;
   }
 
-  :global(.svelte-flow__edge-path.workflow-edge.read-only) {
+  :global(.svelte-flow__edge-path.workflow-edge.read-only:not(.stale)) {
     opacity: 0.72;
   }
 
   :global(.svelte-flow__edge-path.workflow-edge.stale) {
     stroke-dasharray: 5 4;
-    opacity: 1;
   }
 
   @media (forced-colors: active) {
@@ -103,7 +102,7 @@
       stroke: CanvasText;
     }
 
-    :global(.svelte-flow__edge-path.workflow-edge.read-only) {
+    :global(.svelte-flow__edge-path.workflow-edge.read-only:not(.stale)) {
       stroke: GrayText;
       opacity: 1;
     }
