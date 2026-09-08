@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { compile } from 'svelte/compiler'
 import {
   arrangeGraph,
   editorMetrics,
@@ -7,6 +9,59 @@ import {
   resetEditorMetrics,
   settleRenderer,
 } from './support'
+
+test('[RG10] preserves read-only selection and emphasis in the compiled forced-colors cascade', async ({
+  page,
+  browserName,
+}) => {
+  const { css } = compile(readFileSync('src/features/canvas/WorkflowEdge.svelte', 'utf8'), {
+    filename: 'WorkflowEdge.svelte',
+    generate: 'client',
+    css: 'external',
+  })
+  expect(css?.code).toBeTruthy()
+  await page.setContent(`<style>${css!.code}</style><svg>
+    <path id="read-only" class="svelte-flow__edge-path workflow-edge read-only" d="M0 0H50" />
+    <path id="selected" class="svelte-flow__edge-path workflow-edge read-only selected" d="M0 10H50" />
+    <path id="emphasized" class="svelte-flow__edge-path workflow-edge read-only emphasized" d="M0 20H50" />
+    <path id="stale" class="svelte-flow__edge-path workflow-edge stale" d="M0 30H50" />
+    <path id="stale-read-only" class="svelte-flow__edge-path workflow-edge stale read-only" d="M0 40H50" />
+    <path id="gray-text" style="stroke: GrayText" d="M0 50H50" />
+    <path id="highlight" style="stroke: Highlight" d="M0 60H50" />
+  </svg>`)
+  const paint = (id: string) =>
+    page.locator(`#${id}`).evaluate((path) => {
+      const style = getComputedStyle(path)
+      return {
+        opacity: style.opacity,
+        stroke: style.stroke,
+        width: parseFloat(style.strokeWidth),
+        dash: style.strokeDasharray,
+      }
+    })
+  expect((await paint('read-only')).opacity).toBe('0.72')
+  for (const id of ['selected', 'emphasized']) {
+    expect(await paint(id)).toMatchObject({ opacity: '0.72', width: 3 })
+  }
+  for (const id of ['stale', 'stale-read-only']) {
+    expect((await paint(id)).opacity).toBe('1')
+    expect((await paint(id)).dash).toMatch(/5(?:px)?,?\s+4/)
+  }
+  if (browserName === 'chromium') {
+    await page.emulateMedia({ forcedColors: 'active' })
+    const grayText = (await paint('gray-text')).stroke
+    const highlight = (await paint('highlight')).stroke
+    expect(highlight).not.toBe(grayText)
+    expect(await paint('read-only')).toMatchObject({ opacity: '1', stroke: grayText })
+    for (const id of ['selected', 'emphasized']) {
+      expect.soft(await paint(id), id).toMatchObject({ opacity: '1', stroke: highlight, width: 3 })
+    }
+    for (const id of ['stale', 'stale-read-only']) {
+      expect((await paint(id)).opacity).toBe('1')
+      expect((await paint(id)).dash).toMatch(/5(?:px)?,?\s+4/)
+    }
+  }
+})
 
 test('[RG10] keeps selected stale read-only connections opaque in both themes', async ({ page, browserName }) => {
   await openSeededPair(page, { scenario: 'routed-showcase' })
