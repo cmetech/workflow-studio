@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { decode } from 'fast-png'
 import {
+  activeScopeSnapshot,
   editorMetrics,
   expectNoPointerAuthorityWork,
   resetEditorMetrics,
@@ -550,6 +551,14 @@ test('picker-priority Escape consumes edge mode before mixed selection without p
     'description: Verify picker-priority Escape after projection refresh.',
   )
   await replaceDefinitionYaml(page, refreshedDefinition)
+  await expect
+    .poll(async () => {
+      const snapshot = await e2eSnapshot(page)
+      return snapshot.analysisDefinitionRevision === snapshot.definitionRevision
+    })
+    .toBe(true)
+  await page.locator('[aria-label="Definition YAML"] .cm-line').first().click()
+  await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
   await page.getByRole('button', { name: 'Visual', exact: true }).click()
 
   await expect(prepare).not.toHaveClass(/selected/)

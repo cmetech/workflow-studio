@@ -14,6 +14,11 @@ export default defineConfig(({ mode }) => ({
     }
   },
   build: { manifest: true },
+  optimizeDeps: {
+    // Arrange Graph starts these nested workers lazily. Pre-bundle their runtime
+    // imports so a cold dev server does not reload the editor on first use.
+    include: ['elkjs/lib/elk-api.js', 'elkjs/lib/elk-worker.min.js'],
+  },
   server: {
     port: 1420,
     strictPort: true

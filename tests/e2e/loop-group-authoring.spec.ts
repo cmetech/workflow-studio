@@ -1199,6 +1199,7 @@ test.describe('loop group visual authoring', () => {
     await expectNoLongTasks(page, browserName, 'body pan and zoom', bodyInteractionPhase)
 
     const beforeBack = await e2eSnapshot(page)
+    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
     await resetEditorMetrics(page)
     const backPhase = await beginLongTaskPhase(page, browserName)
     await page.getByRole('button', { name: 'Back to root workflow' }).click()
