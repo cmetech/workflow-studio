@@ -1,6 +1,6 @@
 # Workflow Studio v3.0.0 Full Release Plan
 
-> **Status:** Approved by the user on 2026-09-08. Publish v3.0.0 after protected workflow verification succeeds.
+> **Status:** Approved and completed on 2026-09-08. v3.0.0 was published after protected workflow verification succeeded.
 
 **Goal:** Publish Workflow Studio v3.0.0 from the reviewed `base` history using the existing draft-only GitHub Actions pipeline and a separate verified publication step.
 

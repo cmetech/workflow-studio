@@ -136,7 +136,7 @@ describe('version three release metadata', () => {
     expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
-  it('retains the immutable bootstrap while documenting the published release and later candidates', () => {
+  it('retains the immutable bootstrap while documenting v3.0.0 as the published release', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
@@ -150,12 +150,12 @@ describe('version three release metadata', () => {
     )
     expect(installing).toContain('install the latest published release')
     expect(installing).toContain('immutable v1.0.5 bootstrap URLs')
-    expect(installing).toContain('v1.0.6 is the latest published release')
+    expect(installing).toContain('v3.0.0 is the latest published release')
     expect(installing).toContain('v1.0.7 documentation-and-shortcuts draft')
     expect(installing).toContain('v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release')
     expect(installing).toContain('v2.0.0 verified unpublished draft')
     expect(installing).toMatch(/v2\.0\.1[^\n]*superseded[^\n]*without a tag or release/i)
-    expect(installing).toContain('v3.0.0 release candidate')
+    expect(installing).toContain('install published v3.0.0')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -168,7 +168,7 @@ describe('version three release metadata', () => {
     expect(installing).not.toContain('/v1.0.4/scripts/install')
   })
 
-  it('preserves release history and records the v3.0.0 candidate boundary separately', () => {
+  it('preserves release history and records the published v3.0.0 boundary separately', () => {
     for (const path of ['docs/releasing.md', 'docs/verification/version-1-release-acceptance.md']) {
       const document = readFileSync(path, 'utf8')
       expect(document).toMatch(/v1\.0\.1[^\n]*unpublished[^\n]*failed draft/i)
@@ -238,22 +238,32 @@ describe('version three release metadata', () => {
     const versionThree = readFileSync('docs/verification/version-3-release-acceptance.md', 'utf8')
     expect(versionThree).toContain('Version/tag: `3.0.0` / `v3.0.0`')
     expect(versionThree).toContain('5cad28d843b83456b013d076786aa52ff2259135')
-    expect(versionThree).toMatch(/v3\.0\.0[^\n]*tag[^\n]*does not exist/i)
-    expect(versionThree).toMatch(/v3\.0\.0[^\n]*(?:draft|release)[^\n]*does not exist/i)
+    expect(versionThree).toContain('1cd6a8d323bb408bef394e5b20be5aed75bd6d12')
+    expect(versionThree).toContain('34242821519')
+    expect(versionThree).toContain('34245992410')
+    expect(versionThree).toContain('384861987')
+    expect(versionThree).toMatch(/v3\.0\.0[^\n]*annotated tag[^\n]*1cd6a8d/i)
+    expect(versionThree).toMatch(/v3\.0\.0[^\n]*latest published release/i)
     expect(versionThree).toContain(
-      '- [ ] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v3.0.0 draft bytes.',
+      '- [x] Extracted DMG/NSIS payloads, exact draft inventory, checksums, and updater signatures verified from downloaded v3.0.0 draft bytes.',
     )
+    expect(versionThree).toContain('- [x] Verified draft is published as the latest GitHub release.')
+    expect(versionThree).toContain('- [x] Public `latest.json`, checksum, and installer links resolve.')
+    expect(versionThree).toContain('398 passed and 4 skipped')
+    expect(versionThree).toContain('5a7d6e4da38736bfccc694020661e5773080040c5dc8656c25ecb571004b0f10')
+    expect(versionThree).toContain('604792a1e83a7f88b3dbcaf1db8c6619021438fb951a3845bdfed64ffca05379')
     expect(versionThree).toContain('- [x] No unresolved Critical/Important review finding remains.')
     expect(versionThree).toContain('- [x] Release approved for publication after protected workflow verification.')
     expect(versionThree).toContain('docs/mockups/ui-collapsed-panels-problems.png')
     expect(versionThree).toContain('docs/mockups/ui-expanded-panels-problems.png')
     expect(versionThree).toContain('docs/mockups/ui-theme-customization.png')
     expect(versionThree).toContain('tests/scripts/test_whole_branch_fix_process_probe.py')
-    expect(versionThree).toMatch(/release-v3\.0\.0[^\n]*release preparation/i)
+    expect(versionThree).toMatch(/release-v3\.0\.0[^\n]*post-release evidence/i)
 
     const currentPlan = readFileSync('docs/superpowers/plans/2026-09-08-workflow-studio-v3.0.0-release.md', 'utf8')
     expect(currentPlan).toContain('Workflow Studio v3.0.0 Full Release Plan')
     expect(currentPlan).toMatch(/approved[^\n]*2026-09-08/i)
+    expect(currentPlan).toMatch(/completed[^\n]*2026-09-08/i)
     expect(currentPlan).toMatch(/publish[^\n]*after[^\n]*protected[^\n]*verification/i)
 
     expect(readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')).toContain(
