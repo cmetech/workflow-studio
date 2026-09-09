@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '3.0.0'
+const RELEASE_VERSION = '3.0.1'
 const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
@@ -68,7 +68,7 @@ describe('version three release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 3.0.0', () => {
+  it('keeps every package and native release version synchronized at 3.0.1', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -80,8 +80,8 @@ describe('version three release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "3\.0\.0"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.0"/)
+    expect(cargoManifest).toMatch(/^version = "3\.0\.1"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.1"/)
   })
 
   it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and the Dagre-to-ELK replacement', () => {
@@ -130,7 +130,7 @@ describe('version three release metadata', () => {
     const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
     const expectedCargoLock = baseCargoLock().replace(
       'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "3.0.0"',
+      'name = "workflow-studio"\nversion = "3.0.1"',
     )
 
     expect(currentCargoLock).toBe(expectedCargoLock)
@@ -266,6 +266,16 @@ describe('version three release metadata', () => {
     expect(currentPlan).toMatch(/completed[^\n]*2026-09-08/i)
     expect(currentPlan).toMatch(/publish[^\n]*after[^\n]*protected[^\n]*verification/i)
 
+    const hotfixPlan = readFileSync('docs/superpowers/plans/2026-09-09-workflow-studio-v3.0.1-release.md', 'utf8')
+    expect(hotfixPlan).toContain('Workflow Studio v3.0.1 Windows Persistence Hotfix Release Plan')
+    expect(hotfixPlan).toMatch(/approved[^\n]*2026-09-09/i)
+    expect(hotfixPlan).toMatch(/publish[^\n]*after[^\n]*protected[^\n]*release workflow/i)
+
+    const hotfixAcceptance = readFileSync('docs/verification/version-3.0.1-release-acceptance.md', 'utf8')
+    expect(hotfixAcceptance).toContain('Version/tag: `3.0.1` / `v3.0.1`')
+    expect(hotfixAcceptance).toContain('79e04d61b7b235eaf7135f0bd9b1707117d5730c')
+    expect(hotfixAcceptance).toMatch(/Windows[^\n]*error 87/i)
+
     expect(readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')).toContain(
       'Workflow Studio v2.0.1 Local Release Preparation Plan',
     )
@@ -290,7 +300,7 @@ describe('version three release metadata', () => {
     const releasing = readFileSync('docs/releasing.md', 'utf8')
     const preflightIndex = releasing.indexOf('## Local worktree preflight')
     const tagInstructionIndex = releasing.indexOf(
-      '4. Create an annotated `v3.0.0` tag on a commit contained in `origin/base`, then push that exact tag.',
+      '4. Create an annotated `v3.0.1` tag on a commit contained in `origin/base`, then push that exact tag.',
     )
 
     expect(preflightIndex).toBeGreaterThanOrEqual(0)

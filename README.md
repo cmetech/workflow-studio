@@ -22,7 +22,7 @@ Native macOS (Apple Silicon and Intel) and Windows x64 packages are distributed 
 
 See [Installing Workflow Studio](docs/installing.md) for direct downloads, checksum verification, safe one-line installer commands, and platform warning guidance. Maintainers should follow the [release runbook](docs/releasing.md); automation creates a verified draft and never publishes it automatically.
 
-Security boundaries and the untrusted-input threat model are documented in [Security](docs/security.md). The current [version 3 release acceptance record](docs/verification/version-3-release-acceptance.md) tracks the v3.0.0 release; the [version 2 release acceptance record](docs/verification/version-2-release-acceptance.md) and [version 1 record](docs/verification/version-1-release-acceptance.md) remain available as history.
+Security boundaries and the untrusted-input threat model are documented in [Security](docs/security.md). The [v3.0.1 release acceptance record](docs/verification/version-3.0.1-release-acceptance.md) tracks the approved Windows persistence hotfix candidate; the [version 3 release acceptance record](docs/verification/version-3-release-acceptance.md), [version 2 release acceptance record](docs/verification/version-2-release-acceptance.md), and [version 1 record](docs/verification/version-1-release-acceptance.md) remain available as history.
 
 ## Start here
 
