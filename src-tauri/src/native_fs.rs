@@ -24,8 +24,8 @@ pub(crate) fn replace_file_in_capability_directory(
 
     if target_name.is_empty()
         || target_name
-            .encode_utf16()
-            .any(|unit| matches!(unit, b'\\' as u16 | b'/' as u16 | b':' as u16 | 0))
+            .bytes()
+            .any(|byte| matches!(byte, b'\\' | b'/' | b':' | 0))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
