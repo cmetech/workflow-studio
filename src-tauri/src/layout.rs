@@ -346,13 +346,8 @@ fn select_windows_atomic_commit(
 
 #[cfg(windows)]
 fn replace_file_windows(directory: &Dir, temporary: &File) -> LayoutResult<()> {
-    const TARGET_LENGTH: usize = LAYOUT_FILE.len();
-    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
-        directory,
-        temporary,
-        LAYOUT_FILE,
-    )
-    .map_err(|error| io_error("layout_write_failed", error))
+    crate::native_fs::replace_file_in_capability_directory(directory, temporary, LAYOUT_FILE)
+        .map_err(|error| io_error("layout_write_failed", error))
 }
 
 impl<'a> StagedLayout<'a> {

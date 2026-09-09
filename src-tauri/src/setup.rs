@@ -1956,11 +1956,8 @@ fn commit_readiness(
             .rename(temporary, directory, READY_FILE)
             .map_err(|error| io_error("setup_ready_write_failed", error));
     }
-    const TARGET_LENGTH: usize = READY_FILE.len();
-    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
-        directory, file, READY_FILE,
-    )
-    .map_err(|error| io_error("setup_ready_write_failed", error))
+    crate::native_fs::replace_file_in_capability_directory(directory, file, READY_FILE)
+        .map_err(|error| io_error("setup_ready_write_failed", error))
 }
 
 fn file_identity(file: &CapabilityFile, code: &'static str) -> SetupResult<Handle> {

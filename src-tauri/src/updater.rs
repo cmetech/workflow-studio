@@ -1532,18 +1532,14 @@ fn commit_update_preferences(
                 )
             });
     }
-    const TARGET_LENGTH: usize = SETTINGS_FILE.len();
-    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
-        directory,
-        file,
-        SETTINGS_FILE,
+    crate::native_fs::replace_file_in_capability_directory(directory, file, SETTINGS_FILE).map_err(
+        |_| {
+            update_error(
+                "update_settings_write_failed",
+                "Update settings could not be atomically replaced.",
+            )
+        },
     )
-    .map_err(|_| {
-        update_error(
-            "update_settings_write_failed",
-            "Update settings could not be atomically replaced.",
-        )
-    })
 }
 
 #[cfg(unix)]

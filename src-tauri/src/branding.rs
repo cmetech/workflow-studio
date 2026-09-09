@@ -1812,13 +1812,8 @@ fn replace_active_file(
     _source_name: &std::ffi::OsStr,
     source: &CapFile,
 ) -> BrandResult<()> {
-    const TARGET_LENGTH: usize = ACTIVE_FILE.len();
-    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
-        directory,
-        source,
-        ACTIVE_FILE,
-    )
-    .map_err(|error| io_error("brand_storage_failed", error))
+    crate::native_fs::replace_file_in_capability_directory(directory, source, ACTIVE_FILE)
+        .map_err(|error| io_error("brand_storage_failed", error))
 }
 
 fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {
