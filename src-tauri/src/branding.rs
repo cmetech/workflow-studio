@@ -1812,45 +1812,13 @@ fn replace_active_file(
     _source_name: &std::ffi::OsStr,
     source: &CapFile,
 ) -> BrandResult<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
-    };
-
     const TARGET_LENGTH: usize = ACTIVE_FILE.len();
-    #[repr(C)]
-    struct RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0,
-        root_directory: windows_sys::Win32::Foundation::HANDLE,
-        file_name_length: u32,
-        file_name: [u16; TARGET_LENGTH],
-    }
-    let mut file_name = [0_u16; TARGET_LENGTH];
-    for (destination, source) in file_name.iter_mut().zip(ACTIVE_FILE.encode_utf16()) {
-        *destination = source;
-    }
-    let rename = RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
-        root_directory: directory.as_raw_handle(),
-        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
-        file_name,
-    };
-    let renamed = unsafe {
-        SetFileInformationByHandle(
-            source.as_raw_handle(),
-            FileRenameInfo,
-            (&rename as *const RelativeRenameInfo).cast(),
-            std::mem::size_of::<RelativeRenameInfo>() as u32,
-        )
-    };
-    if renamed == 0 {
-        Err(io_error(
-            "brand_storage_failed",
-            std::io::Error::last_os_error(),
-        ))
-    } else {
-        Ok(())
-    }
+    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
+        directory,
+        source,
+        ACTIVE_FILE,
+    )
+    .map_err(|error| io_error("brand_storage_failed", error))
 }
 
 fn load_active_record_at(app_data: &Path) -> BrandResult<ActiveBrandRecord> {

@@ -1956,45 +1956,11 @@ fn commit_readiness(
             .rename(temporary, directory, READY_FILE)
             .map_err(|error| io_error("setup_ready_write_failed", error));
     }
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
-    };
-
     const TARGET_LENGTH: usize = READY_FILE.len();
-    #[repr(C)]
-    struct RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0,
-        root_directory: windows_sys::Win32::Foundation::HANDLE,
-        file_name_length: u32,
-        file_name: [u16; TARGET_LENGTH],
-    }
-    let mut file_name = [0_u16; TARGET_LENGTH];
-    for (destination, source) in file_name.iter_mut().zip(READY_FILE.encode_utf16()) {
-        *destination = source;
-    }
-    let rename = RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
-        root_directory: directory.as_raw_handle(),
-        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
-        file_name,
-    };
-    let replaced = unsafe {
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileRenameInfo,
-            std::ptr::addr_of!(rename).cast(),
-            std::mem::size_of_val(&rename) as u32,
-        )
-    };
-    if replaced == 0 {
-        Err(io_error(
-            "setup_ready_write_failed",
-            std::io::Error::last_os_error(),
-        ))
-    } else {
-        Ok(())
-    }
+    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
+        directory, file, READY_FILE,
+    )
+    .map_err(|error| io_error("setup_ready_write_failed", error))
 }
 
 fn file_identity(file: &CapabilityFile, code: &'static str) -> SetupResult<Handle> {

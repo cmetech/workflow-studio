@@ -1532,44 +1532,18 @@ fn commit_update_preferences(
                 )
             });
     }
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
-    };
     const TARGET_LENGTH: usize = SETTINGS_FILE.len();
-    #[repr(C)]
-    struct RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0,
-        root_directory: windows_sys::Win32::Foundation::HANDLE,
-        file_name_length: u32,
-        file_name: [u16; TARGET_LENGTH],
-    }
-    let mut file_name = [0_u16; TARGET_LENGTH];
-    for (destination, source) in file_name.iter_mut().zip(SETTINGS_FILE.encode_utf16()) {
-        *destination = source;
-    }
-    let rename = RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
-        root_directory: directory.as_raw_handle(),
-        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
-        file_name,
-    };
-    let replaced = unsafe {
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            FileRenameInfo,
-            std::ptr::addr_of!(rename).cast(),
-            std::mem::size_of_val(&rename) as u32,
-        )
-    };
-    if replaced == 0 {
-        Err(update_error(
+    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
+        directory,
+        file,
+        SETTINGS_FILE,
+    )
+    .map_err(|_| {
+        update_error(
             "update_settings_write_failed",
             "Update settings could not be atomically replaced.",
-        ))
-    } else {
-        Ok(())
-    }
+        )
+    })
 }
 
 #[cfg(unix)]

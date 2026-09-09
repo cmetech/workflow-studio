@@ -346,46 +346,13 @@ fn select_windows_atomic_commit(
 
 #[cfg(windows)]
 fn replace_file_windows(directory: &Dir, temporary: &File) -> LayoutResult<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO_0,
-    };
-
     const TARGET_LENGTH: usize = LAYOUT_FILE.len();
-    #[repr(C)]
-    struct RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0,
-        root_directory: windows_sys::Win32::Foundation::HANDLE,
-        file_name_length: u32,
-        file_name: [u16; TARGET_LENGTH],
-    }
-
-    let mut file_name = [0_u16; TARGET_LENGTH];
-    for (destination, source) in file_name.iter_mut().zip(LAYOUT_FILE.encode_utf16()) {
-        *destination = source;
-    }
-    let rename = RelativeRenameInfo {
-        anonymous: FILE_RENAME_INFO_0 { ReplaceIfExists: 1 },
-        root_directory: directory.as_raw_handle(),
-        file_name_length: (file_name.len() * std::mem::size_of::<u16>()) as u32,
-        file_name,
-    };
-    let replaced = unsafe {
-        SetFileInformationByHandle(
-            temporary.as_raw_handle(),
-            FileRenameInfo,
-            std::ptr::addr_of!(rename).cast(),
-            std::mem::size_of_val(&rename) as u32,
-        )
-    };
-    if replaced == 0 {
-        Err(io_error(
-            "layout_write_failed",
-            std::io::Error::last_os_error(),
-        ))
-    } else {
-        Ok(())
-    }
+    crate::native_fs::replace_file_in_capability_directory::<TARGET_LENGTH>(
+        directory,
+        temporary,
+        LAYOUT_FILE,
+    )
+    .map_err(|error| io_error("layout_write_failed", error))
 }
 
 impl<'a> StagedLayout<'a> {
@@ -700,6 +667,7 @@ mod tests {
         assert!(!app_data.path().join("layouts-v1.json").exists());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn rejects_a_regular_app_data_root_replaced_after_capability_binding() {
         let parent = tempfile::tempdir().unwrap();

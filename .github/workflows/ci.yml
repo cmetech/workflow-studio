@@ -92,5 +92,5 @@ jobs:
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
       - name: Run Windows native persistence tests
         if: runner.os == 'Windows'
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml layout::tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json
