@@ -945,7 +945,9 @@ fn store_update_preferences_impl(
                 "Update settings changed before commit.",
             ));
         }
-        commit_update_preferences(root, &temporary, &file, destination_identity.is_some())?;
+        let destination_exists = destination_identity.is_some();
+        drop(destination_identity);
+        commit_update_preferences(root, &temporary, &file, destination_exists)?;
         sync_cap_directory(root)?;
         scope.verify().map_err(map_setup_error)?;
         Ok(())

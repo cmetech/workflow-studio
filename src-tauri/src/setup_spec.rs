@@ -618,11 +618,12 @@ fn setup_sanitizes_external_failure_once_for_stage_terminal_error_and_log() {
 fn readiness_is_atomic_and_keyed_by_schema_and_app_version() {
     let root = tempdir().unwrap();
     atomic_persist_readiness(root.path(), 1, "0.1.0").unwrap();
+    atomic_persist_readiness(root.path(), 2, "0.2.0").unwrap();
     let value: serde_json::Value =
         serde_json::from_slice(&fs::read(root.path().join("setup-ready-v1.json")).unwrap())
             .unwrap();
-    assert_eq!(value["schemaVersion"], 1);
-    assert_eq!(value["appVersion"], "0.1.0");
+    assert_eq!(value["schemaVersion"], 2);
+    assert_eq!(value["appVersion"], "0.2.0");
     assert!(fs::read_dir(root.path()).unwrap().all(|entry| !entry
         .unwrap()
         .file_name()

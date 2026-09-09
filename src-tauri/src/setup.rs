@@ -690,12 +690,10 @@ impl AppDataScope {
                     "Setup readiness changed before the atomic commit.",
                 ));
             }
-            commit_readiness(
-                &self.root,
-                &temporary,
-                &file,
-                destination_identity.is_some(),
-            )?;
+            let destination_exists = destination_identity.is_some();
+            drop(current_destination);
+            drop(destination_identity);
+            commit_readiness(&self.root, &temporary, &file, destination_exists)?;
             sync_cap_directory(&self.root, "setup_ready_write_failed")?;
             self.verify()?;
             Ok(())
