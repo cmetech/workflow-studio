@@ -1,6 +1,6 @@
 # Workflow Studio v3.0.1 Windows Persistence Hotfix Release Plan
 
-> **Status:** Approved and in progress on 2026-09-09. Publish only after the protected release workflow verifies the draft.
+> **Status:** Approved and completed on 2026-09-09. v3.0.1 was published after the protected release workflow verified the draft.
 
 **Goal:** Publish Workflow Studio v3.0.1 from `base` so Windows users can persist Arrange Graph layout and the other native app-state files without operating-system error 87.
 

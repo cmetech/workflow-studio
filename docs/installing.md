@@ -1,6 +1,6 @@
 # Installing Workflow Studio
 
-Workflow Studio v3.0.0 is the latest published release while v3.0.1 is the approved Windows persistence hotfix candidate. v3.0.1 corrects error 87 when Windows saves private layout, branding, setup, or updater state. The v1.0.7 documentation-and-shortcuts draft and v2.0.0 verified unpublished draft remain historical records. The v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release. The v2.0.1 UI customization recovery candidate was superseded without a tag or release. Native installers are distributed through the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow produces `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
+Workflow Studio v3.0.1 is the latest published release. It corrects error 87 when Windows saves private layout, branding, setup, or updater state while retaining the complete v3.0.0 feature set. The v1.0.7 documentation-and-shortcuts draft and v2.0.0 verified unpublished draft remain historical records. The v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release. The v2.0.1 UI customization recovery candidate was superseded without a tag or release. Native installers are distributed through the public `cmetech/workflow-studio` GitHub Releases page. The application does not have an Apple Developer ID signature, Apple notarization, or a Microsoft Authenticode signature. Gatekeeper or SmartScreen warnings are expected. The release workflow produces `SHA256SUMS`, and the in-app updater uses a separate first-party cryptographic signature to prevent modified update artifacts from installing.
 
 ## Supported targets
 
@@ -10,11 +10,11 @@ Workflow Studio v3.0.0 is the latest published release while v3.0.1 is the appro
 | macOS | Intel | `LOOP24-Workflow-Studio_<version>_macos_x86_64.dmg` |
 | Windows | x64 | `LOOP24-Workflow-Studio_<version>_windows_x86_64-setup.exe` |
 
-Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in published v3.0.0.
+Windows ARM64 is unsupported and is not silently redirected to x64. Linux is deferred and unsupported by the bootstrap; it has no AppImage, package, updater entry, or installation path in published v3.0.1.
 
 ## One-line verified installer launch
 
-These commands load the immutable v1.0.5 bootstrap scripts, which install the latest published release. The bootstrap tag identifies the reviewed script bytes, not the application version it downloads. They now install published v3.0.0. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
+These commands load the immutable v1.0.5 bootstrap scripts, which install the latest published release. The bootstrap tag identifies the reviewed script bytes, not the application version it downloads. They now install published v3.0.1. Review [the shell script](../scripts/install.sh) or [the PowerShell script](../scripts/install.ps1) first if that is your policy.
 
 macOS:
 
@@ -46,7 +46,7 @@ Run the NSIS setup executable. Microsoft Defender SmartScreen may show “Window
 
 ### Linux
 
-Linux packaging is deferred. The immutable v1.0.5 bootstrap does not support Linux, and published v3.0.0 has no Linux fallback artifact.
+Linux packaging is deferred. The immutable v1.0.5 bootstrap does not support Linux, and published v3.0.1 has no Linux fallback artifact.
 
 ## First launch, Git, and updates
 

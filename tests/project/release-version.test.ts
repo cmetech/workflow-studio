@@ -136,7 +136,7 @@ describe('version three release metadata', () => {
     expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
-  it('retains the immutable bootstrap while documenting v3.0.0 as the published release', () => {
+  it('retains the immutable bootstrap while documenting v3.0.1 as the published release', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
@@ -150,12 +150,12 @@ describe('version three release metadata', () => {
     )
     expect(installing).toContain('install the latest published release')
     expect(installing).toContain('immutable v1.0.5 bootstrap URLs')
-    expect(installing).toContain('v3.0.0 is the latest published release')
+    expect(installing).toContain('v3.0.1 is the latest published release')
     expect(installing).toContain('v1.0.7 documentation-and-shortcuts draft')
     expect(installing).toContain('v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release')
     expect(installing).toContain('v2.0.0 verified unpublished draft')
     expect(installing).toMatch(/v2\.0\.1[^\n]*superseded[^\n]*without a tag or release/i)
-    expect(installing).toContain('install published v3.0.0')
+    expect(installing).toContain('install published v3.0.1')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -275,6 +275,15 @@ describe('version three release metadata', () => {
     expect(hotfixAcceptance).toContain('Version/tag: `3.0.1` / `v3.0.1`')
     expect(hotfixAcceptance).toContain('79e04d61b7b235eaf7135f0bd9b1707117d5730c')
     expect(hotfixAcceptance).toMatch(/Windows[^\n]*error 87/i)
+    expect(hotfixAcceptance).toContain('7608947b4d17e49cd064fc978d330c76aab8c281')
+    expect(hotfixAcceptance).toContain('34406142397')
+    expect(hotfixAcceptance).toContain('34408692126')
+    expect(hotfixAcceptance).toContain('385868225')
+    expect(hotfixAcceptance).toContain('500306ff03c375fbfed9a7b80d4a386d78b6c9449d96b79297379a0d0b16b3ef')
+    expect(hotfixAcceptance).toContain('- [x] Verified draft is published as the latest GitHub release.')
+    expect(hotfixAcceptance).toContain('- [x] Public `latest.json`, checksum, and installer links resolve.')
+
+    expect(hotfixPlan).toMatch(/completed[^\n]*2026-09-09/i)
 
     expect(readFileSync('docs/superpowers/plans/2026-09-07-workflow-studio-v2.0.1-release.md', 'utf8')).toContain(
       'Workflow Studio v2.0.1 Local Release Preparation Plan',
