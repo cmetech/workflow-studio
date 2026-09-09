@@ -90,12 +90,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml
-      - name: Run Windows native persistence tests
+      - name: Test Windows layout persistence
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo test --locked --manifest-path src-tauri/Cargo.toml layout::tests
-          cargo test --locked --manifest-path src-tauri/Cargo.toml branding::tests::active_record_replaces_an_existing_selection_and_uses_the_platform_replace_branch -- --exact
-          cargo test --locked --manifest-path src-tauri/Cargo.toml setup_spec::readiness_is_atomic_and_keyed_by_schema_and_app_version -- --exact
-          cargo test --locked --manifest-path src-tauri/Cargo.toml updater_spec::updater_preferences_default_on_recover_from_malformed_data_and_store_atomically -- --exact
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml layout::tests
+      - name: Test Windows branding persistence
+        if: runner.os == 'Windows'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml branding::tests::active_record_replaces_an_existing_selection_and_uses_the_platform_replace_branch -- --exact
+      - name: Test Windows setup persistence
+        if: runner.os == 'Windows'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml setup_spec::readiness_is_atomic_and_keyed_by_schema_and_app_version -- --exact
+      - name: Test Windows updater persistence
+        if: runner.os == 'Windows'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml updater_spec::updater_preferences_default_on_recover_from_malformed_data_and_store_atomically -- --exact
       - run: npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json
