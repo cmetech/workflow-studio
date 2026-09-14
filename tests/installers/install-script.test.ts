@@ -12,6 +12,7 @@ import {
   validateReleaseManifest,
 } from '../../scripts/verify-release-assets.mjs'
 import { verifyInstallerNetworkPolicy } from '../../scripts/installer-network-policy.mjs'
+import { resolvePosixShell, toPosixShellPath } from '../support/posix-shell'
 
 interface FixtureAsset {
   name: string
@@ -32,6 +33,49 @@ interface ReleaseFixture {
 
 const fixture = JSON.parse(readFileSync('tests/fixtures/releases/valid-manifest.json', 'utf8')) as ReleaseFixture
 const POWERSHELL_EXECUTABLE = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
+const POSIX_SHELL = resolvePosixShell({ override: process.env.WORKFLOW_STUDIO_TEST_BASH })
+const posixIt = POSIX_SHELL.ok || process.env.CI ? it : it.skip
+
+function posixShell(): string {
+  if (!POSIX_SHELL.ok) throw new Error(POSIX_SHELL.reason)
+  return POSIX_SHELL.executable
+}
+
+function expectNoSpawnError(result: { readonly error?: Error }): void {
+  expect(result.error, result.error?.message).toBeUndefined()
+}
+
+function installFakeGitHubCli(bin: string): void {
+  if (process.platform === 'win32') {
+    const executable = join(bin, 'gh.exe')
+    const compiled = spawnSync('rustc', ['-', '-o', executable], {
+      encoding: 'utf8',
+      input: `use std::env;
+use std::process::{exit, Command};
+
+fn main() {
+    let node = env::var_os("WORKFLOW_STUDIO_FAKE_CLI_NODE").expect("fake CLI Node executable is required");
+    let script = env::var_os("WORKFLOW_STUDIO_FAKE_CLI_SCRIPT").expect("fake CLI script is required");
+    let status = Command::new(node)
+        .arg(script)
+        .args(env::args_os().skip(1))
+        .status()
+        .expect("fake CLI script could not start");
+    exit(status.code().unwrap_or(1));
+}
+`,
+      timeout: 60_000,
+      windowsHide: true,
+    })
+    if (compiled.error) throw compiled.error
+    if (compiled.status !== 0) throw new Error(`Could not build the fake GitHub CLI: ${compiled.stderr}`)
+    return
+  }
+
+  const executable = join(bin, 'gh')
+  writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
+  chmodSync(executable, 0o700)
+}
 
 const TEST_UPDATER_PUBLIC_KEY = `untrusted comment: minisign public key E7620F1842B4E81F
 RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
@@ -597,7 +641,7 @@ Get-WindowsArchitecture
     }
   })
 
-  it('rejects Linux before calling curl or querying release metadata', () => {
+  posixIt('rejects Linux before calling curl or querying release metadata', () => {
     const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-linux-installer-'))
     const curlSentinel = join(directory, 'curl-called')
     try {
@@ -608,11 +652,18 @@ Get-WindowsArchitecture
       chmodSync(uname, 0o700)
       chmodSync(curl, 0o700)
 
-      const result = spawnSync('sh', ['scripts/install.sh'], {
-        encoding: 'utf8',
-        env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}` },
-      })
+      const result = spawnSync(
+        posixShell(),
+        ['-c', 'PATH="$WORKFLOW_STUDIO_TEST_BIN:$PATH"; export PATH; exec sh scripts/install.sh'],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, WORKFLOW_STUDIO_TEST_BIN: toPosixShellPath(directory) },
+          timeout: 30_000,
+          windowsHide: true,
+        },
+      )
 
+      expectNoSpawnError(result)
       expect(result.status).toBe(1)
       expect(result.stderr).toContain('macOS only')
       expect(result.stdout).not.toContain('checking the latest public release')
@@ -635,7 +686,7 @@ Get-WindowsArchitecture
     expect(result.stdout).not.toContain('checking the latest public release')
   })
 
-  it('rejects a non-semantic GitHub tag before any artifact is downloaded', () => {
+  posixIt('rejects a non-semantic GitHub tag before any artifact is downloaded', () => {
     const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-installer-test-'))
     try {
       const uname = join(directory, 'uname')
@@ -645,10 +696,17 @@ Get-WindowsArchitecture
       chmodSync(uname, 0o700)
       chmodSync(curl, 0o700)
 
-      const result = spawnSync('sh', ['scripts/install.sh'], {
-        encoding: 'utf8',
-        env: { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}` },
-      })
+      const result = spawnSync(
+        posixShell(),
+        ['-c', 'PATH="$WORKFLOW_STUDIO_TEST_BIN:$PATH"; export PATH; exec sh scripts/install.sh'],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, WORKFLOW_STUDIO_TEST_BIN: toPosixShellPath(directory) },
+          timeout: 30_000,
+          windowsHide: true,
+        },
+      )
+      expectNoSpawnError(result)
       expect(result.status).toBe(1)
       expect(result.stderr).toContain('latest release returned an invalid tag')
       expect(result.stdout).not.toContain('downloading LOOP24-Workflow-Studio')
@@ -757,28 +815,27 @@ process.stderr.write('unexpected gh arguments: ' + JSON.stringify(args) + '\\n')
 process.exit(64)
 `,
   )
-  const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
-  if (process.platform === 'win32') {
-    writeFileSync(executable, '@node "%~dp0\\fake-gh.mjs" %*\r\n')
-  } else {
-    writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
-    chmodSync(executable, 0o700)
-  }
+  installFakeGitHubCli(bin)
 
-  const result = spawnSync('bash', ['-c', run], {
+  const result = spawnSync(posixShell(), ['-c', `PATH="$WORKFLOW_STUDIO_TEST_BIN:$PATH"; export PATH\n${run}`], {
     cwd: root,
     encoding: 'utf8',
+    timeout: 30_000,
+    windowsHide: true,
     env: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      WORKFLOW_STUDIO_TEST_BIN: toPosixShellPath(bin),
       FAKE_GH_STATE: statePath,
       GH_TOKEN: 'test-token',
       GITHUB_OUTPUT: outputPath,
       GITHUB_REPOSITORY: 'cmetech/workflow-studio',
       TAG: 'v3.0.1',
       EXPECTED_COMMIT: 'a'.repeat(40),
+      WORKFLOW_STUDIO_FAKE_CLI_NODE: process.execPath,
+      WORKFLOW_STUDIO_FAKE_CLI_SCRIPT: join(bin, 'fake-gh.mjs'),
     },
   })
+  expectNoSpawnError(result)
   return {
     root,
     result,
@@ -828,35 +885,41 @@ describe('release workflow contract', () => {
     expect(resolution.run).toContain('Application commit')
   })
 
-  it('creates the v3.0.1 draft only after two clean absence reads', () => {
-    const run = namedStep('validate', 'Create and validate exact draft release').run!
-    const invocation = executeDraftLifecycle(run, {
-      listResponses: [[[]], [[]]],
-      postResponse: draftLifecycleRelease(),
-      calls: [],
-      payloads: [],
-    })
-    try {
-      expect(invocation.result.status, invocation.result.stderr).toBe(0)
-      expect(invocation.output).toBe('release_id=73\n')
-      expect(invocation.state.payloads).toEqual([
-        {
-          tag_name: 'v3.0.1',
-          target_commitish: 'a'.repeat(40),
-          name: 'LOOP24 Workflow Studio v3.0.1',
-          body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
-          draft: true,
-          prerelease: false,
-        },
-      ])
-      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
-      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
-    } finally {
-      rmSync(invocation.root, { recursive: true, force: true })
-    }
-  })
+  posixIt(
+    'creates the v3.0.1 draft only after two clean absence reads',
+    () => {
+      const run = namedStep('validate', 'Create and validate exact draft release').run!
+      const invocation = executeDraftLifecycle(run, {
+        listResponses: [[[]], [[]]],
+        postResponse: draftLifecycleRelease(),
+        calls: [],
+        payloads: [],
+      })
+      try {
+        expect(existsSync(join(invocation.root, 'bin', 'gh.exe'))).toBe(true)
+        expect(existsSync(join(invocation.root, 'bin', 'gh.cmd'))).toBe(false)
+        expect(invocation.result.status, invocation.result.stderr).toBe(0)
+        expect(invocation.output).toBe('release_id=73\n')
+        expect(invocation.state.payloads).toEqual([
+          {
+            tag_name: 'v3.0.1',
+            target_commitish: 'a'.repeat(40),
+            name: 'LOOP24 Workflow Studio v3.0.1',
+            body: 'Native operating-system artifacts are unsigned. Review docs/installing.md before installation.',
+            draft: true,
+            prerelease: false,
+          },
+        ])
+        expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+        expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
+      } finally {
+        rmSync(invocation.root, { recursive: true, force: true })
+      }
+    },
+    30_000,
+  )
 
-  it('reuses an existing exact empty draft without creating a second release', () => {
+  posixIt('reuses an existing exact empty draft without creating a second release', () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[draftLifecycleRelease()]]],
@@ -873,7 +936,7 @@ describe('release workflow contract', () => {
     }
   })
 
-  it('rejects an existing nonempty exact draft without attempting creation', () => {
+  posixIt('rejects an existing nonempty exact draft without attempting creation', () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] })]]],
@@ -889,7 +952,7 @@ describe('release workflow contract', () => {
     }
   })
 
-  it.each([
+  posixIt.each([
     [
       'duplicate exact releases',
       [[draftLifecycleRelease({ id: 72 }), draftLifecycleRelease({ id: 73 })]],
@@ -915,7 +978,7 @@ describe('release workflow contract', () => {
     }
   })
 
-  it('requires a second clean absence result before creating', () => {
+  posixIt('requires a second clean absence result before creating', () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[]], '{"draft":'],
@@ -933,7 +996,7 @@ describe('release workflow contract', () => {
     }
   })
 
-  it.each([
+  posixIt.each([
     ['malformed JSON', '{"draft":', /invalid json/i],
     ['a nonempty asset list', draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] }), /zero assets/i],
   ] as const)('rejects a created response containing %s without a list retry', (_name, postResponse, error) => {
@@ -954,14 +1017,16 @@ describe('release workflow contract', () => {
     }
   })
 
-  it.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0']])(
+  posixIt.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0']])(
     'executes strict SemVer validation for valid tag %s',
     (tag) => {
       const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
       const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-'))
       try {
-        const result = spawnSync('bash', ['-c', run], {
+        const result = spawnSync(posixShell(), ['-c', run], {
           encoding: 'utf8',
+          timeout: 30_000,
+          windowsHide: true,
           env: {
             ...process.env,
             DISPATCH_REF: 'refs/heads/base',
@@ -969,6 +1034,7 @@ describe('release workflow contract', () => {
             GITHUB_OUTPUT: join(root, 'output'),
           },
         })
+        expectNoSpawnError(result)
         expect(result.status, result.stderr).toBe(0)
         expect(readFileSync(join(root, 'output'), 'utf8')).toContain(`tag=${tag}`)
       } finally {
@@ -977,7 +1043,7 @@ describe('release workflow contract', () => {
     },
   )
 
-  it.each([
+  posixIt.each([
     ['refs/heads/feature', 'v1.2.3'],
     ['refs/heads/base', 'v1.2.3-01'],
     ['refs/heads/base', 'v1.2.3-a..b'],
@@ -990,8 +1056,10 @@ describe('release workflow contract', () => {
     const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
     const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-invalid-'))
     try {
-      const result = spawnSync('bash', ['-c', run], {
+      const result = spawnSync(posixShell(), ['-c', run], {
         encoding: 'utf8',
+        timeout: 30_000,
+        windowsHide: true,
         env: {
           ...process.env,
           DISPATCH_REF: dispatchRef,
@@ -999,6 +1067,7 @@ describe('release workflow contract', () => {
           GITHUB_OUTPUT: join(root, 'output'),
         },
       })
+      expectNoSpawnError(result)
       expect(result.status).toBe(1)
       expect(result.stderr).toMatch(/must be dispatched from base|Invalid version tag/)
     } finally {
@@ -1006,68 +1075,77 @@ describe('release workflow contract', () => {
     }
   })
 
-  it('executes commit resolution and rejects tooling outside base', () => {
-    const run = namedStep('validate', 'Validate immutable application and tooling commits').run!
-    const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-boundary-'))
-    const origin = join(root, 'origin')
-    const checkout = join(root, 'checkout')
-    const output = join(root, 'output')
-    const summary = join(root, 'summary')
-    const git = (cwd: string, ...args: string[]) => {
-      const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
-      expect(result.status, result.stderr).toBe(0)
-      return result.stdout.trim()
-    }
+  posixIt(
+    'executes commit resolution and rejects tooling outside base',
+    () => {
+      const run = namedStep('validate', 'Validate immutable application and tooling commits').run!
+      const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-boundary-'))
+      const origin = join(root, 'origin')
+      const checkout = join(root, 'checkout')
+      const output = join(root, 'output')
+      const summary = join(root, 'summary')
+      const git = (cwd: string, ...args: string[]) => {
+        const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
+        expect(result.status, result.stderr).toBe(0)
+        return result.stdout.trim()
+      }
 
-    try {
-      mkdirSync(origin)
-      git(origin, 'init', '-b', 'base')
-      git(origin, 'config', 'user.name', 'Release Test')
-      git(origin, 'config', 'user.email', 'release@example.invalid')
-      writeFileSync(join(origin, 'application'), 'tagged\n')
-      git(origin, 'add', 'application')
-      git(origin, 'commit', '-m', 'tagged application')
-      const applicationCommit = git(origin, 'rev-parse', 'HEAD')
-      git(origin, 'tag', '-a', 'v1.2.3', '-m', 'v1.2.3')
-      writeFileSync(join(origin, 'tooling'), 'release tooling\n')
-      git(origin, 'add', 'tooling')
-      git(origin, 'commit', '-m', 'release tooling')
-      const toolingCommit = git(origin, 'rev-parse', 'HEAD')
-      git(origin, 'checkout', '--orphan', 'unrelated')
-      git(origin, 'rm', '-rf', '.')
-      writeFileSync(join(origin, 'unrelated'), 'outside base\n')
-      git(origin, 'add', 'unrelated')
-      git(origin, 'commit', '-m', 'unrelated tooling')
-      const unrelatedCommit = git(origin, 'rev-parse', 'HEAD')
-      git(origin, 'checkout', 'base')
-      git(root, 'clone', origin, checkout)
-      git(checkout, 'checkout', '--detach', 'v1.2.3')
+      try {
+        mkdirSync(origin)
+        git(origin, 'init', '-b', 'base')
+        git(origin, 'config', 'user.name', 'Release Test')
+        git(origin, 'config', 'user.email', 'release@example.invalid')
+        writeFileSync(join(origin, 'application'), 'tagged\n')
+        git(origin, 'add', 'application')
+        git(origin, 'commit', '-m', 'tagged application')
+        const applicationCommit = git(origin, 'rev-parse', 'HEAD')
+        git(origin, 'tag', '-a', 'v1.2.3', '-m', 'v1.2.3')
+        writeFileSync(join(origin, 'tooling'), 'release tooling\n')
+        git(origin, 'add', 'tooling')
+        git(origin, 'commit', '-m', 'release tooling')
+        const toolingCommit = git(origin, 'rev-parse', 'HEAD')
+        git(origin, 'checkout', '--orphan', 'unrelated')
+        git(origin, 'rm', '-rf', '.')
+        writeFileSync(join(origin, 'unrelated'), 'outside base\n')
+        git(origin, 'add', 'unrelated')
+        git(origin, 'commit', '-m', 'unrelated tooling')
+        const unrelatedCommit = git(origin, 'rev-parse', 'HEAD')
+        git(origin, 'checkout', 'base')
+        git(root, 'clone', origin, checkout)
+        git(checkout, 'checkout', '--detach', 'v1.2.3')
 
-      const invoke = (commit: string) =>
-        spawnSync('bash', ['-c', run], {
-          cwd: checkout,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            TAG: 'v1.2.3',
-            TOOLING_COMMIT: commit,
-            GITHUB_OUTPUT: output,
-            GITHUB_STEP_SUMMARY: summary,
-          },
-        })
+        const invoke = (commit: string) => {
+          const result = spawnSync(posixShell(), ['-c', run], {
+            cwd: checkout,
+            encoding: 'utf8',
+            timeout: 30_000,
+            windowsHide: true,
+            env: {
+              ...process.env,
+              TAG: 'v1.2.3',
+              TOOLING_COMMIT: commit,
+              GITHUB_OUTPUT: output,
+              GITHUB_STEP_SUMMARY: summary,
+            },
+          })
+          expectNoSpawnError(result)
+          return result
+        }
 
-      const unrelated = invoke(unrelatedCommit)
-      expect(unrelated.status).toBe(1)
-      expect(unrelated.stderr).toContain('does not belong to base')
+        const unrelated = invoke(unrelatedCommit)
+        expect(unrelated.status).toBe(1)
+        expect(unrelated.stderr).toContain('does not belong to base')
 
-      const accepted = invoke(toolingCommit)
-      expect(accepted.status, accepted.stderr).toBe(0)
-      expect(readFileSync(output, 'utf8')).toContain(`application_commit=${applicationCommit}`)
-      expect(readFileSync(summary, 'utf8')).toContain(toolingCommit)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
+        const accepted = invoke(toolingCommit)
+        expect(accepted.status, accepted.stderr).toBe(0)
+        expect(readFileSync(output, 'utf8')).toContain(`application_commit=${applicationCommit}`)
+        expect(readFileSync(summary, 'utf8')).toContain(toolingCommit)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    },
+    30_000,
+  )
 
   it('uses separate credential-free application and pinned release-tooling checkouts in every job', () => {
     const expectedRefs = {
@@ -1374,14 +1452,22 @@ ${gate}
     }
   })
 
-  it('keeps the extracted-package gates valid in their native command languages', () => {
+  posixIt('keeps the extracted macOS package gate valid in Bash', () => {
     const mac = namedStep('build', 'Verify extracted macOS DMG payload').run!.replaceAll(
       '${{ matrix.rust_target }}',
       'aarch64-apple-darwin',
     )
-    const bash = spawnSync('bash', ['-n'], { input: mac, encoding: 'utf8' })
+    const bash = spawnSync(posixShell(), ['-n'], {
+      input: mac,
+      encoding: 'utf8',
+      timeout: 30_000,
+      windowsHide: true,
+    })
+    expectNoSpawnError(bash)
     expect(bash.status, bash.stderr).toBe(0)
+  })
 
+  it('keeps the extracted Windows package gate valid in PowerShell', () => {
     const powershellProbe = spawnSync(POWERSHELL_EXECUTABLE, [
       '-NoLogo',
       '-NoProfile',

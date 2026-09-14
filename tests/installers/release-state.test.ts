@@ -1,8 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { resolveRelease, runReleaseResolution } from '../../scripts/resolve-release.mjs'
 
 const EXPECTED_COMMIT = 'a'.repeat(40)
 
@@ -39,36 +39,7 @@ function invoke(
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-state-'))
-  const bin = join(root, 'bin')
-  const fakeGh = join(bin, 'fake-gh.mjs')
-  const argumentsPath = join(root, 'gh-arguments.json')
-  mkdirSync(bin)
-  writeFileSync(
-    fakeGh,
-    `import { writeFileSync } from 'node:fs'
-const args = process.argv.slice(2)
-writeFileSync(process.env.FAKE_GH_ARGUMENTS, JSON.stringify(args))
-if (args.some((argument) => argument.includes('/releases/tags/'))) {
-  process.stderr.write('tag endpoint returned 404\\n')
-  process.exit(44)
-}
-if (process.env.FAKE_GH_STATUS !== '0') {
-  process.stderr.write('fake gh failed\\n')
-  process.exit(Number(process.env.FAKE_GH_STATUS))
-}
-process.stdout.write(process.env.FAKE_GH_RESPONSE)
-`,
-  )
-  const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
-  if (process.platform === 'win32') {
-    writeFileSync(executable, '@node "%~dp0\\fake-gh.mjs" %*\r\n')
-  } else {
-    writeFileSync(executable, '#!/bin/sh\nexec node "$(dirname "$0")/fake-gh.mjs" "$@"\n')
-    chmodSync(executable, 0o700)
-  }
-
   const args = [
-    'scripts/resolve-release.mjs',
     '--mode',
     options.mode ?? 'exact-draft',
     '--repository',
@@ -80,17 +51,18 @@ process.stdout.write(process.env.FAKE_GH_RESPONSE)
   ]
   if (options.output) args.push('--output', options.output)
   if (options.expectedId) args.push('--expected-id', options.expectedId)
-  const result = spawnSync(process.execPath, args, {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`,
-      FAKE_GH_ARGUMENTS: argumentsPath,
-      FAKE_GH_RESPONSE: options.rawResponse ?? JSON.stringify(response),
-      FAKE_GH_STATUS: String(options.ghStatus ?? 0),
+  let ghArguments: string[] = []
+  const result = runReleaseResolution(args, {
+    runGh(arguments_: string[]) {
+      ghArguments = [...arguments_]
+      return {
+        error: undefined,
+        status: options.ghStatus ?? 0,
+        stdout: options.rawResponse ?? JSON.stringify(response),
+        stderr: options.ghStatus ? 'fake gh failed\n' : '',
+      }
     },
   })
-  const ghArguments = existsSync(argumentsPath) ? (JSON.parse(readFileSync(argumentsPath, 'utf8')) as string[]) : []
   return { root, result, ghArguments }
 }
 
@@ -99,22 +71,10 @@ function invokeJson(
   options: { expectedId?: string; fromFile?: boolean; rawResponse?: string; output?: 'id' | 'json' } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-json-'))
-  const bin = join(root, 'bin')
-  const ghSentinel = join(root, 'gh-invoked')
   const inputPath = join(root, 'release.json')
-  mkdirSync(bin)
-  const executable = join(bin, process.platform === 'win32' ? 'gh.cmd' : 'gh')
-  if (process.platform === 'win32') {
-    writeFileSync(executable, `@echo invoked>"${ghSentinel}"\r\n@exit /b 97\r\n`)
-  } else {
-    writeFileSync(executable, `#!/bin/sh\nprintf invoked > '${ghSentinel}'\nexit 97\n`)
-    chmodSync(executable, 0o700)
-  }
-
   const serialized = options.rawResponse ?? JSON.stringify(response)
   if (options.fromFile) writeFileSync(inputPath, serialized)
   const args = [
-    'scripts/resolve-release.mjs',
     '--mode',
     'validate-json',
     '--input',
@@ -127,18 +87,73 @@ function invokeJson(
     options.output ?? 'id',
   ]
   if (options.expectedId) args.push('--expected-id', options.expectedId)
-  const result = spawnSync(process.execPath, args, {
-    encoding: 'utf8',
-    input: options.fromFile ? undefined : serialized,
-    env: {
-      ...process.env,
-      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`,
+  let ghInvoked = false
+  const result = runReleaseResolution(args, {
+    runGh() {
+      ghInvoked = true
+      throw new Error('validate-json must not invoke GitHub')
     },
+    readInput: (input: string) => (input === '-' ? serialized : readFileSync(input, 'utf8')),
   })
-  return { root, result, ghInvoked: existsSync(ghSentinel) }
+  return { root, result, ghInvoked }
 }
 
 describe('authenticated release-list resolution', () => {
+  it('uses an injected GitHub runner instead of resolving a host executable', () => {
+    const runGh = vi.fn(() => ({
+      error: undefined,
+      status: 0,
+      stdout: JSON.stringify([[release({ id: 73 })]]),
+      stderr: '',
+    }))
+
+    expect(
+      resolveRelease(
+        [
+          '--mode',
+          'exact-draft',
+          '--repository',
+          'cmetech/workflow-studio',
+          '--tag',
+          'v3.0.1',
+          '--expected-commit',
+          EXPECTED_COMMIT,
+        ],
+        { runGh },
+      ),
+    ).toBe(`${JSON.stringify(release({ id: 73 }))}\n`)
+    expect(runGh).toHaveBeenCalledWith([
+      'api',
+      '--paginate',
+      '--slurp',
+      'repos/cmetech/workflow-studio/releases?per_page=100',
+    ])
+  })
+
+  it('classifies a missing release without mutating process output state', () => {
+    const result = runReleaseResolution(
+      [
+        '--mode',
+        'exact-draft',
+        '--repository',
+        'cmetech/workflow-studio',
+        '--tag',
+        'v3.0.1',
+        '--expected-commit',
+        EXPECTED_COMMIT,
+      ],
+      {
+        runGh: () => ({ error: undefined, status: 0, stdout: '[[]]', stderr: '' }),
+      },
+    )
+
+    expect(result).toEqual({
+      status: 3,
+      stdout: '',
+      stderr: 'Release resolution failed: Expected exactly one release tagged v3.0.1; found 0\n',
+    })
+  })
+
   it('finds one exact draft across paginated release-list results without using the tag endpoint', () => {
     const invocation = invoke([[release({ id: 11, tag_name: 'v9.9.9' })], [release({ id: 73 })]])
     try {
