@@ -6,6 +6,7 @@ mod layout;
 mod logging;
 #[cfg(any(unix, windows))]
 mod native_fs;
+mod native_process;
 mod recovery;
 mod setup;
 mod startup;

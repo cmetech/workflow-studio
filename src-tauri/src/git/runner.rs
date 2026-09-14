@@ -25,11 +25,11 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
-};
+use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
 use super::{GitError, GitResult};
+#[cfg(windows)]
+use crate::native_process::background_creation_flags;
 
 const MAX_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -186,7 +186,7 @@ fn run_command(
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
-    command.creation_flags(CREATE_SUSPENDED);
+    command.creation_flags(background_creation_flags());
 
     let started = Instant::now();
     let mut child = command.spawn().map_err(|_| {
@@ -783,4 +783,33 @@ pub(crate) fn read_for_test(reader: impl Read) -> GitResult<Vec<u8>> {
         Arc::new(AtomicBool::new(false)),
     )
     .map_err(|_| GitError::new("git_read_failed", "Git output could not be read."))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::run_command;
+    use crate::native_process::test_support::{
+        assert_hidden_and_descendant_terminated, fixture_command, run_fixture,
+    };
+    use std::time::{Duration, Instant};
+
+    const FIXTURE_TEST: &str = "git::runner::tests::runner_background_child_fixture";
+
+    #[test]
+    fn runner_background_child_fixture() {
+        run_fixture(FIXTURE_TEST, "git");
+    }
+
+    #[test]
+    fn runner_hides_console_and_terminates_descendants_on_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = fixture_command(FIXTURE_TEST, "git", directory.path());
+        let started = Instant::now();
+
+        let error = run_command(command, Duration::from_secs(2), None).unwrap_err();
+
+        assert_eq!(error.code, "git_timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_hidden_and_descendant_terminated(directory.path());
+    }
 }
