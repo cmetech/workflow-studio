@@ -41,14 +41,6 @@ function required(options, name) {
   return value
 }
 
-function runGitHubCli(arguments_) {
-  return spawnSync('gh', arguments_, {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    shell: false,
-  })
-}
-
 function listReleases(repository, runGh) {
   const endpoint = `repos/${repository}/releases?per_page=100`
   const result = runGh(['api', '--paginate', '--slurp', endpoint])
@@ -164,9 +156,10 @@ function readReleaseJson(input, readInput) {
   }
 }
 
-export function resolveRelease(arguments_, dependencies = {}) {
-  const runGh = dependencies.runGh ?? runGitHubCli
-  const readInput = dependencies.readInput ?? ((input) => readFileSync(input === '-' ? 0 : input, 'utf8'))
+function resolveReleaseText(arguments_, dependencies) {
+  const { runGh, readInput } = dependencies ?? {}
+  if (typeof runGh !== 'function') throw new Error('Missing required injected dependency: runGh')
+  if (typeof readInput !== 'function') throw new Error('Missing required injected dependency: readInput')
   const options = parseOptions(arguments_)
   const mode = required(options, 'mode')
   const tag = required(options, 'tag')
@@ -210,9 +203,9 @@ export function resolveRelease(arguments_, dependencies = {}) {
   return serializeRelease(release, output)
 }
 
-export function runReleaseResolution(arguments_, dependencies = {}) {
+export function resolveRelease(arguments_, dependencies) {
   try {
-    return { status: 0, stdout: resolveRelease(arguments_, dependencies), stderr: '' }
+    return { status: 0, stdout: resolveReleaseText(arguments_, dependencies), stderr: '' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return {
@@ -223,8 +216,20 @@ export function runReleaseResolution(arguments_, dependencies = {}) {
   }
 }
 
+function resolveCommandLineRelease(arguments_) {
+  return resolveRelease(arguments_, {
+    runGh: (ghArguments) =>
+      spawnSync('gh', ghArguments, {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        shell: false,
+      }),
+    readInput: (input) => readFileSync(input === '-' ? 0 : input, 'utf8'),
+  })
+}
+
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  const result = runReleaseResolution(process.argv.slice(2))
+  const result = resolveCommandLineRelease(process.argv.slice(2))
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
   process.exitCode = result.status

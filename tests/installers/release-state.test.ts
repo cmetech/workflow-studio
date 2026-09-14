@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { resolveRelease, runReleaseResolution } from '../../scripts/resolve-release.mjs'
+import { resolveRelease } from '../../scripts/resolve-release.mjs'
 
 const EXPECTED_COMMIT = 'a'.repeat(40)
 
@@ -52,7 +52,7 @@ function invoke(
   if (options.output) args.push('--output', options.output)
   if (options.expectedId) args.push('--expected-id', options.expectedId)
   let ghArguments: string[] = []
-  const result = runReleaseResolution(args, {
+  const result = resolveRelease(args, {
     runGh(arguments_: string[]) {
       ghArguments = [...arguments_]
       return {
@@ -62,6 +62,7 @@ function invoke(
         stderr: options.ghStatus ? 'fake gh failed\n' : '',
       }
     },
+    readInput: vi.fn(),
   })
   return { root, result, ghArguments }
 }
@@ -88,7 +89,7 @@ function invokeJson(
   ]
   if (options.expectedId) args.push('--expected-id', options.expectedId)
   let ghInvoked = false
-  const result = runReleaseResolution(args, {
+  const result = resolveRelease(args, {
     runGh() {
       ghInvoked = true
       throw new Error('validate-json must not invoke GitHub')
@@ -119,9 +120,9 @@ describe('authenticated release-list resolution', () => {
           '--expected-commit',
           EXPECTED_COMMIT,
         ],
-        { runGh },
+        { runGh, readInput: vi.fn() },
       ),
-    ).toBe(`${JSON.stringify(release({ id: 73 }))}\n`)
+    ).toEqual({ status: 0, stdout: `${JSON.stringify(release({ id: 73 }))}\n`, stderr: '' })
     expect(runGh).toHaveBeenCalledWith([
       'api',
       '--paginate',
@@ -131,7 +132,7 @@ describe('authenticated release-list resolution', () => {
   })
 
   it('classifies a missing release without mutating process output state', () => {
-    const result = runReleaseResolution(
+    const result = resolveRelease(
       [
         '--mode',
         'exact-draft',
@@ -144,6 +145,7 @@ describe('authenticated release-list resolution', () => {
       ],
       {
         runGh: () => ({ error: undefined, status: 0, stdout: '[[]]', stderr: '' }),
+        readInput: vi.fn(),
       },
     )
 
@@ -151,6 +153,50 @@ describe('authenticated release-list resolution', () => {
       status: 3,
       stdout: '',
       stderr: 'Release resolution failed: Expected exactly one release tagged v3.0.1; found 0\n',
+    })
+  })
+
+  it('requires a supplied input reader instead of falling back to host file access', () => {
+    const result = resolveRelease(
+      [
+        '--mode',
+        'validate-json',
+        '--input',
+        'missing-release.json',
+        '--tag',
+        'v3.0.1',
+        '--expected-commit',
+        EXPECTED_COMMIT,
+      ],
+      { runGh: vi.fn() },
+    )
+
+    expect(result).toEqual({
+      status: 1,
+      stdout: '',
+      stderr: 'Release resolution failed: Missing required injected dependency: readInput\n',
+    })
+  })
+
+  it('requires a supplied GitHub runner before release resolution', () => {
+    const result = resolveRelease(
+      [
+        '--mode',
+        'exact-draft',
+        '--repository',
+        'not a repository',
+        '--tag',
+        'v3.0.1',
+        '--expected-commit',
+        EXPECTED_COMMIT,
+      ],
+      { readInput: vi.fn() },
+    )
+
+    expect(result).toEqual({
+      status: 1,
+      stdout: '',
+      stderr: 'Release resolution failed: Missing required injected dependency: runGh\n',
     })
   })
 

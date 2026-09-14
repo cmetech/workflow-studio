@@ -35,6 +35,8 @@ const fixture = JSON.parse(readFileSync('tests/fixtures/releases/valid-manifest.
 const POWERSHELL_EXECUTABLE = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
 const POSIX_SHELL = resolvePosixShell({ override: process.env.WORKFLOW_STUDIO_TEST_BASH })
 const posixIt = POSIX_SHELL.ok || process.env.CI ? it : it.skip
+const POSIX_SHELL_SKIP_SUFFIX = POSIX_SHELL.ok || process.env.CI ? '' : ` (${POSIX_SHELL.reason})`
+const posixTitle = (title: string) => `${title}${POSIX_SHELL_SKIP_SUFFIX}`
 
 function posixShell(): string {
   if (!POSIX_SHELL.ok) throw new Error(POSIX_SHELL.reason)
@@ -641,7 +643,7 @@ Get-WindowsArchitecture
     }
   })
 
-  posixIt('rejects Linux before calling curl or querying release metadata', () => {
+  posixIt(posixTitle('rejects Linux before calling curl or querying release metadata'), () => {
     const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-linux-installer-'))
     const curlSentinel = join(directory, 'curl-called')
     try {
@@ -686,34 +688,38 @@ Get-WindowsArchitecture
     expect(result.stdout).not.toContain('checking the latest public release')
   })
 
-  posixIt('rejects a non-semantic GitHub tag before any artifact is downloaded', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-installer-test-'))
-    try {
-      const uname = join(directory, 'uname')
-      const curl = join(directory, 'curl')
-      writeFileSync(uname, '#!/bin/sh\n[ "$1" = "-s" ] && echo Darwin || echo x86_64\n')
-      writeFileSync(curl, '#!/bin/sh\nprintf \'{\\n  "tag_name": "v1.2x.3",\\n  "assets": []\\n}\\n\'\n')
-      chmodSync(uname, 0o700)
-      chmodSync(curl, 0o700)
+  posixIt(
+    posixTitle('rejects a non-semantic GitHub tag before any artifact is downloaded'),
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), 'workflow-studio-installer-test-'))
+      try {
+        const uname = join(directory, 'uname')
+        const curl = join(directory, 'curl')
+        writeFileSync(uname, '#!/bin/sh\n[ "$1" = "-s" ] && echo Darwin || echo x86_64\n')
+        writeFileSync(curl, '#!/bin/sh\nprintf \'{\\n  "tag_name": "v1.2x.3",\\n  "assets": []\\n}\\n\'\n')
+        chmodSync(uname, 0o700)
+        chmodSync(curl, 0o700)
 
-      const result = spawnSync(
-        posixShell(),
-        ['-c', 'PATH="$WORKFLOW_STUDIO_TEST_BIN:$PATH"; export PATH; exec sh scripts/install.sh'],
-        {
-          encoding: 'utf8',
-          env: { ...process.env, WORKFLOW_STUDIO_TEST_BIN: toPosixShellPath(directory) },
-          timeout: 30_000,
-          windowsHide: true,
-        },
-      )
-      expectNoSpawnError(result)
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain('latest release returned an invalid tag')
-      expect(result.stdout).not.toContain('downloading LOOP24-Workflow-Studio')
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
+        const result = spawnSync(
+          posixShell(),
+          ['-c', 'PATH="$WORKFLOW_STUDIO_TEST_BIN:$PATH"; export PATH; exec sh scripts/install.sh'],
+          {
+            encoding: 'utf8',
+            env: { ...process.env, WORKFLOW_STUDIO_TEST_BIN: toPosixShellPath(directory) },
+            timeout: 30_000,
+            windowsHide: true,
+          },
+        )
+        expectNoSpawnError(result)
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain('latest release returned an invalid tag')
+        expect(result.stdout).not.toContain('downloading LOOP24-Workflow-Studio')
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+    30_000,
+  )
 })
 
 interface WorkflowJob {
@@ -886,7 +892,7 @@ describe('release workflow contract', () => {
   })
 
   posixIt(
-    'creates the v3.0.1 draft only after two clean absence reads',
+    `creates the v3.0.1 draft only after two clean absence reads${POSIX_SHELL_SKIP_SUFFIX}`,
     () => {
       const run = namedStep('validate', 'Create and validate exact draft release').run!
       const invocation = executeDraftLifecycle(run, {
@@ -896,8 +902,8 @@ describe('release workflow contract', () => {
         payloads: [],
       })
       try {
-        expect(existsSync(join(invocation.root, 'bin', 'gh.exe'))).toBe(true)
-        expect(existsSync(join(invocation.root, 'bin', 'gh.cmd'))).toBe(false)
+        expect(existsSync(join(invocation.root, 'bin', process.platform === 'win32' ? 'gh.exe' : 'gh'))).toBe(true)
+        if (process.platform === 'win32') expect(existsSync(join(invocation.root, 'bin', 'gh.cmd'))).toBe(false)
         expect(invocation.result.status, invocation.result.stderr).toBe(0)
         expect(invocation.output).toBe('release_id=73\n')
         expect(invocation.state.payloads).toEqual([
@@ -919,7 +925,7 @@ describe('release workflow contract', () => {
     30_000,
   )
 
-  posixIt('reuses an existing exact empty draft without creating a second release', () => {
+  posixIt(posixTitle('reuses an existing exact empty draft without creating a second release'), () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[draftLifecycleRelease()]]],
@@ -936,7 +942,7 @@ describe('release workflow contract', () => {
     }
   })
 
-  posixIt('rejects an existing nonempty exact draft without attempting creation', () => {
+  posixIt(posixTitle('rejects an existing nonempty exact draft without attempting creation'), () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] })]]],
@@ -961,24 +967,27 @@ describe('release workflow contract', () => {
     ['a wrong-commit release', [[draftLifecycleRelease({ target_commitish: 'b'.repeat(40) })]], /target commit/i],
     ['a published release', [[draftLifecycleRelease({ draft: false })]], /must be a draft/i],
     ['malformed release-list JSON', '{"draft":', /invalid json/i],
-  ] as const)('fails closed for %s without attempting absence or creation', (_name, listResponse, error) => {
-    const run = namedStep('validate', 'Create and validate exact draft release').run!
-    const invocation = executeDraftLifecycle(run, {
-      listResponses: [listResponse],
-      calls: [],
-      payloads: [],
-    })
-    try {
-      expect(invocation.result.status).toBe(1)
-      expect(invocation.result.stderr).toMatch(error)
-      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(1)
-      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
-    } finally {
-      rmSync(invocation.root, { recursive: true, force: true })
-    }
-  })
+  ] as const)(
+    posixTitle('fails closed for %s without attempting absence or creation'),
+    (_name, listResponse, error) => {
+      const run = namedStep('validate', 'Create and validate exact draft release').run!
+      const invocation = executeDraftLifecycle(run, {
+        listResponses: [listResponse],
+        calls: [],
+        payloads: [],
+      })
+      try {
+        expect(invocation.result.status).toBe(1)
+        expect(invocation.result.stderr).toMatch(error)
+        expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(1)
+        expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(0)
+      } finally {
+        rmSync(invocation.root, { recursive: true, force: true })
+      }
+    },
+  )
 
-  posixIt('requires a second clean absence result before creating', () => {
+  posixIt(posixTitle('requires a second clean absence result before creating'), () => {
     const run = namedStep('validate', 'Create and validate exact draft release').run!
     const invocation = executeDraftLifecycle(run, {
       listResponses: [[[]], '{"draft":'],
@@ -999,26 +1008,29 @@ describe('release workflow contract', () => {
   posixIt.each([
     ['malformed JSON', '{"draft":', /invalid json/i],
     ['a nonempty asset list', draftLifecycleRelease({ assets: [{ id: 91, name: 'latest.json' }] }), /zero assets/i],
-  ] as const)('rejects a created response containing %s without a list retry', (_name, postResponse, error) => {
-    const run = namedStep('validate', 'Create and validate exact draft release').run!
-    const invocation = executeDraftLifecycle(run, {
-      listResponses: [[[]], [[]]],
-      postResponse,
-      calls: [],
-      payloads: [],
-    })
-    try {
-      expect(invocation.result.status).toBe(1)
-      expect(invocation.result.stderr).toMatch(error)
-      expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
-      expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
-    } finally {
-      rmSync(invocation.root, { recursive: true, force: true })
-    }
-  })
+  ] as const)(
+    posixTitle('rejects a created response containing %s without a list retry'),
+    (_name, postResponse, error) => {
+      const run = namedStep('validate', 'Create and validate exact draft release').run!
+      const invocation = executeDraftLifecycle(run, {
+        listResponses: [[[]], [[]]],
+        postResponse,
+        calls: [],
+        payloads: [],
+      })
+      try {
+        expect(invocation.result.status).toBe(1)
+        expect(invocation.result.stderr).toMatch(error)
+        expect(invocation.state.calls.filter((call) => call.includes('--paginate'))).toHaveLength(2)
+        expect(invocation.state.calls.filter((call) => call.includes('POST'))).toHaveLength(1)
+      } finally {
+        rmSync(invocation.root, { recursive: true, force: true })
+      }
+    },
+  )
 
   posixIt.each([['v1.2.3'], ['v0.0.0-alpha'], ['v1.2.3-alpha.1'], ['v1.2.3-0A.0']])(
-    'executes strict SemVer validation for valid tag %s',
+    posixTitle('executes strict SemVer validation for valid tag %s'),
     (tag) => {
       const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
       const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-'))
@@ -1052,7 +1064,7 @@ describe('release workflow contract', () => {
     ['refs/heads/base', 'v1.2.3+build.001'],
     ['refs/heads/base', 'v1.2.3-alpha.1+build.001'],
     ['refs/heads/base', 'v01.2.3'],
-  ])('rejects invalid dispatch/tag pair %s %s before checkout', (dispatchRef, tag) => {
+  ])(posixTitle('rejects invalid dispatch/tag pair %s %s before checkout'), (dispatchRef, tag) => {
     const run = namedStep('validate', 'Validate dispatch ref and tag syntax').run!
     const root = mkdtempSync(join(tmpdir(), 'workflow-studio-semver-invalid-'))
     try {
@@ -1076,7 +1088,7 @@ describe('release workflow contract', () => {
   })
 
   posixIt(
-    'executes commit resolution and rejects tooling outside base',
+    posixTitle('executes commit resolution and rejects tooling outside base'),
     () => {
       const run = namedStep('validate', 'Validate immutable application and tooling commits').run!
       const root = mkdtempSync(join(tmpdir(), 'workflow-studio-release-boundary-'))
@@ -1452,7 +1464,7 @@ ${gate}
     }
   })
 
-  posixIt('keeps the extracted macOS package gate valid in Bash', () => {
+  posixIt(posixTitle('keeps the extracted macOS package gate valid in Bash'), () => {
     const mac = namedStep('build', 'Verify extracted macOS DMG payload').run!.replaceAll(
       '${{ matrix.rust_target }}',
       'aarch64-apple-darwin',
@@ -1641,7 +1653,7 @@ if ($errors.Count -ne 0) {
       })
       expect(result.status, result.stderr).toBe(0)
     }
-  })
+  }, 30_000)
 
   it('installs Linux native libraries only in final verification before compiling the tagged Rust verifier', () => {
     const steps = jobSteps('verify')
