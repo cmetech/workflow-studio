@@ -1,3 +1,7 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 /brands/** text=auto eol=lf
 /contracts/** text=auto eol=lf
 /examples/** text=auto eol=lf

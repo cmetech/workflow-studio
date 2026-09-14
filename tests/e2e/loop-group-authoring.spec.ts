@@ -163,6 +163,7 @@ test.describe('loop group visual authoring', () => {
   })
 
   test('authors body nodes and references without crossing sibling scope identity', async ({ page }) => {
+    test.setTimeout(30_000)
     const task12RawDefinition = await readFile(
       new URL('../../examples/loop-group-iteration-context/workflow.yaml', import.meta.url),
       'utf8',
@@ -187,6 +188,10 @@ test.describe('loop group visual authoring', () => {
     await prompt.click()
     await expect(page.getByText('$draft.output', { exact: true })).toBeVisible()
     await expect(page.getByText('$LOOP_PREV.review.output', { exact: true })).toBeVisible()
+    await prompt.evaluate((element) => {
+      const input = element as HTMLTextAreaElement
+      input.setSelectionRange(input.value.length, input.value.length)
+    })
     const before = await e2eSnapshot(page)
     await resetEditorMetrics(page)
     await page.getByRole('button', { name: 'Insert $draft.output' }).click()

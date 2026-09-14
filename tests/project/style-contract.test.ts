@@ -75,7 +75,7 @@ describe('offline visual style contract', () => {
           ...readFileSync(path, 'utf8').matchAll(
             /(?:^|[;{'"\s])(color|fill|stroke)\s*:\s*var\(--color-(accent(?:-strong|-contrast)?)\)/gm,
           ),
-        ].map((match) => `${path}:${match[1]}:${match[2]}`),
+        ].map((match) => `${path.replaceAll('\\', '/')}:${match[1]}:${match[2]}`),
       ),
     )
 
