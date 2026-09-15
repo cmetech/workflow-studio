@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
@@ -151,7 +150,7 @@ pub struct StartupError {
 
 type StartupResult<T> = Result<T, StartupError>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RecentRecord {
     #[serde(rename = "rootPath")]
     root_path: String,
@@ -169,7 +168,11 @@ pub fn recent_workspaces_load(
     app: AppHandle,
     state: State<'_, RecentWorkspaceState>,
 ) -> StartupResult<String> {
-    with_recent_storage(&app, &state, RecentStorage::load)
+    let content = with_recent_storage(&app, &state, RecentStorage::load)?;
+    if content.is_empty() {
+        return Ok(content);
+    }
+    Ok(normalize_recent_content(&content).unwrap_or(content))
 }
 
 #[tauri::command]
@@ -184,18 +187,10 @@ pub fn recent_workspaces_save(
             "Recent workspace data exceeds 64 KiB.",
         ));
     }
-    let records: Vec<RecentRecord> = serde_json::from_str(&content).map_err(|_| {
-        error(
-            "recent_workspace_invalid",
-            "Recent workspace data must be a JSON array of roots.",
-        )
-    })?;
-    let unique: HashSet<&str> = records
-        .iter()
-        .map(|record| record.root_path.as_str())
-        .collect();
+    let normalized = normalize_recent_content(&content)?;
+    let records: Vec<RecentRecord> = serde_json::from_str(&normalized)
+        .expect("normalized recent workspace JSON must remain valid");
     if records.len() > 20
-        || unique.len() != records.len()
         || records
             .iter()
             .any(|record| record.root_path.is_empty() || record.last_opened_at.is_empty())
@@ -205,7 +200,7 @@ pub fn recent_workspaces_save(
             "Recent workspace data must contain at most 20 unique roots with timestamps.",
         ));
     }
-    with_recent_storage(&app, &state, |storage| storage.save(content.as_bytes()))
+    with_recent_storage(&app, &state, |storage| storage.save(normalized.as_bytes()))
 }
 
 #[tauri::command]
@@ -215,19 +210,79 @@ pub fn recent_workspace_available(
     state: State<'_, RecentWorkspaceState>,
 ) -> StartupResult<bool> {
     let content = with_recent_storage(&app, &state, RecentStorage::load)?;
-    let records: Vec<RecentRecord> = match serde_json::from_str(&content) {
-        Ok(records) => records,
-        Err(_) => return Ok(false),
-    };
-    if !records.iter().any(|record| record.root_path == path) {
-        return Ok(false);
+    Ok(recent_path_available(&content, Path::new(&path)))
+}
+
+fn normalize_recent_content(content: &str) -> StartupResult<String> {
+    let records: Vec<RecentRecord> = serde_json::from_str(content).map_err(|_| {
+        error(
+            "recent_workspace_invalid",
+            "Recent workspace data must be a JSON array of roots.",
+        )
+    })?;
+    let mut normalized: Vec<RecentRecord> = Vec::with_capacity(records.len());
+    for mut record in records {
+        let public =
+            crate::platform_paths::public_path(Path::new(&record.root_path)).map_err(|_| {
+                error(
+                    "recent_workspace_invalid",
+                    "Recent workspace paths must be safe absolute paths.",
+                )
+            })?;
+        record.root_path = unicode(&public).ok_or_else(|| {
+            error(
+                "recent_workspace_invalid",
+                "Recent workspace paths must be valid Unicode.",
+            )
+        })?;
+        let identity = recent_path_identity(&record.root_path);
+        if let Some(existing) = normalized
+            .iter_mut()
+            .find(|candidate| recent_path_identity(&candidate.root_path) == identity)
+        {
+            if existing.last_opened_at < record.last_opened_at {
+                *existing = record;
+            }
+        } else {
+            normalized.push(record);
+        }
     }
-    let requested = Path::new(&path);
-    let canonical = match requested.canonicalize() {
-        Ok(value) => value,
-        Err(_) => return Ok(false),
+    serde_json::to_string(&normalized)
+        .map_err(|cause| error("recent_workspace_invalid", cause.to_string()))
+}
+
+fn recent_path_available(content: &str, requested: &Path) -> bool {
+    let records: Vec<RecentRecord> = match serde_json::from_str(content) {
+        Ok(records) => records,
+        Err(_) => return false,
     };
-    Ok(canonical == requested && canonical.is_dir())
+    recent_records_include_path(&records, requested)
+}
+
+fn recent_records_include_path(records: &[RecentRecord], requested: &Path) -> bool {
+    let requested_canonical = match requested.canonicalize() {
+        Ok(path) if path.is_dir() => path,
+        _ => return false,
+    };
+    let requested_identity = match Handle::from_path(&requested_canonical) {
+        Ok(identity) => identity,
+        Err(_) => return false,
+    };
+    records.iter().any(|record| {
+        let stored_canonical = match Path::new(&record.root_path).canonicalize() {
+            Ok(path) if path.is_dir() => path,
+            _ => return false,
+        };
+        let stored_identity = match Handle::from_path(&stored_canonical) {
+            Ok(identity) => identity,
+            Err(_) => return false,
+        };
+        stored_canonical == requested_canonical && stored_identity == requested_identity
+    })
+}
+
+fn recent_path_identity(path: &str) -> &str {
+    path
 }
 
 fn collect_startup_paths(args: impl IntoIterator<Item = OsString>) -> Vec<StartupPath> {
@@ -240,7 +295,7 @@ fn classify_startup_path(value: OsString) -> Option<StartupPath> {
     if canonical.is_dir() {
         return Some(StartupPath {
             kind: "directory",
-            path: unicode(&canonical)?,
+            path: public_unicode(&canonical)?,
             root_path: None,
             relative_path: None,
         });
@@ -251,8 +306,8 @@ fn classify_startup_path(value: OsString) -> Option<StartupPath> {
     let root = canonical.parent()?.to_path_buf();
     Some(StartupPath {
         kind: "yaml",
-        path: unicode(&canonical)?,
-        root_path: Some(unicode(&root)?),
+        path: public_unicode(&canonical)?,
+        root_path: Some(public_unicode(&root)?),
         relative_path: Some(canonical.file_name()?.to_str()?.to_string()),
     })
 }
@@ -293,6 +348,10 @@ fn unicode(path: &Path) -> Option<String> {
     path.to_str().map(ToOwned::to_owned)
 }
 
+fn public_unicode(path: &Path) -> Option<String> {
+    unicode(&crate::platform_paths::public_path(path).ok()?)
+}
+
 fn error(code: &'static str, message: impl Into<String>) -> StartupError {
     StartupError {
         code,
@@ -311,7 +370,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{collect_startup_paths, is_yaml, RecentStorage};
+    use super::{
+        collect_startup_paths, is_yaml, normalize_recent_content, recent_path_available,
+        RecentRecord, RecentStorage,
+    };
 
     #[test]
     fn startup_accepts_only_existing_directories_and_yaml_files() {
@@ -340,6 +402,65 @@ mod tests {
         assert!(!is_yaml(std::path::Path::new("flow.yaml.exe")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn startup_and_recent_paths_are_public_while_filesystem_identity_stays_canonical() {
+        let root = tempdir().unwrap();
+        let yaml = root.path().join("flow.yaml");
+        fs::write(&yaml, "name: flow\n").unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+        let canonical_yaml = yaml.canonicalize().unwrap();
+        assert!(canonical_root.to_string_lossy().starts_with(r"\\?\"));
+        assert!(canonical_yaml.to_string_lossy().starts_with(r"\\?\"));
+
+        let paths = collect_startup_paths([
+            root.path().as_os_str().to_owned(),
+            yaml.as_os_str().to_owned(),
+        ]);
+
+        assert_eq!(paths.len(), 2);
+        assert!(!paths[0].path.starts_with(r"\\?\"));
+        assert!(!paths[1].path.starts_with(r"\\?\"));
+        assert!(!paths[1].root_path.as_deref().unwrap().starts_with(r"\\?\"));
+
+        let public_root = crate::platform_paths::public_path(&canonical_root).unwrap();
+        let recent = serde_json::json!([
+            {
+                "rootPath": public_root,
+                "lastOpenedAt": "2026-09-14T12:00:00.000Z"
+            }
+        ])
+        .to_string();
+        assert_ne!(canonical_root, public_root);
+        assert!(!public_root.to_string_lossy().starts_with(r"\\?\"));
+        assert!(recent_path_available(&recent, &public_root));
+        assert_eq!(canonical_root, root.path().canonicalize().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recent_serialization_migrates_verbatim_duplicates_to_the_newest_public_record() {
+        let content = serde_json::json!([
+            {
+                "rootPath": r"C:\Work\flows",
+                "lastOpenedAt": "2026-09-14T12:00:00.000Z"
+            },
+            {
+                "rootPath": r"\\?\C:\Work\flows",
+                "lastOpenedAt": "2026-09-14T13:00:00.000Z"
+            }
+        ])
+        .to_string();
+
+        let normalized = normalize_recent_content(&content).unwrap();
+        let records: Vec<RecentRecord> = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].root_path, r"C:\Work\flows");
+        assert_eq!(records[0].last_opened_at, "2026-09-14T13:00:00.000Z");
+        assert!(!normalized.contains(r"\\?\"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn recent_storage_rejects_an_app_data_symlink() {
@@ -362,6 +483,17 @@ mod tests {
         let app_data = root.path().join("app-data");
         fs::create_dir(&app_data).unwrap();
         let storage = RecentStorage::open(&app_data).unwrap();
+        #[cfg(windows)]
+        let storage = {
+            use cap_std::ambient_authority;
+            use cap_std::fs::Dir;
+
+            let mut storage = storage;
+            let parking = root.path().join("parking");
+            fs::create_dir(&parking).unwrap();
+            storage.directory = Dir::open_ambient_dir(&parking, ambient_authority()).unwrap();
+            storage
+        };
         fs::rename(&app_data, root.path().join("original")).unwrap();
         fs::create_dir(&app_data).unwrap();
 

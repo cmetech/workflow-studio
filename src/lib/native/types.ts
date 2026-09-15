@@ -32,9 +32,19 @@ export class NativeError extends Error {
   }
 }
 
+/** An OS path normalized for renderer display and storage, never a native capability identity. */
+export type PublicPath = string
+
 export interface WorkspaceRootInfo {
   readonly workspaceId: string
-  readonly rootPath: string
+  readonly rootPath: PublicPath
+}
+
+export interface StartupPath {
+  readonly kind: 'directory' | 'yaml'
+  readonly path: PublicPath
+  readonly rootPath?: PublicPath
+  readonly relativePath?: string
 }
 
 export interface WorkspaceReadResult {
@@ -293,14 +303,7 @@ export interface WorkspaceNativeBridge
   recentWorkspacesLoad(): Promise<string>
   recentWorkspacesSave(content: string): Promise<void>
   pathAvailable(path: string): Promise<boolean>
-  startupPaths(): Promise<
-    readonly {
-      readonly kind: 'directory' | 'yaml'
-      readonly path: string
-      readonly rootPath?: string
-      readonly relativePath?: string
-    }[]
-  >
+  startupPaths(): Promise<readonly StartupPath[]>
   recoveryList(): Promise<readonly RecoveryBlob[]>
   recoveryWrite(request: RecoveryWriteRequest): Promise<void>
   recoveryDelete(id: string): Promise<void>
