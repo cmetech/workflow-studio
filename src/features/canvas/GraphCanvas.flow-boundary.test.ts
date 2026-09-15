@@ -1,5 +1,5 @@
 import { tick } from 'svelte'
-import { clearCanvasState } from '$src/stores/canvas'
+import { $canvasPositions, clearCanvasState } from '$src/stores/canvas'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,17 @@ import { CANVAS_PAN_INTERACTION } from '$src/lib/commands/canvas-interactions'
 import type { ScopeLayoutV1 } from '$src/lib/layout/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
 import { VISUAL_NODE_CAPACITY } from '$src/lib/projection/types'
+
+const transientBoundary = vi.hoisted(() => {
+  const original = vi.fn()
+  return {
+    original,
+    store: {
+      domNode: null as ParentNode | null,
+      updateNodePositions: original,
+    },
+  }
+})
 
 vi.mock('@xyflow/svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xyflow/svelte')>()
@@ -20,7 +31,7 @@ vi.mock('@xyflow/svelte', async (importOriginal) => {
     SvelteFlow,
     Background,
     useSvelteFlow: () => ({ fitView: async () => true, getViewport: () => ({ x: 0, y: 0, zoom: 1 }) }),
-    useStore: () => ({ domNode: document, updateNodePositions: vi.fn() }),
+    useStore: () => transientBoundary.store,
   }
 })
 
@@ -80,6 +91,98 @@ describe('GraphCanvas Svelte Flow boundary', () => {
   afterEach(() => {
     vi.useRealTimers()
     clearCanvasState()
+    transientBoundary.store.domNode = null
+    transientBoundary.store.updateNodePositions = transientBoundary.original
+    transientBoundary.original.mockClear()
+  })
+
+  it('restores transient DOM before delayed Svelte Flow callbacks when authorability is lost', async () => {
+    const node = {
+      id: 'first',
+      kind: 'prompt',
+      value: 'First',
+      dependsOn: [],
+      options: {},
+      source: { path: '/nodes/0', start: 0, end: 1 },
+    }
+    const graph: ProjectedGraph = {
+      ...projection,
+      nodes: [node],
+      definitionOrder: ['first'],
+      capacity: { status: 'visual', nodeCount: 1, edgeCount: 0 },
+    }
+    const saved = { ...layout, nodePositions: { first: { x: 0, y: 0 } } }
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<div class="svelte-flow__node selected" data-id="first" style="transform: translate(7px, 8px)"></div>'
+    transientBoundary.store.domNode = root
+    const onPersistLayout = vi.fn()
+    const props = {
+      commandSurface: commandRegistry,
+      projection: graph,
+      layout: saved,
+      onPersistLayout,
+    }
+    const rendered = render(GraphCanvas, props)
+    try {
+      await tick()
+      const canvas = screen.getByTestId('workflow-canvas')
+      const element = root.querySelector<HTMLElement>('[data-id="first"]')!
+      const firstMove = new Map([['first', { internals: { positionAbsolute: { x: 75, y: 90 } } }]])
+
+      await fireEvent(canvas, new CustomEvent('workflowdragstart'))
+      transientBoundary.store.updateNodePositions(firstMove, true)
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', { detail: { id: 'first', position: { x: 75, y: 90 } } }),
+      )
+      expect(element.style.transform).toBe('translate(75px, 90px)')
+      expect(element).toHaveClass('dragging')
+
+      await rendered.rerender({ ...props, readOnly: true })
+      await tick()
+
+      expect(element.style.transform).toBe('translate(7px, 8px)')
+      expect(element).not.toHaveClass('dragging')
+      transientBoundary.store.updateNodePositions(
+        new Map([['first', { internals: { positionAbsolute: { x: 175, y: 190 } } }]]),
+        true,
+      )
+      transientBoundary.store.updateNodePositions(firstMove, false)
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', { detail: { id: 'first', position: { x: 175, y: 190 } } }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(element.style.transform).toBe('translate(7px, 8px)')
+      expect(element).not.toHaveClass('dragging')
+      expect(transientBoundary.original).not.toHaveBeenCalled()
+      expect($canvasPositions.get()).toEqual(saved.nodePositions)
+      expect(onPersistLayout).not.toHaveBeenCalled()
+
+      await rendered.rerender({ ...props, readOnly: false })
+      await fireEvent(canvas, new CustomEvent('workflowdragstart'))
+      const secondMove = new Map([['first', { internals: { positionAbsolute: { x: 125, y: 150 } } }]])
+      transientBoundary.store.updateNodePositions(secondMove, true)
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', { detail: { id: 'first', position: { x: 125, y: 150 } } }),
+      )
+      transientBoundary.store.updateNodePositions(secondMove, false)
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', { detail: { id: 'first', position: { x: 125, y: 150 } } }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(transientBoundary.original).toHaveBeenCalledOnce()
+      expect(transientBoundary.original).toHaveBeenCalledWith(secondMove, false)
+      expect($canvasPositions.get()).toEqual({ first: { x: 125, y: 150 } })
+      expect(onPersistLayout).toHaveBeenCalledOnce()
+    } finally {
+      rendered.unmount()
+    }
   })
 
   it('[RG6] defers auto-pan layout work throughout a held node drag and saves its final viewport once', async () => {

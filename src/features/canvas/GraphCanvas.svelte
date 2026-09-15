@@ -690,8 +690,13 @@
     if (attempt && !arrangeIsCurrent(attempt)) untrack(() => cancelArrange())
   })
 
+  $effect.pre(() => {
+    const available = canDrag()
+    if (!available) untrack(() => clearPendingDrag())
+  })
+
   $effect(() => {
-    const mutable = !readOnly && !stale && !transitionLocked && !arrangeBusy
+    const mutable = canDrag()
     untrack(() => {
       flowNodes = flowNodes.map((node) =>
         node.draggable === mutable && node.connectable === mutable
@@ -702,7 +707,7 @@
   })
 
   function handleDragStart(): void {
-    if (!canAuthor()) return
+    if (!canDrag()) return
     if (dragging) return
     viewportController?.beginNodeDrag()
     dragging = true
@@ -719,7 +724,7 @@
     recordEditorMetric('pointerMoves')
     const pending = pendingDrag
     if (
-      !canAuthor() ||
+      !canDrag() ||
       !dragging ||
       !pending ||
       pending.workflowIdentity !== workflowIdentity ||
@@ -746,7 +751,7 @@
     const updates =
       pendingIsCurrent && pending.positions.length > 0 ? (stopped.length > 0 ? stopped : pending.positions) : []
     clearPendingDrag()
-    if (!canAuthor()) return
+    if (!canDrag()) return
     if (updates.length === 0) return
     rememberRoutingPublication(undefined)
     clearRenderedRouting()
@@ -997,6 +1002,7 @@
       client,
     }
     activeArrange = attempt
+    clearPendingDrag()
     arrangeBusy = true
     authoringFeedback = 'Arranging graph…'
     onArrangeBusyChange(true, attempt.workflowIdentity)
@@ -1639,6 +1645,10 @@
     return !readOnly && !stale && !transitionLocked && !arrangeBusy
   }
 
+  function canDrag(): boolean {
+    return surfaceActive && canAuthor()
+  }
+
   function canAdd(): boolean {
     return !readOnly && !transitionLocked && !arrangeBusy && (!stale || (blankDraft && projection.nodes.length === 0))
   }
@@ -1932,8 +1942,8 @@
       bind:viewport={flowViewport}
       {nodeTypes}
       {edgeTypes}
-      nodesDraggable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
-      nodesConnectable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
+      nodesDraggable={canDrag()}
+      nodesConnectable={canDrag()}
       elementsSelectable={!transitionLocked}
       onlyRenderVisibleElements={!arrangeMeasuring && projection.capacity.nodeCount !== 1}
       nodesFocusable={true}

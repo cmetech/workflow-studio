@@ -2272,6 +2272,194 @@ describe('GraphCanvas', () => {
     unsubscribe()
   })
 
+  it.each([
+    ['inactive surface', { surfaceActive: false }],
+    ['read-only mode', { readOnly: true }],
+    ['stale analysis', { stale: true }],
+    ['transition lock', { transitionLocked: true }],
+  ] as const)(
+    'cancels transient drag state when authorability is lost to %s and accepts a later gesture',
+    async (_reason, replacement) => {
+      const measurements = canvasMeasurements()
+      const routing = await savedRouting()
+      const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        layout: { ...layout, routing },
+        onPersistLayout: persistLayout,
+      }
+      const rendered = renderCanvas(props)
+      const publications: (typeof layout.nodePositions)[] = []
+      const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+      try {
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+        )
+        publications.length = 0
+        let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+        await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 75, y: 90 } },
+          }),
+        )
+        await rendered.rerender({ ...props, ...replacement })
+        await tick()
+
+        expect(rendered.component.cancel()).toBe(false)
+
+        canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 175, y: 190 } },
+          }),
+        )
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragstop', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 175, y: 190 } },
+          }),
+        )
+        await rendered.component.flushPersistence()
+
+        expect(publications).toEqual([])
+        expect($canvasPositions.get()).toEqual(layout.nodePositions)
+        expect(persistLayout).not.toHaveBeenCalled()
+
+        await rendered.rerender({
+          ...props,
+          surfaceActive: true,
+          readOnly: false,
+          stale: false,
+          transitionLocked: false,
+        })
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+        )
+        publications.length = 0
+        canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+        await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 125, y: 150 } },
+          }),
+        )
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragstop', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 125, y: 150 } },
+          }),
+        )
+        await rendered.component.flushPersistence()
+
+        expect(publications).toEqual([{ collect: { x: 125, y: 150 }, review: { x: 320, y: 0 } }])
+        expect(persistLayout).toHaveBeenCalledOnce()
+      } finally {
+        unsubscribe()
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it('cancels an active drag before arrange makes authoring busy and accepts a gesture after arrange cancellation', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const client = new DeferredLayoutClient()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({
+      projection,
+      layout: { ...layout, routing },
+      layoutClient: client,
+      onPersistLayout: persistLayout,
+    })
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      publications.length = 0
+      let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 75, y: 90 } },
+        }),
+      )
+
+      const arranging = rendered.component.arrange()
+      await tick()
+      expect(rendered.component.cancel()).toBe(true)
+      expect(client.cancel).toHaveBeenCalledOnce()
+      await arranging
+      await tick()
+
+      canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 175, y: 190 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 175, y: 190 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(publications).toEqual([])
+      expect($canvasPositions.get()).toEqual(layout.nodePositions)
+      expect(persistLayout).not.toHaveBeenCalled()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'review', position: { x: 500, y: 120 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'review', position: { x: 500, y: 120 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(publications).toEqual([{ collect: { x: 0, y: 0 }, review: { x: 500, y: 120 } }])
+      expect(persistLayout).toHaveBeenCalledOnce()
+    } finally {
+      unsubscribe()
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
   it('does not publish a drag start and stop that contains no move event', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
