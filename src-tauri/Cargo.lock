@@ -5153,6 +5153,7 @@ version = "3.0.1"
 dependencies = [
  "base64 0.22.1",
  "cap-std",
+ "chrono",
  "getrandom 0.3.4",
  "libc",
  "minisign-verify",

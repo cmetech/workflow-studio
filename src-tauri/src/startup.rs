@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
+use chrono::{DateTime, SecondsFormat, Utc};
 use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -169,10 +170,14 @@ pub fn recent_workspaces_load(
     state: State<'_, RecentWorkspaceState>,
 ) -> StartupResult<String> {
     let content = with_recent_storage(&app, &state, RecentStorage::load)?;
+    normalize_loaded_recent_content(&content)
+}
+
+fn normalize_loaded_recent_content(content: &str) -> StartupResult<String> {
     if content.is_empty() {
-        return Ok(content);
+        return Ok(content.to_string());
     }
-    Ok(normalize_recent_content(&content).unwrap_or(content))
+    normalize_recent_content_with_policy(content, InvalidRecentRecordPolicy::Skip)
 }
 
 #[tauri::command]
@@ -214,41 +219,81 @@ pub fn recent_workspace_available(
 }
 
 fn normalize_recent_content(content: &str) -> StartupResult<String> {
+    normalize_recent_content_with_policy(content, InvalidRecentRecordPolicy::Reject)
+}
+
+#[derive(Clone, Copy)]
+enum InvalidRecentRecordPolicy {
+    Reject,
+    Skip,
+}
+
+fn normalize_recent_content_with_policy(
+    content: &str,
+    invalid_policy: InvalidRecentRecordPolicy,
+) -> StartupResult<String> {
     let records: Vec<RecentRecord> = serde_json::from_str(content).map_err(|_| {
         error(
             "recent_workspace_invalid",
             "Recent workspace data must be a JSON array of roots.",
         )
     })?;
-    let mut normalized: Vec<RecentRecord> = Vec::with_capacity(records.len());
-    for mut record in records {
-        let public =
-            crate::platform_paths::public_path(Path::new(&record.root_path)).map_err(|_| {
-                error(
-                    "recent_workspace_invalid",
-                    "Recent workspace paths must be safe absolute paths.",
-                )
-            })?;
-        record.root_path = unicode(&public).ok_or_else(|| {
-            error(
-                "recent_workspace_invalid",
-                "Recent workspace paths must be valid Unicode.",
-            )
-        })?;
+    let mut normalized: Vec<(RecentRecord, DateTime<Utc>)> = Vec::with_capacity(records.len());
+    for record in records {
+        let (record, opened_at) = match normalize_recent_record(record) {
+            Ok(record) => record,
+            Err(_) if matches!(invalid_policy, InvalidRecentRecordPolicy::Skip) => continue,
+            Err(error) => return Err(error),
+        };
         let identity = recent_path_identity(&record.root_path);
         if let Some(existing) = normalized
             .iter_mut()
-            .find(|candidate| recent_path_identity(&candidate.root_path) == identity)
+            .find(|(candidate, _)| recent_path_identity(&candidate.root_path) == identity)
         {
-            if existing.last_opened_at < record.last_opened_at {
-                *existing = record;
+            if existing.1 < opened_at {
+                *existing = (record, opened_at);
             }
         } else {
-            normalized.push(record);
+            normalized.push((record, opened_at));
         }
     }
-    serde_json::to_string(&normalized)
+    let records: Vec<RecentRecord> = normalized.into_iter().map(|(record, _)| record).collect();
+    serde_json::to_string(&records)
         .map_err(|cause| error("recent_workspace_invalid", cause.to_string()))
+}
+
+fn normalize_recent_record(
+    mut record: RecentRecord,
+) -> StartupResult<(RecentRecord, DateTime<Utc>)> {
+    if record.root_path.trim().is_empty() {
+        return Err(error(
+            "recent_workspace_invalid",
+            "Recent workspace paths must not be empty.",
+        ));
+    }
+    let public =
+        crate::platform_paths::public_path(Path::new(&record.root_path)).map_err(|_| {
+            error(
+                "recent_workspace_invalid",
+                "Recent workspace paths must be safe absolute paths.",
+            )
+        })?;
+    record.root_path = unicode(&public).ok_or_else(|| {
+        error(
+            "recent_workspace_invalid",
+            "Recent workspace paths must be valid Unicode.",
+        )
+    })?;
+    let opened_at = DateTime::parse_from_rfc3339(&record.last_opened_at)
+        .map_err(|_| {
+            error(
+                "recent_workspace_invalid",
+                "Recent workspace timestamps must use RFC 3339.",
+            )
+        })?
+        .with_timezone(&Utc);
+    record.last_opened_at = opened_at.to_rfc3339_opts(SecondsFormat::Millis, true);
+    Ok((record, opened_at))
 }
 
 fn recent_path_available(content: &str, requested: &Path) -> bool {
@@ -260,6 +305,14 @@ fn recent_path_available(content: &str, requested: &Path) -> bool {
 }
 
 fn recent_records_include_path(records: &[RecentRecord], requested: &Path) -> bool {
+    recent_records_include_path_with_hook(records, requested, |_| {})
+}
+
+fn recent_records_include_path_with_hook(
+    records: &[RecentRecord],
+    requested: &Path,
+    mut before_stored_identity: impl FnMut(&Path),
+) -> bool {
     let requested_canonical = match requested.canonicalize() {
         Ok(path) if path.is_dir() => path,
         _ => return false,
@@ -273,6 +326,7 @@ fn recent_records_include_path(records: &[RecentRecord], requested: &Path) -> bo
             Ok(path) if path.is_dir() => path,
             _ => return false,
         };
+        before_stored_identity(&stored_canonical);
         let stored_identity = match Handle::from_path(&stored_canonical) {
             Ok(identity) => identity,
             Err(_) => return false,
@@ -371,8 +425,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        collect_startup_paths, is_yaml, normalize_recent_content, recent_path_available,
-        RecentRecord, RecentStorage,
+        collect_startup_paths, is_yaml, normalize_loaded_recent_content, normalize_recent_content,
+        recent_path_available, recent_records_include_path_with_hook, RecentRecord, RecentStorage,
     };
 
     #[test]
@@ -459,6 +513,79 @@ mod tests {
         assert_eq!(records[0].root_path, r"C:\Work\flows");
         assert_eq!(records[0].last_opened_at, "2026-09-14T13:00:00.000Z");
         assert!(!normalized.contains(r"\\?\"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recent_load_filters_unsafe_records_without_returning_raw_verbatim_paths() {
+        let content = serde_json::json!([
+            {
+                "rootPath": r"\\?\C:\Work\flows",
+                "lastOpenedAt": "2026-09-14T13:00:00.000Z"
+            },
+            {
+                "rootPath": r"\\.\PhysicalDrive0",
+                "lastOpenedAt": "2026-09-14T14:00:00.000Z"
+            }
+        ])
+        .to_string();
+
+        let normalized = normalize_loaded_recent_content(&content).unwrap();
+        let records: Vec<RecentRecord> = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].root_path, r"C:\Work\flows");
+        assert!(!normalized.contains(r"\\?\"));
+        assert!(!normalized.contains("PhysicalDrive0"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recent_migration_compares_timestamp_instants_instead_of_timestamp_spelling() {
+        let content = serde_json::json!([
+            {
+                "rootPath": r"C:\Work\flows",
+                "lastOpenedAt": "2026-09-14T12:30:00+00:00"
+            },
+            {
+                "rootPath": r"\\?\C:\Work\flows",
+                "lastOpenedAt": "2026-09-14T13:00:00+02:00"
+            }
+        ])
+        .to_string();
+
+        let normalized = normalize_recent_content(&content).unwrap();
+        let records: Vec<RecentRecord> = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].last_opened_at, "2026-09-14T12:30:00.000Z");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recent_availability_rejects_identity_replacement_at_the_same_canonical_path() {
+        let parent = tempdir().unwrap();
+        let workspace = parent.path().join("workspace");
+        let displaced = parent.path().join("displaced");
+        fs::create_dir(&workspace).unwrap();
+        let public =
+            crate::platform_paths::public_path(&workspace.canonicalize().unwrap()).unwrap();
+        let records = vec![RecentRecord {
+            root_path: public.to_str().unwrap().to_string(),
+            last_opened_at: "2026-09-14T12:00:00.000Z".to_string(),
+        }];
+        let mut replaced = false;
+
+        let available = recent_records_include_path_with_hook(&records, &public, |_| {
+            if !replaced {
+                fs::rename(&workspace, &displaced).unwrap();
+                fs::create_dir(&workspace).unwrap();
+                replaced = true;
+            }
+        });
+
+        assert!(replaced);
+        assert!(!available);
     }
 
     #[cfg(unix)]
