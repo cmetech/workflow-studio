@@ -2289,6 +2289,59 @@ nodes:
     expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
   })
 
+  it.each(['cancel', 'failure'] as const)(
+    'resumes seeded Git activation when a %s folder request supersedes a slow startup selection',
+    async (outcome) => {
+      const repository = { root: '/startup', branch: 'main', detachedHead: null }
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'flow.yaml': 'name: Startup\ndescription: Open at launch.\nnodes:\n  - id: first\n    command: echo ready\n',
+        },
+      })
+      const startupRead = await backing.workspaceRead('flow.yaml')
+      const slowRead = deferred<typeof startupRead>()
+      const chooseWorkspaceFolder = vi.fn(async () => {
+        if (outcome === 'failure') throw new Error('picker failed before selection')
+        return null
+      })
+      const workspaceRead = vi.fn(async () => slowRead.promise)
+      const gitDetect = vi.fn(async () => repository)
+      const gitStatus = vi.fn(async () => ({ entries: [] }))
+      const gitDiffPair = vi.fn(async () => ({ working: '', index: '', authorizationToken: 'version-1' }))
+      const gitHistoryPair = vi.fn(async () => ({ commits: [], authorizationToken: 'history-1' }))
+      setNativeBridgeForTest({
+        ...backing,
+        startupPaths: async () => [
+          { kind: 'yaml', path: '/startup/flow.yaml', rootPath: '/startup', relativePath: 'flow.yaml' },
+        ],
+        chooseWorkspaceFolder,
+        workspaceSetRoot: async (rootPath) => ({ workspaceId: 'shared-workspace-id', rootPath, repository }),
+        workspaceRead,
+        gitDetect,
+        gitStatus,
+        gitBeginHistorySession: async () => 1,
+        gitDiffPair,
+        gitHistoryPair,
+        gitRetainHistoryAuthorization: async () => undefined,
+        gitRetainVersionAuthorization: async () => undefined,
+      })
+
+      render(App)
+      await waitForSetupReady()
+      await waitFor(() => expect(workspaceRead).toHaveBeenCalledWith('flow.yaml'))
+
+      await fireEvent.click(screen.getAllByRole('button', { name: 'Open Folder' })[0]!)
+      await waitFor(() => expect(chooseWorkspaceFolder).toHaveBeenCalledOnce())
+      slowRead.resolve(startupRead)
+
+      await waitFor(() => expect(gitHistoryPair).toHaveBeenCalledOnce())
+      expect(gitDetect).not.toHaveBeenCalled()
+      expect(gitStatus).toHaveBeenCalledTimes(1)
+      expect(gitState.get().inspection.repository).toEqual(repository)
+      expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
+    },
+  )
+
   it('redetects a changed Git descriptor before refreshing an open seeded pair', async () => {
     const initialRepository = { root: '/startup', branch: 'main', detachedHead: null }
     const detachedRepository = { root: '/startup', branch: null, detachedHead: '123456789abc' }

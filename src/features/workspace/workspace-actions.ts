@@ -178,7 +178,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
           }
         }
       } finally {
-        if (generation === rootGeneration) dependencies.workspaceSelectionSettled?.(selected)
+        dependencies.workspaceSelectionSettled?.(selected)
       }
       if (generation !== rootGeneration) return
       await recentWorkspaces.record(selected.rootPath, now())

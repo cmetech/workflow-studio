@@ -287,7 +287,7 @@
   const gitController = createGitInspectionController(native)
   let gitLifecycleIdentity = ''
   let selectedWorkspace = $state.raw<WorkspaceRootInfo | null>(null)
-  let workspaceSelectionPending = $state(false)
+  let pendingWorkspaceSelection = $state.raw<WorkspaceRootInfo | null>(null)
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
@@ -544,11 +544,11 @@
       await recoveryStore.save(createRecoveryDraft(pair, new Date().toISOString()))
     },
     workspaceSelected: (selected) => {
-      workspaceSelectionPending = true
+      pendingWorkspaceSelection = selected
       selectedWorkspace = selected
     },
     workspaceSelectionSettled: (selected) => {
-      if (selectedWorkspace?.workspaceId === selected.workspaceId) workspaceSelectionPending = false
+      if (pendingWorkspaceSelection === selected) pendingWorkspaceSelection = null
     },
   })
 
@@ -2293,7 +2293,7 @@
   $effect(() => {
     const pair = $documentSessionStore.pair
     const workspaceId = $workspace.id
-    if (workspaceSelectionPending) return
+    if (pendingWorkspaceSelection) return
     if (workspaceId && selectedWorkspace && selectedWorkspace.workspaceId !== workspaceId) return
     const repository = selectedWorkspace?.workspaceId === workspaceId ? selectedWorkspace.repository : undefined
     const pairPaths = pair
