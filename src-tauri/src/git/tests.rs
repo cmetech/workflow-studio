@@ -722,6 +722,46 @@ fn pair_binding_rejects_a_replaced_capability_root_even_with_the_same_file_inode
     assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
 }
 
+#[cfg(windows)]
+fn assert_windows_directory_rename_denied(error: std::io::Error) {
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "unexpected Windows rename error: {error}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_holds_pair_binding_until_drop() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: retained\n").unwrap();
+    let binding = super::mutate::PairPathBinding::capture(&root, &["flow.yaml"]).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join("flow.yaml").is_file());
+    assert!(!parked.exists());
+    binding.verify().unwrap();
+
+    drop(binding);
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: replacement\n").unwrap();
+    assert_eq!(
+        fs::read_to_string(parked.join("flow.yaml")).unwrap(),
+        "name: retained\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("flow.yaml")).unwrap(),
+        "name: replacement\n"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn untracked_safe_symlink_preview_uses_link_mode_and_target_bytes() {
@@ -2206,6 +2246,29 @@ fn bound_context_rejects_workspace_and_repository_replacement_races() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_holds_context_until_drop() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(&root, &root).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join(".git").is_dir());
+    assert!(!parked.exists());
+    context.verify().unwrap();
+
+    drop(context);
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    AuthorizedGitContext::bind(&root, &root).unwrap();
+}
+
 #[test]
 fn stale_native_history_authorization_cannot_publish_after_context_clear() {
     let root = tempdir().unwrap();
@@ -2607,6 +2670,46 @@ fn retained_token_rejects_a_replacement_at_the_same_workspace_and_repository_pat
             .authorized_history(&token, &replacement_context, "flow.yaml", None)
             .err()
             .expect("a token must not cross stable directory identities")
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_retained_token_rejects_new_identity() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let original_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+    let state = GitState::default();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let request = state.begin_history(controller_epoch, 1).unwrap();
+    let token = state
+        .issue_history(
+            request,
+            authorization(&original_context, "flow.yaml", Default::default()),
+        )
+        .unwrap();
+    state.retain_history(controller_epoch, 1, &token).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join(".git").is_dir());
+    assert!(!parked.exists());
+
+    drop(original_context);
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let replacement_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+    assert_eq!(
+        state
+            .authorized_history(&token, &replacement_context, "flow.yaml", None)
+            .err()
+            .expect("a retained token must not cross stable directory identities")
             .code,
         "git_pair_not_authorized"
     );

@@ -349,10 +349,35 @@ fn preserves_unrelated_staged_unstaged_and_untracked_work() {
     .unwrap();
 
     let committed = assert_git(root.path(), &["show", "--pretty=", "--name-only", "HEAD"]);
-    assert!(committed.contains("flow.yaml"));
-    assert!(!committed.contains("staged.txt"));
+    let committed_paths = committed.lines().collect::<Vec<_>>();
+    assert!(committed_paths.contains(&"flow.yaml"));
+    assert!(!committed_paths.contains(&"staged.txt"));
+    assert!(!committed_paths.contains(&"unstaged.txt"));
+    assert!(!committed_paths.contains(&"untracked.txt"));
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:unstaged.txt"]),
+        "base\n"
+    );
+    assert!(!git(root.path(), &["cat-file", "-e", "HEAD:untracked.txt"])
+        .status
+        .success());
     let staged = assert_git(root.path(), &["diff", "--cached", "--", "staged.txt"]);
     assert!(staged.contains("-base\n+staged change\n"));
+    assert_eq!(
+        assert_git(
+            root.path(),
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                "staged.txt",
+                "unstaged.txt",
+                "untracked.txt",
+            ],
+        ),
+        "M  staged.txt\n M unstaged.txt\n?? untracked.txt\n"
+    );
     assert_eq!(
         fs::read_to_string(root.path().join("unstaged.txt")).unwrap(),
         "unstaged change\n"
