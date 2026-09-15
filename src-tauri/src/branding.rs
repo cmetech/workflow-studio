@@ -1367,7 +1367,7 @@ impl BrandStorageScope {
         Ok(())
     }
 
-    fn bind_pack(&self, id: &str) -> BrandResult<(Dir, Handle)> {
+    fn bind_pack(&self, id: &str) -> BrandResult<(Dir, DirectoryIdentity)> {
         self.verify()?;
         let metadata = self
             .brands
@@ -1383,21 +1383,21 @@ impl BrandStorageScope {
             .brands
             .open_dir(id)
             .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
-        let identity = cap_directory_identity(&directory, "brand_storage_scope_invalid")?;
+        let identity = directory_identity_snapshot(&directory, "brand_storage_scope_invalid")?;
         if !self.named_pack_identity_matches(id, &identity) {
             return Err(brand_storage_scope_changed());
         }
         Ok((directory, identity))
     }
 
-    fn named_pack_identity_matches(&self, id: &str, expected: &Handle) -> bool {
+    fn named_pack_identity_matches(&self, id: &str, expected: &DirectoryIdentity) -> bool {
         self.brands
             .symlink_metadata(id)
             .ok()
             .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
             .and_then(|_| self.brands.open_dir(id).ok())
             .and_then(|directory| {
-                cap_directory_identity(&directory, "brand_storage_scope_invalid").ok()
+                directory_identity_snapshot(&directory, "brand_storage_scope_invalid").ok()
             })
             .as_ref()
             == Some(expected)
@@ -1439,9 +1439,61 @@ fn write_private_file_at(directory: &Dir, relative: &Path, bytes: &[u8]) -> Bran
 struct StagedBrandDirectory<'a> {
     parent: &'a Dir,
     name: OsString,
-    directory: Dir,
-    identity: Handle,
+    directory: Option<Dir>,
+    identity: DirectoryIdentity,
     active: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DirectoryIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume_serial_number: u32,
+    #[cfg(windows)]
+    file_index: u64,
+}
+
+fn directory_identity_snapshot(
+    directory: &Dir,
+    code: &'static str,
+) -> BrandResult<DirectoryIdentity> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+
+        let metadata = directory
+            .dir_metadata()
+            .map_err(|error| io_error(code, error))?;
+        Ok(DirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::mem::MaybeUninit;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if unsafe {
+            GetFileInformationByHandle(directory.as_raw_handle(), information.as_mut_ptr())
+        } == 0
+        {
+            return Err(io_error(code, std::io::Error::last_os_error()));
+        }
+        let information = unsafe { information.assume_init() };
+        Ok(DirectoryIdentity {
+            volume_serial_number: information.dwVolumeSerialNumber,
+            file_index: ((information.nFileIndexHigh as u64) << 32)
+                | information.nFileIndexLow as u64,
+        })
+    }
 }
 
 impl<'a> StagedBrandDirectory<'a> {
@@ -1463,11 +1515,11 @@ impl<'a> StagedBrandDirectory<'a> {
                             )
                             .map_err(|error| io_error("brand_storage_failed", error))?;
                     }
-                    let identity = cap_directory_identity(&directory, "brand_storage_failed")?;
+                    let identity = directory_identity_snapshot(&directory, "brand_storage_failed")?;
                     return Ok(Self {
                         parent,
                         name,
-                        directory,
+                        directory: Some(directory),
                         identity,
                         active: true,
                     });
@@ -1482,13 +1534,29 @@ impl<'a> StagedBrandDirectory<'a> {
         ))
     }
 
+    fn directory(&self) -> BrandResult<&Dir> {
+        self.directory
+            .as_ref()
+            .ok_or_else(brand_storage_scope_changed)
+    }
+
     fn named_identity_matches(&self) -> bool {
         self.parent
             .open_dir(&self.name)
             .ok()
-            .and_then(|directory| cap_directory_identity(&directory, "brand_storage_failed").ok())
+            .and_then(|directory| {
+                directory_identity_snapshot(&directory, "brand_storage_failed").ok()
+            })
             .as_ref()
             == Some(&self.identity)
+    }
+
+    fn close_for_commit(&mut self) -> BrandResult<()> {
+        if self.directory.is_none() || !self.named_identity_matches() {
+            return Err(brand_storage_scope_changed());
+        }
+        drop(self.directory.take());
+        Ok(())
     }
 
     fn disarm(&mut self) {
@@ -1498,7 +1566,11 @@ impl<'a> StagedBrandDirectory<'a> {
 
 impl Drop for StagedBrandDirectory<'_> {
     fn drop(&mut self) {
-        if self.active {
+        if !self.active {
+            return;
+        }
+        drop(self.directory.take());
+        if self.named_identity_matches() {
             let _ = self.parent.remove_dir_all(&self.name);
         }
     }
@@ -1596,10 +1668,14 @@ fn import_brand_pack_at_with_commit_hook(
     }
     enforce_storage_quota(&scope, new_pack_bytes, None)?;
     let mut staging = StagedBrandDirectory::new(&scope.brands, &request.manifest.id)?;
-    write_private_file_at(&staging.directory, Path::new("brand.yaml"), &manifest_bytes)?;
+    write_private_file_at(
+        staging.directory()?,
+        Path::new("brand.yaml"),
+        &manifest_bytes,
+    )?;
     for asset in &request.assets {
         write_private_file_at(
-            &staging.directory,
+            staging.directory()?,
             Path::new(&asset.path),
             &asset.sanitized_bytes,
         )?;
@@ -1617,15 +1693,16 @@ fn import_brand_pack_at_with_commit_hook(
         Err(error) => return Err(io_error("brand_storage_failed", error)),
     }
     enforce_storage_quota(&scope, new_pack_bytes, Some(&staging.name))?;
+    staging.close_for_commit()?;
     scope
         .brands
         .rename(&staging.name, &scope.brands, &request.manifest.id)
         .map_err(|error| io_error("brand_storage_failed", error))?;
-    staging.disarm();
     scope.verify()?;
     if !scope.named_pack_identity_matches(&request.manifest.id, &staging.identity) {
         return Err(brand_storage_scope_changed());
     }
+    staging.disarm();
     let id = request.manifest.id.clone();
     let display_name = request.manifest.display_name.clone();
     locked.remove(&request.grant_token);
@@ -1947,7 +2024,7 @@ fn load_stored_pack_from_directory(
     scope: &BrandStorageScope,
     id: &str,
     directory: &Dir,
-    directory_identity: &Handle,
+    directory_identity: &DirectoryIdentity,
 ) -> BrandResult<StoredBrandPack> {
     let (bytes, _) =
         read_bounded_cap_file(directory, Path::new("brand.yaml"), "brand_storage_invalid")?;
@@ -3027,6 +3104,61 @@ mod tests {
     }
 
     #[test]
+    fn complete_custom_brand_import_publishes_after_closing_staging_handle() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        let expected_manifest = manifest();
+        let expected_logo = sources
+            .iter()
+            .find(|asset| asset.path == "logo.svg")
+            .unwrap()
+            .bytes
+            .clone();
+        let expected_mark = sources
+            .iter()
+            .find(|asset| asset.path == "mark.svg")
+            .unwrap()
+            .bytes
+            .clone();
+
+        let imported =
+            import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+
+        assert_eq!(imported.id, "acme");
+        assert_eq!(imported.display_name, "Acme Studio");
+        let storage = app_data.path().join("brands");
+        let published = storage.join("acme");
+        let stored_manifest: NativeBrandManifest =
+            serde_json::from_slice(&fs::read(published.join("brand.yaml")).unwrap()).unwrap();
+        assert_eq!(stored_manifest, expected_manifest);
+        assert_eq!(fs::read(published.join("logo.svg")).unwrap(), expected_logo);
+        assert_eq!(fs::read(published.join("mark.svg")).unwrap(), expected_mark);
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let (published_directory, published_identity) = scope.bind_pack("acme").unwrap();
+        assert_eq!(
+            directory_identity_snapshot(&published_directory, "brand_storage_scope_invalid")
+                .unwrap(),
+            published_identity
+        );
+        assert!(scope.named_pack_identity_matches("acme", &published_identity));
+        assert!(fs::read_dir(storage).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+    }
+
+    #[test]
     fn list_retains_inactive_valid_packs_and_reports_corrupt_entries_without_hiding_valid_ones() {
         let (_source, path) = source_pack();
         let app_data = tempfile::tempdir().unwrap();
@@ -3540,18 +3672,30 @@ mod tests {
         )
         .unwrap();
         let parked = source.path().with_extension("parked");
-        fs::rename(source.path(), &parked).unwrap();
-        fs::create_dir(source.path()).unwrap();
-        assert_eq!(
-            import_brand_pack_at(
+        let replaced = replace_directory_name_for_test(source.path(), &parked);
+        if replaced {
+            fs::create_dir(source.path()).unwrap();
+            assert_eq!(
+                import_brand_pack_at(
+                    app_data.path(),
+                    request(&replacement, &replacement_sources),
+                    &replacement_grants,
+                )
+                .unwrap_err()
+                .code,
+                "brand_source_changed"
+            );
+        } else {
+            assert!(cfg!(windows));
+            let imported = import_brand_pack_at(
                 app_data.path(),
                 request(&replacement, &replacement_sources),
                 &replacement_grants,
             )
-            .unwrap_err()
-            .code,
-            "brand_source_changed"
-        );
+            .unwrap();
+            assert_eq!(imported.id, "acme");
+            assert!(!parked.exists());
+        }
     }
 
     #[test]
