@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 import { inspectGitPair, inspectGitRepository, loadGitCommit } from '$src/lib/git/git-api'
-import type { GitInspection, GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
+import type { GitInspection, GitPairPaths, GitPairSnapshot, GitRepository } from '$src/lib/git/types'
 import { emptyGitInspection } from '$src/lib/git/types'
 import type { GitNativeBridge } from '$src/lib/native/types'
 
@@ -39,6 +39,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
   activeControllerId = controllerId
   resetGitState()
   let generation = 0
+  let publicationGeneration = 0
   let previewGeneration = 0
   let nativeRequestGeneration = 0
   let disposed = false
@@ -47,52 +48,71 @@ export function createGitInspectionController(native: GitNativeBridge) {
   let disposePromise: Promise<void> | null = null
   let sessionAttempt: HistorySessionAttempt | null = null
   let activeSession: HistorySession | null = null
+  let activeWorkspaceId: string | null = null
+  let activeRepository: GitRepository | null | undefined
+  let workspaceBarrier: Promise<void> = Promise.resolve()
+  let workspaceActivation: Promise<void> = Promise.resolve()
 
   function ownsPublication(): boolean {
     return !disposed && activeControllerId === controllerId
   }
 
-  function publicationIsCurrent(request: number): boolean {
-    return request === generation && ownsPublication()
+  function publicationIsCurrent(workspaceGeneration: number, request: number): boolean {
+    return workspaceGeneration === generation && request === publicationGeneration && ownsPublication()
   }
 
   async function publishRepository(): Promise<void> {
-    const request = ++generation
+    const workspaceGeneration = ++generation
+    const request = ++publicationGeneration
     previewGeneration += 1
+    activeWorkspaceId = null
+    activeRepository = undefined
     const previousToken = activeToken
     const previousVersionToken = activeVersionToken
     activeToken = null
     activeVersionToken = null
     if (ownsPublication()) setGitLoading(emptyGitInspection)
     await Promise.all([revoke(previousToken), revokeVersion(previousVersionToken)])
-    if (!publicationIsCurrent(request)) return
+    if (!publicationIsCurrent(workspaceGeneration, request)) return
     try {
       const inspection = await inspectGitRepository(native)
-      if (!publicationIsCurrent(request)) return
+      if (!publicationIsCurrent(workspaceGeneration, request)) return
+      activeRepository = inspection.repository
       setGitInspection(inspection)
     } catch (error: unknown) {
-      if (publicationIsCurrent(request)) {
+      if (publicationIsCurrent(workspaceGeneration, request)) {
         setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
       }
     }
   }
 
-  async function publishPair(pair: GitPairPaths): Promise<void> {
-    const request = ++generation
+  async function publishPair(pair: GitPairPaths, expectedWorkspaceId?: string): Promise<void> {
+    if (expectedWorkspaceId !== undefined && expectedWorkspaceId !== activeWorkspaceId) return
+    const workspaceGeneration = activeWorkspaceId === null ? ++generation : generation
+    const request = ++publicationGeneration
     previewGeneration += 1
     const previousToken = activeToken
     const previousVersionToken = activeVersionToken
     activeToken = null
     activeVersionToken = null
-    if (ownsPublication()) setGitLoading(emptyGitInspection)
+    const seeded = activeRepository
+    if (ownsPublication()) setGitLoading(inspectionForRepository(seeded ?? null))
     await Promise.all([revoke(previousToken), revokeVersion(previousVersionToken)])
-    if (!publicationIsCurrent(request)) return
+    await workspaceBarrier
+    if (
+      !publicationIsCurrent(workspaceGeneration, request) ||
+      (expectedWorkspaceId !== undefined && expectedWorkspaceId !== activeWorkspaceId)
+    )
+      return
     try {
-      const inspection = await loadPairInspection(pair, request, () => publicationIsCurrent(request), 1)
+      const isCurrent = () =>
+        publicationIsCurrent(workspaceGeneration, request) &&
+        (expectedWorkspaceId === undefined || expectedWorkspaceId === activeWorkspaceId)
+      const inspection = await loadPairInspection(pair, workspaceGeneration, isCurrent, 1, seeded)
       if (!inspection) return
       const token = inspection.historyAuthorizationToken ?? null
       const versionToken = inspection.diff.authorizationToken ?? null
-      if (!publicationIsCurrent(request)) {
+      if (!isCurrent()) {
         await revoke(token)
         await revokeVersion(versionToken)
         return
@@ -102,7 +122,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
       setGitInspection(inspection)
     } catch (error: unknown) {
       if (error instanceof InactiveGitControllerError) return
-      if (publicationIsCurrent(request)) {
+      if (publicationIsCurrent(workspaceGeneration, request)) {
         setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
       }
     }
@@ -113,19 +133,25 @@ export function createGitInspectionController(native: GitNativeBridge) {
     request: number,
     isCurrent: () => boolean,
     contextRetries: number,
+    seededRepository: GitRepository | null | undefined = activeRepository,
   ): Promise<GitInspection | null> {
     let session: HistorySession | null = null
     let token: string | null = null
     let versionToken: string | null = null
     let nativeRequest = 0
     try {
-      const inspection = await inspectGitPair(native, pair, async () => {
-        if (!isCurrent()) throw new InactiveGitControllerError()
-        session = await acquireHistorySession()
-        if (!isCurrent()) throw new InactiveGitControllerError()
-        nativeRequest = ++nativeRequestGeneration
-        return { controllerEpoch: session.epoch, requestGeneration: nativeRequest }
-      })
+      const inspection = await inspectGitPair(
+        native,
+        pair,
+        async () => {
+          if (!isCurrent()) throw new InactiveGitControllerError()
+          session = await acquireHistorySession()
+          if (!isCurrent()) throw new InactiveGitControllerError()
+          nativeRequest = ++nativeRequestGeneration
+          return { controllerEpoch: session.epoch, requestGeneration: nativeRequest }
+        },
+        seededRepository,
+      )
       token = inspection.historyAuthorizationToken ?? null
       versionToken = inspection.diff.authorizationToken ?? null
       if (!isCurrent()) {
@@ -157,7 +183,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
       if (isContextChanged(error) && contextRetries > 0) {
         if (session) await retireHistorySession(session)
         if (!isCurrent()) return null
-        return loadPairInspection(pair, request, isCurrent, contextRetries - 1)
+        return loadPairInspection(pair, request, isCurrent, contextRetries - 1, seededRepository)
       }
       throw error
     }
@@ -201,6 +227,13 @@ export function createGitInspectionController(native: GitNativeBridge) {
     return retireSessionAttempt(session.attempt)
   }
 
+  function retireCurrentHistorySession(): Promise<void> {
+    const attempt = activeSession?.attempt ?? sessionAttempt
+    activeSession = null
+    sessionAttempt = null
+    return attempt ? retireSessionAttempt(attempt) : Promise.resolve()
+  }
+
   function previewIsCurrent(request: number, inspectionGeneration: number, root: string, pair: GitPairPaths): boolean {
     if (request !== previewGeneration || inspectionGeneration !== generation || !ownsPublication()) return false
     const current = $gitState.get().inspection
@@ -217,7 +250,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
     const session = activeSession
     if (session) await retireHistorySession(session)
     if (!isCurrent()) return null
-    const inspection = await loadPairInspection(pair, inspectionGeneration, isCurrent, 1)
+    const inspection = await loadPairInspection(pair, inspectionGeneration, isCurrent, 1, activeRepository)
     if (!inspection) return null
     const token = inspection.historyAuthorizationToken ?? null
     const versionToken = inspection.diff.authorizationToken ?? null
@@ -261,13 +294,57 @@ export function createGitInspectionController(native: GitNativeBridge) {
   }
 
   return {
+    activateWorkspace(workspaceId: string, repository: GitRepository | null): Promise<void> {
+      if (
+        activeWorkspaceId === workspaceId &&
+        activeRepository !== undefined &&
+        sameRepository(activeRepository, repository)
+      ) {
+        return workspaceActivation
+      }
+      const workspaceGeneration = ++generation
+      const request = ++publicationGeneration
+      previewGeneration += 1
+      const previousToken = activeToken
+      const previousVersionToken = activeVersionToken
+      activeToken = null
+      activeVersionToken = null
+      activeWorkspaceId = workspaceId
+      activeRepository = repository
+      if (ownsPublication()) setGitLoading(inspectionForRepository(repository))
+      const barrier = Promise.all([
+        revoke(previousToken),
+        revokeVersion(previousVersionToken),
+        retireCurrentHistorySession(),
+      ]).then(() => undefined)
+      workspaceBarrier = barrier
+      workspaceActivation = barrier.then(async () => {
+        if (!publicationIsCurrent(workspaceGeneration, request)) return
+        if (!repository) {
+          setGitInspection(emptyGitInspection)
+          return
+        }
+        try {
+          const inspection = await inspectGitRepository(native, repository)
+          if (publicationIsCurrent(workspaceGeneration, request)) setGitInspection(inspection)
+        } catch (error: unknown) {
+          if (publicationIsCurrent(workspaceGeneration, request)) {
+            setGitError(error instanceof Error ? error.message : 'Local Git inspection failed.')
+          }
+        }
+      })
+      return workspaceActivation
+    },
     reset(): void {
       const token = activeToken
       const versionToken = activeVersionToken
       activeToken = null
       activeVersionToken = null
       generation += 1
+      publicationGeneration += 1
       previewGeneration += 1
+      activeWorkspaceId = null
+      activeRepository = undefined
       if (ownsPublication()) resetGitState()
       void revoke(token)
       void revokeVersion(versionToken)
@@ -275,8 +352,8 @@ export function createGitInspectionController(native: GitNativeBridge) {
     refreshRepository(): Promise<void> {
       return publishRepository()
     },
-    refreshPair(pair: GitPairPaths): Promise<void> {
-      return publishPair(pair)
+    refreshPair(pair: GitPairPaths, workspaceId?: string): Promise<void> {
+      return publishPair(pair, workspaceId)
     },
     async loadCommit(oid: string, pair: GitPairPaths): Promise<GitPairSnapshot | null> {
       if (!ownsPublication()) return Promise.reject(new Error('The Git inspection controller is no longer active.'))
@@ -311,6 +388,7 @@ export function createGitInspectionController(native: GitNativeBridge) {
       if (disposePromise) return disposePromise
       disposed = true
       generation += 1
+      publicationGeneration += 1
       previewGeneration += 1
       const token = activeToken
       const versionToken = activeVersionToken
@@ -366,23 +444,42 @@ function isPreviewAuthorityLoss(error: unknown): boolean {
 
 export interface GitLifecycleController {
   reset(): void
+  activateWorkspace(workspaceId: string, repository: GitRepository | null): Promise<void>
   refreshRepository(): Promise<void>
-  refreshPair(pair: GitPairPaths): Promise<void>
+  refreshPair(pair: GitPairPaths, workspaceId?: string): Promise<void>
 }
 
 export function synchronizeGitLifecycle(
   controller: GitLifecycleController,
-  context: { readonly workspaceId: string | null; readonly pair: GitPairPaths | null },
+  context: {
+    readonly workspaceId: string | null
+    readonly repository?: GitRepository | null
+    readonly pair: GitPairPaths | null
+  },
 ): Promise<void> {
   if (!context.workspaceId) {
     controller.reset()
     return Promise.resolve()
   }
-  return context.pair ? controller.refreshPair(context.pair) : controller.refreshRepository()
+  if (context.repository === undefined) {
+    return context.pair ? controller.refreshPair(context.pair) : controller.refreshRepository()
+  }
+  const activation = controller.activateWorkspace(context.workspaceId, context.repository)
+  if (!context.pair) return activation
+  const pair = controller.refreshPair(context.pair, context.workspaceId)
+  return Promise.all([activation, pair]).then(() => undefined)
 }
 
 function samePair(left: GitPairPaths | null | undefined, right: GitPairPaths): boolean {
   return left?.definitionPath === right.definitionPath && left.companionPath === right.companionPath
+}
+
+function sameRepository(left: GitRepository | null, right: GitRepository | null): boolean {
+  return left?.root === right?.root && left?.branch === right?.branch && left?.detachedHead === right?.detachedHead
+}
+
+function inspectionForRepository(repository: GitRepository | null): GitInspection {
+  return repository ? { ...emptyGitInspection, repository } : emptyGitInspection
 }
 
 function freezeInspection(inspection: GitInspection): GitInspection {

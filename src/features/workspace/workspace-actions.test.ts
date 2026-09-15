@@ -129,7 +129,7 @@ function createNative(): WorkspaceActionsNative {
     chooseWorkspaceFolder: vi.fn(async () => '/selected'),
     chooseImportDefinition: vi.fn(async () => '/outside/import.yaml'),
     chooseExportDirectory: vi.fn(async () => '/exports'),
-    workspaceSetRoot: vi.fn(async (rootPath) => ({ workspaceId: 'workspace', rootPath })),
+    workspaceSetRoot: vi.fn(async (rootPath) => ({ workspaceId: 'workspace', rootPath, repository: null })),
     workspaceScan: vi.fn(async () => [...disk.keys()].map(entry)),
     workspaceRead: vi.fn(async (relativePath) => {
       const text = disk.get(relativePath)
@@ -386,17 +386,17 @@ describe('workspace actions', () => {
   })
 
   it('serializes root changes so the latest open request wins after an older native call resolves', async () => {
-    let releaseSlow: ((value: { workspaceId: string; rootPath: string }) => void) | undefined
+    let releaseSlow: ((value: { workspaceId: string; rootPath: string; repository: null }) => void) | undefined
     vi.mocked(native.workspaceSetRoot).mockImplementation((rootPath) =>
       rootPath === '/slow'
         ? new Promise((resolve) => (releaseSlow = resolve))
-        : Promise.resolve({ workspaceId: 'fast', rootPath }),
+        : Promise.resolve({ workspaceId: 'fast', rootPath, repository: null }),
     )
     const api = actions()
     const slow = api.openWorkspace('/slow')
     await vi.waitFor(() => expect(native.workspaceSetRoot).toHaveBeenCalledWith('/slow'))
     const fast = api.openWorkspace('/fast')
-    releaseSlow?.({ workspaceId: 'slow', rootPath: '/slow' })
+    releaseSlow?.({ workspaceId: 'slow', rootPath: '/slow', repository: null })
 
     await expect(slow).resolves.toBeNull()
     await expect(fast).resolves.toMatchObject({ workspaceId: 'fast', rootPath: '/fast' })
@@ -419,7 +419,7 @@ describe('workspace actions', () => {
     )
     vi.mocked(native.workspaceSetRoot).mockImplementation(async (rootPath) => {
       if (rootPath === '/new') expect(activationReleased).toBe(true)
-      return { workspaceId: rootPath.slice(1), rootPath }
+      return { workspaceId: rootPath.slice(1), rootPath, repository: null }
     })
     const api = actions()
     const old = api.handleExternalPath('/old/flow.yaml', {

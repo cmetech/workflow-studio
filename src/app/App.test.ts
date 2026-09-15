@@ -31,7 +31,7 @@ import {
 } from '$src/stores/documents'
 import { $activeLayout as activeLayoutStore, clearActiveLayout, setActiveLayout } from '$src/stores/layout'
 import { $canvasSelection, setCanvasSelection } from '$src/stores/canvas'
-import { resetGitState } from '$src/stores/git'
+import { gitState, resetGitState } from '$src/stores/git'
 import { resetDocumentationSession } from '$src/stores/documentation'
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import archonFixtureText from '../../tests/fixtures/contracts/minimal-archon-v1.json?raw'
@@ -2227,6 +2227,29 @@ nodes:
     const callsBeforeMetadataChange = gitStatus.mock.calls.length
     await notifyGitChanged!({ paths: ['index', 'HEAD'], kind: 'modify' })
     await waitFor(() => expect(gitStatus.mock.calls.length).toBeGreaterThan(callsBeforeMetadataChange))
+  })
+
+  it('seeds Git from folder activation without a renderer repository detection', async () => {
+    const repository = { root: '/repo', branch: 'main', detachedHead: null }
+    const gitDetect = vi.fn(async () => repository)
+    const gitStatus = vi.fn(async () => ({ entries: [] }))
+    setNativeBridgeForTest({
+      workspaceSetRoot: async (rootPath) => ({ workspaceId: 'selected', rootPath, repository }),
+      workspaceScan: async () => [],
+      gitDetect,
+      gitStatus,
+    })
+    render(App)
+    await waitForSetupReady()
+
+    await fireEvent.click(
+      within(screen.getByRole('region', { name: 'Welcome' })).getByRole('button', { name: 'Open Folder' }),
+    )
+
+    await waitFor(() => expect(gitStatus).toHaveBeenCalledTimes(1))
+    expect(gitStatus).toHaveBeenCalledWith('/repo')
+    expect(gitDetect).not.toHaveBeenCalled()
+    expect(gitState.get().inspection.repository).toEqual(repository)
   })
 
   it('uses an accessible button group to select the editor mode', async () => {

@@ -96,6 +96,7 @@ export interface WorkspaceActionsDependencies {
   readonly companionCreated: (definitionPath: string, companionPath: string) => Promise<void>
   readonly companionRemoved: (companionPath: string) => Promise<void>
   readonly recoverDraft: (pair: WorkflowPairText) => Promise<void>
+  readonly workspaceSelected?: (selected: WorkspaceRootInfo) => void
   readonly now?: () => string
 }
 
@@ -151,6 +152,7 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       clearWorkspace()
       const selected = await dependencies.native.workspaceSetRoot(rootPath)
       if (generation !== rootGeneration) return
+      dependencies.workspaceSelected?.(selected)
       const files = await dependencies.native.workspaceScan()
       if (generation !== rootGeneration) return
       loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files, selected.rootPath)

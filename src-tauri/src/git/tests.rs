@@ -2826,9 +2826,37 @@ fn reports_no_repository_and_detached_head_without_mutating_working_state() {
     commit_all(root, "initial");
     git(root, &["checkout", "--detach"]);
 
+    super::runner::reset_read_probe_count_for_test();
     let repository = detect_repository(root).unwrap().expect("repository");
     assert!(repository.branch.is_none());
     assert_eq!(repository.detached_head.as_deref().map(str::len), Some(12));
+    assert_eq!(super::runner::read_probe_count_for_test(), 2);
+}
+
+#[test]
+fn repository_metadata_discovery_uses_one_attached_head_probe() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: attached\n").unwrap();
+    commit_all(root, "initial");
+
+    super::runner::reset_read_probe_count_for_test();
+    let metadata = super::detect_repository_metadata(root)
+        .unwrap()
+        .expect("repository metadata");
+
+    assert_eq!(super::runner::read_probe_count_for_test(), 1);
+    assert_eq!(
+        metadata.worktree_dir,
+        root.join(".git").canonicalize().unwrap()
+    );
+    assert_eq!(
+        metadata.common_dir,
+        root.join(".git").canonicalize().unwrap()
+    );
 }
 
 #[test]
@@ -2860,8 +2888,10 @@ fn treats_an_initialized_repository_without_commits_as_empty_history() {
     let root = directory.path();
     git(root, &["init", "-b", "main"]);
 
+    super::runner::reset_read_probe_count_for_test();
     let repository = detect_repository(root).unwrap().expect("repository");
     assert_eq!(repository.branch.as_deref(), Some("main"));
+    assert_eq!(super::runner::read_probe_count_for_test(), 1);
     assert!(history_pair(root, "flow.yaml", None).unwrap().is_empty());
 }
 
@@ -3247,18 +3277,16 @@ fn maps_every_closed_git_operation_to_exact_argv() {
     assert_read_argv(root, ReadOperation::Version, &["--version"]);
     assert_read_argv(
         root,
-        ReadOperation::RepositoryRoot,
-        &["rev-parse", "--show-toplevel"],
-    );
-    assert_read_argv(
-        root,
-        ReadOperation::GitDirectory,
-        &["rev-parse", "--absolute-git-dir"],
-    );
-    assert_read_argv(
-        root,
-        ReadOperation::GitCommonDirectory,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ReadOperation::RepositoryContext,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref=strict",
+            "HEAD",
+        ],
     );
     assert_read_argv(
         root,

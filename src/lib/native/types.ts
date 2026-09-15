@@ -38,6 +38,7 @@ export type PublicPath = string
 export interface WorkspaceRootInfo {
   readonly workspaceId: string
   readonly rootPath: PublicPath
+  readonly repository: GitRepository | null
 }
 
 export interface StartupPath {

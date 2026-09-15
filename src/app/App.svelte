@@ -162,7 +162,7 @@
   import UpdateOverlay from '$src/features/updates/UpdateOverlay.svelte'
   import { createUpdateController } from '$src/lib/updates/update-api'
   import type { UpdateState } from '$src/lib/updates/types'
-  import type { HostInfo } from '$src/lib/native/types'
+  import type { HostInfo, WorkspaceRootInfo } from '$src/lib/native/types'
   import { publishUpdateState } from '$src/stores/updates'
   import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
   import {
@@ -286,6 +286,7 @@
   const brandState = brandController.state
   const gitController = createGitInspectionController(native)
   let gitLifecycleIdentity = ''
+  let selectedWorkspace = $state.raw<WorkspaceRootInfo | null>(null)
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
@@ -540,6 +541,9 @@
     companionRemoved: (companionPath) => documentWorkspace.companionRemoved(companionPath),
     recoverDraft: async (pair) => {
       await recoveryStore.save(createRecoveryDraft(pair, new Date().toISOString()))
+    },
+    workspaceSelected: (selected) => {
+      selectedWorkspace = selected
     },
   })
 
@@ -1870,12 +1874,8 @@
   async function openWorkspace(rootPath?: string): Promise<void> {
     explorerCatalogOperation = { phase: 'loading' }
     try {
-      const selected = await actions.openWorkspace(rootPath)
+      await actions.openWorkspace(rootPath)
       explorerCatalogOperation = { phase: 'ready' }
-      if (selected) {
-        gitController.reset()
-        void refreshGitRepository()
-      }
       await refreshRecent()
     } catch (error: unknown) {
       explorerCatalogOperation = {
@@ -1889,8 +1889,12 @@
   async function initializeGitRepository(): Promise<void> {
     const rootPath = workspace.get().rootPath
     if (!rootPath) throw new Error('Select a workspace before initializing Git.')
-    await native.gitInit(rootPath)
-    await refreshGit()
+    const repository = await native.gitInit(rootPath)
+    if (selectedWorkspace?.workspaceId === workspace.get().id) {
+      selectedWorkspace = { ...selectedWorkspace, repository }
+    } else {
+      await refreshGit()
+    }
   }
 
   async function setRepositoryIdentity(identity: { userName: string; userEmail: string }): Promise<void> {
@@ -1947,11 +1951,13 @@
 
   async function refreshGit(): Promise<void> {
     const pair = activeGitPair()
-    await synchronizeGitLifecycle(gitController, { workspaceId: workspace.get().id, pair })
-  }
-
-  async function refreshGitRepository(): Promise<void> {
-    await gitController.refreshRepository()
+    const workspaceId = workspace.get().id
+    if (!workspaceId) {
+      gitController.reset()
+      return
+    }
+    if (pair) await gitController.refreshPair(pair, workspaceId)
+    else await gitController.refreshRepository()
   }
 
   function loadHistoricalGitPair(oid: string): Promise<GitPairSnapshot> {
@@ -1986,8 +1992,6 @@
 
   async function handleExternalWorkspacePath(path: string): Promise<void> {
     await actions.handleExternalPath(path)
-    gitController.reset()
-    void refreshGit()
   }
 
   async function activeContractFor(entry: WorkflowPairEntry): Promise<AuthoringContract | undefined> {
@@ -2254,11 +2258,14 @@
   $effect(() => {
     const pair = $documentSessionStore.pair
     const workspaceId = $workspace.id
-    const identity = `${workspaceId ?? ''}\0${pair?.definition.path ?? ''}\0${pair?.companion?.path ?? ''}`
+    if (workspaceId && selectedWorkspace && selectedWorkspace.workspaceId !== workspaceId) return
+    const repository = selectedWorkspace?.workspaceId === workspaceId ? selectedWorkspace.repository : undefined
+    const identity = `${workspaceId ?? ''}\0${repository === undefined ? 'legacy' : (repository?.root ?? 'none')}\0${repository?.branch ?? ''}\0${repository?.detachedHead ?? ''}\0${pair?.definition.path ?? ''}\0${pair?.companion?.path ?? ''}`
     if (identity === gitLifecycleIdentity) return
     gitLifecycleIdentity = identity
     void synchronizeGitLifecycle(gitController, {
       workspaceId,
+      ...(repository === undefined ? {} : { repository }),
       pair: pair ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null } : null,
     })
   })
@@ -2632,8 +2639,6 @@
       if (disposed) return
       try {
         await actions.handleStartupPaths()
-        if (activeGitPair()) void refreshGit()
-        else if ($workspace.id) void refreshGitRepository()
       } catch (error: unknown) {
         workspaceError = error instanceof Error ? error.message : 'The startup workflow could not be opened.'
       }

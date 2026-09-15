@@ -7,6 +7,11 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    static READ_PROBE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
@@ -38,9 +43,7 @@ const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) enum ReadOperation<'a> {
     Version,
-    RepositoryRoot,
-    GitDirectory,
-    GitCommonDirectory,
+    RepositoryContext,
     Branch,
     HeadReference,
     ShortHead,
@@ -149,7 +152,19 @@ impl CommandOutput {
 }
 
 pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<CommandOutput> {
+    #[cfg(test)]
+    READ_PROBE_COUNT.with(|count| count.set(count.get() + 1));
     run_command(build_read_command(root, operation)?, READ_TIMEOUT, None)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_read_probe_count_for_test() {
+    READ_PROBE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn read_probe_count_for_test() -> usize {
+    READ_PROBE_COUNT.with(std::cell::Cell::get)
 }
 
 pub(crate) fn run_mutation(
@@ -574,11 +589,15 @@ pub(crate) fn mutation_command_with_index_for_test(
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::Version => strings(&["--version"]),
-        ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
-        ReadOperation::GitDirectory => strings(&["rev-parse", "--absolute-git-dir"]),
-        ReadOperation::GitCommonDirectory => {
-            strings(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        }
+        ReadOperation::RepositoryContext => strings(&[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref=strict",
+            "HEAD",
+        ]),
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
         ReadOperation::HeadReference => strings(&["symbolic-ref", "--quiet", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
