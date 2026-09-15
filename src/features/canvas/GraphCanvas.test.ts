@@ -35,8 +35,8 @@ describe('deferTransientNodePositionUpdates', () => {
   function fixture() {
     const root = document.createElement('div')
     root.innerHTML = `
-      <div class="svelte-flow__node" data-id="parent"></div>
-      <div class="svelte-flow__node" data-id="child"></div>
+      <div class="svelte-flow__node" data-id="first" style="transform: translate(7px, 8px)"></div>
+      <div class="svelte-flow__node dragging" data-id="second" style="transform: scale(0.9)"></div>
       <div class="svelte-flow__node" data-id="other"></div>
     `
     const original = vi.fn()
@@ -44,66 +44,127 @@ describe('deferTransientNodePositionUpdates', () => {
     return { root, original, store }
   }
 
-  it('applies only dragged absolute positions locally and delegates one durable synchronization at stop', () => {
+  it('applies already-computed absolute positions locally and delegates one durable synchronization at stop', () => {
     const { root, original, store } = fixture()
-    const restore = deferTransientNodePositionUpdates(store)
+    const transientUpdates = deferTransientNodePositionUpdates(store)
     const dragItems = new Map([
       [
-        'parent',
+        'first',
         {
-          id: 'parent',
+          id: 'first',
           position: { x: 10, y: 20 },
           internals: { positionAbsolute: { x: 110, y: 120 } },
         },
       ],
       [
-        'child',
+        'second',
         {
-          id: 'child',
-          parentId: 'parent',
+          id: 'second',
           position: { x: 30, y: 40 },
           internals: { positionAbsolute: { x: 140, y: 160 } },
         },
       ],
     ])
 
+    transientUpdates.begin()
     store.updateNodePositions(dragItems, true)
 
     expect(original).not.toHaveBeenCalled()
-    expect(root.querySelector<HTMLElement>('[data-id="parent"]')?.style.transform).toBe('translate(110px, 120px)')
-    expect(root.querySelector<HTMLElement>('[data-id="child"]')?.style.transform).toBe('translate(140px, 160px)')
+    expect(root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(110px, 120px)')
+    expect(root.querySelector<HTMLElement>('[data-id="second"]')?.style.transform).toBe('translate(140px, 160px)')
     expect(root.querySelector<HTMLElement>('[data-id="other"]')?.style.transform).toBe('')
-    expect(root.querySelector('[data-id="parent"]')).toHaveClass('dragging')
-    expect(root.querySelector('[data-id="child"]')).toHaveClass('dragging')
+    expect(root.querySelector('[data-id="first"]')).toHaveClass('dragging')
+    expect(root.querySelector('[data-id="second"]')).toHaveClass('dragging')
 
     store.updateNodePositions(dragItems, false)
 
     expect(original).toHaveBeenCalledOnce()
     expect(original).toHaveBeenCalledWith(dragItems, false)
-    restore()
+    transientUpdates.destroy()
+    expect(store.updateNodePositions).toBe(original)
+  })
+
+  it('matches Svelte Flow cancellation ordering and restores every touched element exactly', () => {
+    const { root, original, store } = fixture()
+    const transientUpdates = deferTransientNodePositionUpdates(store)
+    const first = root.querySelector<HTMLElement>('[data-id="first"]')!
+    const second = root.querySelector<HTMLElement>('[data-id="second"]')!
+    const moved = new Map([
+      ['first', { internals: { positionAbsolute: { x: 110, y: 120 } } }],
+      ['second', { internals: { positionAbsolute: { x: 140, y: 160 } } }],
+    ])
+
+    transientUpdates.begin()
+    store.updateNodePositions(moved, true)
+    transientUpdates.cancel()
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
+
+    store.updateNodePositions(new Map([['first', { internals: { positionAbsolute: { x: 210, y: 220 } } }]]), true)
+    store.updateNodePositions(moved, false)
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
+    expect(original).not.toHaveBeenCalled()
+
+    transientUpdates.begin()
+    store.updateNodePositions(moved, true)
+    store.updateNodePositions(moved, false)
+
+    expect(original).toHaveBeenCalledOnce()
+    expect(original).toHaveBeenCalledWith(moved, false)
+    transientUpdates.destroy()
+  })
+
+  it('restores exact touched DOM state and the owned action during teardown', () => {
+    const { root, original, store } = fixture()
+    const transientUpdates = deferTransientNodePositionUpdates(store)
+    const first = root.querySelector<HTMLElement>('[data-id="first"]')!
+    const second = root.querySelector<HTMLElement>('[data-id="second"]')!
+
+    transientUpdates.begin()
+    store.updateNodePositions(
+      new Map([
+        ['first', { internals: { positionAbsolute: { x: 30, y: 40 } } }],
+        ['second', { internals: { positionAbsolute: { x: 50, y: 60 } } }],
+      ]),
+      true,
+    )
+    transientUpdates.destroy()
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
     expect(store.updateNodePositions).toBe(original)
   })
 
   it('isolates each canvas store and does not overwrite a later owner during teardown', () => {
     const first = fixture()
     const second = fixture()
-    const restoreFirst = deferTransientNodePositionUpdates(first.store)
-    const restoreSecond = deferTransientNodePositionUpdates(second.store)
+    const firstUpdates = deferTransientNodePositionUpdates(first.store)
+    const secondUpdates = deferTransientNodePositionUpdates(second.store)
     const firstWrapper = first.store.updateNodePositions
     const replacement = vi.fn()
     const dragItems = new Map([
-      ['parent', { id: 'parent', position: { x: 1, y: 2 }, internals: { positionAbsolute: { x: 3, y: 4 } } }],
+      ['first', { id: 'first', position: { x: 1, y: 2 }, internals: { positionAbsolute: { x: 3, y: 4 } } }],
     ])
 
+    firstUpdates.begin()
     first.store.updateNodePositions(dragItems, true)
 
-    expect(first.root.querySelector<HTMLElement>('[data-id="parent"]')?.style.transform).toBe('translate(3px, 4px)')
-    expect(second.root.querySelector<HTMLElement>('[data-id="parent"]')?.style.transform).toBe('')
+    expect(first.root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(3px, 4px)')
+    expect(second.root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(7px, 8px)')
     first.store.updateNodePositions = replacement
-    restoreFirst()
+    firstUpdates.destroy()
     expect(first.store.updateNodePositions).toBe(replacement)
     expect(second.store.updateNodePositions).not.toBe(firstWrapper)
-    restoreSecond()
+    secondUpdates.destroy()
     expect(second.store.updateNodePositions).toBe(second.original)
   })
 })
@@ -2175,7 +2236,20 @@ describe('GraphCanvas', () => {
       }),
     )
     expect(rendered.component.cancel()).toBe(true)
-    await fireEvent(canvas, new CustomEvent('workflowdragstop', { bubbles: true, detail: {} }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 175, y: 190 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 175, y: 190 } },
+      }),
+    )
     await vi.advanceTimersByTimeAsync(300)
 
     expect(publications).toEqual([])
@@ -2264,6 +2338,75 @@ describe('GraphCanvas', () => {
     expect(persistLayout).not.toHaveBeenCalled()
     unsubscribe()
   })
+
+  it.each(['workflow', 'generation', 'scope'] as const)(
+    'cancels a drag owned by the previous %s before its first move and accepts the next gesture',
+    async (change) => {
+      vi.useFakeTimers()
+      const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        layout,
+        workflowIdentity: 'workflow-a',
+        pairGeneration: 1,
+        onPersistLayout: persistLayout,
+      }
+      const rendered = renderCanvas(props)
+      let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await tick()
+      const publications: (typeof layout.nodePositions)[] = []
+      const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+      publications.length = 0
+
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+
+      const nextProjection: ProjectedGraph =
+        change === 'scope'
+          ? {
+              ...projection,
+              scope: {
+                ...projection.scope,
+                key: 'loop-group:refine',
+                kind: 'loop-group',
+                groupId: 'refine',
+              },
+            }
+          : projection
+      await rendered.rerender({
+        ...props,
+        projection: nextProjection,
+        workflowIdentity: change === 'workflow' ? 'workflow-b' : props.workflowIdentity,
+        pairGeneration: change === 'generation' ? 2 : props.pairGeneration,
+      })
+      await tick()
+      publications.length = 0
+
+      expect(rendered.component.cancel()).toBe(false)
+
+      canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 125, y: 150 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 125, y: 150 } },
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(300)
+
+      expect(publications).toEqual([{ collect: { x: 125, y: 150 }, review: { x: 320, y: 0 } }])
+      expect(persistLayout).toHaveBeenCalledOnce()
+      unsubscribe()
+    },
+  )
 
   it('keeps keyboard nudge as one immediate durable publication and one persistence write', async () => {
     vi.useFakeTimers()

@@ -704,20 +704,33 @@
   function handleDragStart(): void {
     if (!canAuthor()) return
     if (dragging) return
+    viewportController?.beginNodeDrag()
     dragging = true
-    pendingDrag = undefined
+    pendingDrag = {
+      workflowIdentity,
+      generation: pairGeneration,
+      scopeKey: projection.scope.key,
+      positions: [],
+    }
     routingActivation += 1
   }
 
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
-    if (!canAuthor() || !dragging) return
+    const pending = pendingDrag
+    if (
+      !canAuthor() ||
+      !dragging ||
+      !pending ||
+      pending.workflowIdentity !== workflowIdentity ||
+      pending.generation !== pairGeneration ||
+      pending.scopeKey !== projection.scope.key
+    )
+      return
     const positions = draggedPositions(detail)
     if (positions.length === 0) return
     pendingDrag = {
-      workflowIdentity,
-      generation: pairGeneration,
-      scopeKey: projection.scope.key,
+      ...pending,
       positions,
     }
   }
@@ -730,7 +743,8 @@
       pending?.workflowIdentity === workflowIdentity &&
       pending.generation === pairGeneration &&
       pending.scopeKey === projection.scope.key
-    const updates = pendingIsCurrent && stopped.length > 0 ? stopped : pendingIsCurrent ? pending.positions : []
+    const updates =
+      pendingIsCurrent && pending.positions.length > 0 ? (stopped.length > 0 ? stopped : pending.positions) : []
     clearPendingDrag()
     if (!canAuthor()) return
     if (updates.length === 0) return
@@ -743,6 +757,7 @@
 
   function clearPendingDrag(): boolean {
     const active = dragging || pendingDrag !== undefined
+    if (active) viewportController?.cancelNodeDrag()
     dragging = false
     pendingDrag = undefined
     return active
