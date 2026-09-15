@@ -139,6 +139,7 @@ describe('Git inspection lifecycle', () => {
       activateWorkspace: vi.fn(async () => undefined),
       refreshRepository: vi.fn(async () => undefined),
       refreshPair: vi.fn(async () => undefined),
+      refreshWorkspaceMetadata: vi.fn(async () => undefined),
     }
     const repository = { root: '/repo', branch: 'main', detachedHead: null }
     await synchronizeGitLifecycle(controller, { workspaceId: null, repository: null, pair: null })
@@ -198,6 +199,75 @@ describe('Git inspection lifecycle', () => {
     expect(native.gitDiffPair).toHaveBeenCalledOnce()
     expect(native.gitHistoryPair).toHaveBeenCalledOnce()
     expect($gitState.get().inspection.repository).toEqual(repository)
+    expect($gitState.get().inspection.pair).toEqual(pair)
+  })
+
+  it('retires pair authority and publishes repository status when the same seeded workspace closes its pair', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitStatus).mockResolvedValue({
+      entries: [{ path: 'other.txt', index: ' ', worktree: 'M', untracked: false }],
+    })
+    const controller = createGitInspectionController(native)
+    const repository = { root: '/repo', branch: 'main', detachedHead: null }
+    const pair = { definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' }
+
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair })
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair: null })
+
+    expect(native.gitDetect).not.toHaveBeenCalled()
+    expect(native.gitStatus).toHaveBeenCalledTimes(2)
+    expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith('default-token')
+    expect(native.gitRevokeVersionAuthorization).toHaveBeenCalledWith('default-version-token')
+    expect(native.gitDisposeHistorySession).toHaveBeenCalledWith(1)
+    expect($gitState.get().inspection).toMatchObject({
+      repository,
+      pair: null,
+      status: { entries: [{ path: 'other.txt', index: ' ', worktree: 'M', untracked: false }] },
+      diff: { working: '', index: '', authorizationToken: '' },
+      history: [],
+      historyAuthorizationToken: null,
+    })
+  })
+
+  it('uses only the latest detected descriptor when Git metadata refreshes race', async () => {
+    const native = nativeFixture()
+    const controller = createGitInspectionController(native)
+    const initialRepository = { root: '/repo', branch: 'main', detachedHead: null }
+    const detachedRepository = { root: '/repo', branch: null, detachedHead: '123456789abc' }
+    const staleRepository = { root: '/stale-repo', branch: 'stale', detachedHead: null }
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+    const staleDetection = deferred<typeof staleRepository>()
+    vi.mocked(native.gitDetect).mockReturnValueOnce(staleDetection.promise).mockResolvedValueOnce(detachedRepository)
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository: initialRepository, pair })
+
+    const refreshMetadata = Reflect.get(controller, 'refreshWorkspaceMetadata') as
+      | undefined
+      | ((
+          workspaceId: string,
+          pairInput: { readonly definitionPath: string; readonly companionPath: string | null },
+        ) => Promise<unknown>)
+    expect(refreshMetadata).toBeTypeOf('function')
+    if (!refreshMetadata) return
+
+    const staleRefresh = refreshMetadata.call(controller, 'workspace', pair)
+    await vi.waitFor(() => expect(native.gitDetect).toHaveBeenCalledTimes(1))
+    await refreshMetadata.call(controller, 'workspace', pair)
+    staleDetection.resolve(staleRepository)
+    await staleRefresh
+
+    expect(native.gitDetect).toHaveBeenCalledTimes(2)
+    expect(native.gitStatus).toHaveBeenCalledTimes(2)
+    expect(native.gitDiffPair).toHaveBeenCalledTimes(2)
+    expect(native.gitHistoryPair).toHaveBeenCalledTimes(2)
+    expect(native.gitStatus).not.toHaveBeenCalledWith('/stale-repo')
+    expect(native.gitDiffPair).toHaveBeenLastCalledWith(
+      '/repo',
+      'flow.yaml',
+      null,
+      expect.any(Number),
+      expect.any(Number),
+    )
+    expect($gitState.get().inspection.repository).toEqual(detachedRepository)
     expect($gitState.get().inspection.pair).toEqual(pair)
   })
 

@@ -97,6 +97,7 @@ export interface WorkspaceActionsDependencies {
   readonly companionRemoved: (companionPath: string) => Promise<void>
   readonly recoverDraft: (pair: WorkflowPairText) => Promise<void>
   readonly workspaceSelected?: (selected: WorkspaceRootInfo) => void
+  readonly workspaceSelectionSettled?: (selected: WorkspaceRootInfo) => void
   readonly now?: () => string
 }
 
@@ -153,27 +154,31 @@ export function createWorkspaceActions(dependencies: WorkspaceActionsDependencie
       const selected = await dependencies.native.workspaceSetRoot(rootPath)
       if (generation !== rootGeneration) return
       dependencies.workspaceSelected?.(selected)
-      const files = await dependencies.native.workspaceScan()
-      if (generation !== rootGeneration) return
-      loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files, selected.rootPath)
-      if (relativePath) {
-        const entries = pairWorkflowFiles(selected.workspaceId, files)
-        const target = entries.find(
-          (candidate): candidate is WorkflowPairEntry =>
-            candidate.kind === 'workflow' &&
-            (candidate.definitionPath === relativePath || candidate.companionPath === relativePath),
-        )
-        if (target) {
-          if (generation !== rootGeneration) return
-          selectWorkspaceEntry(target.id)
-          await dependencies.activate(target)
-          if (generation !== rootGeneration) return
-        } else {
-          const orphan = entries.find(
-            (candidate) => candidate.kind === 'orphan-companion' && candidate.companionPath === relativePath,
+      try {
+        const files = await dependencies.native.workspaceScan()
+        if (generation !== rootGeneration) return
+        loadWorkspaceEntries(selected.workspaceId, fileName(selected.rootPath), files, selected.rootPath)
+        if (relativePath) {
+          const entries = pairWorkflowFiles(selected.workspaceId, files)
+          const target = entries.find(
+            (candidate): candidate is WorkflowPairEntry =>
+              candidate.kind === 'workflow' &&
+              (candidate.definitionPath === relativePath || candidate.companionPath === relativePath),
           )
-          if (orphan) selectWorkspaceEntry(orphan.id)
+          if (target) {
+            if (generation !== rootGeneration) return
+            selectWorkspaceEntry(target.id)
+            await dependencies.activate(target)
+            if (generation !== rootGeneration) return
+          } else {
+            const orphan = entries.find(
+              (candidate) => candidate.kind === 'orphan-companion' && candidate.companionPath === relativePath,
+            )
+            if (orphan) selectWorkspaceEntry(orphan.id)
+          }
         }
+      } finally {
+        if (generation === rootGeneration) dependencies.workspaceSelectionSettled?.(selected)
       }
       if (generation !== rootGeneration) return
       await recentWorkspaces.record(selected.rootPath, now())

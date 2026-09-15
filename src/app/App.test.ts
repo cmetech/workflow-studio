@@ -2252,6 +2252,97 @@ nodes:
     expect(gitState.get().inspection.repository).toEqual(repository)
   })
 
+  it('starts a YAML pair with its workspace repository and one status request without detection', async () => {
+    const repository = { root: '/startup', branch: 'main', detachedHead: null }
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'flow.yaml': 'name: Startup\ndescription: Open at launch.\nnodes:\n  - id: first\n    command: echo ready\n',
+      },
+    })
+    const gitDetect = vi.fn(async () => repository)
+    const gitStatus = vi.fn(async () => ({ entries: [] }))
+    const gitDiffPair = vi.fn(async () => ({ working: '', index: '', authorizationToken: 'version-1' }))
+    const gitHistoryPair = vi.fn(async () => ({ commits: [], authorizationToken: 'history-1' }))
+    setNativeBridgeForTest({
+      ...backing,
+      startupPaths: async () => [
+        { kind: 'yaml', path: '/startup/flow.yaml', rootPath: '/startup', relativePath: 'flow.yaml' },
+      ],
+      workspaceSetRoot: async (rootPath) => ({ workspaceId: 'startup-workspace', rootPath, repository }),
+      gitDetect,
+      gitStatus,
+      gitBeginHistorySession: async () => 1,
+      gitDiffPair,
+      gitHistoryPair,
+      gitRetainHistoryAuthorization: async () => undefined,
+      gitRetainVersionAuthorization: async () => undefined,
+    })
+
+    render(App)
+    await waitForSetupReady()
+    await waitFor(() => expect(gitHistoryPair).toHaveBeenCalledOnce())
+
+    expect(gitDetect).not.toHaveBeenCalled()
+    expect(gitStatus).toHaveBeenCalledTimes(1)
+    expect(gitStatus).toHaveBeenCalledWith('/startup')
+    expect(gitState.get().inspection.repository).toEqual(repository)
+    expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
+  })
+
+  it('redetects a changed Git descriptor before refreshing an open seeded pair', async () => {
+    const initialRepository = { root: '/startup', branch: 'main', detachedHead: null }
+    const detachedRepository = { root: '/startup', branch: null, detachedHead: '123456789abc' }
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'flow.yaml': 'name: Startup\ndescription: Open at launch.\nnodes:\n  - id: first\n    command: echo ready\n',
+      },
+    })
+    const gitDetect = vi.fn(async () => detachedRepository)
+    const gitStatus = vi.fn(async () => ({ entries: [] }))
+    const gitDiffPair = vi.fn(async () => ({ working: '', index: '', authorizationToken: 'version' }))
+    const gitHistoryPair = vi.fn(async () => ({ commits: [], authorizationToken: 'history' }))
+    let notifyGitChanged:
+      | ((event: { paths: readonly string[]; kind: 'create' | 'modify' | 'remove' | 'rename' }) => void | Promise<void>)
+      | undefined
+    setNativeBridgeForTest({
+      ...backing,
+      startupPaths: async () => [
+        { kind: 'yaml', path: '/startup/flow.yaml', rootPath: '/startup', relativePath: 'flow.yaml' },
+      ],
+      workspaceSetRoot: async (rootPath) => ({
+        workspaceId: 'startup-workspace',
+        rootPath,
+        repository: initialRepository,
+      }),
+      gitDetect,
+      gitStatus,
+      gitBeginHistorySession: async () => 1,
+      gitDiffPair,
+      gitHistoryPair,
+      gitRetainHistoryAuthorization: async () => undefined,
+      gitRetainVersionAuthorization: async () => undefined,
+      onGitChanged: async (handler) => {
+        notifyGitChanged = handler
+        return () => undefined
+      },
+    })
+
+    render(App)
+    await waitForSetupReady()
+    await waitFor(() => expect(gitHistoryPair).toHaveBeenCalledOnce())
+    expect(gitDetect).not.toHaveBeenCalled()
+    await waitFor(() => expect(notifyGitChanged).toBeDefined())
+
+    await notifyGitChanged!({ paths: ['HEAD'], kind: 'modify' })
+
+    await waitFor(() => expect(gitState.get().inspection.repository).toEqual(detachedRepository))
+    expect(gitDetect).toHaveBeenCalledOnce()
+    expect(gitStatus).toHaveBeenCalledTimes(2)
+    expect(gitDiffPair).toHaveBeenCalledTimes(2)
+    expect(gitHistoryPair).toHaveBeenCalledTimes(2)
+    expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
+  })
+
   it('uses an accessible button group to select the editor mode', async () => {
     loadWorkspaceEntries('workspace', 'Workspace', [])
     render(App)

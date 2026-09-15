@@ -164,7 +164,7 @@
   import type { UpdateState } from '$src/lib/updates/types'
   import type { HostInfo, WorkspaceRootInfo } from '$src/lib/native/types'
   import { publishUpdateState } from '$src/stores/updates'
-  import type { GitPairPaths, GitPairSnapshot } from '$src/lib/git/types'
+  import type { GitPairPaths, GitPairSnapshot, GitRepository } from '$src/lib/git/types'
   import {
     createVersion,
     loadHistoricalPairAsDraft,
@@ -287,6 +287,7 @@
   const gitController = createGitInspectionController(native)
   let gitLifecycleIdentity = ''
   let selectedWorkspace = $state.raw<WorkspaceRootInfo | null>(null)
+  let workspaceSelectionPending = $state(false)
   const layoutStore = createLayoutStore(native)
   const recoveryStore = createRecoveryStore(native)
   const recoveryDrafts = new RecoveryDraftController(recoveryStore)
@@ -543,7 +544,11 @@
       await recoveryStore.save(createRecoveryDraft(pair, new Date().toISOString()))
     },
     workspaceSelected: (selected) => {
+      workspaceSelectionPending = true
       selectedWorkspace = selected
+    },
+    workspaceSelectionSettled: (selected) => {
+      if (selectedWorkspace?.workspaceId === selected.workspaceId) workspaceSelectionPending = false
     },
   })
 
@@ -1949,6 +1954,14 @@
     return pair ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null } : null
   }
 
+  function gitLifecycleKey(
+    workspaceId: string | null,
+    repository: GitRepository | null | undefined,
+    pair: GitPairPaths | null,
+  ): string {
+    return `${workspaceId ?? ''}\0${repository === undefined ? 'legacy' : (repository?.root ?? 'none')}\0${repository?.branch ?? ''}\0${repository?.detachedHead ?? ''}\0${pair?.definitionPath ?? ''}\0${pair?.companionPath ?? ''}`
+  }
+
   async function refreshGit(): Promise<void> {
     const pair = activeGitPair()
     const workspaceId = workspace.get().id
@@ -1958,6 +1971,28 @@
     }
     if (pair) await gitController.refreshPair(pair, workspaceId)
     else await gitController.refreshRepository()
+  }
+
+  async function refreshGitMetadata(): Promise<void> {
+    const workspaceId = workspace.get().id
+    if (!workspaceId) {
+      gitController.reset()
+      return
+    }
+    if (selectedWorkspace?.workspaceId !== workspaceId) {
+      await refreshGit()
+      return
+    }
+    const pair = activeGitPair()
+    const repository = await gitController.refreshWorkspaceMetadata(workspaceId, pair)
+    if (
+      repository === undefined ||
+      workspace.get().id !== workspaceId ||
+      selectedWorkspace?.workspaceId !== workspaceId
+    )
+      return
+    gitLifecycleIdentity = gitLifecycleKey(workspaceId, repository, pair)
+    selectedWorkspace = { ...selectedWorkspace, repository }
   }
 
   function loadHistoricalGitPair(oid: string): Promise<GitPairSnapshot> {
@@ -2258,15 +2293,19 @@
   $effect(() => {
     const pair = $documentSessionStore.pair
     const workspaceId = $workspace.id
+    if (workspaceSelectionPending) return
     if (workspaceId && selectedWorkspace && selectedWorkspace.workspaceId !== workspaceId) return
     const repository = selectedWorkspace?.workspaceId === workspaceId ? selectedWorkspace.repository : undefined
-    const identity = `${workspaceId ?? ''}\0${repository === undefined ? 'legacy' : (repository?.root ?? 'none')}\0${repository?.branch ?? ''}\0${repository?.detachedHead ?? ''}\0${pair?.definition.path ?? ''}\0${pair?.companion?.path ?? ''}`
+    const pairPaths = pair
+      ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null }
+      : null
+    const identity = gitLifecycleKey(workspaceId, repository, pairPaths)
     if (identity === gitLifecycleIdentity) return
     gitLifecycleIdentity = identity
     void synchronizeGitLifecycle(gitController, {
       workspaceId,
       ...(repository === undefined ? {} : { repository }),
-      pair: pair ? { definitionPath: pair.definition.path, companionPath: pair.companion?.path ?? null } : null,
+      pair: pairPaths,
     })
   })
 
@@ -2484,7 +2523,7 @@
       if (disposed) return
       await documentWorkspace.start()
       if (disposed) return
-      const unlistenGit = await native.onGitChanged(() => refreshGit())
+      const unlistenGit = await native.onGitChanged(() => refreshGitMetadata())
       if (disposed) {
         unlistenGit()
         return
