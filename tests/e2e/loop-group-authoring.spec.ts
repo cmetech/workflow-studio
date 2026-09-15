@@ -57,6 +57,13 @@ async function expectNoLongTasks(
     state.entries.splice(0)
     return { phaseEntries, phaseStart: startTime, phaseEnd: performance.now() }
   }, phaseStart)
+  console.info(
+    `PERF_SAMPLE ${JSON.stringify({
+      phase: label,
+      maxDuration: Math.max(0, ...observation.phaseEntries.map(({ duration }) => duration)),
+      entries: observation.phaseEntries,
+    })}`,
+  )
   expect(
     observation.phaseEntries.filter(({ duration }) => duration > 50),
     JSON.stringify({ label, ...observation }),
@@ -952,6 +959,7 @@ test.describe('loop group visual authoring', () => {
     const rootDragPhase = await beginLongTaskPhase(page, browserName)
     await performNodeDrag(page, rootDragStart, { x: 110, y: 120 }, async () => {
       const metrics = await editorMetrics(page)
+      console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope root node drag', metrics })}`)
       expectNoPointerAuthorityWork(metrics)
       expect(metrics.pointerMoves).toBeGreaterThan(0)
     })
@@ -1144,6 +1152,7 @@ test.describe('loop group visual authoring', () => {
       { x: 20, y: 20 },
       async () => {
         const metrics = await editorMetrics(page)
+        console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope body node drag', metrics })}`)
         expectNoPointerAuthorityWork(metrics)
         expect(metrics.pointerMoves).toBeGreaterThan(0)
       },

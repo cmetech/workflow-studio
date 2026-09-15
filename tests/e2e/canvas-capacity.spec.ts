@@ -102,6 +102,9 @@ async function expectNoLongTasks(
     state.entries.length = 0
     return phaseEntries
   }, phaseStart)
+  console.info(
+    `PERF_SAMPLE ${JSON.stringify({ phase: label, maxDuration: Math.max(0, ...entries.map(({ duration }) => duration)), entries })}`,
+  )
   expect(
     entries.filter(({ duration }) => duration > 50),
     JSON.stringify({ phase: label, entries }),
@@ -276,8 +279,12 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   const beforeYaml = (await e2eSnapshot(page)).definitionText
   const beforePosition = await activeLayoutPosition(page, 'node-000')
   const beforePersistedLayout = await persistedLayoutProbe(page, 'node-000')
+  const incidentEdge = page.locator('.svelte-flow__edge[data-id="dependency:node-000->node-001"] path').first()
+  const beforeIncidentEdgePath = await incidentEdge.getAttribute('d')
+  expect(beforeIncidentEdgePath).toBeTruthy()
   const dragPhase = await beginLongTaskPhase(page, browserName)
   await dragNodeBy(page, 'node-000', { x: 110, y: 120 }, (metrics) => {
+    console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'capacity root node drag', metrics })}`)
     expect(metrics.pointerMoves).toBeGreaterThan(0)
     expect(metrics).toMatchObject({
       parseRequests: 0,
@@ -290,6 +297,7 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   })
   await expect.poll(async () => (await activeLayoutPosition(page, 'node-000')).x).toBeGreaterThan(beforePosition.x + 80)
   await expect.poll(async () => (await activeLayoutPosition(page, 'node-000')).y).toBeGreaterThan(beforePosition.y + 80)
+  await expect.poll(() => incidentEdge.getAttribute('d')).not.toBe(beforeIncidentEdgePath)
   await expectNoLongTasks(page, browserName, 'node drag', dragPhase)
   await expect
     .poll(async () => (await persistedLayoutProbe(page, 'node-000')).saveCount)

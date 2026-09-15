@@ -20,6 +20,7 @@ vi.mock('@xyflow/svelte', async (importOriginal) => {
     SvelteFlow,
     Background,
     useSvelteFlow: () => ({ fitView: async () => true, getViewport: () => ({ x: 0, y: 0, zoom: 1 }) }),
+    useStore: () => ({ domNode: document, updateNodePositions: vi.fn() }),
   }
 })
 

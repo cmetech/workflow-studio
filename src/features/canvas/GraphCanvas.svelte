@@ -147,6 +147,7 @@
 
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
+  const draggableNodeIds = $derived(new Set(projection.nodes.map(({ id }) => id)))
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
   const reconcileSelection = createCanvasSelectionReconciler()
   const reconcileSurfaceEdges = createCanvasEdgeSelectionReconciler()
@@ -190,6 +191,13 @@
     | undefined
   let routingActivation = 0
   let dragging = $state(false)
+  interface PendingDrag {
+    readonly workflowIdentity: string
+    readonly generation: number
+    readonly scopeKey: ProjectedGraph['scope']['key']
+    readonly positions: readonly { readonly id: string; readonly position: CanvasPosition }[]
+  }
+  let pendingDrag: PendingDrag | undefined
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
@@ -426,6 +434,19 @@
       ...(currentActiveRouting() ? { routing: activeRouting!.routing } : {}),
     })
   }
+
+  $effect(() => {
+    const dragContext = { workflowIdentity, generation: pairGeneration, scopeKey: projection.scope.key }
+    untrack(() => {
+      if (
+        pendingDrag &&
+        (pendingDrag.workflowIdentity !== dragContext.workflowIdentity ||
+          pendingDrag.generation !== dragContext.generation ||
+          pendingDrag.scopeKey !== dragContext.scopeKey)
+      )
+        clearPendingDrag()
+    })
+  })
 
   $effect(() => {
     if (!surfaceActive) return
@@ -682,36 +703,62 @@
 
   function handleDragStart(): void {
     if (!canAuthor()) return
+    if (dragging) return
     dragging = true
-    layoutRevision += 1
-    invalidateRouting(false)
+    pendingDrag = undefined
+    routingActivation += 1
   }
 
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
-    if (!canAuthor()) return
-    layoutRevision += 1
-    moveCanvasPositions(draggedPositions(detail))
+    if (!canAuthor() || !dragging) return
+    const positions = draggedPositions(detail)
+    if (positions.length === 0) return
+    pendingDrag = {
+      workflowIdentity,
+      generation: pairGeneration,
+      scopeKey: projection.scope.key,
+      positions,
+    }
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
     recordEditorMetric('dragCompletions')
-    dragging = false
+    const stopped = draggedPositions(detail)
+    const pending = pendingDrag
+    const pendingIsCurrent =
+      pending?.workflowIdentity === workflowIdentity &&
+      pending.generation === pairGeneration &&
+      pending.scopeKey === projection.scope.key
+    const updates = pendingIsCurrent && stopped.length > 0 ? stopped : pendingIsCurrent ? pending.positions : []
+    clearPendingDrag()
     if (!canAuthor()) return
+    if (updates.length === 0) return
     rememberRoutingPublication(undefined)
     clearRenderedRouting()
     layoutRevision += 1
-    const updates = draggedPositions(detail)
-    if (updates.length === 0) return
     moveCanvasPositions(updates)
     schedulePersist(layoutWithPositions())
+  }
+
+  function clearPendingDrag(): boolean {
+    const active = dragging || pendingDrag !== undefined
+    dragging = false
+    pendingDrag = undefined
+    return active
   }
 
   function draggedPositions(
     detail: CanvasDragDetail,
   ): readonly { readonly id: string; readonly position: CanvasPosition }[] {
-    if (detail.nodes) return detail.nodes
-    return detail.id && detail.position ? [{ id: detail.id, position: detail.position }] : []
+    const candidates =
+      detail.nodes ?? (detail.id && detail.position ? [{ id: detail.id, position: detail.position }] : [])
+    return candidates
+      .slice(0, projection.nodes.length)
+      .filter(
+        ({ id, position }) => draggableNodeIds.has(id) && Number.isFinite(position.x) && Number.isFinite(position.y),
+      )
+      .map(({ id, position }) => ({ id, position: { x: position.x, y: position.y } }))
   }
 
   function dragDetail(
@@ -1289,6 +1336,7 @@
   }
 
   export function cancel(): boolean {
+    if (clearPendingDrag()) return true
     if (cancelArrange()) return true
     if (closeNodeMenu(true)) return true
     if (cancelEdge()) return true
@@ -1803,6 +1851,7 @@
 
   onDestroy(() => {
     destroyed = true
+    clearPendingDrag()
     const client = activeArrange?.client ?? layoutClient ?? ownedLayoutClient
     cancelArrange()
     client?.destroy()
