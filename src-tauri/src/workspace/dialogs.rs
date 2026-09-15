@@ -671,6 +671,7 @@ fn io_error(code: &'static str, cause: std::io::Error) -> WorkspaceError {
 mod tests {
     use std::fs;
     use std::future::Future;
+    use std::path::Path;
 
     use tauri::AppHandle;
     use tempfile::tempdir;
@@ -680,6 +681,28 @@ mod tests {
         export_granted_yaml_pair_with_commit_hook, grant_export_directory, grant_import_pair,
         read_granted_yaml, revoke_export_grant, DialogGrantState, ExportYamlFile, WorkspaceResult,
     };
+
+    #[cfg(not(windows))]
+    fn replace_directory_name_for_test(path: &Path, parked: &Path) -> bool {
+        fs::rename(path, parked).unwrap();
+        true
+    }
+
+    #[cfg(windows)]
+    fn replace_directory_name_for_test(path: &Path, parked: &Path) -> bool {
+        match fs::rename(path, parked) {
+            Ok(()) => true,
+            Err(error) => {
+                assert!(
+                    matches!(error.raw_os_error(), Some(5 | 32 | 33)),
+                    "a retained dialog capability may only deny directory replacement through a Windows access, sharing, or lock violation: {error}"
+                );
+                assert!(path.is_dir());
+                assert!(!parked.exists());
+                false
+            }
+        }
+    }
 
     #[test]
     fn workspace_picker_command_is_async_so_cancel_can_return_to_the_webview() {
@@ -866,20 +889,35 @@ mod tests {
         let canonical = selected.canonicalize().unwrap();
         let grants = DialogGrantState::default();
         grant_export_directory(&canonical, &grants).unwrap();
-        fs::rename(&selected, root.path().join("original")).unwrap();
-        fs::create_dir(&selected).unwrap();
         let pair = [ExportYamlFile {
             file_name: "flow.yaml".into(),
             text: "name: flow\n".into(),
         }];
+        let parked = root.path().join("original");
 
-        assert_eq!(
-            export_granted_yaml_pair(&canonical, false, &pair, &grants)
-                .unwrap_err()
-                .code,
-            "external_path_changed"
-        );
-        assert!(!selected.join("flow.yaml").exists());
+        if replace_directory_name_for_test(&selected, &parked) {
+            fs::create_dir(&selected).unwrap();
+            assert_eq!(
+                export_granted_yaml_pair(&canonical, false, &pair, &grants)
+                    .unwrap_err()
+                    .code,
+                "external_path_changed"
+            );
+            assert!(!selected.join("flow.yaml").exists());
+        } else {
+            let current_identity = same_file::Handle::from_path(&selected).unwrap();
+            {
+                let permitted = grants.exports.lock().unwrap();
+                let grant = permitted.get(&canonical).unwrap();
+                assert_eq!(grant.identity, current_identity);
+                assert!(grant.directory.metadata(".").unwrap().is_dir());
+            }
+            export_granted_yaml_pair(&canonical, false, &pair, &grants).unwrap();
+            assert_eq!(
+                fs::read_to_string(selected.join("flow.yaml")).unwrap(),
+                "name: flow\n"
+            );
+        }
     }
 
     #[test]
@@ -924,14 +962,30 @@ mod tests {
         fs::write(&definition, "name: flow\n").unwrap();
         let grants = DialogGrantState::default();
         let canonical = grant_import_pair(&definition, &grants).unwrap();
-        fs::rename(&selected, root.path().join("original")).unwrap();
-        fs::create_dir(&selected).unwrap();
-        fs::write(selected.join("flow.yaml"), "name: attacker\n").unwrap();
+        let parked = root.path().join("original");
 
-        assert_eq!(
-            read_granted_yaml(&canonical, &grants).unwrap_err().code,
-            "external_parent_changed"
-        );
+        if replace_directory_name_for_test(&selected, &parked) {
+            fs::create_dir(&selected).unwrap();
+            fs::write(selected.join("flow.yaml"), "name: attacker\n").unwrap();
+            assert_eq!(
+                read_granted_yaml(&canonical, &grants).unwrap_err().code,
+                "external_parent_changed"
+            );
+        } else {
+            let current_parent_identity = same_file::Handle::from_path(&selected).unwrap();
+            let current_file_identity = same_file::Handle::from_path(&definition).unwrap();
+            {
+                let permitted = grants.imports.lock().unwrap();
+                let grant = permitted.get(&canonical).unwrap();
+                assert_eq!(grant.parent_identity, current_parent_identity);
+                assert_eq!(grant.file_identity, current_file_identity);
+                assert!(grant.file.metadata().unwrap().is_file());
+            }
+            assert_eq!(
+                read_granted_yaml(&canonical, &grants).unwrap().text,
+                "name: flow\n"
+            );
+        }
     }
 
     #[cfg(unix)]
