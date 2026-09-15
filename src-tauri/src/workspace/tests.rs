@@ -41,6 +41,17 @@ fn assert_code<T>(result: Result<T, super::WorkspaceError>, code: &str) {
     assert_eq!(error.code, code);
 }
 
+fn workspace_write_residue(path: &std::path::Path) -> Vec<String> {
+    let mut residue = fs::read_dir(path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".workflow-studio-"))
+        .collect::<Vec<_>>();
+    residue.sort();
+    residue
+}
+
 #[test]
 fn rejects_untrusted_relative_path_shapes() {
     for candidate in [
@@ -161,12 +172,8 @@ fn writes_are_revision_checked_atomic_and_preserve_permissions() {
         "930a3450b65f12b82d9e0ef2c7e4c8b68538adb96dc161b5b6f27a4ea342902a"
     );
     assert_eq!(
-        fs::read_dir(root.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() != "flow.yaml")
-            .count(),
-        0,
+        workspace_write_residue(root.path()),
+        Vec::<String>::new(),
         "atomic write must not leave same-directory temporary files"
     );
 
@@ -174,6 +181,110 @@ fn writes_are_revision_checked_atomic_and_preserve_permissions() {
         files::write(&workspace, "flow.yaml", "id: create\n", None),
         "external_revision_conflict",
     );
+
+    let read_only_target = root.path().join("read-only.yaml");
+    fs::write(&read_only_target, "id: read-only-before\n").unwrap();
+    let mut read_only_permissions = fs::metadata(&read_only_target).unwrap().permissions();
+    read_only_permissions.set_readonly(true);
+    fs::set_permissions(&read_only_target, read_only_permissions).unwrap();
+    let read_only_before =
+        files::read(&workspace, "read-only.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    files::write(
+        &workspace,
+        "read-only.yaml",
+        "id: read-only-after\n",
+        Some(&read_only_before.sha256),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&read_only_target).unwrap(),
+        "id: read-only-after\n"
+    );
+    assert!(fs::metadata(&read_only_target)
+        .unwrap()
+        .permissions()
+        .readonly());
+    assert_eq!(workspace_write_residue(root.path()), Vec::<String>::new());
+
+    #[cfg(windows)]
+    {
+        let rollback_target = root.path().join("rollback.yaml");
+        fs::write(&rollback_target, "id: rollback-before\n").unwrap();
+        let mut rollback_permissions = fs::metadata(&rollback_target).unwrap().permissions();
+        rollback_permissions.set_readonly(true);
+        fs::set_permissions(&rollback_target, rollback_permissions).unwrap();
+        let rollback_before =
+            files::read(&workspace, "rollback.yaml", files::MAX_YAML_BYTES).unwrap();
+
+        let error = files::write_with_permission_restore_failure(
+            &workspace,
+            "rollback.yaml",
+            "id: rollback-after\n",
+            Some(&rollback_before.sha256),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace_permission_restore_failed");
+        assert!(error.message.contains("verified original was restored"));
+        assert_eq!(
+            fs::read_to_string(&rollback_target).unwrap(),
+            "id: rollback-before\n"
+        );
+        assert!(fs::metadata(&rollback_target)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(workspace_write_residue(root.path()), Vec::<String>::new());
+
+        let identity_target = root.path().join("identity.yaml");
+        let displaced_commit = root.path().join("identity-committed.yaml");
+        fs::write(&identity_target, "id: identity-before\n").unwrap();
+        let identity_before =
+            files::read(&workspace, "identity.yaml", files::MAX_YAML_BYTES).unwrap();
+
+        let error = files::write_with_permission_order_hook(
+            &workspace,
+            "identity.yaml",
+            "id: identity-mine\n",
+            Some(&identity_before.sha256),
+            |phase, _| {
+                if phase == "afterCommit" {
+                    fs::rename(&identity_target, &displaced_commit).unwrap();
+                    fs::write(&identity_target, "id: identity-external\n").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace_write_partial");
+        assert_eq!(
+            fs::read_to_string(&identity_target).unwrap(),
+            "id: identity-external\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&displaced_commit).unwrap(),
+            "id: identity-mine\n"
+        );
+        assert!(!fs::metadata(&identity_target)
+            .unwrap()
+            .permissions()
+            .readonly());
+        let residue = workspace_write_residue(root.path());
+        assert_eq!(residue.len(), 1);
+        assert!(residue[0].starts_with(".workflow-studio-original-"));
+        assert_eq!(
+            fs::read_to_string(root.path().join(&residue[0])).unwrap(),
+            "id: identity-before\n"
+        );
+
+        for target in [&read_only_target, &rollback_target] {
+            let mut permissions = fs::metadata(target).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(target, permissions).unwrap();
+        }
+    }
 }
 
 #[test]
