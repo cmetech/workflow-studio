@@ -905,8 +905,8 @@ mod tests {
             );
             assert!(!selected.join("flow.yaml").exists());
         } else {
-            let current_identity = same_file::Handle::from_path(&selected).unwrap();
             {
+                let current_identity = same_file::Handle::from_path(&selected).unwrap();
                 let permitted = grants.exports.lock().unwrap();
                 let grant = permitted.get(&canonical).unwrap();
                 assert_eq!(grant.identity, current_identity);
@@ -915,6 +915,14 @@ mod tests {
             export_granted_yaml_pair(&canonical, false, &pair, &grants).unwrap();
             assert_eq!(
                 fs::read_to_string(selected.join("flow.yaml")).unwrap(),
+                "name: flow\n"
+            );
+            assert!(grants.exports.lock().unwrap().is_empty());
+            fs::rename(&selected, &parked).unwrap();
+            assert!(!selected.exists());
+            assert!(parked.is_dir());
+            assert_eq!(
+                fs::read_to_string(parked.join("flow.yaml")).unwrap(),
                 "name: flow\n"
             );
         }
@@ -972,9 +980,9 @@ mod tests {
                 "external_parent_changed"
             );
         } else {
-            let current_parent_identity = same_file::Handle::from_path(&selected).unwrap();
-            let current_file_identity = same_file::Handle::from_path(&definition).unwrap();
             {
+                let current_parent_identity = same_file::Handle::from_path(&selected).unwrap();
+                let current_file_identity = same_file::Handle::from_path(&definition).unwrap();
                 let permitted = grants.imports.lock().unwrap();
                 let grant = permitted.get(&canonical).unwrap();
                 assert_eq!(grant.parent_identity, current_parent_identity);
@@ -983,6 +991,14 @@ mod tests {
             }
             assert_eq!(
                 read_granted_yaml(&canonical, &grants).unwrap().text,
+                "name: flow\n"
+            );
+            assert!(grants.imports.lock().unwrap().is_empty());
+            fs::rename(&selected, &parked).unwrap();
+            assert!(!selected.exists());
+            assert!(parked.is_dir());
+            assert_eq!(
+                fs::read_to_string(parked.join("flow.yaml")).unwrap(),
                 "name: flow\n"
             );
         }
