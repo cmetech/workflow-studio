@@ -984,6 +984,7 @@ fn rename_pair_impl(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(capability_error("workspace_rename_failed", error)),
     };
+    ensure_bound_file(&source)?;
     let source_identity = named_identity(&source, "path_not_found")
         .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
     let source_companion_identity = if has_companion {
@@ -1223,19 +1224,30 @@ pub fn trash_paths_with_handoff_hook(
 }
 
 #[cfg(test)]
-pub fn trash_paths_with_post_delete_hook(
+pub fn trash_paths_with_scope_verification_failure(
     scope: &WorkspaceScope,
     relative_paths: &[String],
-    mut delete: impl FnMut(&Path) -> Result<(), String>,
+    failure_phase: &'static str,
     mut post_delete_hook: impl FnMut(),
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     let requests = unchecked_trash_requests(relative_paths);
-    trash_paths_impl(
+    trash_paths_impl_with_verification(
         scope,
         &requests,
         || {},
         |_| {},
         &mut post_delete_hook,
+        |phase| {
+            if phase == failure_phase {
+                Err(WorkspaceError::new(
+                    "workspace_root_changed",
+                    "The selected workspace root was replaced and must be reopened.",
+                ))
+            } else {
+                Ok(())
+            }
+        },
         &mut delete,
     )
 }
@@ -1244,8 +1256,28 @@ fn trash_paths_impl(
     scope: &WorkspaceScope,
     requests: &[TrashPathExpectation],
     bound_hook: impl FnOnce(),
+    handoff_hook: impl FnMut(&Path),
+    post_delete_hook: impl FnMut(),
+    delete: &mut impl FnMut(&Path) -> Result<(), String>,
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    trash_paths_impl_with_verification(
+        scope,
+        requests,
+        bound_hook,
+        handoff_hook,
+        post_delete_hook,
+        |_| Ok(()),
+        delete,
+    )
+}
+
+fn trash_paths_impl_with_verification(
+    scope: &WorkspaceScope,
+    requests: &[TrashPathExpectation],
+    bound_hook: impl FnOnce(),
     mut handoff_hook: impl FnMut(&Path),
     mut post_delete_hook: impl FnMut(),
+    mut scope_verification_hook: impl FnMut(&str) -> WorkspaceResult<()>,
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     if requests.is_empty() || requests.len() > 2 {
@@ -1283,6 +1315,7 @@ fn trash_paths_impl(
                 request.expected_current_hash.as_deref(),
                 &mut handoff_hook,
                 &mut post_delete_hook,
+                &mut scope_verification_hook,
                 delete,
             )
         }) {
@@ -1311,6 +1344,7 @@ fn trash_bound_path(
     expected_current_hash: Option<&str>,
     handoff_hook: &mut impl FnMut(&Path),
     post_delete_hook: &mut impl FnMut(),
+    scope_verification_hook: &mut impl FnMut(&str) -> WorkspaceResult<()>,
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<()> {
     ensure_bound_file(source)?;
@@ -1354,17 +1388,18 @@ fn trash_bound_path(
 
     let candidate_path = scope.root.join(&quarantine_name);
     handoff_hook(&candidate_path);
-    let ambient_path = match scope.root_path() {
-        Ok(root_path) => root_path.join(&quarantine_name),
-        Err(error) => {
-            return Err(trash_rollback_error(
-                &quarantine,
-                source,
-                &original_identity,
-                error,
-            ))
-        }
-    };
+    let ambient_path =
+        match scope_verification_hook("beforeHandoff").and_then(|_| scope.root_path()) {
+            Ok(root_path) => root_path.join(&quarantine_name),
+            Err(error) => {
+                return Err(trash_rollback_error(
+                    &quarantine,
+                    source,
+                    &original_identity,
+                    error,
+                ))
+            }
+        };
     if !named_identity_matches(&quarantine, &original_identity) {
         return Err(trash_rollback_error(
             &quarantine,
@@ -1403,7 +1438,9 @@ fn trash_bound_path(
             ),
         ));
     }
-    if let Err(error) = scope.verify() {
+    if let Err(error) =
+        scope_verification_hook("beforeDelete").and_then(|_| scope.verify().map(|_| ()))
+    {
         return Err(trash_rollback_error(
             &quarantine,
             source,
@@ -1423,7 +1460,9 @@ fn trash_bound_path(
     }
     let delete_result = delete(&ambient_path);
     post_delete_hook();
-    if let Err(error) = scope.verify() {
+    if let Err(error) =
+        scope_verification_hook("afterDelete").and_then(|_| scope.verify().map(|_| ()))
+    {
         return Err(trash_rollback_error(
             &quarantine,
             source,
@@ -1509,10 +1548,17 @@ fn trash_rollback_error(
 }
 
 fn ensure_bound_file(path: &BoundPath) -> WorkspaceResult<()> {
-    let metadata = path
+    let link_metadata = path
         .parent
-        .metadata(&path.name)
+        .symlink_metadata(&path.name)
         .map_err(|error| capability_error("path_not_found", error))?;
+    let metadata = if link_metadata.file_type().is_symlink() {
+        path.parent
+            .metadata(&path.name)
+            .map_err(|error| capability_error("path_not_found", error))?
+    } else {
+        link_metadata
+    };
     if !metadata.is_file() {
         return Err(WorkspaceError::new(
             "not_a_file",
