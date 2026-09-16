@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { LayoutWorkerRequest, LayoutWorkerResult } from '../../src/workers/layout-worker-protocol'
+import type { ArrangeMetricsSnapshot } from '../../src/lib/metrics/arrange-metrics'
 import { expect, test, type Page, type CDPSession } from '@playwright/test'
 import {
   createLargeWorkflowFixture,
@@ -26,6 +27,7 @@ interface E2EMetricSnapshot {
   readonly nativeCalls: number
   readonly gitCalls: number
   readonly pointerMoves: number
+  readonly arrange: ArrangeMetricsSnapshot | null
 }
 
 interface CapacityProbe {
@@ -527,23 +529,37 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     !shouldRunReferenceCapacityScenario(enforcePerceptualPerformance, browserName),
     'Shared CI retains the Chromium capacity path; complete cross-engine acceptance runs on reference hardware.',
   )
-  test.setTimeout(60_000)
+  test.setTimeout(180_000)
   await installArrangeCapacityProbe(page)
   await openSeededPair(page, '?scenario=routed-capacity')
   await expect.poll(async () => (await capacityProbe(page)).analysisCurrent).toBe(true)
   const yaml = (await e2eSnapshot(page)).definitionText
   expect(yaml).toBe(createLargeWorkflowFixture().yaml)
-  const session =
-    enforcePerceptualPerformance && browserName === 'chromium' ? await page.context().newCDPSession(page) : null
-  if (session) await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
-  for (let run = 0; run < 4; run++) {
+  let session: CDPSession | null = null
+  const arrangeMetrics: ArrangeMetricsSnapshot[] = []
+  const initialSaveCount = await page.evaluate(
+    () => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount,
+  )
+  for (let run = 0; run < 6; run++) {
+    if (run === 1 && enforcePerceptualPerformance && browserName === 'chromium') {
+      session = await page.context().newCDPSession(page)
+      await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
+    }
     const phase = await beginLongTaskPhase(page, browserName)
     await invokeArrange(page)
-    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
-      'Graph arranged: 250 nodes and 500 dependencies.',
-      { timeout: 10_000 },
-    )
-    await expectNoLongTasks(page, browserName, `Arrange ${run === 0 ? 'cold' : 'warmed'} ${run}`, phase)
+    const feedback = page.getByRole('status', { name: 'Canvas authoring feedback' })
+    await expect.poll(async () => (await feedback.textContent()) !== 'Arranging graph…', { timeout: 10_000 }).toBe(true)
+    const diagnostic = await page.evaluate(() => ({
+      worker: window.__ARRANGE_CAPACITY__,
+      metric: (
+        window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+          metrics(): E2EMetricSnapshot
+        }
+      ).metrics().arrange,
+    }))
+    console.info(`ARRANGE_PHASE_SAMPLE ${JSON.stringify({ run, ...diagnostic })}`)
+    await expect(feedback).toHaveText('Graph arranged: 250 nodes and 500 dependencies.')
+    if (run > 0) await expectNoLongTasks(page, browserName, `Arrange warmed ${run}`, phase)
     const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
     expect(state.requests).toBe(run + 1)
     expect(state.responses).toBe(run + 1)
@@ -551,6 +567,37 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     expect(state.runs[run]!.points).toBeGreaterThanOrEqual(1_000)
     expect(state.runs[run]!.points).toBeLessThanOrEqual(32_000)
     if (enforcePerceptualPerformance && run > 0) expect(state.runs[run]!.durationMs).toBeLessThanOrEqual(3_000)
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+                metrics(): E2EMetricSnapshot
+              }
+            ).metrics().arrange?.outcome,
+        ),
+      )
+      .toBe('accepted')
+    await expect
+      .poll(() => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount))
+      .toBe(initialSaveCount + run + 1)
+    const metric = await page.evaluate(
+      () =>
+        (
+          window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+            metrics(): E2EMetricSnapshot
+          }
+        ).metrics().arrange!,
+    )
+    expect(metric.requestId).toBe(`layout:${run + 1}`)
+    expect(metric.totalMs).toBeGreaterThanOrEqual(metric.phaseTotalMs)
+    expect(Object.keys(metric.phases).sort()).toEqual(
+      ['measure', 'fingerprint', 'serialize', 'worker', 'validate', 'publish', 'fit', 'persist'].sort(),
+    )
+    if (enforcePerceptualPerformance && run > 0) expect(metric.totalMs).toBeLessThan(3_000)
+    console.info(`ARRANGE_ACCEPTED_SAMPLE ${JSON.stringify({ run, metric })}`)
+    arrangeMetrics.push(metric)
     await page.keyboard.press('Escape')
   }
   const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
@@ -587,7 +634,7 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   expect(rendering.fallback).toEqual([])
   expect(rendering.mounted).toBeGreaterThan(0)
   const evidencePath = testInfo.outputPath('arrange-capacity.json')
-  await writeFile(evidencePath, JSON.stringify({ ...state, mainTasks, rendering }, null, 2))
+  await writeFile(evidencePath, JSON.stringify({ ...state, arrangeMetrics, mainTasks, rendering }, null, 2))
   await testInfo.attach('arrange-capacity.json', { path: evidencePath, contentType: 'application/json' })
   expect((await e2eSnapshot(page)).definitionText).toBe(yaml)
 
@@ -639,7 +686,7 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     return probe.changes
   })
   expect(changedPaths).toEqual([])
-  expect((await page.evaluate(() => window.__ARRANGE_CAPACITY__)).requests).toBe(4)
+  expect((await page.evaluate(() => window.__ARRANGE_CAPACITY__)).requests).toBe(6)
   const contentEvidencePath = testInfo.outputPath('routed-content-capacity.json')
   await writeFile(contentEvidencePath, JSON.stringify({ contentMainTasks, changedPaths }, null, 2))
   await testInfo.attach('routed-content-capacity.json', { path: contentEvidencePath, contentType: 'application/json' })

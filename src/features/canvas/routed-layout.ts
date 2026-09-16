@@ -49,6 +49,10 @@ export type RoutedLayoutValidation =
   | { readonly ok: true; readonly layout: ValidatedRoutedLayout; readonly crossingCount: number }
   | { readonly ok: false; readonly code: RoutedLayoutFailureCode }
 
+export type RoutedLayoutSafetyValidation =
+  | { readonly ok: true; readonly layout: ValidatedRoutedLayout }
+  | { readonly ok: false; readonly code: RoutedLayoutFailureCode }
+
 interface Rectangle {
   readonly left: number
   readonly top: number
@@ -126,6 +130,18 @@ export function normalizeRoute(points: readonly EdgeRoutePointV1[]): readonly Ed
 }
 
 export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutValidation {
+  return validateRoutedLayoutInternal(input, true) as RoutedLayoutValidation
+}
+
+/** Validates every persisted-geometry invariant without computing informational crossing statistics. */
+export function validateRoutedLayoutSafety(input: RoutedLayoutInput): RoutedLayoutSafetyValidation {
+  return validateRoutedLayoutInternal(input, false) as RoutedLayoutSafetyValidation
+}
+
+function validateRoutedLayoutInternal(
+  input: RoutedLayoutInput,
+  collectCrossings: boolean,
+): RoutedLayoutValidation | RoutedLayoutSafetyValidation {
   const nodeIds = input.nodes.map(({ id }) => id)
   if (!exactMembership(nodeIds, Object.keys(input.positions))) return failure('node_membership_mismatch')
 
@@ -227,11 +243,8 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
 
   if (hasLongCoincidentSegment(routes)) return failure('coincident_route_segment')
 
-  return {
-    ok: true,
-    layout: { positions, routes },
-    crossingCount: countOrthogonalCrossings(routes),
-  }
+  const accepted = { ok: true, layout: { positions, routes } } as const
+  return collectCrossings ? { ...accepted, crossingCount: countOrthogonalCrossings(routes) } : accepted
 }
 
 export function countOrthogonalCrossings(routes: Readonly<Record<string, EdgeRouteV1>>): number {

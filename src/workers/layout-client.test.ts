@@ -137,6 +137,29 @@ describe('LayoutClient', () => {
     await rejection
   })
 
+  it('warms one endpoint before arranging and reuses it across accepted requests', async () => {
+    const worker = new FakeWorker()
+    const factory = vi.fn(() => worker)
+    const client = new LayoutClient(factory)
+
+    client.warm()
+    client.warm()
+    expect(factory).toHaveBeenCalledOnce()
+
+    const firstRequest = request()
+    const first = client.arrange(firstRequest)
+    worker.emit(successFor(firstRequest))
+    await expect(first).resolves.toEqual(successFor(firstRequest))
+    const secondRequest = request(identity({ requestId: 'layout-2', layoutRevision: 8 }))
+    const second = client.arrange(secondRequest)
+    worker.emit(successFor(secondRequest))
+    await expect(second).resolves.toEqual(successFor(secondRequest))
+
+    expect(factory).toHaveBeenCalledOnce()
+    expect(worker.terminated).toBe(false)
+    client.destroy()
+  })
+
   it('posts an exact immutable snapshot without retaining caller-owned arrays or objects', async () => {
     const worker = new FakeWorker()
     const client = new LayoutClient(() => worker)

@@ -206,6 +206,7 @@ describe('[RG12] scoped canvas performance contract', () => {
       metrics.reset()
       const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
       const beforeText = fixture.definition
+      canvas.dispatchEvent(new CustomEvent('workflowdragstart', { bubbles: true }))
       for (let move = 1; move <= 1_000; move += 1) {
         canvas.dispatchEvent(
           new CustomEvent('workflowdragmove', {

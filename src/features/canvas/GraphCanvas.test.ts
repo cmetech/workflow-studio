@@ -25,6 +25,7 @@ import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import { latestArrangeMetrics, resetArrangeMetrics } from '$src/lib/metrics/arrange-metrics'
 import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import * as routedLayout from './routed-layout'
 import { graphFingerprint, routingFingerprint } from './routed-layout'
@@ -243,6 +244,7 @@ class DeferredLayoutClient {
   requests: LayoutWorkerRequest[] = []
   resolve!: (result: LayoutWorkerResult) => void
   reject!: (reason: Error) => void
+  warm = vi.fn()
   arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult> {
     this.requests.push(request)
     return new Promise((resolve, reject) => {
@@ -404,7 +406,102 @@ describe('GraphCanvas', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    resetArrangeMetrics()
     clearCanvasState()
+  })
+
+  it('records one complete phase snapshot for the accepted arrange and its persistence', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+      await rendered.component.flushPersistence()
+
+      const metric = latestArrangeMetrics()
+      expect(metric).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'accepted',
+        phases: {
+          measure: expect.any(Number),
+          fingerprint: expect.any(Number),
+          serialize: expect.any(Number),
+          worker: expect.any(Number),
+          validate: expect.any(Number),
+          publish: expect.any(Number),
+          fit: expect.any(Number),
+          persist: expect.any(Number),
+        },
+      })
+      expect(metric!.totalMs).toBeGreaterThanOrEqual(metric!.phaseTotalMs)
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('warms the reusable layout endpoint when the canvas mounts', async () => {
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await tick()
+      expect(client.warm).toHaveBeenCalledOnce()
+    } finally {
+      rendered.unmount()
+    }
+  })
+
+  it('reuses current rendered measurements without scheduling another measurement frame', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await measurements.publish()
+      const first = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await first
+      await rendered.component.flushPersistence()
+      await measurements.publish()
+
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame')
+      const second = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(2))
+      expect(frame).not.toHaveBeenCalled()
+      client.resolve(successfulArrangement(client.requests[1]!))
+      await second
+      await rendered.component.flushPersistence()
+      frame.mockRestore()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('marks a cancelled arrange without allowing its late persistence to replace newer metrics', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const props = { commandSurface: commandRegistry, projection, layout, layoutClient: client }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      await rendered.rerender({ ...props, pairGeneration: 1 })
+      await arranging
+
+      expect(latestArrangeMetrics()).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'cancelled',
+      })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
   })
 
   it('emphasizes a hovered or focused dependency and both endpoints while keeping other connections visible', async () => {

@@ -5,7 +5,8 @@ import {
   resolveCurrentRouting,
   graphFingerprint,
   routingFingerprint,
-  validateRoutedLayout,
+  validateRoutedLayout as validateRoutedLayoutWithCrossings,
+  validateRoutedLayoutSafety,
   type RoutedLayoutInput,
   type RoutedLayoutValidation,
 } from './routed-layout'
@@ -52,11 +53,40 @@ function input(overrides: Partial<RoutedLayoutInput> = {}): RoutedLayoutInput {
   }
 }
 
+function validateRoutedLayout(candidate: RoutedLayoutInput): RoutedLayoutValidation {
+  const analyzed = validateRoutedLayoutWithCrossings(candidate)
+  if (!analyzed.ok) expect(validateRoutedLayoutSafety(candidate)).toEqual(analyzed)
+  return analyzed
+}
+
 function failureCode(result: RoutedLayoutValidation): string | undefined {
   return result.ok ? undefined : result.code
 }
 
 describe('validateRoutedLayout', () => {
+  it('performs the complete safety validation without optional crossing analysis', () => {
+    expect(validateRoutedLayoutSafety(input())).toEqual({
+      ok: true,
+      layout: { positions: basePositions, routes: baseRoutes },
+    })
+    expect(
+      validateRoutedLayoutSafety(
+        input({
+          routes: {
+            'dependency:source->target': {
+              edgeId: 'dependency:source->target',
+              points: [
+                { x: 100, y: 30 },
+                { x: 100, y: 40 },
+                { x: 190, y: 40 },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toEqual({ ok: false, code: 'route_endpoint_mismatch' })
+  })
+
   it('[RG2] returns one complete normalized clone for safe geometry without mutating caller data', () => {
     const candidate = input({
       routes: {

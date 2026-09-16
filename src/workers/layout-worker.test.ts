@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { arrangeWithElk } from '$src/features/canvas/layout-graph'
-import { processLayoutWorkerRequest } from './layout-worker'
+import { describe, expect, it, vi } from 'vitest'
+import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
+import { createLayoutWorkerProcessor, processLayoutWorkerRequest } from './layout-worker'
 import type { LayoutWorkerRequest } from './layout-worker-protocol'
 
 const request: LayoutWorkerRequest = {
@@ -20,6 +20,80 @@ const request: LayoutWorkerRequest = {
   edges: [{ id: 'ab', source: 'a', target: 'b', order: 0 }],
 }
 describe('layout worker', () => {
+  it('caches only the last accepted full layout identity and exact graph snapshot', async () => {
+    const layout = async () => ({
+      id: 'root',
+      children: [
+        { id: 'a', x: 32, y: 32, width: 216, height: 104 },
+        { id: 'b', x: 384, y: 32, width: 216, height: 104 },
+      ],
+      edges: [
+        {
+          id: 'ab',
+          sections: [{ id: 's', startPoint: { x: 248, y: 84 }, endPoint: { x: 384, y: 84 } }],
+        },
+      ],
+    })
+    const elk = { layout: vi.fn(layout) }
+    const process = createLayoutWorkerProcessor(elk)
+    const repeated = {
+      ...request,
+      identity: { ...request.identity, requestId: 'repeat', layoutRevision: 4 },
+    }
+
+    const first = await process(request)
+    const second = await process(repeated)
+
+    expect(first).toMatchObject({ type: 'layout-result', identity: request.identity })
+    expect(second).toMatchObject({ type: 'layout-result', identity: repeated.identity })
+    expect(elk.layout).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    [
+      'workflow identity',
+      (input: LayoutWorkerRequest) => ({ ...input, identity: { ...input.identity, workflowIdentity: 'other' } }),
+    ],
+    [
+      'pair generation',
+      (input: LayoutWorkerRequest) => ({ ...input, identity: { ...input.identity, pairGeneration: 3 } }),
+    ],
+    [
+      'scope',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        identity: { ...input.identity, scopeKey: 'loop-group:a' as const },
+      }),
+    ],
+    [
+      'node size',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        nodes: input.nodes.map((node, index) => (index ? node : { ...node, width: 217 })),
+      }),
+    ],
+    ['edge', (input: LayoutWorkerRequest) => ({ ...input, edges: [{ ...input.edges[0]!, id: 'renamed-edge' }] })],
+  ])('misses the bounded worker cache after a %s change', async (_label, change) => {
+    const layout = vi.fn(async (graph: Parameters<ElkLike['layout']>[0]) => ({
+      ...graph,
+      children: [
+        { id: 'a', x: 32, y: 32, width: 216, height: 104 },
+        { id: 'b', x: 384, y: 32, width: 216, height: 104 },
+      ],
+      edges: [
+        {
+          id: (graph.edges![0] as { id: string }).id,
+          sections: [{ id: 's', startPoint: { x: 248, y: 84 }, endPoint: { x: 384, y: 84 } }],
+        },
+      ],
+    }))
+    const elk: ElkLike = { layout }
+    const process = createLayoutWorkerProcessor(elk)
+    await process(request)
+    await process(change(request))
+    expect(layout).toHaveBeenCalledTimes(2)
+  })
+
   it('[RG8] returns bounded normalized geometry and exact identity without raw ELK data', async () => {
     const output = await processLayoutWorkerRequest(request, {
       layout: async () => ({

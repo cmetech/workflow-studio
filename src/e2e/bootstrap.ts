@@ -13,6 +13,11 @@ import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import { loadBrandManifest } from '$src/lib/branding/load-brand'
 import type { StoredBrandPack } from '$src/lib/native/types'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import {
+  latestArrangeMetrics,
+  resetArrangeMetrics,
+  type ArrangeMetricsSnapshot,
+} from '$src/lib/metrics/arrange-metrics'
 import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
 import { isAnalysisCurrent } from '$src/lib/documents/revisions'
 import { $activeLayout } from '$src/stores/layout'
@@ -257,7 +262,9 @@ declare global {
       persistedLayoutProbe(nodeId: string): PersistedLayoutProbe
       triggerExternalChange(): Promise<void>
       prepareCapacityConnection(): Promise<void>
-      metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']>
+      metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']> & {
+        readonly arrange: ArrangeMetricsSnapshot | null
+      }
       resetMetrics(): void
       scopeSnapshot(): E2EScopeSnapshot
       projectionScopes(): readonly {
@@ -881,8 +888,11 @@ nodes:
 
   setNativeBridgeForTest(bridge)
   window.__WORKFLOW_STUDIO_E2E__ = {
-    metrics: () => metrics.snapshot(),
-    resetMetrics: () => metrics.reset(),
+    metrics: () => ({ ...metrics.snapshot(), arrange: latestArrangeMetrics() }),
+    resetMetrics: () => {
+      metrics.reset()
+      resetArrangeMetrics()
+    },
     capacityProbe(nodeId): CapacityProbe {
       const session = $documentSession.get()
       const projection = session.analysis?.projection

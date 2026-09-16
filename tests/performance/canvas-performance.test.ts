@@ -102,6 +102,7 @@ describe('250-node canvas performance contract', () => {
       await tick()
       metrics.reset()
       const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      canvas.dispatchEvent(new CustomEvent('workflowdragstart', { bubbles: true }))
 
       for (let move = 1; move <= 1_000; move += 1) {
         canvas.dispatchEvent(

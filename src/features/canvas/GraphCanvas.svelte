@@ -19,12 +19,18 @@
     graphFingerprint,
     routingFingerprint,
     resolveCurrentRouting,
-    validateRoutedLayout,
+    validateRoutedLayoutSafety,
     MAX_ROUTING_COORDINATE,
   } from './routed-layout'
   import CanvasViewportController from './CanvasViewportController.svelte'
   import type { ScopeLayoutV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
+  import {
+    beginArrangeMetrics,
+    finishArrangeMetrics,
+    recordArrangePhase,
+    type ArrangeMetricsAttempt,
+  } from '$src/lib/metrics/arrange-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import { VISUAL_NODE_CAPACITY, VISUAL_EDGE_CAPACITY, type ProjectedGraph } from '$src/lib/projection/types'
   import {
@@ -216,6 +222,15 @@
   let destroyed = false
   let ownedLayoutClient: LayoutClientLike | undefined
   let viewportController: ReturnType<typeof CanvasViewportController> | undefined
+  interface CachedNodeMeasurement {
+    readonly renderedKind: string
+    readonly width: number
+    readonly height: number
+  }
+  let measurementCacheContext = ''
+  // Ephemeral bounded performance cache; its mutations must not schedule component work.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const measurementCache = new Map<string, CachedNodeMeasurement>()
   interface ArrangeAttempt {
     readonly revision: number
     readonly projection: ProjectedGraph
@@ -227,10 +242,12 @@
     publishedPositions?: ScopeLayoutV1['nodePositions']
     releasePersistence?: () => void
     readonly client: LayoutClientLike
+    readonly metrics: ArrangeMetricsAttempt
     nodes?: readonly LayoutWorkerNode[]
     restoreMeasurementVisibility?: () => void
     cancelFrame?: () => void
     published?: boolean
+    metricsFinished?: boolean
   }
   let activeArrange = $state.raw<ArrangeAttempt | undefined>()
   let edgeSourceId = $state<string | null>(null)
@@ -496,6 +513,20 @@
   const routingDimensions = $derived(
     JSON.stringify(flowNodes.map(({ id, measured }) => [id, measured?.width, measured?.height])),
   )
+
+  $effect(() => {
+    const dimensions = routingDimensions
+    untrack(() => {
+      if (!dimensions) return
+      ensureMeasurementCacheContext()
+      for (const node of flowNodes) {
+        const cached = measurementCache.get(node.id)
+        if (!cached || cached.renderedKind !== renderedKind(node) || !validMeasurement(node.measured)) continue
+        if (cached.width !== node.measured.width || cached.height !== node.measured.height)
+          measurementCache.set(node.id, { ...cached, width: node.measured.width, height: node.measured.height })
+      }
+    })
+  })
 
   function currentActiveRouting(): boolean {
     return (
@@ -857,6 +888,8 @@
     layoutRevision += 1
     attempt.cancelFrame?.()
     attempt.client.cancel()
+    finishArrangeMetrics(attempt.metrics, 'cancelled')
+    attempt.metricsFinished = true
     if (!destroyed) authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
     finishArrange(attempt)
     return true
@@ -892,6 +925,69 @@
     )
       return
     return nodes as readonly LayoutWorkerNode[]
+  }
+
+  function currentMeasurementContext(): string {
+    return JSON.stringify([workflowIdentity, pairGeneration, projection.scope.key])
+  }
+
+  function ensureMeasurementCacheContext(): void {
+    const context = currentMeasurementContext()
+    if (measurementCacheContext === context) return
+    measurementCacheContext = context
+    measurementCache.clear()
+  }
+
+  function renderedKind(node: CanvasNode): string {
+    return JSON.stringify([
+      node.type,
+      node.data?.kind,
+      node.data?.summary,
+      node.data?.errorCount,
+      node.data?.requiredIssueCount,
+      node.data?.compound,
+    ])
+  }
+
+  function validMeasurement(measured: CanvasNode['measured']): measured is { width: number; height: number } {
+    return (
+      typeof measured?.width === 'number' &&
+      Number.isFinite(measured.width) &&
+      measured.width >= CANVAS_NODE_WIDTH &&
+      typeof measured.height === 'number' &&
+      Number.isFinite(measured.height) &&
+      measured.height >= CANVAS_NODE_HEIGHT
+    )
+  }
+
+  function rememberMeasurements(nodes: readonly CanvasNode[]): void {
+    ensureMeasurementCacheContext()
+    for (const node of nodes) {
+      if (!validMeasurement(node.measured)) continue
+      measurementCache.set(node.id, {
+        renderedKind: renderedKind(node),
+        width: node.measured.width,
+        height: node.measured.height,
+      })
+    }
+  }
+
+  function withCachedMeasurements(nodes: CanvasNode[]): CanvasNode[] {
+    ensureMeasurementCacheContext()
+    let changed = false
+    const next = nodes.map((node) => {
+      if (validMeasurement(node.measured)) return node
+      const cached = measurementCache.get(node.id)
+      if (!cached || cached.renderedKind !== renderedKind(node)) return node
+      changed = true
+      return { ...node, measured: { width: cached.width, height: cached.height } }
+    })
+    return changed ? next : nodes
+  }
+
+  function hasCachedMeasurement(node: CanvasNode): boolean {
+    const cached = measurementCache.get(node.id)
+    return Boolean(cached && cached.renderedKind === renderedKind(node))
   }
 
   function validResultMetadata(result: LayoutWorkerSuccess): boolean {
@@ -948,16 +1044,37 @@
     return next
   }
 
+  function arrangeClient(): LayoutClientLike {
+    return (
+      layoutClient ??
+      (ownedLayoutClient ??= new LayoutClient(
+        () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' }),
+      ))
+    )
+  }
+
   async function measureArrangement(attempt: ArrangeAttempt): Promise<void> {
     // Mount offscreen cards in bounded batches. Existing visible cards and edges
     // stay in place; the full node/edge topology remains bound throughout.
+    flowNodes = withCachedMeasurements(flowNodes)
     const mountedNodes = new Set(
-      [...root.querySelectorAll('.svelte-flow__node')].map((node) => node.getAttribute('data-id')),
+      [...root.querySelectorAll('.svelte-flow__node')].flatMap((node) => {
+        const id = node.getAttribute('data-id')
+        return id ? [id] : []
+      }),
     )
+    const uncached = flowNodes.filter((node) => !hasCachedMeasurement(node))
+    if (uncached.length === 0) return
+    const missing = uncached.filter((node) => !mountedNodes.has(node.id)).map((node) => node.id)
+    if (missing.length === 0) {
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      rememberMeasurements(flowNodes)
+      return
+    }
     const mountedEdges = new Set(
       [...root.querySelectorAll('.svelte-flow__edge')].map((edge) => edge.getAttribute('data-id')),
     )
-    const offscreen = flowNodes.filter((node) => !mountedNodes.has(node.id)).map((node) => node.id)
     const hiddenNodes = new Map(flowNodes.map((node) => [node.id, node.hidden]))
     const hiddenEdges = new Map(flowEdges.map((edge) => [edge.id, edge.hidden]))
     const restore = () => {
@@ -971,9 +1088,9 @@
     flowEdges = flowEdges.map((edge) => (mountedEdges.has(edge.id) ? edge : { ...edge, hidden: true }))
     // This local accumulator never participates in reactive state; flowNodes is reassigned per batch.
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const revealed = new Set(mountedNodes)
-    for (let offset = 0; offset < Math.max(1, offscreen.length); offset += 40) {
-      for (const id of offscreen.slice(offset, offset + 40)) revealed.add(id)
+    const revealed = new Set([...flowNodes.filter(hasCachedMeasurement).map((node) => node.id), ...mountedNodes])
+    for (let offset = 0; offset < missing.length; offset += 40) {
+      for (const id of missing.slice(offset, offset + 40)) revealed.add(id)
       flowNodes = flowNodes.map((node) =>
         measurementVisibility(node, revealed.has(node.id) ? hiddenNodes.get(node.id) : true),
       )
@@ -982,17 +1099,16 @@
     }
     restore()
     await tick()
+    rememberMeasurements(flowNodes)
   }
 
   export async function arrange(): Promise<void> {
     if (!canAuthor() || !surfaceActive || !canvasMounted || arrangeBusy) return
-    const client =
-      layoutClient ??
-      (ownedLayoutClient ??= new LayoutClient(
-        () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' }),
-      ))
+    const client = arrangeClient()
+    const revision = ++layoutRevision
+    const requestId = `layout:${revision}`
     const attempt: ArrangeAttempt = {
-      revision: ++layoutRevision,
+      revision,
       projection,
       workflowIdentity,
       generation: pairGeneration,
@@ -1000,6 +1116,7 @@
       positions: canvasPositionsStore.get(),
       incomingPositions: layout.nodePositions,
       client,
+      metrics: beginArrangeMetrics(requestId),
     }
     activeArrange = attempt
     clearPendingDrag()
@@ -1007,20 +1124,25 @@
     authoringFeedback = 'Arranging graph…'
     onArrangeBusyChange(true, attempt.workflowIdentity)
     try {
+      let phaseStartedAt = performance.now()
       await measureArrangement(attempt)
+      recordArrangePhase(attempt.metrics, 'measure', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
       const nodes = measuredLayoutNodes()
       if (!nodes) throw new Error('Canvas measurements unavailable.')
       attempt.nodes = nodes
       const edges = projection.edges.map(({ id, source, target }, order) => ({ id, source, target, order }))
+      phaseStartedAt = performance.now()
       const fingerprint = await graphFingerprint({ engine: ROUTING_ENGINE, scopeKey: attempt.scopeKey, nodes, edges })
+      recordArrangePhase(attempt.metrics, 'fingerprint', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       const request: LayoutWorkerRequest = snapshotLayoutRequest({
         type: 'layout',
         nodes,
         edges,
         identity: {
-          requestId: `layout:${attempt.revision}`,
+          requestId,
           workflowIdentity: attempt.workflowIdentity,
           pairGeneration: attempt.generation,
           scopeKey: attempt.scopeKey,
@@ -1028,9 +1150,17 @@
           layoutRevision: attempt.revision,
         },
       })
+      recordArrangePhase(attempt.metrics, 'serialize', performance.now() - phaseStartedAt)
       recordEditorMetric('layouts')
+      phaseStartedAt = performance.now()
       const result = await client.arrange(request)
+      recordArrangePhase(attempt.metrics, 'worker', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      // Worker delivery, result validation, and the single accepted publication
+      // must not collapse into one renderer task at capacity.
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       if (
         result.type !== 'layout-result' ||
         !result.identity ||
@@ -1038,13 +1168,19 @@
         !validResultMetadata(result)
       )
         throw new Error('Invalid layout response.')
-      const validated = validateRoutedLayout({ nodes, edges, positions: result.positions, routes: result.routes })
+      const validated = validateRoutedLayoutSafety({ nodes, edges, positions: result.positions, routes: result.routes })
       if (!validated.ok || !boundsContainLayout(result, nodes)) throw new Error('Invalid routed layout.')
+      recordArrangePhase(attempt.metrics, 'validate', performance.now() - phaseStartedAt)
+      phaseStartedAt = performance.now()
       const finalFingerprint = await routingFingerprint({
         graphFingerprint: fingerprint,
         positions: validated.layout.positions,
       })
+      recordArrangePhase(attempt.metrics, 'fingerprint', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       const next: ScopeLayoutV1 = {
         ...layoutWithPositions(),
         nodePositions: validated.layout.positions,
@@ -1098,8 +1234,11 @@
       }
       onLayoutChange(next, attempt.workflowIdentity)
       await tick()
+      recordArrangePhase(attempt.metrics, 'publish', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       await viewportController?.fitGraph(result.bounds)
+      recordArrangePhase(attempt.metrics, 'fit', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
       arrangedViewport = viewportController?.viewport()
       if (arrangedViewport && pendingLayout?.owner === attempt) {
@@ -1110,10 +1249,15 @@
       }
       authoringFeedback = `Graph arranged: ${nodes.length} nodes and ${edges.length} dependencies.`
     } catch {
-      if (arrangeIsCurrent(attempt))
+      if (arrangeIsCurrent(attempt)) {
         authoringFeedback = attempt.published
           ? `Graph arranged: ${projection.nodes.length} nodes and ${projection.edges.length} dependencies.`
           : ARRANGE_FAILURE
+        if (!attempt.published) {
+          finishArrangeMetrics(attempt.metrics, 'failed')
+          attempt.metricsFinished = true
+        }
+      }
     } finally {
       if (!destroyed && activeArrange === attempt && authoringFeedback === 'Arranging graph…')
         authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
@@ -1124,11 +1268,17 @@
   function withCurrentMeasurements(nodes: CanvasNode[], currentNodes: CanvasNode[]): CanvasNode[] {
     // Same-scope content changes keep their observed footprint until the next
     // ResizeObserver update. Other workflows/scopes must obtain their own sizes.
+    ensureMeasurementCacheContext()
+    rememberMeasurements(currentNodes)
     const previous = new Map(currentNodes.map((node) => [node.id, node]))
-    return nodes.map((node) => {
-      const measured = previous.get(node.id)?.measured
-      return node.measured || !measured ? node : { ...node, measured }
-    })
+    return withCachedMeasurements(
+      nodes.map((node) => {
+        const prior = previous.get(node.id)
+        const measured = prior?.measured
+        if (prior && renderedKind(prior) !== renderedKind(node)) measurementCache.delete(node.id)
+        return node.measured || !measured ? node : { ...node, measured }
+      }),
+    )
   }
 
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
@@ -1761,9 +1911,24 @@
     if (!next) return persistenceQueue
     const operation = persistenceQueue
       .catch(() => undefined)
-      .then(() => {
+      .then(async () => {
+        const startedAt = performance.now()
         recordEditorMetric('layoutSaves')
-        return onPersistLayout(next.scope, next.identity)
+        try {
+          await onPersistLayout(next.scope, next.identity)
+          if (next.owner && !next.owner.metricsFinished) {
+            recordArrangePhase(next.owner.metrics, 'persist', performance.now() - startedAt)
+            finishArrangeMetrics(next.owner.metrics, 'accepted')
+            next.owner.metricsFinished = true
+          }
+        } catch (error) {
+          if (next.owner && !next.owner.metricsFinished) {
+            recordArrangePhase(next.owner.metrics, 'persist', performance.now() - startedAt)
+            finishArrangeMetrics(next.owner.metrics, 'failed')
+            next.owner.metricsFinished = true
+          }
+          throw error
+        }
       })
     persistenceQueue = operation
     return operation
@@ -1771,6 +1936,7 @@
 
   onMount(() => {
     canvasMounted = true
+    arrangeClient().warm?.()
     root.tabIndex = 0
     let menuCanvasWidth = root.clientWidth
     let menuCanvasHeight = root.clientHeight
@@ -1880,6 +2046,7 @@
     const client = activeArrange?.client ?? layoutClient ?? ownedLayoutClient
     cancelArrange()
     client?.destroy()
+    measurementCache.clear()
     clearSelectionGestures()
     void flushPersistence().catch(onPersistenceError)
   })
