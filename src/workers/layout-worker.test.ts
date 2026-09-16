@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
-import { createLayoutWorkerProcessor, processLayoutWorkerRequest } from './layout-worker'
+import { createEagerElkEngine, createLayoutWorkerProcessor, processLayoutWorkerRequest } from './layout-worker'
 import type { LayoutWorkerRequest } from './layout-worker-protocol'
 
 const request: LayoutWorkerRequest = {
@@ -20,6 +20,52 @@ const request: LayoutWorkerRequest = {
   edges: [{ id: 'ab', source: 'a', target: 'b', order: 0 }],
 }
 describe('layout worker', () => {
+  it('creates one nested engine eagerly and lets ELK claim it exactly once', () => {
+    const endpoint = { terminate: vi.fn() }
+    const createWorker = vi.fn(() => endpoint)
+    let workerFactory!: () => typeof endpoint
+    const elk = {}
+
+    expect(
+      createEagerElkEngine(createWorker, (factory) => {
+        workerFactory = factory
+        return elk
+      }),
+    ).toBe(elk)
+    expect(createWorker).toHaveBeenCalledOnce()
+    expect(workerFactory()).toBe(endpoint)
+    expect(workerFactory).toThrow('Nested ELK worker was already claimed.')
+    expect(endpoint.terminate).not.toHaveBeenCalled()
+  })
+
+  it('terminates the eager nested worker when ELK construction fails', () => {
+    const endpoint = { terminate: vi.fn() }
+
+    expect(() =>
+      createEagerElkEngine(
+        () => endpoint,
+        () => {
+          throw new Error('constructor failed')
+        },
+      ),
+    ).toThrow('constructor failed')
+    expect(endpoint.terminate).toHaveBeenCalledOnce()
+  })
+
+  it('owns a new nested worker for every outer engine construction', () => {
+    const endpoints = [{ terminate: vi.fn() }, { terminate: vi.fn() }]
+    const createWorker = vi.fn(() => endpoints.shift()!)
+    const factories: (() => { terminate(): void })[] = []
+
+    createEagerElkEngine(createWorker, (factory) => factories.push(factory))
+    const first = factories[0]!()
+    first.terminate()
+    createEagerElkEngine(createWorker, (factory) => factories.push(factory))
+
+    expect(factories[1]!()).not.toBe(first)
+    expect(createWorker).toHaveBeenCalledTimes(2)
+  })
+
   it('caches only the last accepted full layout identity and exact graph snapshot', async () => {
     const layout = async () => ({
       id: 'root',
@@ -49,6 +95,43 @@ describe('layout worker', () => {
     expect(elk.layout).toHaveBeenCalledOnce()
   })
 
+  it('returns invalid_request when a cyclic message cannot be serialized for the cache', async () => {
+    const cyclicNode = { ...request.nodes[0] } as LayoutWorkerRequest['nodes'][number] & { self?: unknown }
+    cyclicNode.self = cyclicNode
+    const input = { ...request, nodes: [cyclicNode, request.nodes[1]!] }
+    const layout = vi.fn()
+    const process = createLayoutWorkerProcessor({ layout })
+
+    await expect(process(input)).resolves.toMatchObject({
+      type: 'layout-error',
+      identity: request.identity,
+      code: 'invalid_request',
+    })
+    expect(layout).not.toHaveBeenCalled()
+  })
+
+  it('rejects an over-capacity message before attempting layout', async () => {
+    const input = {
+      ...request,
+      nodes: Array.from({ length: 251 }, (_, order) => ({
+        id: `node-${order}`,
+        order,
+        width: 216,
+        height: 104,
+      })),
+      edges: [],
+    }
+    const layout = vi.fn()
+    const process = createLayoutWorkerProcessor({ layout })
+
+    await expect(process(input)).resolves.toMatchObject({
+      type: 'layout-error',
+      identity: request.identity,
+      code: 'invalid_request',
+    })
+    expect(layout).not.toHaveBeenCalled()
+  })
+
   it.each([
     [
       'workflow identity',
@@ -66,13 +149,51 @@ describe('layout worker', () => {
       }),
     ],
     [
-      'node size',
+      'graph fingerprint',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        identity: { ...input.identity, graphFingerprint: `sha256:${'b'.repeat(64)}` as const },
+      }),
+    ],
+    [
+      'node id',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        nodes: input.nodes.map((node, index) => (index ? node : { ...node, id: 'renamed-node' })),
+        edges: input.edges.map((edge) => ({ ...edge, source: 'renamed-node' })),
+      }),
+    ],
+    [
+      'node order field',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        nodes: input.nodes.map((node, index) => (index ? node : { ...node, order: 7 })),
+      }),
+    ],
+    [
+      'node width',
       (input: LayoutWorkerRequest) => ({
         ...input,
         nodes: input.nodes.map((node, index) => (index ? node : { ...node, width: 217 })),
       }),
     ],
-    ['edge', (input: LayoutWorkerRequest) => ({ ...input, edges: [{ ...input.edges[0]!, id: 'renamed-edge' }] })],
+    [
+      'node height',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        nodes: input.nodes.map((node, index) => (index ? node : { ...node, height: 105 })),
+      }),
+    ],
+    ['node sequence', (input: LayoutWorkerRequest) => ({ ...input, nodes: [...input.nodes].reverse() })],
+    ['edge id', (input: LayoutWorkerRequest) => ({ ...input, edges: [{ ...input.edges[0]!, id: 'renamed-edge' }] })],
+    [
+      'edge endpoints',
+      (input: LayoutWorkerRequest) => ({
+        ...input,
+        edges: [{ ...input.edges[0]!, source: 'b', target: 'a' }],
+      }),
+    ],
+    ['edge order field', (input: LayoutWorkerRequest) => ({ ...input, edges: [{ ...input.edges[0]!, order: 9 }] })],
   ])('misses the bounded worker cache after a %s change', async (_label, change) => {
     const layout = vi.fn(async (graph: Parameters<ElkLike['layout']>[0]) => ({
       ...graph,

@@ -6,6 +6,7 @@ import { shouldRefreshCanvasProjection, type CanvasProjectionRefreshSnapshot } f
 
 const projection = {} as ProjectedGraph
 const issues: readonly ValidationIssue[] = []
+const groupSummaries = {}
 const positions: ScopeLayoutV1['nodePositions'] = {
   collect: { x: 100, y: 200 },
   review: { x: 320, y: 0 },
@@ -15,6 +16,7 @@ function snapshot(overrides: Partial<CanvasProjectionRefreshSnapshot> = {}): Can
   return {
     projection,
     issues,
+    groupSummaries,
     workflowIdentity: 'workspace\0release.yaml',
     stale: false,
     readOnly: false,
@@ -44,6 +46,10 @@ describe('shouldRefreshCanvasProjection', () => {
     ['routing added', snapshot({ routingFingerprint: `sha256:${'a'.repeat(64)}` })],
     ['projection', snapshot({ projection: {} as ProjectedGraph })],
     ['diagnostics', snapshot({ issues: [{} as ValidationIssue] })],
+    [
+      'compound summaries',
+      snapshot({ groupSummaries: { repeat: { bodyNodeCount: 2, errorCount: 0, requiredIssueCount: 0 } } }),
+    ],
     ['stale state', snapshot({ stale: true })],
     ['read-only state', snapshot({ readOnly: true })],
     ['transition state', snapshot({ transitionLocked: true })],

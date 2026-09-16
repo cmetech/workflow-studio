@@ -444,6 +444,50 @@ describe('GraphCanvas', () => {
     }
   })
 
+  it('keeps arrange metrics owned when a position update replaces the post-arrange debounced save', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onPersistLayout })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 72, y: 96 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 72, y: 96 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(onPersistLayout).toHaveBeenCalledOnce()
+      expect(onPersistLayout.mock.calls[0]![0]).toMatchObject({
+        nodePositions: expect.objectContaining({ collect: { x: 72, y: 96 } }),
+      })
+      expect(latestArrangeMetrics()).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'accepted',
+      })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
   it('warms the reusable layout endpoint when the canvas mounts', async () => {
     const client = new DeferredLayoutClient()
     const rendered = renderCanvas({ projection, layout, layoutClient: client })
@@ -479,6 +523,123 @@ describe('GraphCanvas', () => {
     } finally {
       rendered.unmount()
       measurements.restore()
+    }
+  })
+
+  it('requires a fresh node measurement after issue badges change rendered height', async () => {
+    const sizes = { collect: { width: 240, height: 104 }, review: { width: 240, height: 168 } }
+    const measurements = canvasMeasurements(sizes)
+    const client = new DeferredLayoutClient()
+    const props = { projection, layout, layoutClient: client, issues: [] }
+    const rendered = renderCanvas(props)
+    let arranging: Promise<void> | undefined
+    const frames: FrameRequestCallback[] = []
+    try {
+      await measurements.publish()
+      sizes.collect.height = 144
+      await rendered.rerender({
+        ...props,
+        issues: [
+          {
+            code: 'schema_required',
+            layer: 'contract',
+            severity: 'error',
+            blocking: true,
+            message: 'Command is required.',
+            document: 'definition',
+            nodeId: 'collect',
+          },
+        ],
+      })
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      arranging = rendered.component.arrange()
+      await waitFor(() => expect(frames).toHaveLength(1))
+      frames.shift()!(performance.now())
+      await waitFor(() =>
+        expect(client.requests.length > 0 || latestArrangeMetrics()?.outcome !== 'pending').toBe(true),
+      )
+
+      expect(client.requests).toHaveLength(0)
+      await arranging
+      frame.mockRestore()
+
+      await measurements.publish()
+      const measuredArrange = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      expect(client.requests[0]!.nodes.find(({ id }) => id === 'collect')).toMatchObject({ height: 144 })
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await measuredArrange
+    } finally {
+      rendered.unmount()
+      await arranging
+      measurements.restore()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('requires a fresh node measurement after a compound summary changes rendered height', async () => {
+    const loopProjection: ProjectedGraph = {
+      ...projection,
+      nodes: projection.nodes.map((node, index) => (index === 0 ? { ...node, kind: 'loop_group' } : node)),
+    }
+    const sizes = { collect: { width: 240, height: 136 }, review: { width: 240, height: 168 } }
+    const measurements = canvasMeasurements(sizes)
+    const client = new DeferredLayoutClient()
+    const props = {
+      projection: loopProjection,
+      layout,
+      layoutClient: client,
+      groupSummaries: {
+        collect: { bodyNodeCount: 1, errorCount: 0, requiredIssueCount: 0 },
+      },
+    }
+    const rendered = renderCanvas(props)
+    let arranging: Promise<void> | undefined
+    const frames: FrameRequestCallback[] = []
+    try {
+      await measurements.publish()
+      sizes.collect.height = 184
+      await rendered.rerender({
+        ...props,
+        groupSummaries: {
+          collect: {
+            bodyNodeCount: 3,
+            maxIterations: 5,
+            primarySinkId: 'review',
+            errorCount: 0,
+            requiredIssueCount: 0,
+          },
+        },
+      })
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      arranging = rendered.component.arrange()
+      await waitFor(() => expect(frames).toHaveLength(1))
+      frames.shift()!(performance.now())
+      await waitFor(() =>
+        expect(client.requests.length > 0 || latestArrangeMetrics()?.outcome !== 'pending').toBe(true),
+      )
+
+      expect(client.requests).toHaveLength(0)
+      await arranging
+      frame.mockRestore()
+
+      await measurements.publish()
+      const measuredArrange = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      expect(client.requests[0]!.nodes.find(({ id }) => id === 'collect')).toMatchObject({ height: 184 })
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await measuredArrange
+    } finally {
+      rendered.unmount()
+      await arranging
+      measurements.restore()
+      vi.restoreAllMocks()
     }
   })
 
@@ -1630,7 +1791,7 @@ describe('GraphCanvas', () => {
     }
   })
 
-  it('[RG8] [RG12] cancels a partial capacity measurement without posting or persisting layout', async () => {
+  it('[RG8] [RG12] measures capacity in bounded batches without republishing the primary graph', async () => {
     const fixture = createLargeWorkflowFixture()
     const measurements = canvasMeasurements(
       Object.fromEntries(fixture.projection.nodes.map(({ id }) => [id, { width: 216, height: 104 }])),
@@ -1647,25 +1808,47 @@ describe('GraphCanvas', () => {
       onPersistLayout: persist,
     })
     await measurements.publish()
-    const before = rendered.container.querySelectorAll('.svelte-flow__node').length
-    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockReturnValue(321)
+    const primary = rendered.container.querySelector<HTMLElement>(
+      '[data-testid="workflow-canvas-viewport"] > .svelte-flow',
+    )!
+    const primaryIds = () =>
+      [...primary.querySelectorAll<HTMLElement>('.svelte-flow__node')].map((node) => node.dataset.id)
+    const before = primaryIds()
+    const frames: FrameRequestCallback[] = []
+    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
     const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    let mounted = true
     try {
       const arranging = rendered.component.arrange()
-      await tick()
-      const during = rendered.container.querySelectorAll('.svelte-flow__node').length
-      expect(during).toBeGreaterThan(before)
-      expect(during).toBeLessThanOrEqual(before + 40)
-      expect(during).toBeLessThan(250)
+      await waitFor(() => expect(frames).toHaveLength(1))
+      const layer = rendered.container.querySelector<HTMLElement>('[data-testid="arrange-measurement-layer"]')!
+      const batchIds = () =>
+        [...layer.querySelectorAll<HTMLElement>('.svelte-flow__node')].map((node) => node.dataset.id)
+      const firstBatch = batchIds()
+      expect(firstBatch.length).toBeGreaterThan(0)
+      expect(firstBatch.length).toBeLessThanOrEqual(40)
+      expect(primaryIds()).toEqual(before)
       expect(client.arrange).not.toHaveBeenCalled()
-      await waitFor(() => expect(frame).toHaveBeenCalled())
+
+      await measurements.publish()
+      frames.shift()!(performance.now())
+      await waitFor(() => expect(frames).toHaveLength(1))
+      expect(batchIds()).not.toEqual(firstBatch)
+      expect(batchIds().length).toBeLessThanOrEqual(40)
+      expect(primaryIds()).toEqual(before)
+
       rendered.unmount()
+      mounted = false
       await arranging
-      expect(cancel).toHaveBeenCalledWith(321)
+      expect(cancel).toHaveBeenCalled()
       expect(client.arrange).not.toHaveBeenCalled()
       expect(publish).not.toHaveBeenCalled()
       expect(persist).not.toHaveBeenCalled()
     } finally {
+      if (mounted) rendered.unmount()
       measurements.restore()
       frame.mockRestore()
       cancel.mockRestore()

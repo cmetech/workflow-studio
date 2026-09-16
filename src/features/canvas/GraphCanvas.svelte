@@ -207,6 +207,7 @@
   const initialProjection = deriveCanvas()
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
   let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
+  let measurementNodes = $state.raw<CanvasNode[]>([])
   let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
   let restoredWorkflowIdentity = $state<string | null>(null)
   let restoredVersion = $state(0)
@@ -470,6 +471,7 @@
     const nextRefresh: CanvasProjectionRefreshSnapshot = {
       projection,
       issues,
+      groupSummaries,
       workflowIdentity,
       stale,
       readOnly,
@@ -632,7 +634,6 @@
       )
         return
       const firstActivation = !currentActiveRouting()
-      clearRenderedRouting()
       // Absence of measurements is temporary, not evidence of a stale cache.
       if (!nodes) {
         if (
@@ -642,6 +643,7 @@
           invalidateRouting(true)
         return
       }
+      clearRenderedRouting()
       const revision = layoutRevision
       const isCurrent = () =>
         !destroyed &&
@@ -1054,11 +1056,12 @@
   }
 
   async function measureArrangement(attempt: ArrangeAttempt): Promise<void> {
-    // Mount offscreen cards in bounded batches. Existing visible cards and edges
-    // stay in place; the full node/edge topology remains bound throughout.
+    // Mount offscreen cards in a separate bounded layer. The primary graph stays
+    // bound exactly once instead of republishing all nodes for every batch.
     flowNodes = withCachedMeasurements(flowNodes)
+    const primaryFlow = viewportElement.querySelector(':scope > .svelte-flow')
     const mountedNodes = new Set(
-      [...root.querySelectorAll('.svelte-flow__node')].flatMap((node) => {
+      [...(primaryFlow?.querySelectorAll('.svelte-flow__node') ?? [])].flatMap((node) => {
         const id = node.getAttribute('data-id')
         return id ? [id] : []
       }),
@@ -1072,34 +1075,24 @@
       rememberMeasurements(flowNodes)
       return
     }
-    const mountedEdges = new Set(
-      [...root.querySelectorAll('.svelte-flow__edge')].map((edge) => edge.getAttribute('data-id')),
-    )
-    const hiddenNodes = new Map(flowNodes.map((node) => [node.id, node.hidden]))
-    const hiddenEdges = new Map(flowEdges.map((edge) => [edge.id, edge.hidden]))
     const restore = () => {
-      flowNodes = flowNodes.map((node) => measurementVisibility(node, hiddenNodes.get(node.id)))
-      flowEdges = flowEdges.map((edge) => measurementVisibility(edge, hiddenEdges.get(edge.id)))
+      measurementNodes = []
       arrangeMeasuring = false
       delete attempt.restoreMeasurementVisibility
     }
     attempt.restoreMeasurementVisibility = restore
     arrangeMeasuring = true
-    flowEdges = flowEdges.map((edge) => (mountedEdges.has(edge.id) ? edge : { ...edge, hidden: true }))
-    // This local accumulator never participates in reactive state; flowNodes is reassigned per batch.
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const revealed = new Set([...flowNodes.filter(hasCachedMeasurement).map((node) => node.id), ...mountedNodes])
+    const byId = new Map(uncached.map((node) => [node.id, node]))
     for (let offset = 0; offset < missing.length; offset += 40) {
-      for (const id of missing.slice(offset, offset + 40)) revealed.add(id)
-      flowNodes = flowNodes.map((node) =>
-        measurementVisibility(node, revealed.has(node.id) ? hiddenNodes.get(node.id) : true),
-      )
+      measurementNodes = missing.slice(offset, offset + 40).map((id) => measurementVisibility(byId.get(id)!, undefined))
       await measurementFrame(attempt)
       if (!arrangeIsCurrent(attempt)) return
+      rememberMeasurements(measurementNodes)
     }
     restore()
-    await tick()
     rememberMeasurements(flowNodes)
+    flowNodes = withCachedMeasurements(flowNodes)
+    await tick()
   }
 
   export async function arrange(): Promise<void> {
@@ -1274,8 +1267,9 @@
     return withCachedMeasurements(
       nodes.map((node) => {
         const prior = previous.get(node.id)
-        const measured = prior?.measured
-        if (prior && renderedKind(prior) !== renderedKind(node)) measurementCache.delete(node.id)
+        const sameRenderedKind = prior !== undefined && renderedKind(prior) === renderedKind(node)
+        const measured = sameRenderedKind ? prior.measured : undefined
+        if (prior && !sameRenderedKind) measurementCache.delete(node.id)
         return node.measured || !measured ? node : { ...node, measured }
       }),
     )
@@ -1891,7 +1885,13 @@
 
   function schedulePersist(next: ScopeLayoutV1): void {
     onLayoutChange({ ...next, routing: next.routing }, workflowIdentity)
-    pendingLayout = { scope: structuredClone(next), identity: workflowIdentity }
+    const ownedArrange = pendingLayout?.identity === workflowIdentity ? pendingLayout : undefined
+    pendingLayout = {
+      scope: structuredClone(next),
+      identity: workflowIdentity,
+      ...(ownedArrange?.owner ? { owner: ownedArrange.owner } : {}),
+      ...(ownedArrange?.waiting ? { waiting: ownedArrange.waiting } : {}),
+    }
     schedulePersistenceFlush()
   }
 
@@ -2103,6 +2103,25 @@
     ondragover={dragNodeKindOver}
     ondrop={dropNodeKind}
   >
+    {#if arrangeMeasuring}
+      <div class="arrange-measurement-layer" data-testid="arrange-measurement-layer" aria-hidden="true" inert>
+        <SvelteFlow
+          bind:nodes={measurementNodes}
+          edges={[]}
+          {nodeTypes}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          onlyRenderVisibleElements={false}
+          nodesFocusable={false}
+          edgesFocusable={false}
+          panOnDrag={false}
+          zoomOnScroll={false}
+          zoomOnPinch={false}
+          zoomOnDoubleClick={false}
+        />
+      </div>
+    {/if}
     <SvelteFlow
       bind:nodes={flowNodes}
       bind:edges={flowEdges}
@@ -2112,7 +2131,7 @@
       nodesDraggable={canDrag()}
       nodesConnectable={canDrag()}
       elementsSelectable={!transitionLocked}
-      onlyRenderVisibleElements={!arrangeMeasuring && projection.capacity.nodeCount !== 1}
+      onlyRenderVisibleElements={projection.capacity.nodeCount !== 1}
       nodesFocusable={true}
       edgesFocusable={true}
       elevateEdgesOnSelect={false}
@@ -2252,6 +2271,16 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .arrange-measurement-layer {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    contain: strict;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
   }
 
   .graph-canvas:focus {

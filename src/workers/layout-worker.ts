@@ -2,6 +2,7 @@
 
 import ELK from 'elkjs/lib/elk-api.js'
 import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
+import { VISUAL_EDGE_CAPACITY, VISUAL_NODE_CAPACITY } from '$src/lib/projection/types'
 import {
   sanitizeLayoutRequestIdentity,
   type LayoutWorkerRequest,
@@ -58,6 +59,25 @@ function cacheableResult(result: LayoutWorkerSuccess): Omit<LayoutWorkerSuccess,
   })
 }
 
+/** Starts one nested engine at outer-worker startup and transfers ownership to one ELK instance. */
+export function createEagerElkEngine<WorkerType extends { terminate(): void }, ElkType>(
+  createWorker: () => WorkerType,
+  createElk: (workerFactory: () => WorkerType) => ElkType,
+): ElkType {
+  const worker = createWorker()
+  let claimed = false
+  try {
+    return createElk(() => {
+      if (claimed) throw new Error('Nested ELK worker was already claimed.')
+      claimed = true
+      return worker
+    })
+  } catch (error) {
+    worker.terminate()
+    throw error
+  }
+}
+
 /** Owns one bounded last-result cache for the lifetime of one warmed worker. */
 export function createLayoutWorkerProcessor(elk: ElkLike): (request: unknown) => Promise<LayoutWorkerResponse> {
   let cached: CachedLayoutResult | undefined
@@ -68,7 +88,29 @@ export function createLayoutWorkerProcessor(elk: ElkLike): (request: unknown) =>
         : null
     if (identity && (request as { type?: unknown }).type === 'layout') {
       const typed = request as LayoutWorkerRequest
-      const key = cacheKey(typed)
+      if (
+        !Array.isArray(typed.nodes) ||
+        !Array.isArray(typed.edges) ||
+        typed.nodes.length > VISUAL_NODE_CAPACITY ||
+        typed.edges.length > VISUAL_EDGE_CAPACITY
+      )
+        return {
+          type: 'layout-error',
+          identity,
+          code: 'invalid_request',
+          message: 'Graph arrangement request is invalid.',
+        }
+      let key: string
+      try {
+        key = cacheKey(typed)
+      } catch {
+        return {
+          type: 'layout-error',
+          identity,
+          code: 'invalid_request',
+          message: 'Graph arrangement request is invalid.',
+        }
+      }
       if (cached?.key === key) return { ...cached.result, identity, durationMs: 0 }
       const result = await processLayoutWorkerRequest(request, elk)
       if (result.type === 'layout-result') cached = { key, result: cacheableResult(result) }
@@ -83,10 +125,10 @@ if (typeof WorkerGlobalScope !== 'undefined' && workerScope instanceof WorkerGlo
   // elk-api supports a real worker factory. The algorithm entry must run in its
   // own scope because it owns onmessage; raw ELK messages never reach the renderer.
   // Dedicated-worker termination also terminates its descendant workers.
-  const elk = new ELK({
-    algorithms: ['layered'],
-    workerFactory: () => new Worker(new URL('./elk-engine-worker.ts', import.meta.url), { type: 'module' }),
-  })
+  const elk = createEagerElkEngine(
+    () => new Worker(new URL('./elk-engine-worker.ts', import.meta.url), { type: 'module' }),
+    (workerFactory) => new ELK({ algorithms: ['layered'], workerFactory }),
+  )
   const processRequest = createLayoutWorkerProcessor(elk)
   workerScope.addEventListener('message', (event: MessageEvent<unknown>) => {
     void processRequest(event.data).then((response) => workerScope.postMessage(response))
