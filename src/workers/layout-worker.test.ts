@@ -19,6 +19,23 @@ const request: LayoutWorkerRequest = {
   ],
   edges: [{ id: 'ab', source: 'a', target: 'b', order: 0 }],
 }
+
+function acceptedElkGraph() {
+  return {
+    id: 'root',
+    children: [
+      { id: 'a', x: 32, y: 32, width: 216, height: 104 },
+      { id: 'b', x: 384, y: 32, width: 216, height: 104 },
+    ],
+    edges: [
+      {
+        id: 'ab',
+        sections: [{ id: 's', startPoint: { x: 248, y: 84 }, endPoint: { x: 384, y: 84 } }],
+      },
+    ],
+  }
+}
+
 describe('layout worker', () => {
   it('creates one nested engine eagerly and lets ELK claim it exactly once', () => {
     const endpoint = { terminate: vi.fn() }
@@ -95,18 +112,54 @@ describe('layout worker', () => {
     expect(elk.layout).toHaveBeenCalledOnce()
   })
 
-  it('returns invalid_request when a cyclic message cannot be serialized for the cache', async () => {
+  it('ignores an undeclared cyclic field and safely reuses the declared request cache', async () => {
     const cyclicNode = { ...request.nodes[0] } as LayoutWorkerRequest['nodes'][number] & { self?: unknown }
     cyclicNode.self = cyclicNode
-    const input = { ...request, nodes: [cyclicNode, request.nodes[1]!] }
+    const input = {
+      ...request,
+      identity: { ...request.identity, requestId: 'cyclic-extra', layoutRevision: 4 },
+      nodes: [cyclicNode, request.nodes[1]!],
+    }
+    const layout = vi.fn(async () => acceptedElkGraph())
+    const process = createLayoutWorkerProcessor({ layout })
+
+    await expect(process(input)).resolves.toMatchObject({ type: 'layout-result', identity: input.identity })
+    await expect(process(request)).resolves.toMatchObject({
+      type: 'layout-result',
+      identity: request.identity,
+      durationMs: 0,
+    })
+    expect(layout).toHaveBeenCalledOnce()
+  })
+
+  it('ignores huge undeclared fields without keying or retaining their content', async () => {
+    const input = {
+      ...request,
+      identity: { ...request.identity, requestId: 'huge-extra', layoutRevision: 4 },
+      nodes: request.nodes.map((node, index) => (index === 0 ? { ...node, privateYaml: 'x'.repeat(1_000_000) } : node)),
+      edges: request.edges.map((edge) => ({ ...edge, privateTrace: 'y'.repeat(1_000_000) })),
+    }
+    const layout = vi.fn(async () => acceptedElkGraph())
+    const process = createLayoutWorkerProcessor({ layout })
+
+    await expect(process(input)).resolves.toMatchObject({ type: 'layout-result', identity: input.identity })
+    await expect(process(request)).resolves.toMatchObject({
+      type: 'layout-result',
+      identity: request.identity,
+      durationMs: 0,
+    })
+    expect(layout).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['oversized declared id', { ...request, nodes: [{ ...request.nodes[0]!, id: 'x'.repeat(4097) }] }],
+    ['invalid declared dimension', { ...request, nodes: [{ ...request.nodes[0]!, width: NaN }] }],
+    ['invalid declared endpoint', { ...request, edges: [{ ...request.edges[0]!, source: { private: true } }] }],
+  ])('returns invalid_request for %s before attempting layout', async (_label, input) => {
     const layout = vi.fn()
     const process = createLayoutWorkerProcessor({ layout })
 
-    await expect(process(input)).resolves.toMatchObject({
-      type: 'layout-error',
-      identity: request.identity,
-      code: 'invalid_request',
-    })
+    await expect(process(input)).resolves.toMatchObject({ type: 'layout-error', code: 'invalid_request' })
     expect(layout).not.toHaveBeenCalled()
   })
 

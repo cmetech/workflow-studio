@@ -1716,6 +1716,45 @@ describe('GraphCanvas', () => {
     }
   })
 
+  it('terminalizes an unpublished attempt invalidated at an await boundary before reactive cancellation', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const mutableProjection = structuredClone(projection) as ProjectedGraph
+    let finish!: (fingerprint: `sha256:${string}`) => void
+    const hashing = vi.spyOn(routedLayout, 'graphFingerprint').mockImplementation(
+      () =>
+        new Promise<`sha256:${string}`>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({
+      projection: mutableProjection,
+      layout,
+      layoutClient: client,
+      onLayoutChange,
+      onPersistLayout,
+    })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(hashing).toHaveBeenCalledOnce())
+      ;(mutableProjection.scope as { key: ProjectedGraph['scope']['key'] }).key = 'loop-group:replacement'
+      finish(`sha256:${'b'.repeat(64)}`)
+      await arranging
+
+      expect(client.requests).toHaveLength(0)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+      expect(latestArrangeMetrics()).toMatchObject({ outcome: 'cancelled' })
+    } finally {
+      rendered.unmount()
+      hashing.mockRestore()
+      measurements.restore()
+    }
+  })
+
   it('keeps a newer Arrange busy when an obsolete request finally settles', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()

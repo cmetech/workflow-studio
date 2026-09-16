@@ -1,10 +1,11 @@
 /// <reference lib="webworker" />
 
 import ELK from 'elkjs/lib/elk-api.js'
-import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
+import { arrangeWithElk, validLayoutWorkerRequest, type ElkLike } from '$src/features/canvas/layout-graph'
 import { VISUAL_EDGE_CAPACITY, VISUAL_NODE_CAPACITY } from '$src/lib/projection/types'
 import {
   sanitizeLayoutRequestIdentity,
+  type LayoutRequestIdentity,
   type LayoutWorkerRequest,
   type LayoutWorkerResponse,
   type LayoutWorkerSuccess,
@@ -36,6 +37,56 @@ interface CachedLayoutResult {
 function cacheKey(request: LayoutWorkerRequest): string {
   const { workflowIdentity, pairGeneration, scopeKey, graphFingerprint } = request.identity
   return JSON.stringify([workflowIdentity, pairGeneration, scopeKey, graphFingerprint, request.nodes, request.edges])
+}
+
+function declaredRequestSnapshot(
+  request: { readonly nodes: readonly unknown[]; readonly edges: readonly unknown[] },
+  identity: LayoutRequestIdentity,
+): LayoutWorkerRequest | null {
+  try {
+    const nodes = Object.freeze(
+      request.nodes.map((value) => {
+        const node = value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+        const declared = node as Record<string, unknown>
+        return Object.freeze({
+          id: declared.id,
+          order: declared.order,
+          width: declared.width,
+          height: declared.height,
+        })
+      }),
+    )
+    const edges = Object.freeze(
+      request.edges.map((value) => {
+        const edge = value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {}
+        const declared = edge as Record<string, unknown>
+        return Object.freeze({
+          id: declared.id,
+          source: declared.source,
+          target: declared.target,
+          order: declared.order,
+        })
+      }),
+    )
+    const snapshot = Object.freeze({
+      type: 'layout' as const,
+      identity: Object.freeze({ ...identity }),
+      nodes,
+      edges,
+    })
+    return validLayoutWorkerRequest(snapshot) ? snapshot : null
+  } catch {
+    return null
+  }
+}
+
+function invalidRequest(identity: LayoutRequestIdentity): LayoutWorkerResponse {
+  return {
+    type: 'layout-error',
+    identity,
+    code: 'invalid_request',
+    message: 'Graph arrangement request is invalid.',
+  }
 }
 
 function cacheableResult(result: LayoutWorkerSuccess): Omit<LayoutWorkerSuccess, 'identity' | 'durationMs'> {
@@ -94,25 +145,12 @@ export function createLayoutWorkerProcessor(elk: ElkLike): (request: unknown) =>
         typed.nodes.length > VISUAL_NODE_CAPACITY ||
         typed.edges.length > VISUAL_EDGE_CAPACITY
       )
-        return {
-          type: 'layout-error',
-          identity,
-          code: 'invalid_request',
-          message: 'Graph arrangement request is invalid.',
-        }
-      let key: string
-      try {
-        key = cacheKey(typed)
-      } catch {
-        return {
-          type: 'layout-error',
-          identity,
-          code: 'invalid_request',
-          message: 'Graph arrangement request is invalid.',
-        }
-      }
+        return invalidRequest(identity)
+      const declared = declaredRequestSnapshot(typed, identity)
+      if (!declared) return invalidRequest(identity)
+      const key = cacheKey(declared)
       if (cached?.key === key) return { ...cached.result, identity, durationMs: 0 }
-      const result = await processLayoutWorkerRequest(request, elk)
+      const result = await processLayoutWorkerRequest(declared, elk)
       if (result.type === 'layout-result') cached = { key, result: cacheableResult(result) }
       return result
     }

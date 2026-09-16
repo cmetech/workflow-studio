@@ -868,11 +868,17 @@
   }
 
   function finishArrange(attempt: ArrangeAttempt): void {
-    if (pendingLayout?.owner === attempt) {
-      if (arrangeIsCurrent(attempt)) {
-        delete pendingLayout.waiting
+    const current = arrangeIsCurrent(attempt)
+    const ownedPendingPersistence = pendingLayout?.owner === attempt ? pendingLayout : undefined
+    if (ownedPendingPersistence) {
+      if (current) {
+        delete ownedPendingPersistence.waiting
         schedulePersistenceFlush()
       } else pendingLayout = null
+    }
+    if (!attempt.metricsFinished && !(ownedPendingPersistence && current)) {
+      finishArrangeMetrics(attempt.metrics, current ? 'failed' : 'cancelled')
+      attempt.metricsFinished = true
     }
     attempt.releasePersistence?.()
     delete attempt.releasePersistence

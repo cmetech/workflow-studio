@@ -63,7 +63,7 @@ const EXPANDED_SPACING: Readonly<LayoutOptions> = Object.freeze({
 })
 
 export function buildElkGraph(request: unknown): ElkNode | null {
-  if (!validRequest(request)) return null
+  if (!validLayoutWorkerRequest(request)) return null
   const nodes = [...request.nodes].sort(compareOrder)
   const edges = [...request.edges].sort(compareOrder)
   const occupied = new Set([...nodes.map(({ id }) => id), ...edges.map(({ id }) => id)])
@@ -232,7 +232,7 @@ export function readElkResult(request: LayoutWorkerRequest, result: unknown): El
 
 export async function arrangeWithElk(request: unknown, elk: ElkLike): Promise<LayoutWorkerResult> {
   const started = performance.now()
-  if (!validRequest(request)) return layoutFailure(request, 'invalid_request')
+  if (!validLayoutWorkerRequest(request)) return layoutFailure(request, 'invalid_request')
   const identity = sanitizeLayoutRequestIdentity(request.identity)!
   const graph = buildElkGraph(request)
   if (!graph) return layoutFailure(request, 'invalid_request')
@@ -352,7 +352,7 @@ function applyPortOrder(graph: ElkNode, order: ReadonlyMap<string, readonly stri
   }
 }
 
-function validRequest(request: unknown): request is LayoutWorkerRequest {
+export function validLayoutWorkerRequest(request: unknown): request is LayoutWorkerRequest {
   if (
     !isRecord(request) ||
     request.type !== 'layout' ||
