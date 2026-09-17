@@ -244,6 +244,20 @@ async function settleAuthoringLogicImports(): Promise<void> {
   await tick()
 }
 
+async function preloadLoopTabSurfaces(): Promise<void> {
+  await Promise.all([
+    settleAuthoringLogicImports(),
+    import('$src/features/workspace/Explorer.svelte'),
+    import('$src/features/canvas/GraphScopeHeader.svelte'),
+    import('$src/features/canvas/GraphCanvas.svelte'),
+    import('$src/features/editor/EditorModes.svelte'),
+    import('$src/features/inspector/Inspector.svelte'),
+    import('$src/features/documents/ProblemsPanel.svelte'),
+    import('$src/features/documents/AuxiliaryPanel.svelte'),
+    import('$src/features/canvas/LoopGroupScopeBar.svelte'),
+  ])
+}
+
 function installRealDocumentWorker(): () => void {
   const originalWorker = globalThis.Worker
   Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
@@ -303,6 +317,10 @@ describe('App', () => {
   it.each([false, true])(
     'defaults a loop tab once with blockers=%s and restores its explicit choice',
     async (blocking) => {
+      // This behavior test owns panel selection and restoration, not lazy-import
+      // latency. Resolve its participating surfaces before rendering so a cold
+      // Windows transform cannot consume an individual UI readiness bound.
+      await preloadLoopTabSurfaces()
       const backing = createBrowserBridge({
         initialFiles: {
           'flow.hermes.yaml': 'language_compatibility: archon-2026-07\n',
@@ -412,7 +430,7 @@ nodes:
         else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
       }
     },
-    40_000,
+    120_000,
   )
 
   it('shows docked panel controls and returns collapsed panel width to the editor', async () => {
