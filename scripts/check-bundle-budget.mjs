@@ -1,5 +1,5 @@
 import { gzipSync } from 'node:zlib'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +35,12 @@ const forbiddenContents = [
 
 function normalizePath(path) {
   return path.split(sep).join('/')
+}
+
+function workerTargets(source) {
+  return [...source.matchAll(/new Worker\(new URL\(\s*[`'"]\/?assets\/([^`'"]+\.js)[`'"]/g)].map(
+    (match) => `assets/${match[1]}`,
+  )
 }
 
 /**
@@ -109,8 +115,6 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
     const source = readFileSync(join(outputRoot, file), 'utf8')
     if (!source.includes('org.eclipse.elk.alg.layered')) continue
     if (!elkAlgorithmFiles.includes(file)) elkAlgorithmFiles.push(file)
-    if (!/^assets\/elk-engine-worker(?:-.*)?\.js$/.test(file))
-      violations.push(`ELK algorithm code escaped its descendant worker into ${file}.`)
   }
   // Workers are emitted outside the manifest. Inspect every JavaScript asset so
   // the worker-only assertion cannot be bypassed by a missing manifest entry.
@@ -120,17 +124,41 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
     const source = readFileSync(join(assetRoot, name), 'utf8')
     if (!source.includes('org.eclipse.elk.alg.layered')) continue
     if (!elkAlgorithmFiles.includes(file)) elkAlgorithmFiles.push(file)
-    if (!/^elk-engine-worker(?:-.*)?\.js$/.test(name))
-      violations.push(`ELK algorithm code escaped its descendant worker into ${file}.`)
   }
   if (elkAlgorithmFiles.length !== 1)
     violations.push(`Expected one ELK algorithm worker asset; found ${elkAlgorithmFiles.length}.`)
+
+  const graphCanvasEntry = manifest['src/features/canvas/GraphCanvas.svelte']
+  const graphCanvasFile = graphCanvasEntry?.file
+  const graphWorkerTargets = graphCanvasFile
+    ? workerTargets(readFileSync(join(outputRoot, graphCanvasFile), 'utf8'))
+    : []
+  const layoutWorkerFile = graphWorkerTargets.length === 1 ? graphWorkerTargets[0] : undefined
+  const layoutWorkerTargets =
+    layoutWorkerFile && existsSync(join(outputRoot, layoutWorkerFile))
+      ? workerTargets(readFileSync(join(outputRoot, layoutWorkerFile), 'utf8'))
+      : []
+  const elkWorkerFile = layoutWorkerTargets.length === 1 ? layoutWorkerTargets[0] : undefined
+  if (
+    !graphCanvasEntry?.isDynamicEntry ||
+    initialKeys.has('src/features/canvas/GraphCanvas.svelte') ||
+    !layoutWorkerFile ||
+    !elkWorkerFile ||
+    elkAlgorithmFiles.length !== 1 ||
+    elkAlgorithmFiles[0] !== elkWorkerFile
+  ) {
+    violations.push('The emitted layout worker does not create the sole ELK algorithm worker asset.')
+  }
+  for (const file of [layoutWorkerFile, elkWorkerFile]) {
+    if (file && initialFiles.has(file)) violations.push(`Initial renderer closure contains worker asset ${file}.`)
+  }
 
   return {
     manifestPath: normalizePath(relative(process.cwd(), absoluteManifest)),
     initialFiles: [...initialFiles].sort(),
     minifiedBytes,
     gzipBytes,
+    layoutWorkerFile,
     elkAlgorithmFiles: elkAlgorithmFiles.sort(),
     violations: [...new Set(violations)],
   }

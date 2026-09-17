@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { analyzeBundleBudget } from '../../scripts/check-bundle-budget.mjs'
 
-function fixtureBundle(options: { coldInInitial?: boolean; oversized?: boolean } = {}) {
+function fixtureBundle(options: { coldInInitial?: boolean; oversized?: boolean; orphanElkWorker?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-bundle-'))
   const assets = join(root, 'assets')
   const vite = join(root, '.vite')
@@ -35,9 +35,20 @@ function fixtureBundle(options: { coldInInitial?: boolean; oversized?: boolean }
     coldSources.map((source, index) => {
       const file =
         source === 'src/features/settings/SettingsPage.svelte' ? 'assets/settings.js' : `assets/cold-${index}.js`
-      if (file !== 'assets/settings.js') writeFileSync(join(root, file), `export const cold${index} = true;`)
+      if (source === 'src/features/canvas/GraphCanvas.svelte') {
+        writeFileSync(
+          join(root, file),
+          'const layout = new Worker(new URL("/assets/layout-worker.js", import.meta.url), { type: "module" });',
+        )
+      } else if (file !== 'assets/settings.js') writeFileSync(join(root, file), `export const cold${index} = true;`)
       return [source, { file, isDynamicEntry: true }]
     }),
+  )
+  writeFileSync(
+    join(assets, 'layout-worker.js'),
+    options.orphanElkWorker
+      ? 'export const layout = true;'
+      : 'const engine = new Worker(new URL("/assets/elk-engine-worker.js", import.meta.url), { type: "module" });',
   )
   writeFileSync(join(assets, 'elk-engine-worker.js'), 'const algorithm = "org.eclipse.elk.alg.layered";')
   writeFileSync(
@@ -82,6 +93,14 @@ describe('initial renderer bundle budget', () => {
     const result = analyzeBundleBudget(fixtureBundle({ oversized: true }))
 
     expect(result.violations).toContain('Initial renderer closure is 2100043 bytes; limit is 2000000 bytes.')
+  })
+
+  it('rejects an ELK-looking asset that is not the sole descendant worker of the emitted layout worker', () => {
+    const result = analyzeBundleBudget(fixtureBundle({ orphanElkWorker: true }))
+
+    expect(result.violations).toContain(
+      'The emitted layout worker does not create the sole ELK algorithm worker asset.',
+    )
   })
 
   it('keeps the real production entry within budget and every ELK algorithm in a worker asset', () => {

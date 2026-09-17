@@ -865,11 +865,15 @@ nodes:
     showActivity('examples')
     render(App)
 
-    const topics = await screen.findAllByRole('button', { name: 'Open documentation: Workflow definition' })
+    const topics = await screen.findAllByRole(
+      'button',
+      { name: 'Open documentation: Workflow definition' },
+      deferredSurfaceWait,
+    )
     await fireEvent.click(topics[0]!)
 
-    expect(await screen.findByLabelText('Offline documentation')).toBeVisible()
-    expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+    expect(await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Workflow definition' }, deferredSurfaceWait)).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
@@ -2073,7 +2077,7 @@ nodes:
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
       await screen.findByRole('heading', { name: 'Explorer' }, deferredSurfaceWait),
     )
-    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled(), deferredSurfaceWait)
     expect(screen.queryAllByRole('treeitem')).toHaveLength(0)
   })
 
@@ -2311,7 +2315,10 @@ nodes:
     expect(gitStatus).toHaveBeenCalledTimes(1)
     expect(gitStatus).toHaveBeenCalledWith('/startup')
     expect(gitState.get().inspection.repository).toEqual(repository)
-    expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
+    await waitFor(
+      () => expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null }),
+      deferredSurfaceWait,
+    )
   })
 
   it.each(['cancel', 'failure'] as const)(
@@ -2363,7 +2370,10 @@ nodes:
       expect(gitDetect).not.toHaveBeenCalled()
       expect(gitStatus).toHaveBeenCalledTimes(1)
       expect(gitState.get().inspection.repository).toEqual(repository)
-      expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null })
+      await waitFor(
+        () => expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null }),
+        deferredSurfaceWait,
+      )
     },
   )
 
@@ -2578,6 +2588,7 @@ nodes:
       await tick()
       await fireEvent.click(within(node).getByRole('button', { name: 'Inspector for collect' }))
       await waitFor(() => expect(screen.getByRole('complementary', { name: 'Inspector' })).not.toHaveAttribute('inert'))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus(), deferredSurfaceWait)
       const field = await screen.findByRole('textbox', { name: /^Id/i }, deferredSurfaceWait)
       const publications: Array<{ readonly revision: number; readonly analysisRevision: number | null }> = []
       let observed = $documentSession.get()

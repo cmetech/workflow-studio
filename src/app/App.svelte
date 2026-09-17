@@ -109,6 +109,7 @@
     formatWorkspaceOutcomeResults,
   } from '$src/features/workspace/workspace-action-coordinator'
   import OpenWorkspace from '$src/features/workspace/OpenWorkspace.svelte'
+  import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
   import { runProblemFocusCoordinator } from '$src/features/documents/problem-focus-coordinator'
   import type GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import LoopGroupEmptyState from '$src/features/canvas/LoopGroupEmptyState.svelte'
@@ -170,6 +171,7 @@
   import RotateCcw from 'lucide-svelte/icons/rotate-ccw'
   import Save from 'lucide-svelte/icons/save'
   import { createApplicationDisposal, disposeApplicationResources } from './application-disposal'
+  import { focusDeferredTarget } from './focus-deferred-target'
   import { installWindowCloseLifecycle } from './window-close-lifecycle'
 
   const globalContext: CommandContext = {
@@ -215,7 +217,6 @@
   const loadExplorer = memoizedSurface(() => import('$src/features/workspace/Explorer.svelte'))
   const loadNodePalette = memoizedSurface(() => import('$src/features/canvas/NodePalette.svelte'))
   const loadQuickOpen = memoizedSurface(() => import('$src/features/workspace/QuickOpen.svelte'))
-  const loadWorkflowContextMenu = memoizedSurface(() => import('$src/features/workspace/WorkflowContextMenu.svelte'))
   const loadNewWorkflowDialog = memoizedSurface(() => import('$src/features/workspace/NewWorkflowDialog.svelte'))
   const loadImportExportDialog = memoizedSurface(() => import('$src/features/workspace/ImportExportDialog.svelte'))
   const loadCommandPalette = memoizedSurface(() => import('$src/features/commands/CommandPalette.svelte'))
@@ -1136,17 +1137,20 @@
         : undefined
     if (!current()) return false
     openInspectorPanel()
-    await tick()
-    if (!current()) return false
-    const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
-    const target =
-      inspector?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
-      inspector?.querySelector<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
-      )
-    if (!current()) return false
-    target?.focus()
-    return true
+    return focusDeferredTarget({
+      load: loadInspector,
+      settle: tick,
+      current,
+      resolveTarget: () => {
+        const inspector = document.querySelector<HTMLElement>('.inspector-panel .inspector')
+        return (
+          inspector?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+          inspector?.querySelector<HTMLElement>(
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+          )
+        )
+      },
+    })
   }
 
   function currentInspectorRestorationTarget(): HTMLElement | undefined {
@@ -3157,7 +3161,10 @@
                 {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
                   <LoopGroupEmptyState
                     groupId={canvasGraph.scope.groupId}
-                    onAddNode={() => graphCanvas?.requestAdd()}
+                    onAddNode={() => {
+                      if (graphCanvas) graphCanvas.requestAdd()
+                      else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
+                    }}
                     onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
                   />
                 {/if}
@@ -3574,7 +3581,9 @@
           {#if guideLoadError}
             <p class="documentation-unavailable" role="alert">
               Task guides could not be loaded. Contract reference remains available.
-              <button type="button" data-variant="secondary" onclick={() => void loadGuides()}>Retry guides</button>
+              <button type="button" data-variant="secondary" onclick={() => void loadGuides().catch(() => undefined)}
+                >Retry guides</button
+              >
             </p>
           {/if}
         {:else}
@@ -3612,6 +3621,15 @@
     <DeferredSurface
       load={loadBrandPreview}
       label="brand preview"
+      modal={{
+        titleId: 'brand-preview-deferred-title',
+        title: 'Brand preview',
+        opener: brandPreviewOpener,
+        dismissible: !$brandState.pending,
+        onCancel: () => {
+          brandPreviewId = null
+        },
+      }}
       componentProps={{
         pack: previewRuntimeBrand,
         mode: resolveThemeMode($themePreference),
@@ -3630,6 +3648,14 @@
     <DeferredSurface
       load={loadQuickOpen}
       label="quick open"
+      modal={{
+        titleId: 'quick-open-deferred-title',
+        title: 'Quick Open',
+        opener: quickOpenOpener,
+        onCancel: () => {
+          quickOpenVisible = false
+        },
+      }}
       componentProps={{
         entries: $workspace.entries,
         opener: quickOpenOpener,
@@ -3645,6 +3671,12 @@
     <DeferredSurface
       load={loadExternalChangeDialog}
       label="external change dialog"
+      modal={{
+        titleId: 'external-change-deferred-title',
+        title: 'Workflow changed on disk',
+        dismissible: false,
+        onCancel: () => undefined,
+      }}
       componentProps={{
         files: [
           {
@@ -3685,21 +3717,17 @@
   {/if}
   {#if contextEntryId}
     <div class="context-layer">
-      <DeferredSurface
-        load={loadWorkflowContextMenu}
-        label="workflow actions"
-        componentProps={{
-          commands: commandSurface.listCommands(),
-          opener: contextOpener,
-          context: contextFor(contextEntryId),
-          onRun: async (id: string) => {
-            const targetEntryId = contextEntryId!
-            const context = contextFor(targetEntryId)
-            contextEntryId = null
-            await runCommand(id, context)
-          },
-          onClose: () => (contextEntryId = null),
+      <WorkflowContextMenu
+        commands={commandSurface.listCommands()}
+        opener={contextOpener}
+        context={contextFor(contextEntryId)}
+        onRun={async (id: string) => {
+          const targetEntryId = contextEntryId!
+          const context = contextFor(targetEntryId)
+          contextEntryId = null
+          await runCommand(id, context)
         }}
+        onClose={() => (contextEntryId = null)}
       />
     </div>
   {/if}
@@ -3707,6 +3735,14 @@
     <DeferredSurface
       load={loadNewWorkflowDialog}
       label="new workflow"
+      modal={{
+        titleId: 'new-workflow-deferred-title',
+        title: 'New Workflow',
+        opener: newDialogOpener,
+        onCancel: () => {
+          newDialogVisible = false
+        },
+      }}
       componentProps={{
         contracts,
         activeContract: activeContractForProfile,
@@ -3728,6 +3764,14 @@
     <DeferredSurface
       load={loadImportExportDialog}
       label="workflow import"
+      modal={{
+        titleId: 'workflow-import-deferred-title',
+        title: 'Import workflow',
+        opener: importDialogOpener,
+        onCancel: () => {
+          importDialogVisible = false
+        },
+      }}
       componentProps={{
         mode: 'import',
         opener: importDialogOpener,
@@ -3748,6 +3792,14 @@
     <DeferredSurface
       load={loadImportExportDialog}
       label="workflow export"
+      modal={{
+        titleId: 'workflow-export-blocked-deferred-title',
+        title: 'Export workflow',
+        opener: contextOpener,
+        onCancel: () => {
+          exportBlockingIssues = []
+        },
+      }}
       componentProps={{
         mode: 'export',
         blockingIssues: exportBlockingIssues,
@@ -3760,6 +3812,15 @@
     <DeferredSurface
       load={loadImportExportDialog}
       label="workflow export"
+      modal={{
+        titleId: 'workflow-export-confirm-deferred-title',
+        title: 'Export workflow',
+        opener: exportConfirmation.opener,
+        onCancel: () => {
+          exportConfirmation?.resolve(false)
+          exportConfirmation = null
+        },
+      }}
       componentProps={{
         mode: 'export',
         paths: exportConfirmation.paths,
@@ -3780,6 +3841,14 @@
     <DeferredSurface
       load={loadAddNodePicker}
       label="node picker"
+      modal={{
+        titleId: 'add-node-deferred-title',
+        title: 'Add node',
+        opener: addNodeRequest.opener,
+        onCancel: () => {
+          addNodeRequest = null
+        },
+      }}
       componentProps={{
         descriptors: activeNodeDescriptors,
         profile: canvasProjection.profile,
@@ -3802,6 +3871,12 @@
     <DeferredSurface
       load={loadCommandPalette}
       label="command palette"
+      modal={{
+        titleId: 'command-palette-deferred-title',
+        title: 'Command palette',
+        opener: commandPaletteOpener ?? keyboardShortcutsOpener,
+        onCancel: closeCommandPalette,
+      }}
       componentProps={{
         registry: commandSurface,
         context: keyboardContext(document.activeElement),
@@ -3839,6 +3914,14 @@
     <DeferredSurface
       load={loadDeleteImpactDialog}
       label="delete confirmation"
+      modal={{
+        titleId: 'delete-impact-deferred-title',
+        title: 'Delete selected nodes',
+        opener: deleteRequest.opener,
+        onCancel: () => {
+          deleteRequest = null
+        },
+      }}
       componentProps={{
         impact: deleteRequest.impact,
         opener: deleteRequest.opener,
@@ -3895,6 +3978,12 @@
   <DeferredSurface
     load={loadUpdateOverlay}
     label="application update"
+    modal={{
+      titleId: 'application-update-deferred-title',
+      title: 'Update Workflow Studio',
+      dismissible: false,
+      onCancel: () => undefined,
+    }}
     componentProps={{
       state: updateProgress,
       ondownload: (runId: string) => updateController.downloadInstall(runId),
