@@ -43,6 +43,52 @@ function workerTargets(source) {
   )
 }
 
+function readElkProvenance(outputRoot, violations) {
+  const provenanceRoot = join(outputRoot, '.vite', 'elk-provenance')
+  if (!existsSync(provenanceRoot)) {
+    violations.push('Bundle is missing elkjs module provenance metadata.')
+    return new Map()
+  }
+  const chunks = new Map()
+  const metadataFiles = readdirSync(provenanceRoot).filter((name) => name.endsWith('.json'))
+  for (const metadataFile of metadataFiles) {
+    let metadata
+    try {
+      metadata = JSON.parse(readFileSync(join(provenanceRoot, metadataFile), 'utf8'))
+    } catch {
+      violations.push('Bundle contains invalid elkjs module provenance metadata.')
+      continue
+    }
+    if (metadata?.version !== 1 || typeof metadata.chunks !== 'object' || metadata.chunks === null) {
+      violations.push('Bundle contains invalid elkjs module provenance metadata.')
+      continue
+    }
+    for (const [rawFile, rawModules] of Object.entries(metadata.chunks)) {
+      const file = normalizePath(rawFile)
+      if (isAbsolute(rawFile) || file.startsWith('/') || file.split('/').includes('..') || !Array.isArray(rawModules)) {
+        violations.push('Bundle contains non-portable elkjs module provenance metadata.')
+        continue
+      }
+      const modules = chunks.get(file) ?? []
+      for (const rawModule of rawModules) {
+        if (
+          typeof rawModule !== 'string' ||
+          isAbsolute(rawModule) ||
+          rawModule.startsWith('/') ||
+          !/^node_modules\/elkjs\/.+/.test(rawModule) ||
+          rawModule.split('/').includes('..')
+        ) {
+          violations.push('Bundle contains non-portable elkjs module provenance metadata.')
+          continue
+        }
+        modules.push(rawModule)
+      }
+      if (modules.length > 0) chunks.set(file, [...new Set(modules)].sort())
+    }
+  }
+  return chunks
+}
+
 /**
  * Analyze the files fetched by application startup. Vite represents the
  * intentional bootstrap imports in the HTML entry's `dynamicImports`; dynamic
@@ -74,6 +120,7 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
   if (initialKeys.size === 0) throw new Error('Bundle manifest does not declare an entry module.')
 
   const violations = []
+  const elkProvenance = readElkProvenance(outputRoot, violations)
   let minifiedBytes = 0
   let gzipBytes = 0
   for (const file of initialFiles) {
@@ -152,6 +199,32 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
   for (const file of [layoutWorkerFile, elkWorkerFile]) {
     if (file && initialFiles.has(file)) violations.push(`Initial renderer closure contains worker asset ${file}.`)
   }
+  const elkRuntimeModules = []
+  const elkModuleFiles = new Map()
+  const allowedElkWorkerFiles = new Set([layoutWorkerFile, elkWorkerFile].filter((file) => file !== undefined))
+  for (const [file, modules] of elkProvenance) {
+    for (const module of modules) {
+      elkRuntimeModules.push(module)
+      const moduleFiles = elkModuleFiles.get(module) ?? []
+      moduleFiles.push(file)
+      elkModuleFiles.set(module, moduleFiles)
+      if (!allowedElkWorkerFiles.has(file)) {
+        violations.push(`ELK runtime module ${module} escaped the GraphCanvas worker chain into ${file}.`)
+      }
+      if (initialFiles.has(file)) {
+        violations.push(`Initial renderer closure contains ELK runtime module ${module} in ${file}.`)
+      }
+    }
+  }
+  for (const [module, files] of elkModuleFiles) {
+    if (files.length !== 1) {
+      violations.push(`ELK runtime module ${module} appears in multiple emitted chunks: ${files.sort().join(', ')}.`)
+    }
+  }
+  if (elkRuntimeModules.length === 0) violations.push('Build metadata contains no elkjs runtime module provenance.')
+  if (elkWorkerFile && !elkProvenance.has(elkWorkerFile)) {
+    violations.push('The descendant ELK worker has no elkjs module provenance.')
+  }
 
   return {
     manifestPath: normalizePath(relative(process.cwd(), absoluteManifest)),
@@ -159,6 +232,7 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
     minifiedBytes,
     gzipBytes,
     layoutWorkerFile,
+    elkRuntimeModules: [...new Set(elkRuntimeModules)].sort(),
     elkAlgorithmFiles: elkAlgorithmFiles.sort(),
     violations: [...new Set(violations)],
   }

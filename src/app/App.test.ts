@@ -219,6 +219,30 @@ function deferred<T>() {
 }
 
 const deferredSurfaceWait = { timeout: 20_000 }
+const gitPublicationWait = { timeout: 1_000, interval: 5 }
+
+async function waitForGitPairPublication(expected: {
+  readonly definitionPath: string
+  readonly companionPath: string | null
+}): Promise<void> {
+  // All mocked native work is explicitly released before this boundary. The
+  // controller publishes synchronously in that promise continuation, so this
+  // bound covers renderer scheduling rather than native I/O.
+  await vi.waitFor(() => {
+    expect(gitState.get().phase).toBe('ready')
+    expect(gitState.get().inspection.pair).toEqual(expected)
+  }, gitPublicationWait)
+}
+
+async function settleAuthoringLogicImports(): Promise<void> {
+  await Promise.all([
+    import('$src/lib/forms/widget-registry'),
+    import('$src/lib/contract/scoped-dag-rule'),
+    import('$src/features/canvas/project-canvas'),
+    import('$src/lib/docs/build-index'),
+  ])
+  await tick()
+}
 
 function installRealDocumentWorker(): () => void {
   const originalWorker = globalThis.Worker
@@ -388,6 +412,7 @@ nodes:
         else Object.defineProperty(globalThis, 'Worker', { configurable: true, value: originalWorker })
       }
     },
+    40_000,
   )
 
   it('shows docked panel controls and returns collapsed panel width to the editor', async () => {
@@ -2292,6 +2317,8 @@ nodes:
     const gitStatus = vi.fn(async () => ({ entries: [] }))
     const gitDiffPair = vi.fn(async () => ({ working: '', index: '', authorizationToken: 'version-1' }))
     const gitHistoryPair = vi.fn(async () => ({ commits: [], authorizationToken: 'history-1' }))
+    const historyRetention = deferred<void>()
+    const gitRetainHistoryAuthorization = vi.fn(async () => historyRetention.promise)
     setNativeBridgeForTest({
       ...backing,
       startupPaths: async () => [
@@ -2303,22 +2330,26 @@ nodes:
       gitBeginHistorySession: async () => 1,
       gitDiffPair,
       gitHistoryPair,
-      gitRetainHistoryAuthorization: async () => undefined,
+      gitRetainHistoryAuthorization,
       gitRetainVersionAuthorization: async () => undefined,
     })
 
     render(App)
     await waitForSetupReady()
     await waitFor(() => expect(gitHistoryPair).toHaveBeenCalledOnce())
+    await waitFor(() => expect(gitRetainHistoryAuthorization).toHaveBeenCalledOnce())
 
     expect(gitDetect).not.toHaveBeenCalled()
     expect(gitStatus).toHaveBeenCalledTimes(1)
     expect(gitStatus).toHaveBeenCalledWith('/startup')
     expect(gitState.get().inspection.repository).toEqual(repository)
-    await waitFor(
-      () => expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null }),
-      deferredSurfaceWait,
-    )
+    expect(gitState.get().inspection.pair).toBeNull()
+    historyRetention.resolve()
+    await waitForGitPairPublication({ definitionPath: 'flow.yaml', companionPath: null })
+    await settleAuthoringLogicImports()
+    await tick()
+    expect(gitStatus).toHaveBeenCalledTimes(1)
+    expect(gitDetect).not.toHaveBeenCalled()
   })
 
   it.each(['cancel', 'failure'] as const)(
@@ -2341,6 +2372,8 @@ nodes:
       const gitStatus = vi.fn(async () => ({ entries: [] }))
       const gitDiffPair = vi.fn(async () => ({ working: '', index: '', authorizationToken: 'version-1' }))
       const gitHistoryPair = vi.fn(async () => ({ commits: [], authorizationToken: 'history-1' }))
+      const historyRetention = deferred<void>()
+      const gitRetainHistoryAuthorization = vi.fn(async () => historyRetention.promise)
       setNativeBridgeForTest({
         ...backing,
         startupPaths: async () => [
@@ -2354,7 +2387,7 @@ nodes:
         gitBeginHistorySession: async () => 1,
         gitDiffPair,
         gitHistoryPair,
-        gitRetainHistoryAuthorization: async () => undefined,
+        gitRetainHistoryAuthorization,
         gitRetainVersionAuthorization: async () => undefined,
       })
 
@@ -2367,13 +2400,17 @@ nodes:
       slowRead.resolve(startupRead)
 
       await waitFor(() => expect(gitHistoryPair).toHaveBeenCalledOnce())
+      await waitFor(() => expect(gitRetainHistoryAuthorization).toHaveBeenCalledOnce())
       expect(gitDetect).not.toHaveBeenCalled()
       expect(gitStatus).toHaveBeenCalledTimes(1)
       expect(gitState.get().inspection.repository).toEqual(repository)
-      await waitFor(
-        () => expect(gitState.get().inspection.pair).toEqual({ definitionPath: 'flow.yaml', companionPath: null }),
-        deferredSurfaceWait,
-      )
+      expect(gitState.get().inspection.pair).toBeNull()
+      historyRetention.resolve()
+      await waitForGitPairPublication({ definitionPath: 'flow.yaml', companionPath: null })
+      await settleAuthoringLogicImports()
+      await tick()
+      expect(gitStatus).toHaveBeenCalledTimes(1)
+      expect(gitDetect).not.toHaveBeenCalled()
     },
   )
 

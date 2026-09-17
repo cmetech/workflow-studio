@@ -4,12 +4,21 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { analyzeBundleBudget } from '../../scripts/check-bundle-budget.mjs'
 
-function fixtureBundle(options: { coldInInitial?: boolean; oversized?: boolean; orphanElkWorker?: boolean } = {}) {
+function fixtureBundle(
+  options: {
+    coldInInitial?: boolean
+    oversized?: boolean
+    orphanElkWorker?: boolean
+    elkModuleInStartup?: boolean
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'workflow-studio-bundle-'))
   const assets = join(root, 'assets')
   const vite = join(root, '.vite')
+  const elkProvenance = join(vite, 'elk-provenance')
   mkdirSync(assets)
   mkdirSync(vite)
+  mkdirSync(elkProvenance)
   const initialSource = options.coldInInitial
     ? 'const cold = "Brand and theme packs"; const codemirror = "CodeMirror";'
     : 'export const welcome = "Open Folder";'
@@ -51,6 +60,19 @@ function fixtureBundle(options: { coldInInitial?: boolean; oversized?: boolean; 
       : 'const engine = new Worker(new URL("/assets/elk-engine-worker.js", import.meta.url), { type: "module" });',
   )
   writeFileSync(join(assets, 'elk-engine-worker.js'), 'const algorithm = "org.eclipse.elk.alg.layered";')
+  writeFileSync(
+    join(elkProvenance, 'worker-chain.json'),
+    JSON.stringify({
+      version: 1,
+      chunks: {
+        'assets/layout-worker.js': ['node_modules/elkjs/lib/elk-api.js'],
+        'assets/elk-engine-worker.js': ['node_modules/elkjs/lib/elk-worker.min.js'],
+        ...(options.elkModuleInStartup
+          ? { 'assets/index.js': ['node_modules/elkjs/lib/unmarked-startup-copy.js'] }
+          : {}),
+      },
+    }),
+  )
   writeFileSync(
     join(vite, 'manifest.json'),
     JSON.stringify({
@@ -103,10 +125,22 @@ describe('initial renderer bundle budget', () => {
     )
   })
 
+  it('rejects unmarked elkjs module provenance outside the descendant ELK worker', () => {
+    const result = analyzeBundleBudget(fixtureBundle({ elkModuleInStartup: true }))
+
+    expect(result.violations).toContain(
+      'ELK runtime module node_modules/elkjs/lib/unmarked-startup-copy.js escaped the GraphCanvas worker chain into assets/index.js.',
+    )
+  })
+
   it('keeps the real production entry within budget and every ELK algorithm in a worker asset', () => {
     const result = analyzeBundleBudget('dist/.vite/manifest.json')
 
     expect(result.violations).toEqual([])
     expect(result.elkAlgorithmFiles).toEqual([expect.stringMatching(/^assets\/elk-engine-worker-.*\.js$/)])
+    expect(result.elkRuntimeModules).toEqual([
+      'node_modules/elkjs/lib/elk-api.js',
+      'node_modules/elkjs/lib/elk-worker.min.js',
+    ])
   })
 })
