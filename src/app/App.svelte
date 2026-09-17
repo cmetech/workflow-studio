@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from 'svelte'
+  import { onDestroy, onMount, tick, type Component } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import {
     commandRegistry,
@@ -15,29 +15,12 @@
   import type { ActivityId, CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
   import { resolveThemeMode } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
-  import { createExampleCopy, loadExampleCatalog } from '$src/lib/examples/load-examples'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
-  import { buildDocumentationIndex } from '$src/lib/docs/build-index'
-  import { createDocumentationGuides } from '$src/lib/docs/guide-sources'
-  import type { DocumentationIndex } from '$src/lib/docs/types'
+  import { loadDocumentationGuides } from '$src/lib/docs/guide-sources'
+  import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
-  import ContractSettingsHost from '$src/features/settings/ContractSettingsHost.svelte'
-  import SettingsPage from '$src/features/settings/SettingsPage.svelte'
-  import UpdateSettings from '$src/features/settings/UpdateSettings.svelte'
-  import AboutView from '$src/features/settings/AboutView.svelte'
-  import AppearanceSettings from '$src/features/branding/AppearanceSettings.svelte'
-  import BrandSettings from '$src/features/branding/BrandSettings.svelte'
-  import BrandPreview from '$src/features/branding/BrandPreview.svelte'
   import Loop24Mark from '$src/features/branding/Loop24Mark.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
-  import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
-  import {
-    collectContractFields,
-    fieldsForLoopGroupOwner,
-    fieldsForScopedNode,
-    fieldsForNode,
-    materializeFormFields,
-  } from '$src/lib/forms/widget-registry'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
   import { applyWorkflowMutation, type ApplyWorkflowMutationResult } from '$src/lib/documents/transactions'
   import type { WorkflowMutation } from '$src/lib/yaml/mutations'
@@ -72,7 +55,7 @@
     themePreference,
   } from '$src/stores/branding'
   import type { RecentWorkspace } from '$src/lib/workspace/recent-workspaces'
-  import type { WorkflowPairEntry } from '$src/lib/workspace/types'
+  import type { WorkflowPairEntry, WorkspaceEntry } from '$src/lib/workspace/types'
   import { createLayoutStore, LayoutPersistenceController } from '$src/lib/layout/layout-store'
   import {
     clampDockedPanels,
@@ -81,7 +64,7 @@
     resolveWorkbenchPresentation,
     type WorkbenchPresentation,
   } from '$src/lib/layout/workbench-layout'
-  import type { LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
+  import type { AuxiliaryTab, LayoutRecordV2, ScopeLayoutV1 } from '$src/lib/layout/types'
   import type { GraphScopeKey, WorkflowProjection } from '$src/lib/projection/types'
   import { createWorkspaceActions, WorkspaceActionError } from '$src/features/workspace/workspace-actions'
   import {
@@ -125,21 +108,10 @@
     createWorkspaceActionCoordinator,
     formatWorkspaceOutcomeResults,
   } from '$src/features/workspace/workspace-action-coordinator'
-  import Explorer from '$src/features/workspace/Explorer.svelte'
   import OpenWorkspace from '$src/features/workspace/OpenWorkspace.svelte'
-  import QuickOpen from '$src/features/workspace/QuickOpen.svelte'
-  import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
-  import NewWorkflowDialog from '$src/features/workspace/NewWorkflowDialog.svelte'
-  import ImportExportDialog from '$src/features/workspace/ImportExportDialog.svelte'
-  import AuxiliaryPanel from '$src/features/documents/AuxiliaryPanel.svelte'
-  import ProblemsPanel from '$src/features/documents/ProblemsPanel.svelte'
   import { runProblemFocusCoordinator } from '$src/features/documents/problem-focus-coordinator'
-  import ExternalChangeDialog from '$src/features/documents/ExternalChangeDialog.svelte'
-  import GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-  import { canvasCapacityForProjection, loopGroupSummariesForProjection } from '$src/features/canvas/project-canvas'
-  import GraphScopeHeader from '$src/features/canvas/GraphScopeHeader.svelte'
+  import type GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
   import LoopGroupEmptyState from '$src/features/canvas/LoopGroupEmptyState.svelte'
-  import LoopGroupScopeBar from '$src/features/canvas/LoopGroupScopeBar.svelte'
   import {
     buildLoopGroupReferenceGuidance,
     LoopGroupReferenceTargetOwner,
@@ -147,19 +119,9 @@
     type ReferenceTargetIdentity,
   } from '$src/features/canvas/loop-group-reference-guidance'
   import { prepareReferenceContract, referenceSurfaceForField } from '$src/lib/references/reference-index'
-  import AddNodePicker from '$src/features/canvas/AddNodePicker.svelte'
-  import NodePalette from '$src/features/canvas/NodePalette.svelte'
   import { nodeKindAvailable, nodeKindDescriptorsForScope } from '$src/features/canvas/node-kind-options'
-  import CommandPalette from '$src/features/commands/CommandPalette.svelte'
-  import KeyboardShortcuts from '$src/features/commands/KeyboardShortcuts.svelte'
-  import DeleteImpactDialog from '$src/features/canvas/DeleteImpactDialog.svelte'
-  import Inspector from '$src/features/inspector/Inspector.svelte'
   import { resolveInspectorTarget, type InspectorTarget } from '$src/features/inspector/inspector-target'
-  import DocumentationView from '$src/features/documentation/DocumentationView.svelte'
-  import ExampleGallery from '$src/features/examples/ExampleGallery.svelte'
-  import GitView from '$src/features/version-control/GitView.svelte'
   import SetupOverlay from '$src/features/setup/SetupOverlay.svelte'
-  import UpdateOverlay from '$src/features/updates/UpdateOverlay.svelte'
   import { createUpdateController } from '$src/lib/updates/update-api'
   import type { UpdateState } from '$src/lib/updates/types'
   import type { HostInfo, WorkspaceRootInfo } from '$src/lib/native/types'
@@ -173,8 +135,8 @@
     type CreateVersionOutcome,
   } from '$src/lib/git/version-actions'
   import { createGitInspectionController, gitState, synchronizeGitLifecycle } from '$src/stores/git'
-  import EditorModes from '$src/features/editor/EditorModes.svelte'
-  import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-extensions'
+  import type EditorModes from '$src/features/editor/EditorModes.svelte'
+  import { applyAuthoritativeEditorText, synchronizeEditorProjection } from '$src/features/editor/editor-projection'
   import type { NodeKindDescriptor } from '$src/lib/contract/types'
   import {
     addLoopGroupDependency,
@@ -199,6 +161,7 @@
   import StatusBar from './StatusBar.svelte'
   import ModalShell from './ModalShell.svelte'
   import ApplicationNotice from './ApplicationNotice.svelte'
+  import DeferredSurface from './DeferredSurface.svelte'
   import X from 'lucide-svelte/icons/x'
   import PanelLeftClose from 'lucide-svelte/icons/panel-left-close'
   import PanelLeftOpen from 'lucide-svelte/icons/panel-left-open'
@@ -221,12 +184,75 @@
   }
   let { commandSurface = commandRegistry }: Props = $props()
 
+  type DeferredModule = { default: Component }
+
+  function memoizedSurface(importer: () => Promise<unknown>): () => Promise<DeferredModule> {
+    let cached: Promise<DeferredModule> | undefined
+    return () => {
+      cached ??= importer()
+        .then((loaded) => loaded as DeferredModule)
+        .catch((error: unknown) => {
+          cached = undefined
+          throw error
+        })
+      return cached
+    }
+  }
+
+  const loadSettingsPage = memoizedSurface(() => import('$src/features/settings/SettingsPage.svelte'))
+  const loadContractSettings = memoizedSurface(() => import('$src/features/settings/ContractSettingsHost.svelte'))
+  const loadUpdateSettings = memoizedSurface(() => import('$src/features/settings/UpdateSettings.svelte'))
+  const loadAboutView = memoizedSurface(() => import('$src/features/settings/AboutView.svelte'))
+  const loadAppearanceSettings = memoizedSurface(() => import('$src/features/branding/AppearanceSettings.svelte'))
+  const loadBrandSettings = memoizedSurface(() => import('$src/features/branding/BrandSettings.svelte'))
+  const loadBrandPreview = memoizedSurface(() => import('$src/features/branding/BrandPreview.svelte'))
+  const loadDocumentationView = memoizedSurface(() => import('$src/features/documentation/DocumentationView.svelte'))
+  const loadExampleGallery = memoizedSurface(() => import('$src/features/examples/ExampleGallery.svelte'))
+  const loadGitView = memoizedSurface(() => import('$src/features/version-control/GitView.svelte'))
+  const loadGraphCanvas = memoizedSurface(() => import('$src/features/canvas/GraphCanvas.svelte'))
+  const loadEditorModes = memoizedSurface(() => import('$src/features/editor/EditorModes.svelte'))
+  const loadInspector = memoizedSurface(() => import('$src/features/inspector/Inspector.svelte'))
+  const loadExplorer = memoizedSurface(() => import('$src/features/workspace/Explorer.svelte'))
+  const loadNodePalette = memoizedSurface(() => import('$src/features/canvas/NodePalette.svelte'))
+  const loadQuickOpen = memoizedSurface(() => import('$src/features/workspace/QuickOpen.svelte'))
+  const loadWorkflowContextMenu = memoizedSurface(() => import('$src/features/workspace/WorkflowContextMenu.svelte'))
+  const loadNewWorkflowDialog = memoizedSurface(() => import('$src/features/workspace/NewWorkflowDialog.svelte'))
+  const loadImportExportDialog = memoizedSurface(() => import('$src/features/workspace/ImportExportDialog.svelte'))
+  const loadCommandPalette = memoizedSurface(() => import('$src/features/commands/CommandPalette.svelte'))
+  const loadKeyboardShortcuts = memoizedSurface(() => import('$src/features/commands/KeyboardShortcuts.svelte'))
+  const loadProblemsPanel = memoizedSurface(() => import('$src/features/documents/ProblemsPanel.svelte'))
+  const loadAuxiliaryPanel = memoizedSurface(() => import('$src/features/documents/AuxiliaryPanel.svelte'))
+  const loadExternalChangeDialog = memoizedSurface(() => import('$src/features/documents/ExternalChangeDialog.svelte'))
+  const loadAddNodePicker = memoizedSurface(() => import('$src/features/canvas/AddNodePicker.svelte'))
+  const loadDeleteImpactDialog = memoizedSurface(() => import('$src/features/canvas/DeleteImpactDialog.svelte'))
+  const loadLoopGroupScopeBar = memoizedSurface(() => import('$src/features/canvas/LoopGroupScopeBar.svelte'))
+  const loadGraphScopeHeader = memoizedSurface(() => import('$src/features/canvas/GraphScopeHeader.svelte'))
+  const loadUpdateOverlay = memoizedSurface(() => import('$src/features/updates/UpdateOverlay.svelte'))
+
   const bundledGuideSources = import.meta.glob('../../docs/app-guides/*.md', {
-    eager: true,
     import: 'default',
     query: '?raw',
-  }) as Readonly<Record<string, string>>
-  const bundledGuides = createDocumentationGuides(bundledGuideSources)
+  }) as Readonly<Record<string, () => Promise<string>>>
+  let bundledGuides = $state.raw<readonly DocumentationGuide[]>([])
+  let guideReadiness: Promise<readonly DocumentationGuide[]> | null = null
+  let documentationBuilder = $state.raw<typeof import('$src/lib/docs/build-index') | null>(null)
+  let guideLoadError = $state(false)
+
+  function loadGuides(): Promise<readonly DocumentationGuide[]> {
+    guideLoadError = false
+    guideReadiness ??= Promise.all([loadDocumentationGuides(bundledGuideSources), import('$src/lib/docs/build-index')])
+      .then(([loaded, builder]) => {
+        documentationBuilder = builder
+        bundledGuides = loaded
+        return loaded
+      })
+      .catch((error: unknown) => {
+        guideReadiness = null
+        guideLoadError = true
+        throw error
+      })
+    return guideReadiness
+  }
   const native = getNativeBridge()
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void
@@ -301,6 +327,26 @@
     | { readonly phase: 'empty' }
     | { readonly phase: 'error'; readonly message: string }
   let exampleCatalogState = $state.raw<ExampleCatalogState>({ phase: 'loading' })
+  let exampleReadiness: Promise<readonly ExampleDescriptor[]> | null = null
+  let widgetRegistry = $state.raw<typeof import('$src/lib/forms/widget-registry') | null>(null)
+  let scopedDagRules = $state.raw<typeof import('$src/lib/contract/scoped-dag-rule') | null>(null)
+  let canvasProjectionTools = $state.raw<typeof import('$src/features/canvas/project-canvas') | null>(null)
+  let authoringLogicReadiness: Promise<void> | null = null
+
+  function loadAuthoringLogic(): Promise<void> {
+    authoringLogicReadiness ??= Promise.all([
+      import('$src/lib/forms/widget-registry'),
+      import('$src/lib/contract/scoped-dag-rule'),
+      import('$src/features/canvas/project-canvas'),
+      import('$src/lib/docs/build-index'),
+    ]).then(([widgets, rules, projectionTools, builder]) => {
+      widgetRegistry = widgets
+      scopedDagRules = rules
+      canvasProjectionTools = projectionTools
+      documentationBuilder = builder
+    })
+    return authoringLogicReadiness
+  }
   let contractsLoaded = $state(false)
   let appContractCache = $state.raw<ContractCache | null>(null)
   let contractCacheAdvisories = $state.raw<readonly ContractCacheAdvisory[]>([])
@@ -328,10 +374,12 @@
     }
     return loaded
   })
-  function loadExamples(): Promise<readonly ExampleDescriptor[]> {
+  function loadExamples(force = false): Promise<readonly ExampleDescriptor[]> {
+    if (force) exampleReadiness = null
+    if (exampleReadiness) return exampleReadiness
     exampleCatalogState = { phase: 'loading' }
-    return Promise.resolve()
-      .then(() => loadExampleCatalog())
+    exampleReadiness = import('$src/lib/examples/load-examples')
+      .then(({ loadExampleCatalog }) => loadExampleCatalog())
       .then((loaded) => {
         exampleCatalogState = loaded.length > 0 ? { phase: 'ready', examples: loaded } : { phase: 'empty' }
         return loaded
@@ -343,8 +391,8 @@
         }
         return []
       })
+    return exampleReadiness
   }
-  const examplesReadiness = loadExamples()
   let recent = $state<readonly RecentWorkspace[]>([])
   let workspaceError = $state<string | null>(null)
   let keyboardShortcutsOpener = $state<HTMLElement | null>(null)
@@ -415,6 +463,20 @@
     },
   })
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
+  const editorModesHostWaiters: ((host: ReturnType<typeof EditorModes>) => void)[] = []
+
+  function captureEditorModesHost(instance: unknown | null): void {
+    const host = instance as ReturnType<typeof EditorModes> | null
+    editorModesHost = host
+    if (!host) return
+    for (const resolve of editorModesHostWaiters) resolve(host)
+    editorModesHostWaiters.length = 0
+  }
+
+  function waitForEditorModesHost(): Promise<ReturnType<typeof EditorModes>> {
+    if (editorModesHost) return Promise.resolve(editorModesHost)
+    return new Promise((resolve) => editorModesHostWaiters.push(resolve))
+  }
   let workbenchHost = $state<HTMLDivElement>()
   let editorColumnHost = $state<HTMLElement>()
   let workspacePanelHost = $state<HTMLElement>()
@@ -580,6 +642,17 @@
   const previewRuntimeBrand = $derived($brandState.packs.find(({ manifest }) => manifest.id === brandPreviewId) ?? null)
   const workbenchSurface = $derived(resolveWorkbenchSurface($activeActivity, $workspace.id !== null))
   const authoringHidden = $derived(workbenchSurface !== 'authoring')
+  let visualEditorRequested = $state(false)
+  let yamlEditorRequested = $state(false)
+
+  $effect(() => {
+    if (workbenchSurface === 'documentation') void loadGuides().catch(() => undefined)
+    if (workbenchSurface === 'examples') void loadExamples()
+    if ($workspace.id !== null) void loadAuthoringLogic()
+    if (workbenchSurface !== 'authoring' || !$documentSessionStore.pair) return
+    if (canvasSurfaceMode !== 'yaml') visualEditorRequested = true
+    if (canvasSurfaceMode !== 'visual') yamlEditorRequested = true
+  })
   const measuredWorkbenchPresentation = $derived(resolveWorkbenchPresentation(workbenchWidth, editorWidth))
   const workbenchPresentation = $derived({
     panels: compactPanelViewport ? 'drawers' : 'docked',
@@ -752,7 +825,9 @@
       scope.auxiliaryTab === undefined ? { ...scope, auxiliaryTab: initialTab } : scope,
     )
   })
-  const canvasCapacity = $derived(canvasGraph ? canvasCapacityForProjection(canvasGraph) : null)
+  const canvasCapacity = $derived(
+    canvasGraph && canvasProjectionTools ? canvasProjectionTools.canvasCapacityForProjection(canvasGraph) : null,
+  )
   const canvasRepairMode = $derived(
     Boolean(
       canvasStale &&
@@ -778,16 +853,16 @@
   )
   const canvasSurfaceMode = $derived(canvasCapacity?.visual === false ? 'yaml' : $activeEditorMode)
   const scopedDagCapabilities = $derived.by(() => {
-    if (!inspectorContract) return undefined
+    if (!inspectorContract || !scopedDagRules) return undefined
     try {
-      return readScopedDagCapabilities(inspectorContract)
+      return scopedDagRules.readScopedDagCapabilities(inspectorContract)
     } catch {
       return undefined
     }
   })
   const loopGroupSummaries = $derived(
-    canvasProjection
-      ? loopGroupSummariesForProjection(
+    canvasProjection && canvasProjectionTools
+      ? canvasProjectionTools.loopGroupSummariesForProjection(
           canvasProjection,
           $documentSessionStore.analysis?.issues ?? [],
           scopedDagCapabilities,
@@ -853,14 +928,15 @@
   const inspectorFields = $derived.by(() => {
     const node = inspectorNodes[0]
     const projection = canvasProjection
-    if (!inspectorContract || !projection || inspectorNodes.length > 1) return []
+    const registry = widgetRegistry
+    if (!inspectorContract || !projection || !registry || inspectorNodes.length > 1) return []
     const index = node ? (inspectorGraph?.nodes.findIndex(({ id }) => id === node.id) ?? -1) : -1
     if (!node) {
-      const fields = collectContractFields(inspectorContract).filter(
-        (field) => !field.nodeKinds && (field.document !== 'companion' || projection.companion),
-      )
+      const fields = registry
+        .collectContractFields(inspectorContract)
+        .filter((field) => !field.nodeKinds && (field.document !== 'companion' || projection.companion))
       return fields.flatMap((field) =>
-        materializeFormFields(
+        registry.materializeFormFields(
           [field],
           (field.document === 'companion' ? (projection.companion ?? {}) : projection.definition) as Readonly<
             Record<string, unknown>
@@ -870,12 +946,12 @@
       )
     }
     const definition = projection.definition as Readonly<Record<string, unknown>>
-    if (inspectorTarget.kind === 'group') return fieldsForLoopGroupOwner(inspectorContract, index, definition)
+    if (inspectorTarget.kind === 'group') return registry.fieldsForLoopGroupOwner(inspectorContract, index, definition)
     if (inspectorGraph?.scope.kind === 'root' && node.kind === 'loop_group')
-      return fieldsForLoopGroupOwner(inspectorContract, index, definition)
+      return registry.fieldsForLoopGroupOwner(inspectorContract, index, definition)
     if (inspectorGraph?.scope.kind === 'loop-group')
-      return fieldsForScopedNode(inspectorContract, node.kind, inspectorGraph, index, definition)
-    return materializeFormFields(fieldsForNode(inspectorContract, node.kind), definition, index)
+      return registry.fieldsForScopedNode(inspectorContract, node.kind, inspectorGraph, index, definition)
+    return registry.materializeFormFields(registry.fieldsForNode(inspectorContract, node.kind), definition, index)
   })
   const inspectorValues = $derived.by(() => {
     if (!canvasProjection) return {}
@@ -893,8 +969,8 @@
     contracts.find((candidate) => candidate.contract_digest === $documentSessionStore.revision?.contractDigest),
   )
   const activeDocumentDocumentationIndex = $derived.by<DocumentationIndex | null>(() =>
-    activeDocumentDocumentationContract
-      ? buildDocumentationIndex(activeDocumentDocumentationContract, bundledGuides)
+    activeDocumentDocumentationContract && documentationBuilder
+      ? documentationBuilder.buildDocumentationIndex(activeDocumentDocumentationContract, bundledGuides)
       : null,
   )
   const exampleDocumentationContract = $derived(
@@ -904,11 +980,17 @@
   )
   const documentationIndex = $derived.by<DocumentationIndex | null>(() =>
     exampleDocumentationProfile
-      ? exampleDocumentationContract
-        ? buildDocumentationIndex(exampleDocumentationContract, bundledGuides)
+      ? exampleDocumentationContract && documentationBuilder
+        ? documentationBuilder.buildDocumentationIndex(exampleDocumentationContract, bundledGuides)
         : null
       : activeDocumentDocumentationIndex,
   )
+  const requestedDocumentationTopicId = $derived.by<string | undefined>(() => {
+    const requested = documentationNavigationRequest?.topicId
+    if (!requested || !documentationIndex || documentationIndex.byId.has(requested)) return requested
+    const contractTopic = `contract:${requested}`
+    return documentationIndex.byId.has(contractTopic) ? contractTopic : requested
+  })
   const exampleTopicLabels = $derived.by(() =>
     Object.fromEntries(
       bundledContracts.flatMap((contract) =>
@@ -1787,7 +1869,16 @@
         showEditorMode('yaml')
         await tick()
         if (!current()) return false
-        return (await editorModesHost?.focusProblem(issue, current)) ?? false
+        try {
+          await loadEditorModes()
+        } catch {
+          return false
+        }
+        await tick()
+        if (!current()) return false
+        const host = await waitForEditorModesHost()
+        if (!current()) return false
+        return host.focusProblem(issue, current)
       },
       acknowledge: acknowledgeProblemFocus,
     })
@@ -2076,6 +2167,7 @@
     const contract = activeContractForProfile(example.profile)
     if (!contract)
       throw new WorkspaceActionError('contract_unavailable', 'The example profile contract is unavailable.')
+    const { createExampleCopy } = await import('$src/lib/examples/load-examples')
     await createExampleCopy(example, {
       native,
       workspaceId: $workspace.id,
@@ -2519,8 +2611,6 @@
       await setupReadiness
       if (disposed) return
       await contractReadiness
-      await examplesReadiness
-      if (disposed) return
       await documentWorkspace.start()
       if (disposed) return
       const unlistenGit = await native.onGitChanged(() => refreshGitMetadata())
@@ -2814,38 +2904,46 @@
       {/if}
       <div class="left-panel-body" data-contextual-panel-body>
         {#if $activeActivity === 'explorer' && $workspace.id !== null}
-          <Explorer
-            state={explorerCatalogState}
-            error={explorerCatalogError}
-            contractAvailable={contractsLoaded && contracts.length > 0}
-            onOpen={(entry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry))}
-            onContext={(entry) => {
-              contextEntryId = entry.id
-              contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-              contextProfile = entry.state === 'legacy' ? 'hermes-legacy' : null
-              if (entry.kind === 'workflow' && entry.companionPath) {
-                void contractReadiness
-                  .then(() => activeContractFor(entry))
-                  .then((contract) => {
-                    if (contextEntryId === entry.id) contextProfile = contract?.profile ?? null
-                  })
-              }
-            }}
-            onNew={(opener) => {
-              newDialogOpener = opener
-              newDialogVisible = true
-            }}
-            onImport={(opener) => {
-              importDialogOpener = opener
-              importDialogVisible = true
+          <DeferredSurface
+            load={loadExplorer}
+            label="workspace explorer"
+            componentProps={{
+              state: explorerCatalogState,
+              error: explorerCatalogError,
+              contractAvailable: contractsLoaded && contracts.length > 0,
+              onOpen: (entry: WorkspaceEntry) => entry.kind === 'workflow' && runWorkspaceOperation(openEntry(entry)),
+              onContext: (entry: WorkspaceEntry) => {
+                contextEntryId = entry.id
+                contextOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+                contextProfile = entry.state === 'legacy' ? 'hermes-legacy' : null
+                if (entry.kind === 'workflow' && entry.companionPath) {
+                  void contractReadiness
+                    .then(() => activeContractFor(entry))
+                    .then((contract) => {
+                      if (contextEntryId === entry.id) contextProfile = contract?.profile ?? null
+                    })
+                }
+              },
+              onNew: (opener: HTMLElement) => {
+                newDialogOpener = opener
+                newDialogVisible = true
+              },
+              onImport: (opener: HTMLElement) => {
+                importDialogOpener = opener
+                importDialogVisible = true
+              },
             }}
           />
         {:else if $activeActivity === 'nodes'}
-          <NodePalette
-            descriptors={activeNodeDescriptors}
-            profile={canvasProjection?.profile ?? inspectorContract?.profile ?? 'hermes-legacy'}
-            disabledReason={nodesPaletteDisabled}
-            onChoose={choosePaletteNode}
+          <DeferredSurface
+            load={loadNodePalette}
+            label="node palette"
+            componentProps={{
+              descriptors: activeNodeDescriptors,
+              profile: canvasProjection?.profile ?? inspectorContract?.profile ?? 'hermes-legacy',
+              disabledReason: nodesPaletteDisabled,
+              onChoose: choosePaletteNode,
+            }}
           />
         {/if}
       </div>
@@ -2976,11 +3074,16 @@
       >
         {#if $workspace.id !== null}
           {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
-            <GraphScopeHeader
-              workflowName={canvasProjection?.name ?? canvasGraph.scope.workflow.name}
-              groupId={canvasGraph.scope.groupId}
-              onBack={leaveLoopGroup}
-              onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
+            <DeferredSurface
+              load={loadGraphScopeHeader}
+              label="scope navigation"
+              componentProps={{
+                workflowName: canvasProjection?.name ?? canvasGraph.scope.workflow.name,
+                groupId: canvasGraph.scope.groupId,
+                onBack: leaveLoopGroup,
+                onEditGroupSettings: (invoker: HTMLButtonElement) =>
+                  editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
+              }}
             />
           {/if}
           <div
@@ -2998,52 +3101,58 @@
                   : canvasCapacity.advisory}
               </p>
             {/if}
-            {#if canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false}
+            {#if visualEditorRequested && canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false}
               <div class="canvas-pane">
-                <GraphCanvas
-                  bind:this={graphCanvas}
-                  {commandSurface}
-                  projection={canvasGraph}
-                  layout={$activeScopeLayoutStore!}
-                  restoreRequest={$canvasScopeRestorationStore}
-                  workflowIdentity={canvasInstanceIdentity(
-                    $documentSessionStore.pair?.workflowId ?? '',
-                    $activeScopeKeyStore,
-                  )}
-                  pairGeneration={$documentSessionStore.pair?.generation ?? 0}
-                  onArrangeBusyChange={captureArrangeBusy}
-                  transitionLocked={canvasTransitionLocked}
-                  surfaceActive={!authoringHidden &&
-                    !(
-                      $activeEditorMode === 'split' &&
-                      workbenchPresentation.split === 'tabs' &&
-                      compactSplitPane === 'yaml'
-                    )}
-                  issues={$documentSessionStore.analysis?.issues ?? []}
-                  stale={canvasStale && !canvasRepairableDraft}
-                  staleSource={canvasStaleSource}
-                  repairMode={canvasRepairMode}
-                  blankDraft={canvasBlankDraft}
-                  inspectorControls={inspectorPanelId}
-                  inspectorExpanded={!inspectorPanelHidden}
-                  readOnly={(canvasReadOnly && !canvasRepairableDraft && !canvasRepairMode) ||
-                    $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                      ?.readOnly === true}
-                  onLayoutChange={captureCanvasLayout}
-                  onPersistLayout={persistCanvasScope}
-                  onPersistenceError={surfaceCanvasPersistenceError}
-                  onConnect={(source, target) => canvasAuthoring.connect(source, target)}
-                  onDisconnect={(source, target) => canvasAuthoring.disconnect(source, target)}
-                  onRequestAdd={requestCanvasAdd}
-                  onRequestDelete={requestCanvasDelete}
-                  onOpenInspector={focusInspector}
-                  onToggleInspector={(expanded, invoker) =>
-                    expanded || workbenchPresentation.panels === 'docked'
-                      ? focusInspector(invoker)
-                      : closeInspectorDrawer(invoker)}
-                  onDropNodeKind={dropPaletteNode}
-                  groupSummaries={loopGroupSummaries}
-                  onOpenLoopGroup={(groupId) => openLoopGroup(groupId)}
+                <DeferredSurface
+                  load={loadGraphCanvas}
+                  label="visual editor"
+                  onInstance={(instance) => (graphCanvas = instance as ReturnType<typeof GraphCanvas> | null)}
+                  componentProps={{
+                    commandSurface,
+                    projection: canvasGraph,
+                    layout: $activeScopeLayoutStore!,
+                    restoreRequest: $canvasScopeRestorationStore,
+                    workflowIdentity: canvasInstanceIdentity(
+                      $documentSessionStore.pair?.workflowId ?? '',
+                      $activeScopeKeyStore,
+                    ),
+                    pairGeneration: $documentSessionStore.pair?.generation ?? 0,
+                    onArrangeBusyChange: captureArrangeBusy,
+                    transitionLocked: canvasTransitionLocked,
+                    surfaceActive:
+                      !authoringHidden &&
+                      !(
+                        $activeEditorMode === 'split' &&
+                        workbenchPresentation.split === 'tabs' &&
+                        compactSplitPane === 'yaml'
+                      ),
+                    issues: $documentSessionStore.analysis?.issues ?? [],
+                    stale: canvasStale && !canvasRepairableDraft,
+                    staleSource: canvasStaleSource,
+                    repairMode: canvasRepairMode,
+                    blankDraft: canvasBlankDraft,
+                    inspectorControls: inspectorPanelId,
+                    inspectorExpanded: !inspectorPanelHidden,
+                    readOnly:
+                      (canvasReadOnly && !canvasRepairableDraft && !canvasRepairMode) ||
+                      $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                        ?.readOnly === true,
+                    onLayoutChange: captureCanvasLayout,
+                    onPersistLayout: persistCanvasScope,
+                    onPersistenceError: surfaceCanvasPersistenceError,
+                    onConnect: (source: string, target: string) => canvasAuthoring.connect(source, target),
+                    onDisconnect: (source: string, target: string) => canvasAuthoring.disconnect(source, target),
+                    onRequestAdd: requestCanvasAdd,
+                    onRequestDelete: requestCanvasDelete,
+                    onOpenInspector: focusInspector,
+                    onToggleInspector: (expanded: boolean, invoker: HTMLElement) =>
+                      expanded || workbenchPresentation.panels === 'docked'
+                        ? focusInspector(invoker)
+                        : closeInspectorDrawer(invoker),
+                    onDropNodeKind: dropPaletteNode,
+                    groupSummaries: loopGroupSummaries,
+                    onOpenLoopGroup: (groupId: string) => openLoopGroup(groupId),
+                  }}
                 />
                 {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
                   <LoopGroupEmptyState
@@ -3054,31 +3163,37 @@
                 {/if}
               </div>
             {/if}
-            {#if $documentSessionStore.pair && $documentSessionStore.revision}
+            {#if yamlEditorRequested && $documentSessionStore.pair && $documentSessionStore.revision}
               <div class="yaml-pane">
                 {#key $documentSessionStore.pair.workflowId}
-                  <EditorModes
-                    bind:this={editorModesHost}
-                    pair={$documentSessionStore.pair}
-                    revision={$documentSessionStore.revision}
-                    analysis={$documentSessionStore.analysis}
-                    projection={canvasProjection}
-                    mode={canvasSurfaceMode}
-                    syncOrigins={{
-                      definition:
-                        $documentSyncOriginsStore.definition?.revision ===
-                        $documentSessionStore.pair.definition.revision
-                          ? $documentSyncOriginsStore.definition.origin
-                          : 'unknown',
-                      companion:
-                        $documentSessionStore.pair.companion &&
-                        $documentSyncOriginsStore.companion?.revision === $documentSessionStore.pair.companion.revision
-                          ? $documentSyncOriginsStore.companion.origin
-                          : 'unknown',
+                  <DeferredSurface
+                    load={loadEditorModes}
+                    label="YAML editor"
+                    onInstance={captureEditorModesHost}
+                    componentProps={{
+                      pair: $documentSessionStore.pair,
+                      revision: $documentSessionStore.revision,
+                      analysis: $documentSessionStore.analysis,
+                      projection: canvasProjection,
+                      mode: canvasSurfaceMode,
+                      syncOrigins: {
+                        definition:
+                          $documentSyncOriginsStore.definition?.revision ===
+                          $documentSessionStore.pair.definition.revision
+                            ? $documentSyncOriginsStore.definition.origin
+                            : 'unknown',
+                        companion:
+                          $documentSessionStore.pair.companion &&
+                          $documentSyncOriginsStore.companion?.revision ===
+                            $documentSessionStore.pair.companion.revision
+                            ? $documentSyncOriginsStore.companion.origin
+                            : 'unknown',
+                      },
+                      readOnly:
+                        $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                          ?.readOnly === true,
+                      onTextChange: editYamlDocument,
                     }}
-                    readOnly={$workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                      ?.readOnly === true}
-                    onTextChange={editYamlDocument}
                   />
                 {/key}
               </div>
@@ -3088,61 +3203,73 @@
       </section>
       {#if $documentSessionStore.pair}
         {#snippet problemsContent()}
-          <ProblemsPanel
-            hosted
-            issues={$documentSessionStore.analysis?.issues ?? []}
-            workflowName={canvasProjection?.name}
-            selectionOwner={problemsSelectionOwner}
-            paths={{
-              definition: $documentSessionStore.pair?.definition.path ?? null,
-              companion: $documentSessionStore.pair?.companion?.path ?? null,
-            }}
-            onDocumentation={(id, opener) => {
-              exampleDocumentationProfile = undefined
-              documentationNavigationSequence += 1
-              const topicId = activeDocumentDocumentationIndex?.byId.has(id)
-                ? id
-                : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
-                  ? `contract:${id}`
-                  : id
-              documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
-              routePageNavigation('documentation', opener, true)
+          <DeferredSurface
+            load={loadProblemsPanel}
+            label="Validation problems"
+            componentProps={{
+              hosted: true,
+              issues: $documentSessionStore.analysis?.issues ?? [],
+              workflowName: canvasProjection?.name,
+              selectionOwner: problemsSelectionOwner,
+              paths: {
+                definition: $documentSessionStore.pair?.definition.path ?? null,
+                companion: $documentSessionStore.pair?.companion?.path ?? null,
+              },
+              onDocumentation: (id: string, opener: HTMLButtonElement) => {
+                exampleDocumentationProfile = undefined
+                documentationNavigationSequence += 1
+                const topicId = activeDocumentDocumentationIndex?.byId.has(id)
+                  ? id
+                  : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
+                    ? `contract:${id}`
+                    : id
+                documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
+                routePageNavigation('documentation', opener, true)
+              },
             }}
           />
         {/snippet}
         {#snippet referencesContent()}
           {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
-            <LoopGroupScopeBar
-              groupId={canvasGraph.scope.groupId}
-              suggestions={loopGroupReferenceSuggestions}
-              status={referenceStatus}
-              {...referenceInsertionTargetLabel ? { insertionTargetLabel: referenceInsertionTargetLabel } : {}}
-              onCopy={copyLoopGroupReference}
-              canInsert={canInsertLoopGroupReference}
-              onInsert={insertLoopGroupReference}
-              onAddDependency={addOuterGroupDependency}
+            <DeferredSurface
+              load={loadLoopGroupScopeBar}
+              label="loop references"
+              componentProps={{
+                groupId: canvasGraph.scope.groupId,
+                suggestions: loopGroupReferenceSuggestions,
+                status: referenceStatus,
+                ...(referenceInsertionTargetLabel ? { insertionTargetLabel: referenceInsertionTargetLabel } : {}),
+                onCopy: copyLoopGroupReference,
+                canInsert: canInsertLoopGroupReference,
+                onInsert: insertLoopGroupReference,
+                onAddDependency: addOuterGroupDependency,
+              }}
             />
           {/if}
         {/snippet}
-        <AuxiliaryPanel
-          problems={problemsContent}
-          references={canvasGraph?.scope.kind === 'loop-group' ? referencesContent : undefined}
-          issueCount={$documentSessionStore.analysis?.issues.length ?? 0}
-          blockingCount={auxiliaryBlockingCount}
-          activeTab={auxiliaryTab}
-          height={problemsHeight}
-          minimumHeight={96}
-          maximumHeight={problemsHeightMaximum}
-          onHeightPreview={previewProblemsHeight}
-          onHeightCommit={commitProblemsHeight}
-          onTabChange={(auxiliaryTab) =>
-            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab }))}
-          problemsScroll={$activeScopeLayoutStore?.problemsScroll ?? 0}
-          referencesScroll={$activeScopeLayoutStore?.referencesScroll ?? 0}
-          onProblemsScroll={(problemsScroll) =>
-            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll }))}
-          onReferencesScroll={(referencesScroll) =>
-            updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, referencesScroll }))}
+        <DeferredSurface
+          load={loadAuxiliaryPanel}
+          label="Validation panel"
+          componentProps={{
+            problems: problemsContent,
+            references: canvasGraph?.scope.kind === 'loop-group' ? referencesContent : undefined,
+            issueCount: $documentSessionStore.analysis?.issues.length ?? 0,
+            blockingCount: auxiliaryBlockingCount,
+            activeTab: auxiliaryTab,
+            height: problemsHeight,
+            minimumHeight: 96,
+            maximumHeight: problemsHeightMaximum,
+            onHeightPreview: previewProblemsHeight,
+            onHeightCommit: commitProblemsHeight,
+            onTabChange: (auxiliaryTab: AuxiliaryTab) =>
+              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab })),
+            problemsScroll: $activeScopeLayoutStore?.problemsScroll ?? 0,
+            referencesScroll: $activeScopeLayoutStore?.referencesScroll ?? 0,
+            onProblemsScroll: (problemsScroll: number) =>
+              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll })),
+            onReferencesScroll: (referencesScroll: number) =>
+              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, referencesScroll })),
+          }}
         />
         {#if $documentWorkspaceState.analysisError}
           <div class="document-outcome">
@@ -3213,42 +3340,52 @@
           onclick={() => void closeInspectorDrawer()}><X size={16} aria-hidden="true" /></button
         >
       {/if}
-      <Inspector
-        fields={inspectorFields}
-        values={inspectorValues}
-        selectionLabel={inspectorNodes.length === 1
-          ? (inspectorNodes[0]?.id ?? 'Node')
-          : inspectorNodes.length === 0
-            ? 'Workflow'
-            : `${inspectorNodes.length} nodes`}
-        selectionCount={inspectorNodes.length}
-        selectionNodeId={inspectorNodes[0]?.id}
-        selectionScopeKey={inspectorTarget.kind === 'group'
-          ? inspectorTarget.bodyScopeKey
-          : (inspectorGraph?.scope.key ?? 'root')}
-        bindingIdentity={inspectorBindingIdentity}
-        issues={$documentSessionStore.analysis?.issues ?? []}
-        disabledReason={inspectorDisabledReason}
-        documentationIndex={activeDocumentDocumentationIndex ?? undefined}
-        documentationTopicId={inspectorDocumentationTopicId}
-        onDocumentationTopic={(id) => (inspectorDocumentationTopicId = id)}
-        onCommit={commitInspectorField}
-        onTextTarget={rememberInspectorTextTarget}
-        focusRequest={inspectorFocusRequest}
-        activeTab={$activeScopeLayoutStore?.inspector.tab === 'Execution' ||
-        $activeScopeLayoutStore?.inspector.tab === 'Advanced' ||
-        $activeScopeLayoutStore?.inspector.tab === 'Docs'
-          ? $activeScopeLayoutStore.inspector.tab
-          : 'General'}
-        scrollTop={$activeScopeLayoutStore?.inspector.scrollTop ?? 0}
-        onTabChange={(tab) =>
-          updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, inspector: { ...scope.inspector, tab } }))}
-        onScroll={(scrollTop) =>
-          updateScopeLayout($activeScopeKeyStore, (scope) => ({
-            ...scope,
-            inspector: { ...scope.inspector, scrollTop },
-          }))}
-      />
+      {#if $workspace.id !== null}
+        <DeferredSurface
+          load={loadInspector}
+          label="inspector"
+          componentProps={{
+            fields: inspectorFields,
+            values: inspectorValues,
+            selectionLabel:
+              inspectorNodes.length === 1
+                ? (inspectorNodes[0]?.id ?? 'Node')
+                : inspectorNodes.length === 0
+                  ? 'Workflow'
+                  : `${inspectorNodes.length} nodes`,
+            selectionCount: inspectorNodes.length,
+            selectionNodeId: inspectorNodes[0]?.id,
+            selectionScopeKey:
+              inspectorTarget.kind === 'group' ? inspectorTarget.bodyScopeKey : (inspectorGraph?.scope.key ?? 'root'),
+            bindingIdentity: inspectorBindingIdentity,
+            issues: $documentSessionStore.analysis?.issues ?? [],
+            disabledReason: inspectorDisabledReason,
+            documentationIndex: activeDocumentDocumentationIndex ?? undefined,
+            documentationTopicId: inspectorDocumentationTopicId,
+            onDocumentationTopic: (id: string) => (inspectorDocumentationTopicId = id),
+            onCommit: commitInspectorField,
+            onTextTarget: rememberInspectorTextTarget,
+            focusRequest: inspectorFocusRequest,
+            activeTab:
+              $activeScopeLayoutStore?.inspector.tab === 'Execution' ||
+              $activeScopeLayoutStore?.inspector.tab === 'Advanced' ||
+              $activeScopeLayoutStore?.inspector.tab === 'Docs'
+                ? $activeScopeLayoutStore.inspector.tab
+                : 'General',
+            scrollTop: $activeScopeLayoutStore?.inspector.scrollTop ?? 0,
+            onTabChange: (tab: ScopeLayoutV1['inspector']['tab']) =>
+              updateScopeLayout($activeScopeKeyStore, (scope) => ({
+                ...scope,
+                inspector: { ...scope.inspector, tab },
+              })),
+            onScroll: (scrollTop: number) =>
+              updateScopeLayout($activeScopeKeyStore, (scope) => ({
+                ...scope,
+                inspector: { ...scope.inspector, scrollTop },
+              })),
+          }}
+        />
+      {/if}
     </aside>
     {#if workbenchSurface === 'welcome'}
       <ActivityPage activity="welcome" title="Welcome" description="Open a local folder to begin authoring workflows.">
@@ -3264,11 +3401,15 @@
     {:else if workbenchSurface === 'settings'}
       {#snippet appearanceSettings()}
         <div class="appearance-settings-stack">
-          <AppearanceSettings
-            mode={$themePreference}
-            colorTheme={$colorTheme}
-            onMode={setThemePreference}
-            onColorTheme={setColorTheme}
+          <DeferredSurface
+            load={loadAppearanceSettings}
+            label="appearance settings"
+            componentProps={{
+              mode: $themePreference,
+              colorTheme: $colorTheme,
+              onMode: setThemePreference,
+              onColorTheme: setColorTheme,
+            }}
           />
           <details class="advanced-brand-packs">
             <summary>Advanced brand packs</summary>
@@ -3276,24 +3417,29 @@
               Brand packs replace product identity assets and the full semantic token set. Most users only need the
               color themes above.
             </p>
-            <BrandSettings
-              packs={$brandState.packs}
-              reports={$brandState.reports}
-              activeId={$brandState.activeId}
-              pending={$brandState.pending}
-              warning={$brandState.warning}
-              onImport={async () => {
-                await runBrandOperation(() => brandController.importPack())
-              }}
-              onPreview={(id) => {
-                brandPreviewId = id
-                brandPreviewOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
-              }}
-              onActivate={async (id) => {
-                await runBrandOperation(() => brandController.activate(id))
-              }}
-              onRemove={async (id, revertActive) => {
-                await runBrandOperation(() => brandController.remove(id, revertActive))
+            <DeferredSurface
+              load={loadBrandSettings}
+              label="brand settings"
+              componentProps={{
+                packs: $brandState.packs,
+                reports: $brandState.reports,
+                activeId: $brandState.activeId,
+                pending: $brandState.pending,
+                warning: $brandState.warning,
+                onImport: async () => {
+                  await runBrandOperation(() => brandController.importPack())
+                },
+                onPreview: (id: string) => {
+                  brandPreviewId = id
+                  brandPreviewOpener =
+                    document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+                },
+                onActivate: async (id: string) => {
+                  await runBrandOperation(() => brandController.activate(id))
+                },
+                onRemove: async (id: string, revertActive: boolean) => {
+                  await runBrandOperation(() => brandController.remove(id, revertActive))
+                },
               }}
             />
           </details>
@@ -3301,37 +3447,49 @@
       {/snippet}
       {#snippet contractSettings()}
         {#if contractsLoaded && appContractCache}
-          <ContractSettingsHost
-            cache={appContractCache}
-            {native}
-            confirmUnsupported={() =>
-              Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?'))}
-            onContractsChanged={synchronizeContractRegistry}
+          <DeferredSurface
+            load={loadContractSettings}
+            label="contract settings"
+            componentProps={{
+              cache: appContractCache,
+              native,
+              confirmUnsupported: () =>
+                Promise.resolve(window.confirm('Cache this unsupported contract for inspection only?')),
+              onContractsChanged: synchronizeContractRegistry,
+            }}
           />
         {:else}
           <p>Loading bundled contracts…</p>
         {/if}
       {/snippet}
       {#snippet updateSettings()}
-        <UpdateSettings
-          {startupCheckEnabled}
-          updateState={updateProgress}
-          oncheck={() => updateController.check(false)}
-          onstartupchange={(enabled) => updateController.setStartupCheck(enabled)}
-          ondownload={(runId) => updateController.downloadInstall(runId)}
-          onopenlog={(runId) => updateController.openLog(runId)}
-          onrelaunch={() => updateController.relaunch()}
+        <DeferredSurface
+          load={loadUpdateSettings}
+          label="update settings"
+          componentProps={{
+            startupCheckEnabled,
+            updateState: updateProgress,
+            oncheck: () => updateController.check(false),
+            onstartupchange: (enabled: boolean) => updateController.setStartupCheck(enabled),
+            ondownload: (runId: string) => updateController.downloadInstall(runId),
+            onopenlog: (runId: string) => updateController.openLog(runId),
+            onrelaunch: () => updateController.relaunch(),
+          }}
         />
       {/snippet}
       {#snippet aboutSettings()}
         {#if hostInfo}
-          <AboutView
-            host={hostInfo}
-            contracts={contracts.map((contract) => ({
-              profile: contract.profile,
-              schemaVersion: contract.schema_version,
-              digest: contract.contract_digest,
-            }))}
+          <DeferredSurface
+            load={loadAboutView}
+            label="application identity"
+            componentProps={{
+              host: hostInfo,
+              contracts: contracts.map((contract) => ({
+                profile: contract.profile,
+                schemaVersion: contract.schema_version,
+                digest: contract.contract_digest,
+              })),
+            }}
           />
         {:else}
           <p role="status">Loading application identity…</p>
@@ -3345,11 +3503,15 @@
         focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
-        <SettingsPage
-          appearance={appearanceSettings}
-          contracts={contractSettings}
-          updates={updateSettings}
-          about={aboutSettings}
+        <DeferredSurface
+          load={loadSettingsPage}
+          label="settings"
+          componentProps={{
+            appearance: appearanceSettings,
+            contracts: contractSettings,
+            updates: updateSettings,
+            about: aboutSettings,
+          }}
         />
       </ActivityPage>
     {:else if workbenchSurface === 'git'}
@@ -3361,22 +3523,26 @@
         focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
-        <GitView
-          embedded
-          availableWidth={Math.max(0, workbenchWidth - 48)}
-          onSelectCommit={loadHistoricalGitPair}
-          currentDefinition={$documentSessionStore.pair?.definition.text}
-          currentCompanion={$documentSessionStore.pair?.companion?.text}
-          onRestoreDraft={restoreHistoricalGitPair}
-          workspaceRoot={$workspace.rootPath ?? undefined}
-          versionReady={Boolean(
-            $documentSessionStore.pair &&
-            pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
-          )}
-          findings={$documentSessionStore.analysis?.issues.map(({ message }) => message) ?? []}
-          onInitialize={initializeGitRepository}
-          onSetIdentity={setRepositoryIdentity}
-          onCreateVersion={createCurrentPairVersion}
+        <DeferredSurface
+          load={loadGitView}
+          label="Git activity"
+          componentProps={{
+            embedded: true,
+            availableWidth: Math.max(0, workbenchWidth - 48),
+            onSelectCommit: loadHistoricalGitPair,
+            currentDefinition: $documentSessionStore.pair?.definition.text,
+            currentCompanion: $documentSessionStore.pair?.companion?.text,
+            onRestoreDraft: restoreHistoricalGitPair,
+            workspaceRoot: $workspace.rootPath ?? undefined,
+            versionReady: Boolean(
+              $documentSessionStore.pair &&
+              pairIsSavedCurrentValid($documentSessionStore.pair, $documentSessionStore.analysis),
+            ),
+            findings: $documentSessionStore.analysis?.issues.map(({ message }) => message) ?? [],
+            onInitialize: initializeGitRepository,
+            onSetIdentity: setRepositoryIdentity,
+            onCreateVersion: createCurrentPairVersion,
+          }}
         />
       </ActivityPage>
     {:else if workbenchSurface === 'documentation'}
@@ -3389,18 +3555,28 @@
         onBack={returnToAuthoringSurface}
       >
         {#if documentationIndex}
-          <DocumentationView
-            index={documentationIndex}
-            {commandSurface}
-            topicId={documentationNavigationRequest?.topicId}
-            navigationRequestId={documentationNavigationRequest?.id}
-            onTopicConsumed={(_id, requestId) => {
-              if (requestId !== undefined && documentationNavigationRequest?.id === requestId) {
-                documentationNavigationRequest = undefined
-              }
+          <DeferredSurface
+            load={loadDocumentationView}
+            label="documentation"
+            componentProps={{
+              index: documentationIndex,
+              commandSurface,
+              topicId: requestedDocumentationTopicId,
+              navigationRequestId: documentationNavigationRequest?.id,
+              onTopicConsumed: (_id: string, requestId?: number) => {
+                if (requestId !== undefined && documentationNavigationRequest?.id === requestId) {
+                  documentationNavigationRequest = undefined
+                }
+              },
+              onOpenExternal: (url: string) => window.open(url, '_blank', 'noopener'),
             }}
-            onOpenExternal={(url) => window.open(url, '_blank', 'noopener')}
           />
+          {#if guideLoadError}
+            <p class="documentation-unavailable" role="alert">
+              Task guides could not be loaded. Contract reference remains available.
+              <button type="button" data-variant="secondary" onclick={() => void loadGuides()}>Retry guides</button>
+            </p>
+          {/if}
         {:else}
           <p class="documentation-unavailable" role="status">Documentation is unavailable for the active contract.</p>
         {/if}
@@ -3414,13 +3590,18 @@
         focusRequest={pageFocusRequest}
         onBack={returnToAuthoringSurface}
       >
-        <ExampleGallery
-          embedded
-          catalogState={exampleCatalogState}
-          topicLabels={exampleTopicLabels}
-          onCreateEditableCopy={(example) => runWorkspaceOperation(createEditableExampleCopy(example))}
-          onOpenDocumentation={openExampleDocumentation}
-          onRetry={() => loadExamples().then(() => undefined)}
+        <DeferredSurface
+          load={loadExampleGallery}
+          label="examples"
+          componentProps={{
+            embedded: true,
+            catalogState: exampleCatalogState,
+            topicLabels: exampleTopicLabels,
+            onCreateEditableCopy: (example: ExampleDescriptor) =>
+              runWorkspaceOperation(createEditableExampleCopy(example)),
+            onOpenDocumentation: openExampleDocumentation,
+            onRetry: () => loadExamples(true).then(() => undefined),
+          }}
         />
       </ActivityPage>
     {/if}
@@ -3428,40 +3609,53 @@
 
   <StatusBar />
   {#if previewRuntimeBrand}
-    <BrandPreview
-      pack={previewRuntimeBrand}
-      mode={resolveThemeMode($themePreference)}
-      pending={$brandState.pending}
-      opener={brandPreviewOpener}
-      onClose={() => (brandPreviewId = null)}
-      onActivate={async () => {
-        if (await runBrandOperation(() => brandController.activate(previewRuntimeBrand.manifest.id))) {
-          brandPreviewId = null
-        }
+    <DeferredSurface
+      load={loadBrandPreview}
+      label="brand preview"
+      componentProps={{
+        pack: previewRuntimeBrand,
+        mode: resolveThemeMode($themePreference),
+        pending: $brandState.pending,
+        opener: brandPreviewOpener,
+        onClose: () => (brandPreviewId = null),
+        onActivate: async () => {
+          if (await runBrandOperation(() => brandController.activate(previewRuntimeBrand.manifest.id))) {
+            brandPreviewId = null
+          }
+        },
       }}
     />
   {/if}
   {#if quickOpenVisible}
-    <QuickOpen
-      entries={$workspace.entries}
-      opener={quickOpenOpener}
-      onOpen={(entry) => {
-        quickOpenVisible = false
-        if (entry.kind === 'workflow') runWorkspaceOperation(openEntry(entry))
+    <DeferredSurface
+      load={loadQuickOpen}
+      label="quick open"
+      componentProps={{
+        entries: $workspace.entries,
+        opener: quickOpenOpener,
+        onOpen: (entry: WorkspaceEntry) => {
+          quickOpenVisible = false
+          if (entry.kind === 'workflow') runWorkspaceOperation(openEntry(entry))
+        },
+        onClose: () => (quickOpenVisible = false),
       }}
-      onClose={() => (quickOpenVisible = false)}
     />
   {/if}
   {#if $documentWorkspaceState.conflict}
-    <ExternalChangeDialog
-      files={[
-        {
-          relativePath: $documentWorkspaceState.conflict.disk.relativePath,
-          modifiedAt: $documentWorkspaceState.conflict.disk.modifiedAt,
-        },
-      ]}
-      diffViewed={$documentWorkspaceState.conflict.diffViewed}
-      onChoice={(choice) => documentWorkspace.resolveConflict(choice)}
+    <DeferredSurface
+      load={loadExternalChangeDialog}
+      label="external change dialog"
+      componentProps={{
+        files: [
+          {
+            relativePath: $documentWorkspaceState.conflict.disk.relativePath,
+            modifiedAt: $documentWorkspaceState.conflict.disk.modifiedAt,
+          },
+        ],
+        diffViewed: $documentWorkspaceState.conflict.diffViewed,
+        onChoice: (choice: Parameters<typeof documentWorkspace.resolveConflict>[0]) =>
+          documentWorkspace.resolveConflict(choice),
+      }}
     />
   {/if}
   {#if $documentWorkspaceState.recoveryOffers[0]}
@@ -3491,84 +3685,108 @@
   {/if}
   {#if contextEntryId}
     <div class="context-layer">
-      <WorkflowContextMenu
-        commands={commandSurface.listCommands()}
-        opener={contextOpener}
-        context={contextFor(contextEntryId)}
-        onRun={async (id) => {
-          const targetEntryId = contextEntryId!
-          const context = contextFor(targetEntryId)
-          contextEntryId = null
-          await runCommand(id, context)
+      <DeferredSurface
+        load={loadWorkflowContextMenu}
+        label="workflow actions"
+        componentProps={{
+          commands: commandSurface.listCommands(),
+          opener: contextOpener,
+          context: contextFor(contextEntryId),
+          onRun: async (id: string) => {
+            const targetEntryId = contextEntryId!
+            const context = contextFor(targetEntryId)
+            contextEntryId = null
+            await runCommand(id, context)
+          },
+          onClose: () => (contextEntryId = null),
         }}
-        onClose={() => (contextEntryId = null)}
       />
     </div>
   {/if}
   {#if newDialogVisible && contracts.length > 0}
-    <NewWorkflowDialog
-      {contracts}
-      activeContract={activeContractForProfile}
-      opener={newDialogOpener}
-      onCancel={() => (newDialogVisible = false)}
-      onCreate={async (input) => {
-        const outcome = await actions.createWorkflow(input)
-        await refreshWorkspace()
-        if (outcome.status === 'completed') newDialogVisible = false
-        else
-          workspaceError = outcome.results
-            .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
-            .join('\n')
+    <DeferredSurface
+      load={loadNewWorkflowDialog}
+      label="new workflow"
+      componentProps={{
+        contracts,
+        activeContract: activeContractForProfile,
+        opener: newDialogOpener,
+        onCancel: () => (newDialogVisible = false),
+        onCreate: async (input: Parameters<typeof actions.createWorkflow>[0]) => {
+          const outcome = await actions.createWorkflow(input)
+          await refreshWorkspace()
+          if (outcome.status === 'completed') newDialogVisible = false
+          else
+            workspaceError = outcome.results
+              .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
+              .join('\n')
+        },
       }}
     />
   {/if}
   {#if importDialogVisible && activeContractForProfile('archon-2026-07')}
-    <ImportExportDialog
-      mode="import"
-      opener={importDialogOpener}
-      onCancel={() => (importDialogVisible = false)}
-      onConfirm={async () => {
-        const outcome = await actions.importWorkflow({ profile: 'archon-2026-07' })
-        await refreshWorkspace()
-        if (outcome.status !== 'partial') importDialogVisible = false
-        else
-          workspaceError = outcome.results
-            .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
-            .join('\n')
+    <DeferredSurface
+      load={loadImportExportDialog}
+      label="workflow import"
+      componentProps={{
+        mode: 'import',
+        opener: importDialogOpener,
+        onCancel: () => (importDialogVisible = false),
+        onConfirm: async () => {
+          const outcome = await actions.importWorkflow({ profile: 'archon-2026-07' })
+          await refreshWorkspace()
+          if (outcome.status !== 'partial') importDialogVisible = false
+          else
+            workspaceError = outcome.results
+              .map(({ path, status, message }) => `${path}: ${status}${message ? ` — ${message}` : ''}`)
+              .join('\n')
+        },
       }}
     />
   {/if}
   {#if exportBlockingIssues.length > 0}
-    <ImportExportDialog
-      mode="export"
-      blockingIssues={exportBlockingIssues}
-      opener={contextOpener}
-      onCancel={() => (exportBlockingIssues = [])}
+    <DeferredSurface
+      load={loadImportExportDialog}
+      label="workflow export"
+      componentProps={{
+        mode: 'export',
+        blockingIssues: exportBlockingIssues,
+        opener: contextOpener,
+        onCancel: () => (exportBlockingIssues = []),
+      }}
     />
   {/if}
   {#if exportConfirmation}
-    <ImportExportDialog
-      mode="export"
-      paths={exportConfirmation.paths}
-      collision={true}
-      opener={exportConfirmation.opener}
-      onCancel={() => {
-        exportConfirmation?.resolve(false)
-        exportConfirmation = null
-      }}
-      onConfirm={() => {
-        exportConfirmation?.resolve(true)
-        exportConfirmation = null
+    <DeferredSurface
+      load={loadImportExportDialog}
+      label="workflow export"
+      componentProps={{
+        mode: 'export',
+        paths: exportConfirmation.paths,
+        collision: true,
+        opener: exportConfirmation.opener,
+        onCancel: () => {
+          exportConfirmation?.resolve(false)
+          exportConfirmation = null
+        },
+        onConfirm: () => {
+          exportConfirmation?.resolve(true)
+          exportConfirmation = null
+        },
       }}
     />
   {/if}
   {#if addNodeRequest && canvasProjection}
-    <AddNodePicker
-      descriptors={activeNodeDescriptors}
-      profile={canvasProjection.profile}
-      opener={addNodeRequest.opener}
-      onChoose={chooseCanvasNode}
-      onClose={() => (addNodeRequest = null)}
+    <DeferredSurface
+      load={loadAddNodePicker}
+      label="node picker"
+      componentProps={{
+        descriptors: activeNodeDescriptors,
+        profile: canvasProjection.profile,
+        opener: addNodeRequest.opener,
+        onChoose: chooseCanvasNode,
+        onClose: () => (addNodeRequest = null),
+      }}
     />
   {/if}
   {#if nodeChordState.pending}
@@ -3581,12 +3799,16 @@
     </div>
   {/if}
   {#if $commandPaletteOpen}
-    <CommandPalette
-      registry={commandSurface}
-      context={keyboardContext(document.activeElement)}
-      opener={commandPaletteOpener ?? keyboardShortcutsOpener ?? undefined}
-      onClose={closeCommandPalette}
-      onExecuted={commandPaletteExecuted}
+    <DeferredSurface
+      load={loadCommandPalette}
+      label="command palette"
+      componentProps={{
+        registry: commandSurface,
+        context: keyboardContext(document.activeElement),
+        opener: commandPaletteOpener ?? keyboardShortcutsOpener ?? undefined,
+        onClose: closeCommandPalette,
+        onExecuted: commandPaletteExecuted,
+      }}
     />
   {/if}
   {#if $keyboardShortcutsOpen}
@@ -3597,7 +3819,11 @@
       onCancel={closeKeyboardShortcuts}
     >
       <h2 id="keyboard-shortcuts-title" class="visually-hidden">Keyboard shortcuts</h2>
-      <KeyboardShortcuts registry={commandSurface} variant="compact" />
+      <DeferredSurface
+        load={loadKeyboardShortcuts}
+        label="keyboard shortcuts"
+        componentProps={{ registry: commandSurface, variant: 'compact' }}
+      />
       {#snippet actions()}
         <button
           type="button"
@@ -3610,11 +3836,15 @@
     </ModalShell>
   {/if}
   {#if deleteRequest}
-    <DeleteImpactDialog
-      impact={deleteRequest.impact}
-      opener={deleteRequest.opener}
-      onCancel={() => (deleteRequest = null)}
-      onConfirm={confirmCanvasDelete}
+    <DeferredSurface
+      load={loadDeleteImpactDialog}
+      label="delete confirmation"
+      componentProps={{
+        impact: deleteRequest.impact,
+        opener: deleteRequest.opener,
+        onCancel: () => (deleteRequest = null),
+        onConfirm: confirmCanvasDelete,
+      }}
     />
   {/if}
   {#if revertRequest}
@@ -3662,15 +3892,19 @@
 {/if}
 
 {#if updateProgress && ['available', 'downloading', 'verifying', 'cancelling', 'installing', 'restart-required', 'recheck-required', 'failed'].includes(updateProgress.phase)}
-  <UpdateOverlay
-    state={updateProgress}
-    ondownload={(runId) => updateController.downloadInstall(runId)}
-    onlater={(runId) => updateController.defer(runId)}
-    oncancel={(runId) => updateController.cancel(runId)}
-    onretry={() => updateController.check(false)}
-    onopenlog={(runId) => updateController.openLog(runId)}
-    onrelaunch={() => updateController.relaunch()}
-    copyText={(text) => navigator.clipboard.writeText(text)}
+  <DeferredSurface
+    load={loadUpdateOverlay}
+    label="application update"
+    componentProps={{
+      state: updateProgress,
+      ondownload: (runId: string) => updateController.downloadInstall(runId),
+      onlater: (runId: string) => updateController.defer(runId),
+      oncancel: (runId: string) => updateController.cancel(runId),
+      onretry: () => updateController.check(false),
+      onopenlog: (runId: string) => updateController.openLog(runId),
+      onrelaunch: () => updateController.relaunch(),
+      copyText: (text: string) => navigator.clipboard.writeText(text),
+    }}
   />
 {/if}
 

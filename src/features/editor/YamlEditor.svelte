@@ -33,6 +33,7 @@
     syncOrigin?: DocumentSyncOrigin
     label?: string
     onTextChange: (text: string) => void
+    onReady?: (() => void) | undefined
   }
 
   let {
@@ -47,6 +48,7 @@
     syncOrigin = 'unknown',
     label = documentKind === 'definition' ? 'Definition YAML' : 'Companion YAML',
     onTextChange,
+    onReady,
   }: Props = $props()
   let host: HTMLDivElement
   let view: EditorView | null = null
@@ -166,6 +168,7 @@
       }
       if (nodeId) focusNode(nodeId)
     })
+    onReady?.()
   })
 
   onDestroy(() => {

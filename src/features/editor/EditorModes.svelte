@@ -40,6 +40,11 @@
   let companionEditor = $state<ReturnType<typeof YamlEditor>>()
   let definitionTab = $state<HTMLButtonElement>()
   let companionTab = $state<HTMLButtonElement>()
+  let readyEditors = $state<readonly DocumentKind[]>([])
+  const editorReadyWaiters: Record<DocumentKind, (() => void)[]> = {
+    definition: [],
+    companion: [],
+  }
   const tabPrefix = $derived(`yaml-${encodeURIComponent(pair.workflowId)}`)
   const definitionTabId = $derived(`${tabPrefix}-definition-tab`)
   const companionTabId = $derived(`${tabPrefix}-companion-tab`)
@@ -50,10 +55,23 @@
     if (!pair.companion && $activeYamlDocument === 'companion') showYamlDocument('definition')
   })
 
+  function markEditorReady(document: DocumentKind): void {
+    if (!readyEditors.includes(document)) readyEditors = [...readyEditors, document]
+    for (const resolve of editorReadyWaiters[document]) resolve()
+    editorReadyWaiters[document].length = 0
+  }
+
+  function waitForEditorReady(document: DocumentKind): Promise<void> {
+    if (readyEditors.includes(document)) return Promise.resolve()
+    return new Promise((resolve) => editorReadyWaiters[document].push(resolve))
+  }
+
   export async function focusProblem(issue: ValidationIssue, current: () => boolean = () => true): Promise<boolean> {
     if (!current() || (issue.document === 'companion' && !pair.companion)) return false
     showYamlDocument(issue.document)
     await tick()
+    if (!current()) return false
+    await waitForEditorReady(issue.document)
     if (!current()) return false
     const editor = issue.document === 'definition' ? definitionEditor : companionEditor
     if (!current()) return false
@@ -156,6 +174,7 @@
       focusOnSelection={mode !== 'visual'}
       syncOrigin={syncOrigins.definition}
       onTextChange={(text) => onTextChange('definition', text)}
+      onReady={() => markEditorReady('definition')}
     />
   </div>
   {#if pair.companion}
@@ -177,6 +196,7 @@
         focusOnSelection={mode !== 'visual'}
         syncOrigin={syncOrigins.companion}
         onTextChange={(text) => onTextChange('companion', text)}
+        onReady={() => markEditorReady('companion')}
       />
     </div>
   {/if}

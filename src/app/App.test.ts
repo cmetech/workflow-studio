@@ -218,6 +218,8 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+const deferredSurfaceWait = { timeout: 20_000 }
+
 function installRealDocumentWorker(): () => void {
   const originalWorker = globalThis.Worker
   Object.defineProperty(globalThis, 'Worker', { configurable: true, value: RealDocumentWorker })
@@ -300,8 +302,8 @@ nodes:
       try {
         const { container } = render(App)
         await waitForSetupReady()
-        await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
-        const open = await screen.findByRole('button', { name: 'Open loop body' })
+        await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
+        const open = await screen.findByRole('button', { name: 'Open loop body' }, deferredSurfaceWait)
         const analysis = $documentSession.get().analysis!
         const issue = {
           code: 'test_required',
@@ -321,12 +323,16 @@ nodes:
         await tick()
         expect(blocking ? problemsTab : referencesTab).toHaveAttribute('aria-selected', 'true')
         receiveDocumentAnalysis({ ...analysis, issues: blocking ? [issue] : [] })
-        expect(container.querySelector('[data-testid="graph-scope-header"]')?.nextElementSibling).toHaveClass(
-          'editor-surfaces',
+        await waitFor(
+          () =>
+            expect(container.querySelector('[data-testid="graph-scope-header"]')?.nextElementSibling).toHaveClass(
+              'editor-surfaces',
+            ),
+          deferredSurfaceWait,
         )
         expect(screen.getByRole('region', { name: 'Workflow editor' }).querySelector('.scope-bar')).toBeNull()
         await fireEvent.click(referencesTab)
-        expect(screen.getByRole('region', { name: 'References for refine' })).toBeVisible()
+        expect(await screen.findByRole('region', { name: 'References for refine' }, deferredSurfaceWait)).toBeVisible()
         expect(screen.getByText(blocking ? '1 problem, 1 blocking' : '0 problems, 0 blocking')).toBeVisible()
         expect(screen.queryByRole('region', { name: 'Problems' })).not.toBeInTheDocument()
         if (!blocking) {
@@ -366,7 +372,7 @@ nodes:
         }
         await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
         expect(screen.queryByRole('tab', { name: 'References' })).not.toBeInTheDocument()
-        await fireEvent.click(await screen.findByRole('button', { name: 'Open loop body' }))
+        await fireEvent.click(await screen.findByRole('button', { name: 'Open loop body' }, deferredSurfaceWait))
         expect(screen.getByRole('tab', { name: 'Problems' })).toHaveAttribute('aria-selected', 'true')
         if (!blocking) {
           expect(screen.getByRole('tab', { name: 'Contract 1' })).toHaveAttribute('aria-selected', 'true')
@@ -464,8 +470,8 @@ nodes:
     try {
       const { container } = render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
-      await screen.findByRole('region', { name: 'Workflow graph' })
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
+      await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
       const workbench = container.querySelector<HTMLElement>('.workbench')!
       const editor = screen.getByRole('region', { name: 'Workflow workspace' })
       await publishCompactPanelMedia(false)
@@ -493,14 +499,14 @@ nodes:
         ).find(({ layout }) => layout.workflowPath === 'flow.yaml')?.layout.collapsedPanels,
       ).toEqual({ left: false, right: false })
 
-      await fireEvent.click(screen.getByRole('treeitem', { name: /other\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /other\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('other.yaml'))
       expect(workspacePanel).not.toHaveAttribute('inert')
       expect(inspectorPanel).not.toHaveAttribute('inert')
 
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect(activeLayoutStore.get()?.workflowPath).toBe('flow.yaml'))
-      await screen.findByRole('region', { name: 'Workflow graph' })
+      await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
       expect(workspacePanel).not.toHaveAttribute('inert')
       expect(inspectorPanel).not.toHaveAttribute('inert')
 
@@ -644,8 +650,8 @@ nodes:
     })
     await tick()
 
-    const dialog = screen.getByRole('dialog', { name: 'Workflow changed on disk' })
-    const compare = screen.getByRole('button', { name: 'Compare' })
+    const dialog = await screen.findByRole('dialog', { name: 'Workflow changed on disk' }, deferredSurfaceWait)
+    const compare = await screen.findByRole('button', { name: 'Compare' }, deferredSurfaceWait)
     const modalKeydown = vi.fn()
     dialog.addEventListener('keydown', modalKeydown, { capture: true })
     expect(dialog.tagName).toBe('DIALOG')
@@ -680,11 +686,11 @@ nodes:
     showActivity('settings')
     render(App)
 
-    expect(await screen.findByRole('heading', { name: 'Appearance' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Appearance' }, deferredSurfaceWait)).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Appearance' })).toHaveAttribute('aria-selected', 'true')
     const disclosure = screen.getByText('Advanced brand packs').closest('details')
     expect(disclosure).not.toHaveAttribute('open')
-    expect(screen.getByRole('button', { name: 'Import brand pack' })).not.toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Import brand pack' }, deferredSurfaceWait)).not.toBeVisible()
 
     await fireEvent.click(screen.getByText('Advanced brand packs'))
 
@@ -704,7 +710,7 @@ nodes:
     loadWorkspaceEntries('current', 'current', [], '/current')
     showActivity('git')
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Initialize Git repository' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Initialize Git repository' }, deferredSurfaceWait))
     expect(screen.getByText('/current')).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'Initialize repository' }))
 
@@ -773,7 +779,9 @@ nodes:
     showActivity('documentation')
     render(App)
 
-    expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
+    expect(
+      await screen.findByText('Documentation is unavailable for the active contract.', {}, deferredSurfaceWait),
+    ).toBeVisible()
   })
 
   it('distinguishes a resolved empty example catalog from loading', async () => {
@@ -783,10 +791,10 @@ nodes:
     render(App)
 
     await waitForSetupReady()
-    expect(screen.getByText('Loading validated examples…')).toBeVisible()
+    expect(await screen.findByText('Loading validated examples…', {}, deferredSurfaceWait)).toBeVisible()
     catalog.resolve([])
 
-    expect(await screen.findByText('No bundled examples are available.')).toBeVisible()
+    expect(await screen.findByText('No bundled examples are available.', {}, deferredSurfaceWait)).toBeVisible()
     expect(screen.queryByText('Loading validated examples…')).not.toBeInTheDocument()
   })
 
@@ -800,14 +808,14 @@ nodes:
     render(App)
 
     await waitForSetupReady()
-    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog could not be read.')
+    expect(await screen.findByRole('alert', {}, deferredSurfaceWait)).toHaveTextContent('Catalog could not be read.')
     await fireEvent.click(screen.getByRole('button', { name: 'Retry loading examples' }))
 
-    expect(load).toHaveBeenCalledTimes(2)
-    expect(await screen.findByText('No bundled examples are available.')).toBeVisible()
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2), deferredSurfaceWait)
+    expect(await screen.findByText('No bundled examples are available.', {}, deferredSurfaceWait)).toBeVisible()
   })
 
-  it('does not fall back to another profile documentation index for a projection-less session', () => {
+  it('does not fall back to another profile documentation index for a projection-less session', async () => {
     openDocumentSession(
       {
         workflowId: 'workflow:workspace:stale.yaml',
@@ -829,7 +837,9 @@ nodes:
     showActivity('documentation')
     render(App)
 
-    expect(screen.getByText('Documentation is unavailable for the active contract.')).toBeVisible()
+    expect(
+      await screen.findByText('Documentation is unavailable for the active contract.', {}, deferredSurfaceWait),
+    ).toBeVisible()
   })
 
   it('opens the exact offline documentation topic from an example card', async () => {
@@ -893,6 +903,7 @@ nodes:
     await waitForSetupReady()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+    await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)
 
     expect(screen.getByText('Start with a task guide or search the complete offline workflow reference.')).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Start here' })).toBeVisible()
@@ -956,6 +967,7 @@ nodes:
     const { container } = render(App)
     await waitForSetupReady()
     await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+    await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)
     await fireEvent.click(screen.getByRole('tab', { name: 'Guides' }))
     const search = screen.getByRole('searchbox', { name: 'Search documentation' })
     await fireEvent.input(search, { target: { value: 'workflow pairs' } })
@@ -967,8 +979,9 @@ nodes:
     article.scrollTop = 147
 
     await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
-    expect(await screen.findByRole('region', { name: 'Examples' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Examples' }, deferredSurfaceWait)).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+    await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)
 
     expect(screen.getByRole('tab', { name: 'Guides' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('searchbox', { name: 'Search documentation' })).toHaveValue('workflow pairs')
@@ -1011,6 +1024,7 @@ nodes:
       render(App)
       await waitForSetupReady()
       await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+      await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)
       await fireEvent.click(screen.getByRole('tab', { name: mode }))
       await fireEvent.click(screen.getByRole('checkbox', { name: 'All documentation' }))
 
@@ -1028,8 +1042,9 @@ nodes:
       expect(screen.getByRole('article', { name: articleName })).toBeVisible()
 
       await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
-      expect(await screen.findByRole('region', { name: 'Examples' })).toBeVisible()
+      expect(await screen.findByRole('region', { name: 'Examples' }, deferredSurfaceWait)).toBeVisible()
       await fireEvent.click(screen.getByRole('button', { name: 'Documentation' }))
+      await screen.findByLabelText('Offline documentation', {}, deferredSurfaceWait)
 
       const selectedTab = screen.getByRole('tab', { name: mode })
       expect(selectedTab).toHaveAttribute('aria-selected', 'true')
@@ -1166,9 +1181,9 @@ nodes:
       const rendered = render(App, { commandSurface: registry })
       try {
         await waitForSetupReady()
-        await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+        await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
         await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
-        await waitFor(() => expect(screen.getByTestId('workflow-canvas')).toBeVisible())
+        expect(await screen.findByTestId('workflow-canvas', {}, deferredSurfaceWait)).toBeVisible()
         await waitFor(() =>
           expect(rendered.container.querySelector('.svelte-flow__node[data-id="draft"]')).toBeInTheDocument(),
         )
@@ -1455,7 +1470,7 @@ nodes:
       ])
       showActivity('explorer')
       await tick()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /cached.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /cached.yaml/i }, deferredSurfaceWait))
 
       await waitFor(() => expect($documentSession.get().revision?.contractDigest).toBe(digest))
     } finally {
@@ -1481,7 +1496,7 @@ nodes:
     await waitFor(() => expect(openDialog).toBeEnabled())
     await fireEvent.click(openDialog)
 
-    const profile = await screen.findByRole('combobox', { name: 'Profile' })
+    const profile = await screen.findByRole('combobox', { name: 'Profile' }, deferredSurfaceWait)
     expect(within(profile).queryByRole('option', { name: 'archon-2026-07' })).not.toBeInTheDocument()
     expect(within(profile).getByRole('option', { name: 'hermes-legacy' })).toBeInTheDocument()
   })
@@ -1493,7 +1508,7 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    const importButton = screen.getByRole('button', { name: 'Import' })
+    const importButton = await screen.findByRole('button', { name: 'Import' }, deferredSurfaceWait)
     await waitFor(() => expect(importButton).toBeEnabled())
     await fireEvent.click(importButton)
 
@@ -1526,8 +1541,8 @@ nodes:
       ).toBe(true)
     })
 
-    await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /existing.yaml/i }))
-    const createCompanion = screen.getByRole('menuitem', { name: 'Create Companion' })
+    await fireEvent.contextMenu(await screen.findByRole('treeitem', { name: /existing.yaml/i }, deferredSurfaceWait))
+    const createCompanion = await screen.findByRole('menuitem', { name: 'Create Companion' }, deferredSurfaceWait)
     expect(createCompanion).toBeDisabled()
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -1541,7 +1556,7 @@ nodes:
     ])
     render(App)
     await waitForSetupReady()
-    await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /hello.yaml/i }, deferredSurfaceWait))
 
     await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('examples/hello.yaml'))
     expect(screen.queryByText(/workflow analysis is unavailable/i)).not.toBeInTheDocument()
@@ -1579,7 +1594,7 @@ nodes:
       await fireEvent.click((await screen.findAllByRole('button', { name: /^Create Editable Copy:/ }))[0]!)
       await waitFor(() => expect(creationWriteStarted).toBe(true))
       await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
-      const releaseEntry = screen.getByRole('treeitem', { name: /release-demo\.yaml/i })
+      const releaseEntry = await screen.findByRole('treeitem', { name: /release-demo\.yaml/i }, deferredSurfaceWait)
       await fireEvent.click(releaseEntry)
       await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml'))
 
@@ -1588,7 +1603,10 @@ nodes:
       expect($documentSession.get().pair?.definition.path).toBe('release-demo.yaml')
       expect($documentSession.get().pair?.definition.text).toBe(releaseDemo)
       expect(workspace.get().activeEntryId).toBe('workflow:browser-workspace:release-demo.yaml')
-      expect(screen.getByRole('treeitem', { name: /release-demo\.yaml/i })).toHaveAttribute('aria-current', 'page')
+      expect(await screen.findByRole('treeitem', { name: /release-demo\.yaml/i }, deferredSurfaceWait)).toHaveAttribute(
+        'aria-current',
+        'page',
+      )
     } finally {
       allowCreationWrite.resolve()
       if (originalWorker === undefined) Reflect.deleteProperty(globalThis, 'Worker')
@@ -1602,7 +1620,7 @@ nodes:
     ])
     render(App)
     await waitForSetupReady()
-    await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /hello.yaml/i }, deferredSurfaceWait))
     await waitFor(() => expect($documentSession.get().pair).not.toBeNull())
     const activePair = $documentSession.get().pair
     expect(activePair).not.toBeNull()
@@ -1634,7 +1652,7 @@ nodes:
     loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
     render(App)
     await waitForSetupReady()
-    await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
     await waitFor(() => expect($documentSession.get().analysis?.issues[0]?.code).toBe('contract_unavailable'))
 
     const dirty = editDocumentText($documentSession.get().pair!, 'definition', savedText.replace('Draft\n', 'Edited\n'))
@@ -1793,7 +1811,7 @@ nodes:
     try {
       render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
 
       const dirty = editDocumentText(
@@ -1843,7 +1861,7 @@ nodes:
     try {
       render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
 
       const dirty = editDocumentText(
@@ -1937,7 +1955,7 @@ nodes:
     try {
       render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
       const dirty = editDocumentText(
         $documentSession.get().pair!,
@@ -1980,7 +1998,7 @@ nodes:
     try {
       render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect($documentSession.get().analysis?.structurallyValid).toBe(true))
 
       const firstDirty = editDocumentText(
@@ -2053,9 +2071,9 @@ nodes:
     await waitForSetupReady()
 
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
-      screen.getByRole('heading', { name: 'Explorer' }),
+      await screen.findByRole('heading', { name: 'Explorer' }, deferredSurfaceWait),
     )
-    expect(screen.getByRole('button', { name: 'Import' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled()
     expect(screen.queryAllByRole('treeitem')).toHaveLength(0)
   })
 
@@ -2073,8 +2091,10 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /readonly.yaml, legacy workflow, read only/i }))
-    expect(screen.getByRole('menuitem', { name: 'Open' })).toBeEnabled()
+    await fireEvent.contextMenu(
+      await screen.findByRole('treeitem', { name: /readonly.yaml, legacy workflow, read only/i }, deferredSurfaceWait),
+    )
+    expect(await screen.findByRole('menuitem', { name: 'Open' }, deferredSurfaceWait)).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: 'Duplicate Pair' })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: 'Create Companion' })).toBeDisabled()
   })
@@ -2090,7 +2110,7 @@ nodes:
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Workspace panel' })).toContainElement(
-      screen.getByRole('heading', { name: 'Explorer' }),
+      await screen.findByRole('heading', { name: 'Explorer' }, deferredSurfaceWait),
     )
     expect(screen.getByRole('region', { name: 'Workflow editor' })).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Inspector' })).toContainElement(
@@ -2114,10 +2134,13 @@ nodes:
     const authoring = container.querySelector<HTMLElement>('section[aria-label="Workflow workspace"]')!
     const workspacePanel = container.querySelector<HTMLElement>('aside[aria-label="Workspace panel"]')!
     const inspector = container.querySelector<HTMLElement>('aside[aria-label="Inspector"]')!
-    expect(await screen.findByRole('region', { name: 'Settings' })).toHaveAttribute('data-workbench-page', 'settings')
+    expect(await screen.findByRole('region', { name: 'Settings' }, deferredSurfaceWait)).toHaveAttribute(
+      'data-workbench-page',
+      'settings',
+    )
     expect(container.querySelector('[data-workbench-page="settings"]')?.closest('.left-panel')).toBeNull()
+    expect(await screen.findByRole('tabpanel', { name: 'Appearance' }, deferredSurfaceWait)).toBeVisible()
     expect(screen.getAllByRole('tab')).toHaveLength(4)
-    expect(screen.getByRole('tabpanel', { name: 'Appearance' })).toBeVisible()
     for (const layer of [workspacePanel, authoring, inspector]) {
       expect(layer).not.toHaveAttribute('hidden')
       expect(layer).toHaveClass('authoring-inactive')
@@ -2187,12 +2210,14 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    const documentation = screen.getByRole('button', {
-      name: 'Open documentation for Add at least one node.',
-    })
+    const documentation = await screen.findByRole(
+      'button',
+      { name: 'Open documentation for Add at least one node.' },
+      deferredSurfaceWait,
+    )
     await fireEvent.click(documentation)
-    await screen.findByRole('region', { name: 'Documentation' })
-    expect(await screen.findByRole('heading', { name: 'Workflow definition' })).toBeVisible()
+    await screen.findByRole('region', { name: 'Documentation' }, deferredSurfaceWait)
+    expect(await screen.findByRole('heading', { name: 'Workflow definition' }, deferredSurfaceWait)).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
 
@@ -2222,7 +2247,7 @@ nodes:
     expect(gitPage).toBeVisible()
     expect(gitPage?.closest('.left-panel')).toBeNull()
     expect(container.querySelector('.left-panel .git-view')).toBeNull()
-    expect(await screen.findByText('Branch: main')).toBeVisible()
+    expect(await screen.findByText('Branch: main', {}, deferredSurfaceWait)).toBeVisible()
     await waitFor(() => expect(notifyGitChanged).toBeDefined())
     const callsBeforeMetadataChange = gitStatus.mock.calls.length
     await notifyGitChanged!({ paths: ['index', 'HEAD'], kind: 'modify' })
@@ -2525,7 +2550,7 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    expect(screen.getByRole('region', { name: 'Workflow graph' })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'More canvas actions' }))
     expect(screen.getByRole('menuitem', { name: 'Arrange Graph' })).toBeEnabled()
     expect($documentSession.get().pair).toBe(before)
@@ -2547,13 +2572,13 @@ nodes:
     try {
       render(App)
       await waitForSetupReady()
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow\.yaml/i }))
-      const node = await screen.findByRole('group', { name: /command node collect$/i })
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
+      const node = await screen.findByRole('group', { name: /command node collect$/i }, deferredSurfaceWait)
       setCanvasSelection(['collect'])
       await tick()
       await fireEvent.click(within(node).getByRole('button', { name: 'Inspector for collect' }))
       await waitFor(() => expect(screen.getByRole('complementary', { name: 'Inspector' })).not.toHaveAttribute('inert'))
-      const field = await screen.findByRole('textbox', { name: /^Id/i })
+      const field = await screen.findByRole('textbox', { name: /^Id/i }, deferredSurfaceWait)
       const publications: Array<{ readonly revision: number; readonly analysisRevision: number | null }> = []
       let observed = $documentSession.get()
       unbind = $documentSession.subscribe((session) => {
@@ -2642,12 +2667,12 @@ nodes:
     const { container } = render(App)
     await waitForSetupReady()
 
-    const graph = screen.getByRole('region', { name: 'Workflow graph' })
+    const graph = await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
     await fireEvent.click(screen.getByRole('button', { name: 'YAML' }))
     await tick()
 
-    expect(screen.getByRole('tabpanel', { name: 'Definition YAML' })).toBeVisible()
-    const editor = screen.getByRole('textbox')
+    expect(await screen.findByRole('tabpanel', { name: 'Definition YAML' }, deferredSurfaceWait)).toBeVisible()
+    const editor = await screen.findByRole('textbox', {}, deferredSurfaceWait)
     expect(editor).toHaveTextContent(/name: Flow/)
     expect(screen.getByRole('region', { name: 'Workflow graph', hidden: true })).toBe(graph)
     expect(activeLayoutStore.get()?.editorMode).toBe('yaml')
@@ -2690,8 +2715,9 @@ nodes:
     )
     await tick()
     expect($canvasSelection.get()).toEqual([])
-    expect(screen.getByRole('textbox')).not.toBe(editor)
-    expect(screen.getByRole('textbox')).toHaveTextContent(/name: Other/)
+    const nextEditor = await screen.findByRole('textbox', {}, deferredSurfaceWait)
+    expect(nextEditor).not.toBe(editor)
+    expect(nextEditor).toHaveTextContent(/name: Other/)
   })
 
   it('applies the stored Problems preference clamped to the measured workbench height', async () => {
@@ -2837,13 +2863,17 @@ nodes:
     render(App)
     await waitForSetupReady()
 
-    await fireEvent.click(screen.getByRole('button', { name: /add at least one node/i }))
+    await fireEvent.click(await screen.findByRole('button', { name: /add at least one node/i }, deferredSurfaceWait))
     await tick()
     await tick()
 
     expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('tab', { name: 'Definition YAML' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('textbox', { name: 'Definition YAML' })).toHaveFocus()
+    expect(await screen.findByRole('tab', { name: 'Definition YAML' }, deferredSurfaceWait)).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    const definitionEditor = await screen.findByRole('textbox', { name: 'Definition YAML' }, deferredSurfaceWait)
+    await waitFor(() => expect(definitionEditor).toHaveFocus(), deferredSurfaceWait)
     await waitFor(() =>
       expect($problemFocus.get()).toMatchObject({ issue: null, targetRevision: null, requested: false }),
     )
@@ -2875,7 +2905,8 @@ nodes:
     showEditorMode('yaml')
     render(App)
     await waitForSetupReady()
-    const view = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'Definition YAML' }))!
+    const definitionEditor = await screen.findByRole('textbox', { name: 'Definition YAML' }, deferredSurfaceWait)
+    const view = EditorView.findFromDOM(definitionEditor)!
     view.dispatch({ changes: { from: 6, to: 10, insert: 'Release' } })
     const release = $documentSession.get().pair!
     expect(release.definition.text).toBe('name: Release\n')

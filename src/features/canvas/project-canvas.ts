@@ -382,14 +382,7 @@ export function isProjectedGraph(value: unknown): value is ProjectedGraph {
   )
 }
 
-export function isWorkflowProjection(value: unknown): value is WorkflowProjection {
-  return (
-    isRecord(value) &&
-    typeof value.name === 'string' &&
-    typeof value.profile === 'string' &&
-    Array.isArray(value.graphs)
-  )
-}
+export { isWorkflowProjection } from './projection-guard'
 
 function resolvePositions(
   projection: ProjectedGraph,
