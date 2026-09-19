@@ -157,6 +157,7 @@ async function assertRealResponsiveModal(
 function modalAtEveryExactGeometry(title: string, body: (page: Page, geometry: ExactGeometry) => Promise<void>): void {
   for (const geometry of EXACT_GEOMETRIES)
     test(`${title} at ${geometry.label}`, async ({ page }) => {
+      test.setTimeout(30_000)
       await page.setViewportSize(geometry.viewport)
       await body(page, geometry)
     })
