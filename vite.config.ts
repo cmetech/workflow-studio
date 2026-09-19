@@ -58,7 +58,10 @@ export default defineConfig(({ mode }) => ({
   },
   server: {
     port: 1420,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      ignored: ['**/test-results*/**', '**/playwright-report/**'],
+    },
   },
   test: {
     environment: 'jsdom',
