@@ -33,42 +33,54 @@ const DEFERRED_SURFACE_MODULES = [
   '/src/features/updates/UpdateOverlay.svelte',
 ] as const
 
-async function warmEntryPage(context: BrowserContext, baseURL: string): Promise<Page> {
+export async function retryE2eWarmup(warmupAttempt: () => Promise<void>, attempts = WARMUP_ATTEMPTS): Promise<void> {
   const failures: string[] = []
-  for (let attempt = 1; attempt <= WARMUP_ATTEMPTS; attempt += 1) {
-    const diagnostics: string[] = []
-    const page = await context.newPage()
-    page.on('console', (message) => {
-      if (message.type() === 'error' || message.type() === 'warning') {
-        diagnostics.push(`console ${message.type()}: ${message.text()}`)
-      }
-    })
-    page.on('pageerror', (error) => diagnostics.push(`page error: ${error.message}`))
-    page.on('requestfailed', (request) => {
-      diagnostics.push(`request failed: ${request.url()} (${request.failure()?.errorText ?? 'unknown error'})`)
-    })
-    page.on('response', (response) => {
-      if (response.status() >= 400) diagnostics.push(`response ${response.status()}: ${response.url()}`)
-    })
-
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await page.goto(baseURL, { waitUntil: 'load', timeout: WARMUP_ATTEMPT_TIMEOUT_MS })
-      await page.locator('[data-viewport-shell]').waitFor({ state: 'attached', timeout: WARMUP_ATTEMPT_TIMEOUT_MS })
-      return page
+      await warmupAttempt()
+      return
     } catch (error) {
-      const body = await page
-        .locator('body')
-        .innerText({ timeout: 1_000 })
-        .catch(() => '<body unavailable>')
       const reason = error instanceof Error ? error.message : String(error)
-      failures.push(
-        `Warm-up attempt ${attempt} failed: ${reason}\nURL: ${page.url()}\nBody: ${body.slice(0, 1_000)}\n${diagnostics.join('\n')}`,
-      )
-      await page.close()
+      failures.push(`Warm-up attempt ${attempt} failed: ${reason}`)
     }
   }
 
-  throw new Error(`Playwright E2E warm-up failed after ${WARMUP_ATTEMPTS} attempts.\n${failures.join('\n\n')}`)
+  throw new Error(`Playwright E2E warm-up failed after ${attempts} attempts.\n${failures.join('\n\n')}`)
+}
+
+async function warmEntryGraphAttempt(context: BrowserContext, baseURL: string): Promise<void> {
+  const diagnostics: string[] = []
+  const page: Page = await context.newPage()
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning') {
+      diagnostics.push(`console ${message.type()}: ${message.text()}`)
+    }
+  })
+  page.on('pageerror', (error) => diagnostics.push(`page error: ${error.message}`))
+  page.on('requestfailed', (request) => {
+    diagnostics.push(`request failed: ${request.url()} (${request.failure()?.errorText ?? 'unknown error'})`)
+  })
+  page.on('response', (response) => {
+    if (response.status() >= 400) diagnostics.push(`response ${response.status()}: ${response.url()}`)
+  })
+
+  try {
+    await page.goto(baseURL, { waitUntil: 'load', timeout: WARMUP_ATTEMPT_TIMEOUT_MS })
+    await page.locator('[data-viewport-shell]').waitFor({ state: 'attached', timeout: WARMUP_ATTEMPT_TIMEOUT_MS })
+    await page.evaluate(
+      async (modulePaths) => Promise.all(modulePaths.map((modulePath) => import(modulePath))).then(() => undefined),
+      DEFERRED_SURFACE_MODULES,
+    )
+  } catch (error) {
+    const body = await page
+      .locator('body')
+      .innerText({ timeout: 1_000 })
+      .catch(() => '<body unavailable>')
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`${reason}\nURL: ${page.url()}\nBody: ${body.slice(0, 1_000)}\n${diagnostics.join('\n')}`)
+  } finally {
+    await page.close()
+  }
 }
 
 export default async function warmE2eEntryGraph(config: FullConfig): Promise<void> {
@@ -79,11 +91,7 @@ export default async function warmE2eEntryGraph(config: FullConfig): Promise<voi
   try {
     const context = await browser.newContext()
     try {
-      const page = await warmEntryPage(context, baseURL)
-      await page.evaluate(
-        async (modulePaths) => Promise.all(modulePaths.map((modulePath) => import(modulePath))).then(() => undefined),
-        DEFERRED_SURFACE_MODULES,
-      )
+      await retryE2eWarmup(() => warmEntryGraphAttempt(context, baseURL))
     } finally {
       await context.close()
     }
