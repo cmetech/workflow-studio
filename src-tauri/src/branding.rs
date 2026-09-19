@@ -3283,7 +3283,15 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, &staging_path).unwrap();
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&outside, &staging_path).unwrap();
+        if let Err(error) = std::os::windows::fs::symlink_dir(&outside, &staging_path) {
+            if error.raw_os_error() == Some(1314) {
+                eprintln!(
+                    "skipping directory-link replacement assertion without symlink privilege"
+                );
+                return;
+            }
+            panic!("failed to create replacement directory link: {error}");
+        }
 
         let replacement_was_accepted = staging.named_identity_matches();
         drop(staging);

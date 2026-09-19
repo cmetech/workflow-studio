@@ -101,7 +101,7 @@ test('[RG8] preserves the arranged layout on a malformed worker result and recov
   expectRoutedGeometry(await readCanvasGeometry(page), showcaseRoot.request)
 })
 
-test('[RG6] [RG9] falls back immediately during real dragging and persists manual positions until re-Arrange', async ({
+test('[RG6] [RG9] freezes routes during real dragging, falls back at stop, and persists manual positions until re-Arrange', async ({
   page,
 }) => {
   await installRoutedWorkerProbe(page)
@@ -127,14 +127,11 @@ test('[RG6] [RG9] falls back immediately during real dragging and persists manua
   await resetEditorMetrics(page)
   await performNodeDrag(page, start, { x: 20, y: 35 }, async () => {
     const dragging = await readCanvasGeometry(page)
-    expect(dragging.edges).not.toEqual(geometry.edges)
-    // Smooth-step previews attach all outgoing edges to the live centered handle.
-    const outgoing = dragging.edges.filter(({ label }) => label.startsWith('Dependency from draft-plan to '))
-    expect(outgoing).toHaveLength(3)
-    expect(new Set(outgoing.map(({ points }) => JSON.stringify(points[0]))).size).toBe(1)
+    expect(dragging.edges).toEqual(geometry.edges)
     expectNoPointerAuthorityWork(await editorMetrics(page))
     expect(await page.evaluate(() => window.__ROUTED_WORKER_PROBE__!.requests)).toBe(requests)
   })
+  await expect.poll(async () => (await readCanvasGeometry(page)).edges).not.toEqual(geometry.edges)
   const manual = await activeScopeSnapshot(page)
   await expect
     .poll(async () =>

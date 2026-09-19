@@ -53,6 +53,7 @@ test('centers activity buttons and icons on the rail axis', async ({ page }) => 
 })
 
 test('renders semantic and established technical surfaces with bundled Geist Mono', async ({ page }) => {
+  test.setTimeout(30_000)
   await openSeededPair(page)
   await page.getByRole('group', { name: 'command node publish', exact: true }).click()
 

@@ -2,7 +2,10 @@ import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 function eolAttribute(paths: readonly string[]): Readonly<Record<string, string>> {
-  const output = execFileSync('git', ['check-attr', 'eol', '--', ...paths], { encoding: 'utf8' })
+  const safeDirectory = process.cwd().replaceAll('\\', '/')
+  const output = execFileSync('git', ['-c', `safe.directory=${safeDirectory}`, 'check-attr', 'eol', '--', ...paths], {
+    encoding: 'utf8',
+  })
   return Object.fromEntries(
     output
       .trim()

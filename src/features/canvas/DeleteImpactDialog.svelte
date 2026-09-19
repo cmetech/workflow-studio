@@ -10,6 +10,7 @@
   }
 
   let { impact, onConfirm, onCancel, opener }: Props = $props()
+  let submitting = $state(false)
   const requiresResolution = $derived(
     impact.references.length > 0 || impact.companions.length > 0 || !!impact.unavailable,
   )
@@ -23,10 +24,15 @@
   }
 
   async function confirm(): Promise<void> {
-    if (requiresResolution) return
+    if (requiresResolution || submitting) return
     const focusTarget = opener
-    await onConfirm?.()
-    focusTarget?.focus()
+    submitting = true
+    try {
+      await onConfirm?.()
+      focusTarget?.focus()
+    } finally {
+      submitting = false
+    }
   }
 </script>
 
@@ -85,8 +91,11 @@
   </div>
   {#snippet actions()}
     <button data-modal-initial-focus type="button" data-variant="secondary" onclick={cancel}>Cancel</button>
-    <button type="button" data-variant="danger" disabled={requiresResolution} onclick={() => void confirm()}
-      >Delete nodes</button
+    <button
+      type="button"
+      data-variant="danger"
+      disabled={requiresResolution || submitting}
+      onclick={() => void confirm()}>Delete nodes</button
     >
   {/snippet}
 </ModalShell>

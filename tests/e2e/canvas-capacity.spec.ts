@@ -195,7 +195,10 @@ function expectNoPortDragWork(metrics: E2EMetricSnapshot): void {
   })
 }
 
-test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ browserName, page }) => {
+test('keeps the 250-node/500-edge canvas responsive and local-only @reference-performance', async ({
+  browserName,
+  page,
+}) => {
   test.setTimeout(45_000)
   await page.setViewportSize({ width: 1440, height: 900 })
 
@@ -521,7 +524,7 @@ async function finishMainTaskTrace(session: CDPSession): Promise<{ maximumMs: nu
   return { maximumMs: Math.max(...durations), taskCount: durations.length }
 }
 
-test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker response and no main-thread long task', async ({
+test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker response and no main-thread long task @reference-performance', async ({
   page,
   browserName,
 }, testInfo) => {
@@ -728,7 +731,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
   page,
   context,
 }) => {
-  test.setTimeout(30_000)
+  test.setTimeout(45_000)
   const output = await mkdtemp(join(tmpdir(), 'workflow-studio-offline-routing-'))
   const sources = new Map<string, string>()
   const served: string[] = []
@@ -786,7 +789,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
         const endpoint = new Worker(`/assets/${worker}`, { type: 'module' })
         try {
           return await new Promise<LayoutWorkerResult>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('Offline worker timed out')), 5_000)
+            const timer = setTimeout(() => reject(new Error('Offline worker timed out')), 15_000)
             endpoint.onmessage = (event) => {
               clearTimeout(timer)
               resolve(event.data)

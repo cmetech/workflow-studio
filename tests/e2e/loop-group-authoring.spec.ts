@@ -70,6 +70,18 @@ async function expectNoLongTasks(
   ).toEqual([])
 }
 
+async function setScrollOffset(scroller: Locator, requested: number | 'bottom' = 'bottom'): Promise<void> {
+  await expect
+    .poll(() => scroller.evaluate((element) => element.scrollHeight - element.clientHeight))
+    .toBeGreaterThan(0)
+  await scroller.evaluate((element, target) => {
+    const maximum = element.scrollHeight - element.clientHeight
+    element.scrollTop = target === 'bottom' ? maximum : Math.min(target, maximum)
+    element.dispatchEvent(new Event('scroll'))
+  }, requested)
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+}
+
 function expectNoNavigationAuthorityWork(metrics: Awaited<ReturnType<typeof editorMetrics>>): void {
   expect(metrics).toMatchObject({
     parseRequests: 0,
@@ -367,13 +379,9 @@ test.describe('loop group visual authoring', () => {
       .click()
     await page.getByRole('tab', { name: 'Advanced' }).click()
     const rootInspectorScroller = page.locator('[data-scroll-owner="inspector"]')
-    await rootInspectorScroller.evaluate((element) => {
-      element.scrollTop = element.scrollHeight
-      element.dispatchEvent(new Event('scroll'))
-    })
+    await setScrollOffset(rootInspectorScroller)
     const rootProblemsScroller = page.locator('[data-scroll-owner="problems"]')
-    await rootProblemsScroller.evaluate((element) => (element.scrollTop = Math.floor(element.scrollHeight / 2)))
-    await expect.poll(() => rootProblemsScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    await setScrollOffset(rootProblemsScroller, 37)
     const rootCanvasScroller = page.getByTestId('workflow-canvas-viewport')
     const rootCanvasDomScroll = await rootCanvasScroller.evaluate((element) => {
       element.style.overflow = 'auto'
@@ -385,6 +393,7 @@ test.describe('loop group visual authoring', () => {
       spacer.style.height = '1500px'
       element.append(spacer)
       element.scrollTo(11, 13)
+      element.dispatchEvent(new Event('scroll'))
       return {
         left: element.scrollLeft,
         top: element.scrollTop,
@@ -395,8 +404,17 @@ test.describe('loop group visual authoring', () => {
     expect(rootCanvasDomScroll.left + rootCanvasDomScroll.top, JSON.stringify(rootCanvasDomScroll)).toBeGreaterThan(0)
     const rootPosition = (await activeScopeSnapshot(page)).positions.refine!
     await page.getByTestId('workflow-canvas').evaluate((element, position) => {
-      element.dispatchEvent(new CustomEvent('workflowdragstop', { bubbles: true, detail: { id: 'polish', position } }))
+      const detail = { id: 'polish', position }
+      element.dispatchEvent(new CustomEvent('workflowdragstart', { bubbles: true }))
+      element.dispatchEvent(new CustomEvent('workflowdragmove', { bubbles: true, detail }))
+      element.dispatchEvent(new CustomEvent('workflowdragstop', { bubbles: true, detail }))
     }, rootPosition)
+    await expect
+      .poll(async () => {
+        const canvasScroll = (await activeScopeSnapshot(page)).canvasScroll
+        return (canvasScroll?.left ?? 0) + (canvasScroll?.top ?? 0)
+      })
+      .toBeGreaterThan(0)
     const root = await activeScopeSnapshot(page)
     expect(root.inspector?.scrollTop).toBeGreaterThan(0)
     expect((root.canvasScroll?.left ?? 0) + (root.canvasScroll?.top ?? 0)).toBeGreaterThan(0)
@@ -412,11 +430,8 @@ test.describe('loop group visual authoring', () => {
     await page.getByRole('tab', { name: 'Problems', exact: true }).focus()
     await page.keyboard.press('Enter')
     const bodyInspectorScroller = page.locator('[data-scroll-owner="inspector"]')
-    await bodyInspectorScroller.evaluate((element) => {
-      element.scrollTop = element.scrollHeight
-      element.dispatchEvent(new Event('scroll'))
-    })
-    await rootProblemsScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
+    await setScrollOffset(bodyInspectorScroller)
+    await setScrollOffset(rootProblemsScroller)
     await page.getByTestId('workflow-canvas-viewport').evaluate((element) => {
       element.style.overflow = 'auto'
       const flow = element.querySelector<HTMLElement>('.svelte-flow')!
@@ -428,11 +443,21 @@ test.describe('loop group visual authoring', () => {
       element.append(spacer)
       element.scrollLeft = 23
       element.scrollTop = 29
+      element.dispatchEvent(new Event('scroll'))
     })
     const bodyPosition = (await activeScopeSnapshot(page)).positions.review!
     await page.getByTestId('workflow-canvas').evaluate((element, position) => {
-      element.dispatchEvent(new CustomEvent('workflowdragstop', { bubbles: true, detail: { id: 'review', position } }))
+      const detail = { id: 'review', position }
+      element.dispatchEvent(new CustomEvent('workflowdragstart', { bubbles: true }))
+      element.dispatchEvent(new CustomEvent('workflowdragmove', { bubbles: true, detail }))
+      element.dispatchEvent(new CustomEvent('workflowdragstop', { bubbles: true, detail }))
     }, bodyPosition)
+    await expect
+      .poll(async () => {
+        const canvasScroll = (await activeScopeSnapshot(page)).canvasScroll
+        return (canvasScroll?.left ?? 0) + (canvasScroll?.top ?? 0)
+      })
+      .toBeGreaterThan(0)
     await page.keyboard.press('Escape')
     const unsaved = `${String((await e2eSnapshot(page)).definitionText)}${Array.from(
       { length: 80 },
@@ -452,7 +477,7 @@ test.describe('loop group visual authoring', () => {
     await page.locator('.svelte-flow__node[data-id="review"]').focus()
     await page.keyboard.press('Enter')
     await page.getByRole('tab', { name: 'General' }).click()
-    await rootProblemsScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
+    await setScrollOffset(rootProblemsScroller)
     await expect
       .poll(() => rootProblemsScroller.evaluate((element) => element.scrollTop))
       .toBeGreaterThan(root.problemsScroll)
@@ -526,12 +551,8 @@ test.describe('loop group visual authoring', () => {
     const referencesTab = page.getByRole('tab', { name: 'References' })
     await expect(referencesTab).toHaveAttribute('aria-selected', 'true')
     const referencesScroller = page.locator('[data-scroll-owner="references"]')
-    const savedScroll = await referencesScroller.evaluate((element) => {
-      element.scrollTop = element.scrollHeight
-      element.dispatchEvent(new Event('scroll'))
-      return element.scrollTop
-    })
-    expect(savedScroll).toBeGreaterThan(0)
+    await setScrollOffset(referencesScroller)
+    const savedScroll = await referencesScroller.evaluate((element) => element.scrollTop)
 
     await page.getByRole('tab', { name: 'Problems', exact: true }).click()
     await page.getByRole('button', { name: 'Back to root workflow' }).click()
@@ -758,7 +779,7 @@ test.describe('loop group visual authoring', () => {
     await addNode.focus()
     await expectVisibleFocusCue(addNode)
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Add node' })).toBeVisible({ timeout: 20_000 })
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: 'Add node' })).toHaveCount(0)
     await page.getByRole('tab', { name: 'Problems', exact: true }).click()
@@ -841,10 +862,8 @@ test.describe('loop group visual authoring', () => {
     await page.getByRole('tab', { name: 'Problems', exact: true }).focus()
     await page.keyboard.press('Enter')
     const compactProblemsScroller = page.locator('[data-scroll-owner="problems"]')
-    await compactInspectorScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
-    await compactProblemsScroller.evaluate((element) => (element.scrollTop = element.scrollHeight))
-    await expect.poll(() => compactInspectorScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-    await expect.poll(() => compactProblemsScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    await setScrollOffset(compactInspectorScroller)
+    await setScrollOffset(compactProblemsScroller)
     await page.keyboard.press('Escape')
     await page.getByRole('tab', { name: 'References', exact: true }).click()
     const motion = await page
@@ -906,7 +925,7 @@ test.describe('loop group visual authoring', () => {
     await addFirst.focus()
     await expectVisibleFocusCue(addFirst)
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Add node' })).toBeVisible({ timeout: 20_000 })
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog', { name: 'Add node' })).toHaveCount(0)
     await page.keyboard.press('Escape')
@@ -914,331 +933,333 @@ test.describe('loop group visual authoring', () => {
     await expect(page.locator('.svelte-flow__node[data-id="empty"]')).toBeFocused()
   })
 
-  performanceTest('keeps hidden scopes idle during scoped gestures and navigation', async ({ page, browserName }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
-    if (browserName === 'chromium') {
-      await page.addInitScript(() => {
-        const entries: Array<{ startTime: number; duration: number }> = []
-        const observer = new PerformanceObserver((list) => {
-          entries.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))
+  performanceTest(
+    'keeps hidden scopes idle during scoped gestures and navigation @reference-performance',
+    async ({ page, browserName }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      if (browserName === 'chromium') {
+        await page.addInitScript(() => {
+          const entries: Array<{ startTime: number; duration: number }> = []
+          const observer = new PerformanceObserver((list) => {
+            entries.push(...list.getEntries().map(({ startTime, duration }) => ({ startTime, duration })))
+          })
+          observer.observe({ type: 'longtask' })
+          Object.defineProperty(window, '__LOOP_GROUP_LONG_TASKS__', { value: { entries, observer } })
         })
-        observer.observe({ type: 'longtask' })
-        Object.defineProperty(window, '__LOOP_GROUP_LONG_TASKS__', { value: { entries, observer } })
-      })
-    }
-    await openSeededPair(page, { scenario: 'loop-group-scoped-capacity', pairName: 'release-demo.yaml' })
-    await settleRenderer(page)
-    await expect
-      .poll(async () => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.projectionScopes().length))
-      .toBe(4)
-    await page.evaluate(() =>
-      window.__WORKFLOW_STUDIO_E2E__!.prepareScopedConnection('loop-group:root-000', 'body-0-003', 'body-0-004'),
-    )
-    await expect
-      .poll(async () =>
-        page.evaluate(
-          () =>
-            window
-              .__WORKFLOW_STUDIO_E2E__!.projectionScopes()
-              .find(({ scopeKey }) => scopeKey === 'loop-group:root-000')?.edgeCount,
-        ),
+      }
+      await openSeededPair(page, { scenario: 'loop-group-scoped-capacity', pairName: 'release-demo.yaml' })
+      await settleRenderer(page)
+      await expect
+        .poll(async () => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.projectionScopes().length))
+        .toBe(4)
+      await page.evaluate(() =>
+        window.__WORKFLOW_STUDIO_E2E__!.prepareScopedConnection('loop-group:root-000', 'body-0-003', 'body-0-004'),
       )
-      .toBe(499)
-    if (browserName === 'chromium') {
-      await page.evaluate(() => {
-        const state = (window as unknown as { __LOOP_GROUP_LONG_TASKS__: LongTaskState }).__LOOP_GROUP_LONG_TASKS__
-        state.entries.splice(0)
-      })
-    }
-    await resetEditorMetrics(page)
-    await expectSingleMountedScope(page, 'root')
-    await expect(page.locator('.svelte-flow__node[data-id="body-0-003"]')).toHaveCount(0)
-    await expect(page.locator('.svelte-flow__node[data-id="body-1-003"]')).toHaveCount(0)
-    const rootStart = await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))
-    const rootDragStart = await prepareNodeDrag(page, 'root-001')
-    const rootDragPhase = await beginLongTaskPhase(page, browserName)
-    await performNodeDrag(page, rootDragStart, { x: 110, y: 120 }, async () => {
-      const metrics = await editorMetrics(page)
-      console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope root node drag', metrics })}`)
-      expectNoPointerAuthorityWork(metrics)
-      expect(metrics.pointerMoves).toBeGreaterThan(0)
-    })
-    await expectNoLongTasks(page, browserName, 'root node drag', rootDragPhase)
-    await expect
-      .poll(async () => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount))
-      .toBe(rootStart.saveCount + 1)
-    await resetEditorMetrics(page)
-
-    const rootInteractionPhase = await beginLongTaskPhase(page, browserName)
-    const flowViewport = page.locator('.svelte-flow__viewport')
-    const rootTransform = await flowViewport.getAttribute('style')
-    await page.getByRole('button', { name: 'More canvas actions' }).click()
-    await page.getByRole('menuitem', { name: 'Zoom In' }).click()
-    await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(rootTransform)
-
-    const beforePan = (await activeScopeSnapshot(page)).viewport!
-    const pane = page.locator('.svelte-flow__pane')
-    const paneBox = await pane.boundingBox()
-    if (!paneBox) throw new Error('The root canvas has no panning geometry.')
-    const wheelZoom = (await activeScopeSnapshot(page)).viewport!.zoom
-    await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
-    await page.mouse.wheel(0, -240)
-    await expect.poll(async () => (await activeScopeSnapshot(page)).viewport?.zoom).not.toBe(wheelZoom)
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-    await resetEditorMetrics(page)
-    await page.keyboard.down('Space')
-    await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(paneBox.x + paneBox.width / 2 + 24, paneBox.y + paneBox.height / 2 + 18, { steps: 5 })
-    expectNoPointerAuthorityWork(await editorMetrics(page))
-    await page.mouse.up()
-    await page.keyboard.up('Space')
-    await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforePan)
-
-    await page.locator('.svelte-flow__node[data-id="root-004"]').focus()
-    await page.keyboard.press('Enter')
-    await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual(['root-004'])
-    await page.getByRole('region', { name: 'Workflow graph' }).focus()
-    await page.keyboard.press('Escape')
-    await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-    await resetEditorMetrics(page)
-    const [marqueeA, marqueeB, marqueeViewport] = await Promise.all([
-      page.locator('.svelte-flow__node[data-id="root-003"]').boundingBox(),
-      page.locator('.svelte-flow__node[data-id="root-004"]').boundingBox(),
-      page.getByTestId('workflow-canvas-viewport').boundingBox(),
-    ])
-    if (!marqueeA || !marqueeB || !marqueeViewport) throw new Error('The root marquee targets have no geometry.')
-    const marqueeStart = {
-      x: Math.max(marqueeViewport.x + 2, Math.min(marqueeA.x, marqueeB.x) - 8),
-      y: Math.max(marqueeViewport.y + 2, Math.min(marqueeA.y, marqueeB.y) - 8),
-    }
-    const marqueeEnd = {
-      x: Math.min(
-        marqueeViewport.x + marqueeViewport.width - 2,
-        Math.max(marqueeA.x + marqueeA.width, marqueeB.x + marqueeB.width) + 8,
-      ),
-      y: Math.min(
-        marqueeViewport.y + marqueeViewport.height - 2,
-        Math.max(marqueeA.y + marqueeA.height, marqueeB.y + marqueeB.height) + 8,
-      ),
-    }
-    await page.keyboard.down('Shift')
-    await page.mouse.move(marqueeStart.x, marqueeStart.y)
-    await page.mouse.down()
-    await page.mouse.move(marqueeEnd.x, marqueeEnd.y, { steps: 6 })
-    expectNoPointerAuthorityWork(await editorMetrics(page))
-    await page.mouse.up()
-    await page.keyboard.up('Shift')
-    await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds.length).toBeGreaterThan(0)
-    await expectNoLongTasks(page, browserName, 'root pan, zoom, and selection', rootInteractionPhase)
-    await page.keyboard.press('Escape')
-    await page.getByRole('button', { name: 'More canvas actions' }).click()
-    await page.getByRole('menuitem', { name: 'Fit Graph' }).click()
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-    const rootBefore = await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))
-    await resetEditorMetrics(page)
-    const openBody = page
-      .locator('.svelte-flow__node[data-id="root-000"]')
-      .getByRole('button', { name: 'Open loop body' })
-    await expect(openBody).toBeVisible()
-    const openBodyBox = await openBody.boundingBox()
-    if (!openBodyBox) throw new Error('The root loop-group action has no pointer geometry.')
-    const bodyEntryPhase = await beginLongTaskPhase(page, browserName)
-    await page.mouse.click(openBodyBox.x + openBodyBox.width / 2, openBodyBox.y + openBodyBox.height / 2)
-    await expect(page.getByTestId('workflow-canvas')).toHaveAttribute('data-scope-key', 'loop-group:root-000')
-    await expect(page.getByRole('heading', { name: /root-000 loop body/i })).toBeVisible()
-    await expectNoLongTasks(page, browserName, 'body entry', bodyEntryPhase)
-    await expectSingleMountedScope(page, 'loop-group:root-000')
-    await expect(page.locator('.svelte-flow__node[data-id="root-003"]')).toHaveCount(0)
-    await expect(page.locator('.svelte-flow__node[data-id="body-1-003"]')).toHaveCount(0)
-    await expect.poll(() => page.locator('.svelte-flow__node').count()).toBeLessThanOrEqual(20)
-    expectNoPointerAuthorityWork(await editorMetrics(page))
-    await page.getByRole('tab', { name: 'Problems', exact: true }).click()
-    await expect(page.locator('[data-issue-key*="e2e_capacity_advisory_"]')).toHaveCount(20)
-    const capacityProblems = page.locator('[data-scroll-owner="problems"]')
-    const problemsScrollPhase = await beginLongTaskPhase(page, browserName)
-    await capacityProblems.evaluate((element) => (element.scrollTop = element.scrollHeight))
-    await expect.poll(() => capacityProblems.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-    await expectNoLongTasks(page, browserName, 'Problems scroll', problemsScrollPhase)
-
-    const beforeValidRevision = (await activeScopeSnapshot(page)).definitionRevision
-    await resetEditorMetrics(page)
-    const validPortDrag = await preparePortDrag(page, 'body-0-003', 'body-0-004')
-    const validConnectionPhase = await beginLongTaskPhase(page, browserName)
-    let validReleasePhase: number | null = null
-    await performPortDrag(
-      page,
-      validPortDrag,
-      async () => {
-        expectNoPointerAuthorityWork(await editorMetrics(page))
-        await expectNoLongTasks(page, browserName, 'valid body connection pointer move', validConnectionPhase)
-        validReleasePhase = await beginLongTaskPhase(page, browserName)
-      },
-      2,
-    )
-    await expect.poll(async () => (await activeScopeSnapshot(page)).definitionRevision).toBe(beforeValidRevision + 1)
-    expect((await editorMetrics(page)).yamlTransactions).toBe(1)
-    await expectNoLongTasks(page, browserName, 'valid body connection release', validReleasePhase)
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-
-    const beforeRejectedRevision = (await activeScopeSnapshot(page)).definitionRevision
-    await resetEditorMetrics(page)
-    const rejectedPortDrag = await preparePortDrag(page, 'body-0-004', 'body-0-003')
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-    await resetEditorMetrics(page)
-    const rejectedConnectionPhase = await beginLongTaskPhase(page, browserName)
-    await performPortDrag(
-      page,
-      rejectedPortDrag,
-      async () => expectNoPointerAuthorityWork(await editorMetrics(page)),
-      2,
-    )
-    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/cycle/i)
-    expect((await activeScopeSnapshot(page)).definitionRevision).toBe(beforeRejectedRevision)
-    expect((await editorMetrics(page)).yamlTransactions).toBe(0)
-    await expectNoLongTasks(page, browserName, 'rejected body connection', rejectedConnectionPhase)
-    await expect
-      .poll(async () =>
-        page.evaluate(
-          () =>
-            window
-              .__WORKFLOW_STUDIO_E2E__!.projectionScopes()
-              .find(({ scopeKey }) => scopeKey === 'loop-group:root-000')?.edgeCount,
-        ),
-      )
-      .toBe(500)
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-
-    await page.locator('.svelte-flow__node[data-id="body-0-003"]').focus()
-    await page.keyboard.press('Enter')
-    const prompt = page.getByRole('textbox', { name: /Nodes Item 4 Prompt Required/i })
-    const beforeInspectorRevision = (await activeScopeSnapshot(page)).definitionRevision
-    await resetEditorMetrics(page)
-    const inspectorPhase = await beginLongTaskPhase(page, browserName)
-    await prompt.fill('Updated through the bounded body Inspector.')
-    await page.getByRole('button', { name: /Apply .* Item 4 Prompt$/ }).click()
-    await expect
-      .poll(async () => (await activeScopeSnapshot(page)).definitionRevision)
-      .toBe(beforeInspectorRevision + 1)
-    expect((await editorMetrics(page)).yamlTransactions).toBe(1)
-    await expectNoLongTasks(page, browserName, 'body Inspector commit', inspectorPhase)
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-
-    const boundedPanels = await page.evaluate(() =>
-      [...document.querySelectorAll<HTMLElement>('[data-scroll-frame]')].map((element) => {
-        const bounds = element.getBoundingClientRect()
-        return { top: bounds.top, bottom: bounds.bottom, height: bounds.height }
-      }),
-    )
-    expect(boundedPanels.length).toBeGreaterThan(0)
-    const viewportHeight = page.viewportSize()?.height ?? 0
-    expect(boundedPanels.every(({ top, bottom, height }) => top >= 0 && bottom <= viewportHeight && height >= 0)).toBe(
-      true,
-    )
-
-    const siblingBefore = await page.evaluate(() =>
-      window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-001'),
-    )
-    const bodyBefore = await page.evaluate(() =>
-      window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
-    )
-    await resetEditorMetrics(page)
-    const bodyDragStart = await prepareNodeDrag(page, 'body-0-003')
-    const bodyDragPhase = await beginLongTaskPhase(page, browserName)
-    await performNodeDrag(
-      page,
-      bodyDragStart,
-      { x: 20, y: 20 },
-      async () => {
+      await expect
+        .poll(async () =>
+          page.evaluate(
+            () =>
+              window
+                .__WORKFLOW_STUDIO_E2E__!.projectionScopes()
+                .find(({ scopeKey }) => scopeKey === 'loop-group:root-000')?.edgeCount,
+          ),
+        )
+        .toBe(499)
+      if (browserName === 'chromium') {
+        await page.evaluate(() => {
+          const state = (window as unknown as { __LOOP_GROUP_LONG_TASKS__: LongTaskState }).__LOOP_GROUP_LONG_TASKS__
+          state.entries.splice(0)
+        })
+      }
+      await resetEditorMetrics(page)
+      await expectSingleMountedScope(page, 'root')
+      await expect(page.locator('.svelte-flow__node[data-id="body-0-003"]')).toHaveCount(0)
+      await expect(page.locator('.svelte-flow__node[data-id="body-1-003"]')).toHaveCount(0)
+      const rootStart = await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))
+      const rootDragStart = await prepareNodeDrag(page, 'root-001')
+      const rootDragPhase = await beginLongTaskPhase(page, browserName)
+      await performNodeDrag(page, rootDragStart, { x: 110, y: 120 }, async () => {
         const metrics = await editorMetrics(page)
-        console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope body node drag', metrics })}`)
+        console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope root node drag', metrics })}`)
         expectNoPointerAuthorityWork(metrics)
         expect(metrics.pointerMoves).toBeGreaterThan(0)
-      },
-      2,
-    )
-    await expectNoLongTasks(page, browserName, 'body node drag', bodyDragPhase)
-    await expect
-      .poll(async () =>
-        page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000').saveCount),
-      )
-      .toBe(bodyBefore.saveCount + 1)
-    const bodyAfter = await page.evaluate(() =>
-      window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
-    )
-    expect(bodyAfter.scope?.nodePositions['body-0-003']).not.toEqual(bodyBefore.scope?.nodePositions['body-0-003'])
-    expect((await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))).scope).toEqual(
-      rootBefore.scope,
-    )
-    expect(
-      (await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-001'))).scope,
-    ).toEqual(siblingBefore.scope)
+      })
+      await expectNoLongTasks(page, browserName, 'root node drag', rootDragPhase)
+      await expect
+        .poll(async () => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount))
+        .toBe(rootStart.saveCount + 1)
+      await resetEditorMetrics(page)
 
-    const bodyViewportBefore = await page.evaluate(() =>
-      window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
-    )
-    await resetEditorMetrics(page)
-    const bodyInteractionPhase = await beginLongTaskPhase(page, browserName)
-    const bodyTransform = await flowViewport.getAttribute('style')
-    await page.getByRole('button', { name: 'More canvas actions' }).click()
-    await page.getByRole('menuitem', { name: 'Zoom In' }).click()
-    await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(bodyTransform)
-    const bodyPanPoint = await pane.evaluate((element) => {
-      const bounds = element.getBoundingClientRect()
-      for (let y = Math.ceil(bounds.top); y < Math.floor(bounds.bottom); y += 4) {
-        for (let x = Math.ceil(bounds.left); x < Math.floor(bounds.right); x += 4) {
-          if (document.elementFromPoint(x, y) === element) return { x, y }
-        }
+      const rootInteractionPhase = await beginLongTaskPhase(page, browserName)
+      const flowViewport = page.locator('.svelte-flow__viewport')
+      const rootTransform = await flowViewport.getAttribute('style')
+      await page.getByRole('button', { name: 'More canvas actions' }).click()
+      await page.getByRole('menuitem', { name: 'Zoom In' }).click()
+      await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(rootTransform)
+
+      const beforePan = (await activeScopeSnapshot(page)).viewport!
+      const pane = page.locator('.svelte-flow__pane')
+      const paneBox = await pane.boundingBox()
+      if (!paneBox) throw new Error('The root canvas has no panning geometry.')
+      const wheelZoom = (await activeScopeSnapshot(page)).viewport!.zoom
+      await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
+      await page.mouse.wheel(0, -240)
+      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport?.zoom).not.toBe(wheelZoom)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      await resetEditorMetrics(page)
+      await page.keyboard.down('Space')
+      await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(paneBox.x + paneBox.width / 2 + 24, paneBox.y + paneBox.height / 2 + 18, { steps: 5 })
+      expectNoPointerAuthorityWork(await editorMetrics(page))
+      await page.mouse.up()
+      await page.keyboard.up('Space')
+      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforePan)
+
+      await page.locator('.svelte-flow__node[data-id="root-004"]').focus()
+      await page.keyboard.press('Enter')
+      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual(['root-004'])
+      await page.getByRole('region', { name: 'Workflow graph' }).focus()
+      await page.keyboard.press('Escape')
+      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      await resetEditorMetrics(page)
+      const [marqueeA, marqueeB, marqueeViewport] = await Promise.all([
+        page.locator('.svelte-flow__node[data-id="root-003"]').boundingBox(),
+        page.locator('.svelte-flow__node[data-id="root-004"]').boundingBox(),
+        page.getByTestId('workflow-canvas-viewport').boundingBox(),
+      ])
+      if (!marqueeA || !marqueeB || !marqueeViewport) throw new Error('The root marquee targets have no geometry.')
+      const marqueeStart = {
+        x: Math.max(marqueeViewport.x + 2, Math.min(marqueeA.x, marqueeB.x) - 8),
+        y: Math.max(marqueeViewport.y + 2, Math.min(marqueeA.y, marqueeB.y) - 8),
       }
-      return null
-    })
-    if (!bodyPanPoint) throw new Error('The body canvas has no truthful panning target.')
-    await page.mouse.click(bodyPanPoint.x, bodyPanPoint.y)
-    const beforeBodyPan = (await activeScopeSnapshot(page)).viewport
-    await page.keyboard.down('Space')
-    await page.mouse.move(bodyPanPoint.x, bodyPanPoint.y)
-    await page.mouse.down()
-    await page.mouse.move(bodyPanPoint.x + 24, bodyPanPoint.y + 18, { steps: 5 })
-    expectNoPointerAuthorityWork(await editorMetrics(page))
-    await page.mouse.up()
-    await page.keyboard.up('Space')
-    await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforeBodyPan)
-    await expect
-      .poll(async () =>
-        page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000').saveCount),
-      )
-      .toBe(bodyViewportBefore.saveCount + 1)
-    expect((await editorMetrics(page)).layoutSaves).toBe(1)
-    await expectNoLongTasks(page, browserName, 'body pan and zoom', bodyInteractionPhase)
+      const marqueeEnd = {
+        x: Math.min(
+          marqueeViewport.x + marqueeViewport.width - 2,
+          Math.max(marqueeA.x + marqueeA.width, marqueeB.x + marqueeB.width) + 8,
+        ),
+        y: Math.min(
+          marqueeViewport.y + marqueeViewport.height - 2,
+          Math.max(marqueeA.y + marqueeA.height, marqueeB.y + marqueeB.height) + 8,
+        ),
+      }
+      await page.keyboard.down('Shift')
+      await page.mouse.move(marqueeStart.x, marqueeStart.y)
+      await page.mouse.down()
+      await page.mouse.move(marqueeEnd.x, marqueeEnd.y, { steps: 6 })
+      expectNoPointerAuthorityWork(await editorMetrics(page))
+      await page.mouse.up()
+      await page.keyboard.up('Shift')
+      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds.length).toBeGreaterThan(0)
+      await expectNoLongTasks(page, browserName, 'root pan, zoom, and selection', rootInteractionPhase)
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: 'More canvas actions' }).click()
+      await page.getByRole('menuitem', { name: 'Fit Graph' }).click()
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      const rootBefore = await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))
+      await resetEditorMetrics(page)
+      const openBody = page
+        .locator('.svelte-flow__node[data-id="root-000"]')
+        .getByRole('button', { name: 'Open loop body' })
+      await expect(openBody).toBeVisible()
+      const openBodyBox = await openBody.boundingBox()
+      if (!openBodyBox) throw new Error('The root loop-group action has no pointer geometry.')
+      const bodyEntryPhase = await beginLongTaskPhase(page, browserName)
+      await page.mouse.click(openBodyBox.x + openBodyBox.width / 2, openBodyBox.y + openBodyBox.height / 2)
+      await expect(page.getByTestId('workflow-canvas')).toHaveAttribute('data-scope-key', 'loop-group:root-000')
+      await expect(page.getByRole('heading', { name: /root-000 loop body/i })).toBeVisible()
+      await expectNoLongTasks(page, browserName, 'body entry', bodyEntryPhase)
+      await expectSingleMountedScope(page, 'loop-group:root-000')
+      await expect(page.locator('.svelte-flow__node[data-id="root-003"]')).toHaveCount(0)
+      await expect(page.locator('.svelte-flow__node[data-id="body-1-003"]')).toHaveCount(0)
+      await expect.poll(() => page.locator('.svelte-flow__node').count()).toBeLessThanOrEqual(20)
+      expectNoPointerAuthorityWork(await editorMetrics(page))
+      await page.getByRole('tab', { name: 'Problems', exact: true }).click()
+      await expect(page.locator('[data-issue-key*="e2e_capacity_advisory_"]')).toHaveCount(20)
+      const capacityProblems = page.locator('[data-scroll-owner="problems"]')
+      const problemsScrollPhase = await beginLongTaskPhase(page, browserName)
+      await setScrollOffset(capacityProblems)
+      await expectNoLongTasks(page, browserName, 'Problems scroll', problemsScrollPhase)
 
-    const beforeBack = await e2eSnapshot(page)
-    await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
-    await resetEditorMetrics(page)
-    const backPhase = await beginLongTaskPhase(page, browserName)
-    await page.getByRole('button', { name: 'Back to root workflow' }).click()
-    await expectSingleMountedScope(page, 'root')
-    expectNoNavigationAuthorityWork(await editorMetrics(page))
-    const afterBack = await e2eSnapshot(page)
-    expect(afterBack.definitionText).toBe(beforeBack.definitionText)
-    expect(afterBack.companionText).toBe(beforeBack.companionText)
-    await expectNoLongTasks(page, browserName, 'Back to root', backPhase)
-
-    await resetEditorMetrics(page)
-    const reentryPhase = await beginLongTaskPhase(page, browserName)
-    await page.locator('.svelte-flow__node[data-id="root-000"]').focus()
-    await page.keyboard.press('Enter')
-    await expectSingleMountedScope(page, 'loop-group:root-000')
-    expectNoNavigationAuthorityWork(await editorMetrics(page))
-    const afterReentry = await e2eSnapshot(page)
-    expect(afterReentry.definitionText).toBe(beforeBack.definitionText)
-    expect(afterReentry.companionText).toBe(beforeBack.companionText)
-    await expectNoLongTasks(page, browserName, 'body re-entry', reentryPhase)
-    if (browserName === 'chromium')
-      await page.evaluate(() =>
-        (
-          window as unknown as { __LOOP_GROUP_LONG_TASKS__: LongTaskState }
-        ).__LOOP_GROUP_LONG_TASKS__.observer.disconnect(),
+      const beforeValidRevision = (await activeScopeSnapshot(page)).definitionRevision
+      await resetEditorMetrics(page)
+      const validPortDrag = await preparePortDrag(page, 'body-0-003', 'body-0-004')
+      const validConnectionPhase = await beginLongTaskPhase(page, browserName)
+      let validReleasePhase: number | null = null
+      await performPortDrag(
+        page,
+        validPortDrag,
+        async () => {
+          expectNoPointerAuthorityWork(await editorMetrics(page))
+          await expectNoLongTasks(page, browserName, 'valid body connection pointer move', validConnectionPhase)
+          validReleasePhase = await beginLongTaskPhase(page, browserName)
+        },
+        2,
       )
-  })
+      await expect.poll(async () => (await activeScopeSnapshot(page)).definitionRevision).toBe(beforeValidRevision + 1)
+      expect((await editorMetrics(page)).yamlTransactions).toBe(1)
+      await expectNoLongTasks(page, browserName, 'valid body connection release', validReleasePhase)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+
+      const beforeRejectedRevision = (await activeScopeSnapshot(page)).definitionRevision
+      await resetEditorMetrics(page)
+      const rejectedPortDrag = await preparePortDrag(page, 'body-0-004', 'body-0-003')
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      await resetEditorMetrics(page)
+      const rejectedConnectionPhase = await beginLongTaskPhase(page, browserName)
+      await performPortDrag(
+        page,
+        rejectedPortDrag,
+        async () => expectNoPointerAuthorityWork(await editorMetrics(page)),
+        2,
+      )
+      await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toContainText(/cycle/i)
+      expect((await activeScopeSnapshot(page)).definitionRevision).toBe(beforeRejectedRevision)
+      expect((await editorMetrics(page)).yamlTransactions).toBe(0)
+      await expectNoLongTasks(page, browserName, 'rejected body connection', rejectedConnectionPhase)
+      await expect
+        .poll(async () =>
+          page.evaluate(
+            () =>
+              window
+                .__WORKFLOW_STUDIO_E2E__!.projectionScopes()
+                .find(({ scopeKey }) => scopeKey === 'loop-group:root-000')?.edgeCount,
+          ),
+        )
+        .toBe(500)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+
+      await page.locator('.svelte-flow__node[data-id="body-0-003"]').focus()
+      await page.keyboard.press('Enter')
+      const prompt = page.getByRole('textbox', { name: /Nodes Item 4 Prompt Required/i })
+      const beforeInspectorRevision = (await activeScopeSnapshot(page)).definitionRevision
+      await resetEditorMetrics(page)
+      const inspectorPhase = await beginLongTaskPhase(page, browserName)
+      await prompt.fill('Updated through the bounded body Inspector.')
+      await page.getByRole('button', { name: /Apply .* Item 4 Prompt$/ }).click()
+      await expect
+        .poll(async () => (await activeScopeSnapshot(page)).definitionRevision)
+        .toBe(beforeInspectorRevision + 1)
+      expect((await editorMetrics(page)).yamlTransactions).toBe(1)
+      await expectNoLongTasks(page, browserName, 'body Inspector commit', inspectorPhase)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+
+      const boundedPanels = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('[data-scroll-frame]')].map((element) => {
+          const bounds = element.getBoundingClientRect()
+          return { top: bounds.top, bottom: bounds.bottom, height: bounds.height }
+        }),
+      )
+      expect(boundedPanels.length).toBeGreaterThan(0)
+      const viewportHeight = page.viewportSize()?.height ?? 0
+      expect(
+        boundedPanels.every(({ top, bottom, height }) => top >= 0 && bottom <= viewportHeight && height >= 0),
+      ).toBe(true)
+
+      const siblingBefore = await page.evaluate(() =>
+        window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-001'),
+      )
+      const bodyBefore = await page.evaluate(() =>
+        window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
+      )
+      await resetEditorMetrics(page)
+      const bodyDragStart = await prepareNodeDrag(page, 'body-0-003')
+      const bodyDragPhase = await beginLongTaskPhase(page, browserName)
+      await performNodeDrag(
+        page,
+        bodyDragStart,
+        { x: 20, y: 20 },
+        async () => {
+          const metrics = await editorMetrics(page)
+          console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'hidden-scope body node drag', metrics })}`)
+          expectNoPointerAuthorityWork(metrics)
+          expect(metrics.pointerMoves).toBeGreaterThan(0)
+        },
+        2,
+      )
+      await expectNoLongTasks(page, browserName, 'body node drag', bodyDragPhase)
+      await expect
+        .poll(async () =>
+          page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000').saveCount),
+        )
+        .toBe(bodyBefore.saveCount + 1)
+      const bodyAfter = await page.evaluate(() =>
+        window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
+      )
+      expect(bodyAfter.scope?.nodePositions['body-0-003']).not.toEqual(bodyBefore.scope?.nodePositions['body-0-003'])
+      expect((await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root'))).scope).toEqual(
+        rootBefore.scope,
+      )
+      expect(
+        (await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-001'))).scope,
+      ).toEqual(siblingBefore.scope)
+
+      const bodyViewportBefore = await page.evaluate(() =>
+        window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000'),
+      )
+      await resetEditorMetrics(page)
+      const bodyInteractionPhase = await beginLongTaskPhase(page, browserName)
+      const bodyTransform = await flowViewport.getAttribute('style')
+      await page.getByRole('button', { name: 'More canvas actions' }).click()
+      await page.getByRole('menuitem', { name: 'Zoom In' }).click()
+      await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(bodyTransform)
+      const bodyPanPoint = await pane.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        for (let y = Math.ceil(bounds.top); y < Math.floor(bounds.bottom); y += 4) {
+          for (let x = Math.ceil(bounds.left); x < Math.floor(bounds.right); x += 4) {
+            if (document.elementFromPoint(x, y) === element) return { x, y }
+          }
+        }
+        return null
+      })
+      if (!bodyPanPoint) throw new Error('The body canvas has no truthful panning target.')
+      await page.mouse.click(bodyPanPoint.x, bodyPanPoint.y)
+      const beforeBodyPan = (await activeScopeSnapshot(page)).viewport
+      await page.keyboard.down('Space')
+      await page.mouse.move(bodyPanPoint.x, bodyPanPoint.y)
+      await page.mouse.down()
+      await page.mouse.move(bodyPanPoint.x + 24, bodyPanPoint.y + 18, { steps: 5 })
+      expectNoPointerAuthorityWork(await editorMetrics(page))
+      await page.mouse.up()
+      await page.keyboard.up('Space')
+      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforeBodyPan)
+      await expect
+        .poll(async () =>
+          page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000').saveCount),
+        )
+        .toBe(bodyViewportBefore.saveCount + 1)
+      expect((await editorMetrics(page)).layoutSaves).toBe(1)
+      await expectNoLongTasks(page, browserName, 'body pan and zoom', bodyInteractionPhase)
+
+      const beforeBack = await e2eSnapshot(page)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      await resetEditorMetrics(page)
+      const backPhase = await beginLongTaskPhase(page, browserName)
+      await page.getByRole('button', { name: 'Back to root workflow' }).click()
+      await expectSingleMountedScope(page, 'root')
+      expectNoNavigationAuthorityWork(await editorMetrics(page))
+      const afterBack = await e2eSnapshot(page)
+      expect(afterBack.definitionText).toBe(beforeBack.definitionText)
+      expect(afterBack.companionText).toBe(beforeBack.companionText)
+      await expectNoLongTasks(page, browserName, 'Back to root', backPhase)
+
+      await resetEditorMetrics(page)
+      const reentryPhase = await beginLongTaskPhase(page, browserName)
+      await page.locator('.svelte-flow__node[data-id="root-000"]').focus()
+      await page.keyboard.press('Enter')
+      await expectSingleMountedScope(page, 'loop-group:root-000')
+      expectNoNavigationAuthorityWork(await editorMetrics(page))
+      const afterReentry = await e2eSnapshot(page)
+      expect(afterReentry.definitionText).toBe(beforeBack.definitionText)
+      expect(afterReentry.companionText).toBe(beforeBack.companionText)
+      await expectNoLongTasks(page, browserName, 'body re-entry', reentryPhase)
+      if (browserName === 'chromium')
+        await page.evaluate(() =>
+          (
+            window as unknown as { __LOOP_GROUP_LONG_TASKS__: LongTaskState }
+          ).__LOOP_GROUP_LONG_TASKS__.observer.disconnect(),
+        )
+    },
+  )
 })

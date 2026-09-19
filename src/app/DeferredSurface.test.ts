@@ -17,6 +17,26 @@ describe('DeferredSurface', () => {
     expect(load).toHaveBeenCalledOnce()
   })
 
+  it('forwards parent prop updates after the deferred component mounts', async () => {
+    const loaded = (await import('./DeferredSurfaceFixture.svelte')) as unknown as { default: Component }
+    const load = vi.fn(async () => loaded)
+    const view = render(DeferredSurface, {
+      load,
+      label: 'Inspector',
+      componentProps: { message: 'Initial fields' },
+    })
+
+    expect(await screen.findByText('Initial fields')).toBeVisible()
+    await view.rerender({
+      load,
+      label: 'Inspector',
+      componentProps: { message: 'Updated fields' },
+    })
+
+    expect(await screen.findByText('Updated fields')).toBeVisible()
+    expect(screen.queryByText('Initial fields')).not.toBeInTheDocument()
+  })
+
   it('surfaces a bounded accessible failure and retries the same importer on request', async () => {
     const load = vi
       .fn<() => Promise<{ default: Component }>>()

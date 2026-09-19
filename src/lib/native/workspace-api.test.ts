@@ -29,6 +29,7 @@ describe('browser workspace bridge', () => {
     expect(selected).toEqual({
       workspaceId: 'browser-workspace',
       rootPath: '/browser/workspace',
+      repository: null,
     })
     expect(entries.map((entry) => entry.relativePath)).toEqual([
       'examples',

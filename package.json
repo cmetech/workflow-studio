@@ -26,7 +26,10 @@
     "test:watch": "vitest",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "playwright test",
+    "test:e2e:functional:windows": "playwright test --project=chromium --grep-invert @reference-performance",
+    "test:e2e:performance:windows": "playwright test --project=chromium --grep @reference-performance",
     "test:e2e:headed": "playwright test --headed",
+    "bundle:check": "node scripts/check-bundle-budget.mjs dist/.vite/manifest.json",
     "tauri": "tauri"
   },
   "dependencies": {

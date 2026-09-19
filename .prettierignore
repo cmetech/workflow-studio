@@ -2,6 +2,7 @@ coverage/
 contracts/
 dist/
 node_modules/
+test-results*/
 src-tauri/gen/
 src-tauri/target/
 AGENTS.md

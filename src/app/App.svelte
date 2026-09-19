@@ -1747,16 +1747,19 @@
   }
 
   async function openLoopGroup(groupId: string): Promise<void> {
+    const scopeKey = `loop-group:${groupId}` as const
     if (!enterLoopGroup(groupId)) return
     inspectorTarget = { kind: 'workflow' }
-    updateScopeLayout(
-      `loop-group:${groupId}`,
-      (scope) => ({ ...scope, focusTarget: { kind: 'scope-heading' } }),
-      'navigation',
-    )
-    await tick()
-    await tick()
-    document.querySelector<HTMLElement>('[data-scope-heading]')?.focus()
+    updateScopeLayout(scopeKey, (scope) => ({ ...scope, focusTarget: { kind: 'scope-heading' } }), 'navigation')
+    await focusDeferredTarget({
+      load: loadGraphScopeHeader,
+      settle: async () => {
+        await tick()
+        await tick()
+      },
+      current: () => $activeScopeKeyStore === scopeKey,
+      resolveTarget: () => document.querySelector<HTMLElement>('[data-scope-heading]'),
+    })
   }
 
   async function leaveLoopGroup(): Promise<void> {

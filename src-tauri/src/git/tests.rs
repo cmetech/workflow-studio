@@ -2108,7 +2108,9 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
     let repository = detect_repository(root).unwrap().expect("repository");
     assert_eq!(
         repository.root,
-        root.canonicalize().unwrap().to_string_lossy()
+        crate::platform_paths::public_path(&root.canonicalize().unwrap())
+            .unwrap()
+            .to_string_lossy()
     );
     assert_eq!(repository.branch.as_deref(), Some("main"));
     assert!(repository.detached_head.is_none());

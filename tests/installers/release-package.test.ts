@@ -215,9 +215,11 @@ describe('packaged resource verification', () => {
     [
       'symlinked',
       (root: string) => {
-        const target = join(root, 'examples/README.md')
-        unlinkSync(target)
-        symlinkSync(join(root, 'contracts/README.md'), target)
+        symlinkSync(
+          join(root, 'contracts'),
+          join(root, 'examples/unexpected-link'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        )
       },
       /symbolic link/i,
     ],

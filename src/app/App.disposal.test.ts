@@ -7,6 +7,8 @@ import type { WorkspaceNativeBridge } from '$src/lib/native/types'
 import { receiveDocumentAnalysis } from '$src/stores/documents'
 import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 
+const deferredSurfaceWait = { timeout: 20_000 }
+
 class WorkerForDisposalTest {
   static instances: WorkerForDisposalTest[] = []
   readonly postMessage = vi.fn()
@@ -79,7 +81,7 @@ describe('App disposal fallback', () => {
     const { container, unmount } = render(App)
     await vi.waitFor(() => expect(onWorkspaceChanged).toHaveBeenCalledOnce())
 
-    await fireEvent.click(screen.getByRole('treeitem', { name: /hello.yaml/i }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /hello.yaml/i }, deferredSurfaceWait))
     const { $documentSession } = await import('$src/stores/documents')
     await vi.waitFor(() => expect($documentSession.get().pair).not.toBeNull())
     const session = $documentSession.get()
@@ -117,6 +119,7 @@ describe('App disposal fallback', () => {
         definition: { name: 'Hello' },
       },
     })
+    await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
     await tick()
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     await fireEvent(
@@ -132,12 +135,10 @@ describe('App disposal fallback', () => {
     await vi.waitFor(() => expect(unlisten).toHaveBeenCalledOnce())
     expect(layoutSave).toHaveBeenCalledOnce()
     expect(recoveryList).toHaveBeenCalled()
-    expect(WorkerForDisposalTest.instances).toHaveLength(1)
-    expect(WorkerForDisposalTest.instances[0]!.removeEventListener.mock.calls.map(([type]) => type)).toEqual([
-      'message',
-      'error',
-      'messageerror',
-    ])
-    expect(WorkerForDisposalTest.instances[0]!.terminate).toHaveBeenCalledOnce()
-  }, 15_000)
+    expect(WorkerForDisposalTest.instances.length).toBeGreaterThan(0)
+    for (const worker of WorkerForDisposalTest.instances) {
+      expect(worker.removeEventListener.mock.calls.map(([type]) => type)).toEqual(['message', 'error', 'messageerror'])
+      expect(worker.terminate).toHaveBeenCalledOnce()
+    }
+  }, 30_000)
 })

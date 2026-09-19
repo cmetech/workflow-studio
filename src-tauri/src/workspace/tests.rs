@@ -98,6 +98,9 @@ fn accepts_unicode_and_spaces_but_rejects_symlink_escape_and_missing_root() {
     let resolved = paths::resolve_existing(&canonical, "flows with spaces/café.yaml").unwrap();
     assert!(resolved.starts_with(&canonical));
 
+    if !file_symlink_tests_supported() {
+        return;
+    }
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("secret.yaml"), "secret: true\n").unwrap();
     create_file_symlink(
@@ -126,6 +129,9 @@ fn scan_does_not_follow_directory_symlinks_and_read_is_bounded_yaml_only() {
     fs::write(root.path().join("nested/flow.yaml"), "id: flow\n").unwrap();
     fs::write(root.path().join("notes.txt"), "not yaml").unwrap();
     fs::write(outside.path().join("outside.yaml"), "outside: true\n").unwrap();
+    if !dir_symlink_tests_supported() {
+        return;
+    }
     create_dir_symlink(outside.path(), &root.path().join("linked"));
 
     let workspace = scope(root.path());
@@ -360,6 +366,10 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
         "id: replacement\n"
     );
 
+    if !swap_symlink_tests_supported() {
+        return;
+    }
+
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -405,6 +415,9 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
 
 #[test]
 fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -441,6 +454,9 @@ fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
 
 #[test]
 fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
+    if !dir_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -475,6 +491,9 @@ fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
 
 #[test]
 fn bound_rename_and_trash_ignore_descendant_swaps_after_binding() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -859,6 +878,9 @@ fn write_restores_read_only_permissions_only_after_staged_unlink_commits() {
 
 #[test]
 fn trash_preserves_each_capability_resolver_error_code() {
+    if !file_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("outside.yaml"), "id: outside\n").unwrap();
@@ -1539,6 +1561,27 @@ fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::windows::fs::symlink_file(target, link).unwrap();
 }
 
+#[cfg(not(windows))]
+fn file_symlink_tests_supported() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn file_symlink_tests_supported() -> bool {
+    let fixture = tempdir().unwrap();
+    let target = fixture.path().join("target.yaml");
+    let link = fixture.path().join("link.yaml");
+    fs::write(&target, "id: target\n").unwrap();
+    match std::os::windows::fs::symlink_file(&target, &link) {
+        Ok(()) => true,
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            eprintln!("skipping symlink test because Windows symlink privilege is unavailable");
+            false
+        }
+        Err(error) => panic!("failed to create Windows file symlink fixture: {error}"),
+    }
+}
+
 #[cfg(unix)]
 fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
@@ -1547,4 +1590,35 @@ fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
 #[cfg(windows)]
 fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::windows::fs::symlink_dir(target, link).unwrap();
+}
+
+#[cfg(not(windows))]
+fn dir_symlink_tests_supported() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn dir_symlink_tests_supported() -> bool {
+    let fixture = tempdir().unwrap();
+    let target = fixture.path().join("target");
+    let link = fixture.path().join("link");
+    fs::create_dir(&target).unwrap();
+    match std::os::windows::fs::symlink_dir(&target, &link) {
+        Ok(()) => true,
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            eprintln!("skipping symlink test because Windows symlink privilege is unavailable");
+            false
+        }
+        Err(error) => panic!("failed to create Windows directory symlink fixture: {error}"),
+    }
+}
+
+#[cfg(windows)]
+fn swap_symlink_tests_supported() -> bool {
+    file_symlink_tests_supported()
+}
+
+#[cfg(not(windows))]
+fn swap_symlink_tests_supported() -> bool {
+    dir_symlink_tests_supported()
 }

@@ -12,6 +12,7 @@ import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/wo
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 
 type AppComponent = (typeof import('./App.svelte'))['default']
+const deferredSurfaceWait = { timeout: 20_000 }
 
 const definitionText = `name: Cached companion
 description: Uses the restored active contract
@@ -126,7 +127,9 @@ describe('App companion contract readiness', () => {
 
     try {
       await hydrationStarted.promise
-      await fireEvent.contextMenu(screen.getByRole('treeitem', { name: /existing.yaml, legacy workflow/i }))
+      await fireEvent.contextMenu(
+        await screen.findByRole('treeitem', { name: /existing.yaml, legacy workflow/i }, deferredSurfaceWait),
+      )
 
       const createCompanion = screen.getByRole('menuitem', { name: 'Create Companion' })
       expect(createCompanion).toBeDisabled()

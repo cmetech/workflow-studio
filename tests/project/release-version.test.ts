@@ -4,7 +4,8 @@ import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
 const RELEASE_VERSION = '3.0.1'
-const PRE_RELEASE_COMMIT = 'd164e1609f0af52fb3fbdcdd2bb19c9c6b2ed0dc'
+const STABILIZED_NPM_LOCK_COMMIT = '1227cc7'
+const STABILIZED_CARGO_LOCK_COMMIT = '5bc5a70'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
 
@@ -12,14 +13,11 @@ function json(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
 }
 
-function baseCargoLock(): string {
-  const result = spawnSync('git', ['show', '53792c7:src-tauri/Cargo.lock'], { encoding: 'utf8' })
-  expect(result.status, result.stderr).toBe(0)
-  return result.stdout
-}
-
-function preReleaseFile(path: string): string {
-  const result = spawnSync('git', ['show', `${PRE_RELEASE_COMMIT}:${path}`], { encoding: 'utf8' })
+function committedFile(commit: string, path: string): string {
+  const safeDirectory = process.cwd().replaceAll('\\', '/')
+  const result = spawnSync('git', ['-c', `safe.directory=${safeDirectory}`, 'show', `${commit}:${path}`], {
+    encoding: 'utf8',
+  })
   expect(result.status, result.stderr).toBe(0)
   return result.stdout
 }
@@ -84,56 +82,16 @@ describe('version three release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.1"/)
   })
 
-  it('changes the npm lockfile only for the synchronized version, pinned Geist packages, and the Dagre-to-ELK replacement', () => {
-    const expected = JSON.parse(preReleaseFile('package-lock.json')) as {
-      version: string
-      packages: Record<string, { version?: string; dependencies?: Record<string, string> }>
-    }
-    expected.version = RELEASE_VERSION
-    expected.packages['']!.version = RELEASE_VERSION
-    expected.packages['']!.dependencies = {
-      ...expected.packages['']!.dependencies,
-      '@fontsource-variable/geist': '5.3.0',
-      '@fontsource-variable/geist-mono': '5.3.0',
-      elkjs: '0.12.0',
-    }
-    expected.packages['node_modules/@fontsource-variable/geist'] = {
-      version: '5.3.0',
-      resolved: 'https://registry.npmjs.org/@fontsource-variable/geist/-/geist-5.3.0.tgz',
-      integrity: 'sha512-j0m+vLQuG5XAYoHtGCVu0spvlGreR3EzpECUVzkFmI1mTVnAO38l/NEPDCFgZ177JxzYJCLSmTQibIiYPilGrA==',
-      license: 'OFL-1.1',
-      funding: { url: 'https://github.com/sponsors/ayuhito' },
-    }
-    expected.packages['node_modules/@fontsource-variable/geist-mono'] = {
-      version: '5.3.0',
-      resolved: 'https://registry.npmjs.org/@fontsource-variable/geist-mono/-/geist-mono-5.3.0.tgz',
-      integrity: 'sha512-vBbuwDEo9AkrqADMXOrlAR3DFcJi4/JxeuU43FoiQERnNwsfXNnvxvReZG02cQKmyk4DZkZdBZX3oTDvy2zBAw==',
-      license: 'OFL-1.1',
-      funding: { url: 'https://github.com/sponsors/ayuhito' },
-    }
-
-    delete expected.packages['']!.dependencies!['@dagrejs/dagre']
-    delete expected.packages['node_modules/@dagrejs/dagre']
-    delete expected.packages['node_modules/@dagrejs/graphlib']
-
-    expected.packages['node_modules/elkjs'] = {
-      version: '0.12.0',
-      resolved: 'https://registry.npmjs.org/elkjs/-/elkjs-0.12.0.tgz',
-      integrity: 'sha512-YZcKynxVxYoKIOEpywEPwCFdg+BTbxQRNf3pbwdDCvc8O3kQD8bmIwSxKU1eOTVc4Xo+VG9Te+575mlfvOrhEQ==',
-      license: 'EPL-2.0 OR GPL-3.0-or-later',
-    }
-
-    expect(json('package-lock.json')).toEqual(expected)
+  it('keeps the npm lockfile identical to the reviewed dependency-stabilization commit', () => {
+    expect(readFileSync('package-lock.json', 'utf8')).toBe(
+      committedFile(STABILIZED_NPM_LOCK_COMMIT, 'package-lock.json'),
+    )
   })
 
-  it('changes no Cargo lockfile package record except the workflow-studio release version', () => {
-    const currentCargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8')
-    const expectedCargoLock = baseCargoLock().replace(
-      'name = "workflow-studio"\nversion = "1.0.0"',
-      'name = "workflow-studio"\nversion = "3.0.1"',
+  it('keeps the Cargo lockfile identical to the reviewed Windows path-stabilization commit', () => {
+    expect(readFileSync('src-tauri/Cargo.lock', 'utf8')).toBe(
+      committedFile(STABILIZED_CARGO_LOCK_COMMIT, 'src-tauri/Cargo.lock'),
     )
-
-    expect(currentCargoLock).toBe(expectedCargoLock)
   })
 
   it('retains the immutable bootstrap while documenting v3.0.1 as the published release', () => {

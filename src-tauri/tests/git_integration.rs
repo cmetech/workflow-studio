@@ -118,10 +118,7 @@ fn initializes_only_the_exact_requested_root_without_creating_a_commit() {
     let root = tempdir().unwrap();
     let repository = init_repository(root.path()).unwrap();
 
-    assert_eq!(
-        Path::new(&repository.root),
-        root.path().canonicalize().unwrap()
-    );
+    assert_eq!(Path::new(&repository.root), root.path());
     assert!(root.path().join(".git").is_dir());
     assert!(!git(root.path(), &["rev-parse", "--verify", "HEAD"])
         .status

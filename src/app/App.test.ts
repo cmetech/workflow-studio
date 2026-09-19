@@ -357,6 +357,10 @@ nodes:
         }
         receiveDocumentAnalysis({ ...analysis, issues: blocking ? [issue] : [] })
         await fireEvent.click(open)
+        await waitFor(
+          () => expect(screen.getByRole('heading', { name: /refine loop body/i })).toHaveFocus(),
+          deferredSurfaceWait,
+        )
         const problemsTab = screen.getByRole('tab', { name: 'Problems' })
         const referencesTab = screen.getByRole('tab', { name: 'References' })
         expect(blocking ? problemsTab : referencesTab).toHaveAttribute('aria-selected', 'true')
