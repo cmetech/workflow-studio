@@ -3376,7 +3376,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
             "--no-textconv",
             "--no-color",
             "--",
-            "/dev/null",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
             paths[0],
         ],
     );

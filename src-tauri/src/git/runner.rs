@@ -641,7 +641,8 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
                 "--no-textconv",
                 "--no-color",
                 "--",
-                "/dev/null",
+                // A real C:\dev\null directory shadows Git's POSIX spelling on Windows.
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
             ]);
             values.push(path.into());
             values
