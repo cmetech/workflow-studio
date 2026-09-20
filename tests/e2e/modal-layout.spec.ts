@@ -273,6 +273,9 @@ modalAtEveryExactGeometry('Add Node is a top-layer modal with reachable contract
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Add Node' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add node' })
+  // The deferred placeholder is also a modal; inject overflow only into the
+  // loaded picker so replacement cannot detach the measured body.
+  await expect(dialog.getByRole('combobox', { name: 'Search node kinds' })).toBeVisible()
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close node picker' }), geometry)
 })
 

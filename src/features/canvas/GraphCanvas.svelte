@@ -1480,7 +1480,7 @@
   }
 
   function hoverEdge(edgeId: string): void {
-    if (flowViewport.zoom < MIN_EDGE_HOVER_ZOOM) return
+    if (usesCapacityRendering() && flowViewport.zoom < MIN_EDGE_HOVER_ZOOM) return
     if (hoveredEdgeId === edgeId) return
     hoveredEdgeId = edgeId
     publishCurrentEdgeEmphasis()

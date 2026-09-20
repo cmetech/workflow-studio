@@ -718,23 +718,25 @@ describe('GraphCanvas', () => {
     measurements.restore()
   })
 
-  it('suppresses transient edge hover at overview zoom while retaining keyboard and authoring-zoom emphasis', async () => {
+  it.each([3, 100])('limits overview hover suppression to capacity graphs: %i nodes', async (nodeCount) => {
     const measurements = canvasMeasurements({
       collect: { width: 216, height: 104 },
       review: { width: 216, height: 104 },
       publish: { width: 216, height: 104 },
     })
     const rendered = renderCanvas({
-      projection: denseProjection,
+      projection: { ...denseProjection, capacity: { ...denseProjection.capacity, nodeCount } },
       layout: { ...denseLayout, viewport: { x: 0, y: 0, zoom: 0.49 } },
     })
     await measurements.publish()
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__edge')).toBeInTheDocument())
     const edge = rendered.container.querySelector<SVGGElement>(
       '.svelte-flow__edge[data-id="dependency:collect->review"]',
     )!
 
     await fireEvent.pointerEnter(edge)
-    expect(edge.querySelector('.workflow-edge')).not.toHaveClass('emphasized')
+    if (nodeCount >= 100) expect(edge.querySelector('.workflow-edge')).not.toHaveClass('emphasized')
+    else expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
 
     edge.focus()
     await tick()
