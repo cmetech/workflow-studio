@@ -429,6 +429,8 @@
   >()
   let handledProblemRequest = 0
   let pendingOpenLoopGroup = $state<string | null>(null)
+  let pendingScopeTransition: GraphScopeKey | null = null
+  let scopeSurfaceTransitioning = $state(false)
   let documentationNavigationRequest = $state<{ readonly id: number; readonly topicId: string } | undefined>()
   let exampleDocumentationProfile = $state<WorkflowProfile | undefined>()
   let documentationNavigationSequence = 0
@@ -1280,10 +1282,11 @@
     } else if ((snapshot?.panel === 'workspace' || !snapshot) && $workspacePanelOpen) await closeWorkspaceDrawer()
   }
 
-  async function persistCanvasLayout(next: LayoutRecordV2): Promise<void> {
+  async function persistCanvasLayout(next: LayoutRecordV2, publishActive = true): Promise<void> {
     const active = activeLayoutStore.get()
     const pair = documentSessionStore.get().pair
     if (
+      publishActive &&
       active?.workspaceId === next.workspaceId &&
       active.workflowPath === next.workflowPath &&
       pair?.definition.path === next.workflowPath
@@ -1314,7 +1317,7 @@
     const pair = documentSessionStore.get().pair
     const active = activeLayoutStore.get()
     if (!pair || !active || identity !== canvasInstanceIdentity(pair.workflowId, active.activeScopeKey)) return
-    await persistCanvasLayout({ ...active, updatedAt: new Date().toISOString() })
+    await persistCanvasLayout({ ...active, updatedAt: new Date().toISOString() }, false)
   }
 
   function surfaceCanvasPersistenceError(error: unknown): void {
@@ -1748,7 +1751,11 @@
 
   async function openLoopGroup(groupId: string): Promise<void> {
     const scopeKey = `loop-group:${groupId}` as const
-    if (!enterLoopGroup(groupId)) return
+    if (
+      !(await prepareScopeTransition(scopeKey)) ||
+      !(await switchCanvasScope(scopeKey, () => enterLoopGroup(groupId)))
+    )
+      return
     inspectorTarget = { kind: 'workflow' }
     updateScopeLayout(scopeKey, (scope) => ({ ...scope, focusTarget: { kind: 'scope-heading' } }), 'navigation')
     await focusDeferredTarget({
@@ -1764,7 +1771,7 @@
 
   async function leaveLoopGroup(): Promise<void> {
     const groupId = canvasGraph?.scope.groupId
-    if (!groupId || !returnToRoot()) return
+    if (!groupId || !(await prepareScopeTransition('root')) || !(await switchCanvasScope('root', returnToRoot))) return
     inspectorTarget = { kind: 'node', scopeKey: 'root', nodeId: groupId }
     updateScopeLayout('root', (scope) => ({ ...scope, focusTarget: { kind: 'node', nodeId: groupId } }), 'navigation')
     await tick()
@@ -1783,6 +1790,39 @@
         restored?.focus()
       }),
     )
+  }
+
+  async function prepareScopeTransition(scopeKey: GraphScopeKey): Promise<boolean> {
+    if (!requiresStagedScopeTransition(scopeKey)) return true
+    if (pendingScopeTransition) return false
+    const viewport = activeLayoutStore.get()?.scopeLayouts[scopeKey]?.viewport
+    const pair = documentSessionStore.get().pair
+    if (!viewport || !pair) return true
+    pendingScopeTransition = scopeKey
+    try {
+      graphCanvas?.prepareScopeViewport(canvasInstanceIdentity(pair.workflowId, scopeKey), viewport)
+      return pendingScopeTransition === scopeKey
+    } finally {
+      pendingScopeTransition = null
+    }
+  }
+
+  async function switchCanvasScope(targetScopeKey: GraphScopeKey, switchScope: () => boolean): Promise<boolean> {
+    if (!requiresStagedScopeTransition(targetScopeKey)) return switchScope()
+    await graphCanvas?.prepareScopeExit()
+    scopeSurfaceTransitioning = true
+    try {
+      await tick()
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      return switchScope()
+    } finally {
+      scopeSurfaceTransitioning = false
+    }
+  }
+
+  function requiresStagedScopeTransition(targetScopeKey: GraphScopeKey): boolean {
+    const targetGraph = canvasProjection?.graphs.find(({ scope }) => scope.key === targetScopeKey)
+    return Math.max(canvasGraph?.capacity.nodeCount ?? 0, targetGraph?.capacity.nodeCount ?? 0) >= 100
   }
 
   async function editLoopGroupSettings(groupId: string, invoker: HTMLElement): Promise<void> {
@@ -3108,7 +3148,7 @@
                   : canvasCapacity.advisory}
               </p>
             {/if}
-            {#if visualEditorRequested && canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false}
+            {#if visualEditorRequested && canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false && !scopeSurfaceTransitioning}
               <div class="canvas-pane">
                 <DeferredSurface
                   load={loadGraphCanvas}

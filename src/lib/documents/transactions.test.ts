@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import type { WorkflowPairText } from './types'
 import { applyWorkflowMutation } from './transactions'
 import { createHistoryState, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
 import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
+import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
 
 function field(path: string): FieldDescriptor {
   return {
@@ -124,6 +126,19 @@ function pair(source = validSource, revision = 3): WorkflowPairText {
 }
 
 describe('workflow YAML transactions', () => {
+  it.each(['|', '>'])('preserves exact leading whitespace when editing a nested %s scalar', async (style) => {
+    const source = validSource.replace('prompt: "Use $prepare.output"', `prompt: ${style}\n      old`)
+    const value = ' leading\n'
+    const result = await applyWorkflowMutation(
+      pair(source),
+      { type: 'set-field', document: 'definition', path: ['nodes', 1, 'prompt'], value },
+      mutationContract,
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(parse(result.pair.definition.text).nodes[1].prompt).toBe(value)
+  })
+
   it('crosses a macrotask boundary before patching when the browser scheduler is unavailable', async () => {
     let boundaryReached = false
     let patchSawBoundary = false
@@ -253,6 +268,67 @@ describe('workflow YAML transactions', () => {
     } finally {
       if (schedulerDescriptor) Object.defineProperty(globalThis, 'scheduler', schedulerDescriptor)
       else Reflect.deleteProperty(globalThis, 'scheduler')
+    }
+  })
+
+  it('defers dependency-patch verification to the authoritative structural analysis', async () => {
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    try {
+      const result = await applyWorkflowMutation(
+        pair(),
+        { type: 'set-dependencies', scopeKey: 'root', nodeId: 'consume', dependsOn: [] },
+        mutationContract,
+        async (proposedPair) => ({
+          workflowId: proposedPair.workflowId,
+          pairGeneration: proposedPair.generation,
+          definitionPath: proposedPair.definition.path,
+          companionPath: proposedPair.companion?.path ?? null,
+          definitionRevision: proposedPair.definition.revision,
+          companionRevision: proposedPair.companion?.revision ?? null,
+          contractDigest: mutationContract.contract_digest,
+          issues: [],
+          structurallyValid: true,
+        }),
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      expect(metrics.snapshot().parseRequests).toBe(1)
+    } finally {
+      restoreMetrics()
+    }
+  })
+
+  it('defers scalar-patch verification to the authoritative structural analysis', async () => {
+    const metrics = createEditorMetricsCollector()
+    const restoreMetrics = installEditorMetrics(metrics)
+    try {
+      const result = await applyWorkflowMutation(
+        pair(),
+        {
+          type: 'set-field',
+          document: 'definition',
+          path: ['nodes', 1, 'prompt'],
+          value: 'Updated prompt',
+        },
+        mutationContract,
+        async (proposedPair) => ({
+          workflowId: proposedPair.workflowId,
+          pairGeneration: proposedPair.generation,
+          definitionPath: proposedPair.definition.path,
+          companionPath: proposedPair.companion?.path ?? null,
+          definitionRevision: proposedPair.definition.revision,
+          companionRevision: proposedPair.companion?.revision ?? null,
+          contractDigest: mutationContract.contract_digest,
+          issues: [],
+          structurallyValid: true,
+        }),
+      )
+
+      expect(result).toMatchObject({ ok: true })
+      expect(metrics.snapshot().parseRequests).toBe(1)
+    } finally {
+      restoreMetrics()
     }
   })
 

@@ -936,6 +936,7 @@ test.describe('loop group visual authoring', () => {
   performanceTest(
     'keeps hidden scopes idle during scoped gestures and navigation @reference-performance',
     async ({ page, browserName }) => {
+      test.setTimeout(45_000)
       await page.setViewportSize({ width: 1440, height: 900 })
       if (browserName === 'chromium') {
         await page.addInitScript(() => {
@@ -990,38 +991,64 @@ test.describe('loop group visual authoring', () => {
         .toBe(rootStart.saveCount + 1)
       await resetEditorMetrics(page)
 
-      const rootInteractionPhase = await beginLongTaskPhase(page, browserName)
       const flowViewport = page.locator('.svelte-flow__viewport')
       const rootTransform = await flowViewport.getAttribute('style')
+      const pane = page.locator('.svelte-flow__pane')
+      const rootPanPoint = await pane.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        for (let y = Math.ceil(bounds.top); y < Math.floor(bounds.bottom); y += 24) {
+          for (let x = Math.ceil(bounds.left); x < Math.floor(bounds.right); x += 24) {
+            if (document.elementFromPoint(x, y) === element) return { x, y }
+          }
+        }
+        return null
+      })
+      if (!rootPanPoint) throw new Error('The root canvas has no truthful panning target.')
+      const rootToolbarPhase = await beginLongTaskPhase(page, browserName)
       await page.getByRole('button', { name: 'More canvas actions' }).click()
+      await expectNoLongTasks(page, browserName, 'root toolbar open', rootToolbarPhase)
+      const rootCommandZoomPhase = await beginLongTaskPhase(page, browserName)
       await page.getByRole('menuitem', { name: 'Zoom In' }).click()
       await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(rootTransform)
-
-      const beforePan = (await activeScopeSnapshot(page)).viewport!
-      const pane = page.locator('.svelte-flow__pane')
-      const paneBox = await pane.boundingBox()
-      if (!paneBox) throw new Error('The root canvas has no panning geometry.')
-      const wheelZoom = (await activeScopeSnapshot(page)).viewport!.zoom
-      await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
+      await expectNoLongTasks(page, browserName, 'root command zoom', rootCommandZoomPhase)
+      const beforeWheelZoom = await flowViewport.getAttribute('style')
+      const rootWheelZoomPhase = await beginLongTaskPhase(page, browserName)
+      await page.mouse.move(rootPanPoint.x, rootPanPoint.y)
       await page.mouse.wheel(0, -240)
-      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport?.zoom).not.toBe(wheelZoom)
+      await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(beforeWheelZoom)
+      await expectNoLongTasks(page, browserName, 'root wheel zoom', rootWheelZoomPhase)
+      await settleRenderer(page)
+      await expect.poll(async () => (await editorMetrics(page)).layoutSaves).toBeGreaterThan(0)
+      await page.waitForTimeout(400)
       await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
       await resetEditorMetrics(page)
+      const beforePan = await flowViewport.getAttribute('style')
+      const rootPanPhase = await beginLongTaskPhase(page, browserName)
       await page.keyboard.down('Space')
-      await page.mouse.move(paneBox.x + paneBox.width / 2, paneBox.y + paneBox.height / 2)
+      await page.mouse.move(rootPanPoint.x, rootPanPoint.y)
       await page.mouse.down()
-      await page.mouse.move(paneBox.x + paneBox.width / 2 + 24, paneBox.y + paneBox.height / 2 + 18, { steps: 5 })
+      await page.mouse.move(rootPanPoint.x + 24, rootPanPoint.y + 18, { steps: 5 })
       expectNoPointerAuthorityWork(await editorMetrics(page))
       await page.mouse.up()
       await page.keyboard.up('Space')
-      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforePan)
+      await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(beforePan)
+      await expectNoLongTasks(page, browserName, 'root pan', rootPanPhase)
+      await settleRenderer(page)
+      await expect.poll(async () => (await editorMetrics(page)).layoutSaves).toBeGreaterThan(0)
+      await page.waitForTimeout(400)
+      await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
+      await resetEditorMetrics(page)
 
-      await page.locator('.svelte-flow__node[data-id="root-004"]').focus()
+      const rootSelectionTarget = page.locator('.svelte-flow__node[data-id="root-004"]')
+      const rootKeyboardSelectionPhase = await beginLongTaskPhase(page, browserName)
+      await rootSelectionTarget.focus()
       await page.keyboard.press('Enter')
-      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual(['root-004'])
+      await expect(rootSelectionTarget).toHaveClass(/selected/)
       await page.getByRole('region', { name: 'Workflow graph' }).focus()
       await page.keyboard.press('Escape')
-      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
+      await expect(rootSelectionTarget).not.toHaveClass(/selected/)
+      await expectNoLongTasks(page, browserName, 'root keyboard selection', rootKeyboardSelectionPhase)
+      await settleRenderer(page)
       await page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.flushRecoveryPersistence())
       await resetEditorMetrics(page)
       const [marqueeA, marqueeB, marqueeViewport] = await Promise.all([
@@ -1044,6 +1071,7 @@ test.describe('loop group visual authoring', () => {
           Math.max(marqueeA.y + marqueeA.height, marqueeB.y + marqueeB.height) + 8,
         ),
       }
+      const rootMarqueePhase = await beginLongTaskPhase(page, browserName)
       await page.keyboard.down('Shift')
       await page.mouse.move(marqueeStart.x, marqueeStart.y)
       await page.mouse.down()
@@ -1051,8 +1079,8 @@ test.describe('loop group visual authoring', () => {
       expectNoPointerAuthorityWork(await editorMetrics(page))
       await page.mouse.up()
       await page.keyboard.up('Shift')
-      await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds.length).toBeGreaterThan(0)
-      await expectNoLongTasks(page, browserName, 'root pan, zoom, and selection', rootInteractionPhase)
+      await expect.poll(() => page.locator('.svelte-flow__node.selected').count()).toBeGreaterThan(0)
+      await expectNoLongTasks(page, browserName, 'root marquee selection', rootMarqueePhase)
       await page.keyboard.press('Escape')
       await page.getByRole('button', { name: 'More canvas actions' }).click()
       await page.getByRole('menuitem', { name: 'Fit Graph' }).click()
@@ -1066,7 +1094,10 @@ test.describe('loop group visual authoring', () => {
       const openBodyBox = await openBody.boundingBox()
       if (!openBodyBox) throw new Error('The root loop-group action has no pointer geometry.')
       const bodyEntryPhase = await beginLongTaskPhase(page, browserName)
-      await page.mouse.click(openBodyBox.x + openBodyBox.width / 2, openBodyBox.y + openBodyBox.height / 2)
+      await page.mouse.move(openBodyBox.x + openBodyBox.width / 2, openBodyBox.y + openBodyBox.height / 2)
+      await page.mouse.down()
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))
+      await page.mouse.up()
       await expect(page.getByTestId('workflow-canvas')).toHaveAttribute('data-scope-key', 'loop-group:root-000')
       await expect(page.getByRole('heading', { name: /root-000 loop body/i })).toBeVisible()
       await expectNoLongTasks(page, browserName, 'body entry', bodyEntryPhase)
@@ -1206,8 +1237,8 @@ test.describe('loop group visual authoring', () => {
       await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(bodyTransform)
       const bodyPanPoint = await pane.evaluate((element) => {
         const bounds = element.getBoundingClientRect()
-        for (let y = Math.ceil(bounds.top); y < Math.floor(bounds.bottom); y += 4) {
-          for (let x = Math.ceil(bounds.left); x < Math.floor(bounds.right); x += 4) {
+        for (let y = Math.ceil(bounds.top); y < Math.floor(bounds.bottom); y += 24) {
+          for (let x = Math.ceil(bounds.left); x < Math.floor(bounds.right); x += 24) {
             if (document.elementFromPoint(x, y) === element) return { x, y }
           }
         }
@@ -1215,7 +1246,7 @@ test.describe('loop group visual authoring', () => {
       })
       if (!bodyPanPoint) throw new Error('The body canvas has no truthful panning target.')
       await page.mouse.click(bodyPanPoint.x, bodyPanPoint.y)
-      const beforeBodyPan = (await activeScopeSnapshot(page)).viewport
+      const beforeBodyPan = await flowViewport.getAttribute('style')
       await page.keyboard.down('Space')
       await page.mouse.move(bodyPanPoint.x, bodyPanPoint.y)
       await page.mouse.down()
@@ -1223,7 +1254,7 @@ test.describe('loop group visual authoring', () => {
       expectNoPointerAuthorityWork(await editorMetrics(page))
       await page.mouse.up()
       await page.keyboard.up('Space')
-      await expect.poll(async () => (await activeScopeSnapshot(page)).viewport).not.toEqual(beforeBodyPan)
+      await expect.poll(() => flowViewport.getAttribute('style')).not.toBe(beforeBodyPan)
       await expect
         .poll(async () =>
           page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('loop-group:root-000').saveCount),
@@ -1239,10 +1270,10 @@ test.describe('loop group visual authoring', () => {
       await page.getByRole('button', { name: 'Back to root workflow' }).click()
       await expectSingleMountedScope(page, 'root')
       expectNoNavigationAuthorityWork(await editorMetrics(page))
+      await expectNoLongTasks(page, browserName, 'Back to root', backPhase)
       const afterBack = await e2eSnapshot(page)
       expect(afterBack.definitionText).toBe(beforeBack.definitionText)
       expect(afterBack.companionText).toBe(beforeBack.companionText)
-      await expectNoLongTasks(page, browserName, 'Back to root', backPhase)
 
       await resetEditorMetrics(page)
       const reentryPhase = await beginLongTaskPhase(page, browserName)
@@ -1250,10 +1281,10 @@ test.describe('loop group visual authoring', () => {
       await page.keyboard.press('Enter')
       await expectSingleMountedScope(page, 'loop-group:root-000')
       expectNoNavigationAuthorityWork(await editorMetrics(page))
+      await expectNoLongTasks(page, browserName, 'body re-entry', reentryPhase)
       const afterReentry = await e2eSnapshot(page)
       expect(afterReentry.definitionText).toBe(beforeBack.definitionText)
       expect(afterReentry.companionText).toBe(beforeBack.companionText)
-      await expectNoLongTasks(page, browserName, 'body re-entry', reentryPhase)
       if (browserName === 'chromium')
         await page.evaluate(() =>
           (

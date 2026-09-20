@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { retryE2eWarmup } from '../e2e/global-setup'
+import { retryE2eWarmup, warmupAttemptTimeoutMs } from '../e2e/global-setup'
 
 describe('E2E global warm-up', () => {
+  it('allows a Windows cold transform graph to finish without weakening other platform timeouts', () => {
+    expect(warmupAttemptTimeoutMs('win32')).toBe(180_000)
+    expect(warmupAttemptTimeoutMs('darwin')).toBe(60_000)
+    expect(warmupAttemptTimeoutMs('linux')).toBe(60_000)
+  })
+
   it('retries a deferred-module warm-up failure within the bounded attempt budget', async () => {
     const attempt = vi
       .fn<() => Promise<void>>()

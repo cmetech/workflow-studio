@@ -718,6 +718,39 @@ describe('GraphCanvas', () => {
     measurements.restore()
   })
 
+  it('suppresses transient edge hover at overview zoom while retaining keyboard and authoring-zoom emphasis', async () => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const rendered = renderCanvas({
+      projection: denseProjection,
+      layout: { ...denseLayout, viewport: { x: 0, y: 0, zoom: 0.49 } },
+    })
+    await measurements.publish()
+    const edge = rendered.container.querySelector<SVGGElement>(
+      '.svelte-flow__edge[data-id="dependency:collect->review"]',
+    )!
+
+    await fireEvent.pointerEnter(edge)
+    expect(edge.querySelector('.workflow-edge')).not.toHaveClass('emphasized')
+
+    edge.focus()
+    await tick()
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    edge.blur()
+    await tick()
+
+    rendered.component.actualSize()
+    await tick()
+    await fireEvent.pointerEnter(edge)
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    rendered.unmount()
+    measurements.restore()
+  })
+
   it('keeps selected-edge emphasis until Escape or deletion and clears it across scope identity changes', async () => {
     const measurements = canvasMeasurements({
       collect: { width: 216, height: 104 },
@@ -1847,6 +1880,8 @@ describe('GraphCanvas', () => {
       onPersistLayout: persist,
     })
     await measurements.publish()
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__edge')).toBeInTheDocument())
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     const primary = rendered.container.querySelector<HTMLElement>(
       '[data-testid="workflow-canvas-viewport"] > .svelte-flow',
     )!
@@ -1894,7 +1929,7 @@ describe('GraphCanvas', () => {
     }
   })
 
-  it('mounts offscreen cards for the measured Arrange frame', async () => {
+  it('mounts capacity-mode offscreen cards for the measured Arrange frame', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()
     const offscreenLayout = { ...layout, nodePositions: { collect: { x: 0, y: 0 }, review: { x: 10000, y: 10000 } } }
@@ -1902,7 +1937,7 @@ describe('GraphCanvas', () => {
       ...projection,
       nodes: projection.nodes.map((node) => ({ ...node, dependsOn: [] })),
       edges: [],
-      capacity: { ...projection.capacity, edgeCount: 0 },
+      capacity: { ...projection.capacity, nodeCount: 100, edgeCount: 0 },
     }
     const rendered = renderCanvas({ projection: disconnectedProjection, layout: offscreenLayout, layoutClient: client })
     try {
@@ -1981,6 +2016,7 @@ describe('GraphCanvas', () => {
         },
       })
       let reopened: ReturnType<typeof renderCanvas> | undefined
+      let renderedMounted = true
       try {
         await measurements.publish()
         const before = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
@@ -1999,12 +2035,13 @@ describe('GraphCanvas', () => {
         expect(persisted.viewport).not.toEqual(layout.viewport)
         expect(persisted.routing).toBeDefined()
         rendered.unmount()
+        renderedMounted = false
         reopened = renderCanvas({ projection, layout: persisted })
         await tick()
         expect(reopened.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')).toBe(fitted)
       } finally {
         reopened?.unmount()
-        rendered.unmount()
+        if (renderedMounted) rendered.unmount()
         measurements.restore()
       }
     },
@@ -2381,10 +2418,13 @@ describe('GraphCanvas', () => {
     expect(container.querySelector('[data-port="output"]')).toBeInTheDocument()
 
     const open = screen.getByRole('button', { name: 'Open loop body' })
+    await fireEvent.pointerDown(open, { button: 0 })
     await fireEvent.click(open)
+    expect($canvasSelection.get()).toEqual([])
     await fireEvent.dblClick(node)
     node.focus()
     await fireEvent.keyDown(node, { key: 'Enter' })
+    expect($canvasSelection.get()).toEqual([])
     await fireEvent.keyDown(open, { key: 'Enter' })
 
     expect(onOpenLoopGroup).toHaveBeenCalledTimes(3)
@@ -2394,12 +2434,13 @@ describe('GraphCanvas', () => {
 
     rendered.component.arrange()
     await tick()
-    expect(screen.getByText('2 body nodes')).toBeVisible()
-    expect(screen.getByText('Maximum 3 iterations')).toBeVisible()
-    expect(screen.getByText('Group output: publish')).toBeVisible()
-    expect(screen.getByText('1 required')).toBeVisible()
-    expect(screen.getByText('1 error')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Open loop body' })).toBeVisible()
+    const primaryFlow = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"] > .svelte-flow')!
+    expect(within(primaryFlow).getByText('2 body nodes')).toBeVisible()
+    expect(within(primaryFlow).getByText('Maximum 3 iterations')).toBeVisible()
+    expect(within(primaryFlow).getByText('Group output: publish')).toBeVisible()
+    expect(within(primaryFlow).getByText('1 required')).toBeVisible()
+    expect(within(primaryFlow).getByText('1 error')).toBeVisible()
+    expect(within(primaryFlow).getByRole('button', { name: 'Open loop body' })).toBeVisible()
     expect(container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveAttribute(
       'aria-label',
       'loop group repeat, 2 body nodes, maximum 3 iterations, primary output publish, 1 error, 1 required issue',
@@ -3394,9 +3435,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
     expect(selectedNode).toHaveClass('selected')
     expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
 
@@ -3437,8 +3476,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
     expect(selectedNode).toHaveClass('selected')
 
     rendered.component.cancel()
@@ -3477,8 +3515,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
 
     await rendered.rerender({
       commandSurface: commandRegistry,

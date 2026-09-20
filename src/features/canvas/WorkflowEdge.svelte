@@ -1,7 +1,12 @@
 <script lang="ts">
   import { BaseEdge, getSmoothStepPath } from '@xyflow/svelte'
+  import { getContext } from 'svelte'
   import { roundedOrthogonalPath } from './edge-route-path'
-  import type { CanvasEdgeData } from './types'
+  import {
+    CANVAS_RENDER_DENSITY_RELATIONSHIP,
+    type CanvasEdgeData,
+    type CanvasRenderDensityRelationship,
+  } from './types'
 
   let { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, selected, data } = $props<{
     id: string
@@ -17,30 +22,55 @@
   }>()
 
   let routedPath = $derived(data?.route ? roundedOrthogonalPath(data.route.points) : '')
+  const renderDensityRelationship = getContext<CanvasRenderDensityRelationship | undefined>(
+    CANVAS_RENDER_DENSITY_RELATIONSHIP,
+  )
+  let overview = $derived(Boolean(renderDensityRelationship?.overview()))
   let path = $derived(
     routedPath ||
       getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 10 })[0],
   )
 </script>
 
-<path d={path} class="workflow-edge-casing" fill="none" aria-hidden="true" />
-<path d={path} class="workflow-edge-focus-halo" fill="none" aria-hidden="true" />
-<BaseEdge
-  {id}
-  {path}
-  {markerEnd}
-  interactionWidth={32}
-  class={[
-    'workflow-edge',
-    selected && 'selected',
-    data?.stale && 'stale',
-    data?.readOnly && 'read-only',
-    data?.emphasized && 'emphasized',
-    data?.deemphasized && 'deemphasized',
-  ]
-    .filter(Boolean)
-    .join(' ')}
-/>
+{#if overview}
+  <path
+    d={path}
+    class={[
+      'svelte-flow__edge-path',
+      'workflow-edge',
+      'workflow-edge-overview',
+      selected && 'selected',
+      data?.stale && 'stale',
+      data?.readOnly && 'read-only',
+      data?.emphasized && 'emphasized',
+      data?.deemphasized && 'deemphasized',
+    ]
+      .filter(Boolean)
+      .join(' ')}
+    fill="none"
+    marker-end={markerEnd}
+    aria-hidden="true"
+  />
+{:else}
+  <path d={path} class="workflow-edge-casing" fill="none" aria-hidden="true" />
+  <path d={path} class="workflow-edge-focus-halo" fill="none" aria-hidden="true" />
+  <BaseEdge
+    {id}
+    {path}
+    {markerEnd}
+    interactionWidth={32}
+    class={[
+      'workflow-edge',
+      selected && 'selected',
+      data?.stale && 'stale',
+      data?.readOnly && 'read-only',
+      data?.emphasized && 'emphasized',
+      data?.deemphasized && 'deemphasized',
+    ]
+      .filter(Boolean)
+      .join(' ')}
+  />
+{/if}
 
 <style>
   :global(.workflow-edge-casing) {

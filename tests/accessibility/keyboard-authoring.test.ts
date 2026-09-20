@@ -430,7 +430,11 @@ describe('keyboard-only workflow authoring', () => {
     ])
     const App = (await import('$src/app/App.svelte')).default
     const rendered = render(App)
-    const workflowEntry = await screen.findByRole('treeitem', { name: /keyboard\.yaml, legacy workflow/i })
+    const workflowEntry = await screen.findByRole(
+      'treeitem',
+      { name: /keyboard\.yaml, legacy workflow/i },
+      deferredSurfaceWait,
+    )
     // jsdom does not seed focus into a newly mounted application. This is the
     // single initial entry point; every subsequent move uses keyboard actions.
     workflowEntry.focus()

@@ -1,7 +1,12 @@
 import { chromium, type BrowserContext, type FullConfig, type Page } from '@playwright/test'
 
 const WARMUP_ATTEMPTS = 2
-const WARMUP_ATTEMPT_TIMEOUT_MS = 60_000
+const DEFAULT_WARMUP_ATTEMPT_TIMEOUT_MS = 60_000
+const WINDOWS_WARMUP_ATTEMPT_TIMEOUT_MS = 180_000
+export function warmupAttemptTimeoutMs(platform: string = process.platform): number {
+  return platform === 'win32' ? WINDOWS_WARMUP_ATTEMPT_TIMEOUT_MS : DEFAULT_WARMUP_ATTEMPT_TIMEOUT_MS
+}
+const WARMUP_ATTEMPT_TIMEOUT_MS = warmupAttemptTimeoutMs()
 const DEFERRED_SURFACE_MODULES = [
   '/src/features/settings/SettingsPage.svelte',
   '/src/features/settings/ContractSettingsHost.svelte',

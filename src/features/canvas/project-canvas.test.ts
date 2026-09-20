@@ -55,6 +55,15 @@ const savedLayout: ScopeLayoutV1 = {
 }
 
 describe('projectCanvas', () => {
+  it('provides initial handle geometry so fresh offscreen nodes can be culled before mounting', () => {
+    const [node] = projectCanvas(projection, savedLayout).nodes
+
+    expect(node?.handles).toEqual([
+      expect.objectContaining({ id: 'dependency-in', type: 'target', x: -16, y: 36, width: 32, height: 32 }),
+      expect.objectContaining({ id: 'dependency-out', type: 'source', x: 200, y: 36, width: 32, height: 32 }),
+    ])
+  })
+
   it.each(['engine', 'sanitizer'])('[RG7] never attaches any route from a rejected %s cache', (change) => {
     const routing = {
       schemaVersion: 1,

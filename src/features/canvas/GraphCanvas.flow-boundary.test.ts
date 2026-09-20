@@ -311,7 +311,51 @@ describe('GraphCanvas Svelte Flow boundary', () => {
     )
   })
 
-  it('mounts a newly admitted small draft while retaining visible-only rendering at the capacity boundary', () => {
+  it('stages a target scope viewport without republishing the departing graph at the target camera', async () => {
+    vi.useFakeTimers()
+    const onPersistLayout = vi.fn()
+    const rendered = render(GraphCanvas, {
+      commandSurface: commandRegistry,
+      projection,
+      layout,
+      workflowIdentity: 'root',
+      onPersistLayout,
+    } as never)
+
+    const target = { x: -120, y: 80, zoom: 1 }
+    rendered.component.prepareScopeViewport('body', target)
+    await tick()
+
+    const flow = screen.getByTestId('svelte-flow-boundary-probe')
+    expect(flow).toHaveAttribute('data-received-viewport', '0,0,1')
+
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection: { ...projection, scope: { ...projection.scope, key: 'loop-group:group', kind: 'loop-group' } },
+      layout: { ...layout, viewport: target },
+      workflowIdentity: 'body',
+      onPersistLayout,
+    } as never)
+    await tick()
+    expect(flow).toHaveAttribute('data-received-viewport', '-120,80,1')
+    await fireEvent(flow, new CustomEvent('flowboundarypan', { detail: target }))
+    await vi.advanceTimersByTimeAsync(300)
+    expect(onPersistLayout).not.toHaveBeenCalled()
+  })
+
+  it('keeps incident edges out of transient marquee updates and restores direct selection afterward', async () => {
+    render(GraphCanvas, { commandSurface: commandRegistry, projection, layout } as never)
+    const flow = screen.getByTestId('svelte-flow-boundary-probe')
+
+    expect(flow).toHaveAttribute('data-received-edge-selectable', 'true')
+    await fireEvent(flow, new CustomEvent('flowboundaryselectionstart'))
+    await tick()
+    expect(flow).toHaveAttribute('data-received-edge-selectable', 'false')
+    await fireEvent(flow, new CustomEvent('flowboundaryselectionend'))
+    await vi.waitFor(() => expect(flow).toHaveAttribute('data-received-edge-selectable', 'true'))
+  })
+
+  it('mounts ordinary graphs fully while retaining visible-only rendering for capacity graphs', () => {
     const projectionWithCount = (nodeCount: number): ProjectedGraph => {
       const nodes = Array.from({ length: nodeCount }, (_, index) => ({
         id: `node-${index}`,
@@ -329,22 +373,24 @@ describe('GraphCanvas Svelte Flow boundary', () => {
       }
     }
 
-    const small = render(GraphCanvas, {
-      commandSurface: commandRegistry,
-      projection: projectionWithCount(1),
-      layout,
-    } as never)
-    expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-visible-only', 'false')
-    small.unmount()
+    for (const nodeCount of [1, 2, 99]) {
+      const fullyMounted = render(GraphCanvas, {
+        commandSurface: commandRegistry,
+        projection: projectionWithCount(nodeCount),
+        layout,
+      } as never)
+      expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-visible-only', 'false')
+      fullyMounted.unmount()
+    }
 
-    for (const nodeCount of [2, VISUAL_NODE_CAPACITY - 1, VISUAL_NODE_CAPACITY]) {
-      const virtualized = render(GraphCanvas, {
+    for (const nodeCount of [100, VISUAL_NODE_CAPACITY - 1, VISUAL_NODE_CAPACITY]) {
+      const capacity = render(GraphCanvas, {
         commandSurface: commandRegistry,
         projection: projectionWithCount(nodeCount),
         layout,
       } as never)
       expect(screen.getByTestId('svelte-flow-boundary-probe')).toHaveAttribute('data-received-visible-only', 'true')
-      virtualized.unmount()
+      capacity.unmount()
     }
   })
 })

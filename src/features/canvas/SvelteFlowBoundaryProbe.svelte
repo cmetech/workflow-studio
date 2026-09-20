@@ -10,6 +10,9 @@
     panActivationKey?: string | readonly string[]
     panOnDrag?: boolean | readonly number[]
     onlyRenderVisibleElements?: boolean
+    defaultEdgeOptions?: { readonly selectable?: boolean }
+    onselectionstart?: () => void
+    onselectionend?: () => void
     children?: Snippet
   }
 
@@ -21,6 +24,9 @@
     panActivationKey,
     panOnDrag,
     onlyRenderVisibleElements,
+    defaultEdgeOptions,
+    onselectionstart,
+    onselectionend,
     children,
   }: Props = $props()
 
@@ -33,7 +39,15 @@
       onmoveend?.(null, next)
     }
     root.addEventListener('flowboundarypan', pan)
-    return () => root.removeEventListener('flowboundarypan', pan)
+    const selectionStart = () => onselectionstart?.()
+    const selectionEnd = () => onselectionend?.()
+    root.addEventListener('flowboundaryselectionstart', selectionStart)
+    root.addEventListener('flowboundaryselectionend', selectionEnd)
+    return () => {
+      root.removeEventListener('flowboundarypan', pan)
+      root.removeEventListener('flowboundaryselectionstart', selectionStart)
+      root.removeEventListener('flowboundaryselectionend', selectionEnd)
+    }
   })
 </script>
 
@@ -44,6 +58,8 @@
   data-received-pan-activation-key={String(panActivationKey ?? 'missing')}
   data-received-pan-on-drag={String(panOnDrag ?? 'missing')}
   data-received-visible-only={String(onlyRenderVisibleElements ?? 'missing')}
+  data-received-edge-selectable={String(defaultEdgeOptions?.selectable ?? 'missing')}
+  data-received-viewport={viewport ? `${viewport.x},${viewport.y},${viewport.zoom}` : 'missing'}
 >
   <div class="svelte-flow__pane"></div>
   {@render children?.()}

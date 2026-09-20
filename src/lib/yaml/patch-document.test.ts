@@ -5,7 +5,7 @@ import type { AuthoringContract, FieldDescriptor, NodeKindDescriptor } from '$sr
 import aliases from '../../../tests/fixtures/yaml/patch-golden/aliases.yaml?raw'
 import ambiguousNodesAlias from '../../../tests/fixtures/yaml/patch-golden/ambiguous-nodes-alias.yaml?raw'
 import richDefinition from '../../../tests/fixtures/yaml/patch-golden/rich-definition.txt?raw'
-import { patchWorkflowDocument } from './patch-document'
+import { patchWorkflowDocument, patchWorkflowPair } from './patch-document'
 import { parseWorkflowYaml } from './parse-document'
 
 function field(path: string): FieldDescriptor {
@@ -79,6 +79,45 @@ function expectExactPrefixAndSuffix(source: string, output: string, start: numbe
 }
 
 describe('source-preserving YAML patches', () => {
+  it('patches dependencies from an authenticated projected-node range without touching unrelated bytes', () => {
+    const source = `name: projected dependency patch
+description: preserve the surrounding capacity document
+nodes:
+  - id: a
+    command: echo a
+  - id: c
+    # dependency ownership stays here
+    depends_on: [a] # retain inline comment
+    prompt: consume
+# exact tail
+`
+    const start = source.indexOf('id: c')
+    const end = source.indexOf('# exact tail')
+    const result = patchWorkflowPair(
+      { definition: source, companion: null },
+      { type: 'set-dependencies', scopeKey: 'root', nodeId: 'c', dependsOn: ['a', 'b'] },
+      mutationContract,
+      undefined,
+      'deferred',
+      {
+        graphs: [
+          {
+            scope: { key: 'root' },
+            nodes: [{ id: 'c', dependsOn: ['a'], source: { start, end } }],
+          },
+        ],
+      },
+    )
+
+    expect(result).toMatchObject({ ok: true })
+    if (!result.ok) return
+    expect(parse(result.texts.definition).nodes[1].depends_on).toEqual(['a', 'b'])
+    expect(result.texts.definition).toContain('# dependency ownership stays here')
+    expect(result.texts.definition).toContain('# retain inline comment')
+    expect(result.texts.definition.slice(0, start)).toBe(source.slice(0, start))
+    expect(result.texts.definition.slice(result.texts.definition.indexOf('# exact tail'))).toBe('# exact tail\n')
+  })
+
   it.each([
     ['plain', 'next-value', 'plain: next-value # plain comment'],
     ['single', "next 'single'", "single: 'next ''single''' # single comment"],

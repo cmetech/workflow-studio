@@ -66,3 +66,10 @@ export interface CanvasScopeRelationship {
 }
 
 export const CANVAS_SCOPE_RELATIONSHIP = Symbol('canvas-scope-relationship')
+
+export interface CanvasRenderDensityRelationship {
+  readonly overview: () => boolean
+  readonly portsVisible: () => boolean
+}
+
+export const CANVAS_RENDER_DENSITY_RELATIONSHIP = Symbol('canvas-render-density-relationship')

@@ -90,7 +90,7 @@ export async function applyWorkflowMutation(
   if (mutation.type === 'replace-document') {
     proposedPair = editDocumentText(pair, documentKind, mutation.text)
   } else {
-    const currentIndex =
+    const current =
       currentAnalysis &&
       currentAnalysis.workflowId === pair.workflowId &&
       currentAnalysis.pairGeneration === pair.generation &&
@@ -99,9 +99,16 @@ export async function applyWorkflowMutation(
       currentAnalysis.definitionRevision === pair.definition.revision &&
       currentAnalysis.companionRevision === (pair.companion?.revision ?? null) &&
       currentAnalysis.contractDigest === contract.contract_digest
-        ? currentAnalysis.referenceIndex
+        ? currentAnalysis
         : undefined
-    const patched = patchWorkflowPair(pairTexts(pair), mutation, contract, currentIndex)
+    const patched = patchWorkflowPair(
+      pairTexts(pair),
+      mutation,
+      contract,
+      current?.referenceIndex,
+      'deferred',
+      current?.projection,
+    )
     if (!patched.ok) return patched
     proposedPair = editDocumentText(pair, 'definition', patched.texts.definition)
     if (patched.texts.companion !== null && proposedPair.companion)
