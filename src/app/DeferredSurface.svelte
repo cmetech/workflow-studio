@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick, type Component } from 'svelte'
+  import { onDestroy, onMount, tick, untrack, type Component } from 'svelte'
   import ModalShell from './ModalShell.svelte'
 
   type LoadedModule = { default: Component }
@@ -21,6 +21,41 @@
   }
 
   let { load, label, componentProps = {}, onInstance, modal }: Props = $props()
+  // A replaced props record must not invalidate consumers of unchanged values.
+  // Own derived readers at this boundary, never inside a disposable child effect.
+  // Unlike effect-synchronized copies, these also stay current within callbacks.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- Fixed reader registry, not rendered collection state.
+  const propReaders = new Map<PropertyKey, { readonly value: unknown; readonly present: boolean }>()
+  for (const key of Reflect.ownKeys(untrack(() => componentProps))) {
+    const value = $derived(Reflect.get(componentProps, key))
+    const present = $derived(key in componentProps)
+    propReaders.set(key, {
+      get value() {
+        return value
+      },
+      get present() {
+        return present
+      },
+    })
+  }
+  // Later-added keys forward directly: creating a derived on their first child
+  // read would tie its lifetime to that child's conditional render effect.
+  const forwardedProps = new Proxy<Record<string, unknown>>(
+    {},
+    {
+      get(_target, key) {
+        const read = propReaders.get(key)
+        return read ? read.value : Reflect.get(componentProps, key)
+      },
+      has(_target, key) {
+        const read = propReaders.get(key)
+        return read ? read.present : key in componentProps
+      },
+      ownKeys: () => Reflect.ownKeys(componentProps),
+      getOwnPropertyDescriptor: (_target, key) =>
+        Object.hasOwn(componentProps, key) ? { enumerable: true, configurable: true } : undefined,
+    },
+  )
   let Surface = $state<Component | null>(null)
   let instance = $state<unknown | null>(null)
   let phase = $state<'loading' | 'ready' | 'error'>('loading')
@@ -53,6 +88,7 @@
     void tick().then(() => fallbackHost?.querySelector<HTMLElement>('[data-deferred-retry]')?.focus())
   })
   onDestroy(() => {
+    propReaders.clear()
     disposed = true
     request += 1
     onInstance?.(null)
@@ -60,7 +96,7 @@
 </script>
 
 {#if phase === 'ready' && Surface}
-  <Surface bind:this={instance} {...componentProps} />
+  <Surface bind:this={instance} {...forwardedProps} />
 {:else if modal}
   <ModalShell
     titleId={modal.titleId}
