@@ -4,7 +4,8 @@ import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
 const RELEASE_VERSION = '3.0.1'
-const STABILIZED_NPM_LOCK_COMMIT = '1227cc7'
+// Includes the narrowly scoped devalue security patch; keep exact lockfile provenance.
+const STABILIZED_NPM_LOCK_COMMIT = '51ef64a'
 const STABILIZED_CARGO_LOCK_COMMIT = '5bc5a70'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
