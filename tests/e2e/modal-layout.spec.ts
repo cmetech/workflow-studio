@@ -25,6 +25,9 @@ async function assertRealResponsiveModal(
   geometry: ExactGeometry,
   options: { injectOverflowFixture?: boolean } = {},
 ): Promise<void> {
+  // Lazy modal fallbacks share the final title but are replaced on load. Wait
+  // for a real action before retaining geometry or injecting overflow content.
+  await expect(reachableAction).toBeVisible()
   await expect(dialog).toBeVisible()
   await expect.poll(() => dialog.evaluate((node) => node.matches(':modal'))).toBe(true)
 
