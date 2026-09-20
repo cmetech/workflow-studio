@@ -28,6 +28,26 @@ const issues: readonly ValidationIssue[] = [
 ]
 
 describe('ProblemsPanel', () => {
+  it('renders repeated diagnostics with a linear identity-read budget', () => {
+    let identityReads = 0
+    const repeated = Array.from({ length: 80 }, () => ({
+      ...issues[0]!,
+      get code() {
+        identityReads += 1
+        return 'required'
+      },
+    }))
+    const { container } = render(ProblemsPanel, {
+      issues: repeated,
+      paths: { definition: 'flow.yaml', companion: null },
+    })
+    const keys = [...container.querySelectorAll('[data-issue-key]')].map((row) => row.getAttribute('data-issue-key'))
+    expect(keys).toHaveLength(repeated.length)
+    expect(new Set(keys).size).toBe(repeated.length)
+    // Count deterministic identity work, not machine-dependent wall time.
+    expect(identityReads).toBeLessThanOrEqual(repeated.length * 3)
+  })
+
   it('publishes scroll changes and restores the active scope offset', async () => {
     const onScroll = vi.fn()
     const { container, rerender } = render(ProblemsPanel, {

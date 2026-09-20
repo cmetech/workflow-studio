@@ -3,7 +3,7 @@
   import type { CommandContext } from '$src/lib/commands/types'
   import type { DocumentKind, IssueLayer, ValidationIssue } from '$src/lib/documents/types'
   import { selectProblem } from '$src/stores/documents'
-  import { issueViewKey } from './issue-view-key'
+  import { keyIssues } from './issue-view-key'
 
   interface Props {
     issues: readonly ValidationIssue[]
@@ -20,7 +20,7 @@
   interface IssueGroup {
     readonly document: DocumentKind
     readonly path: string
-    readonly issues: readonly ValidationIssue[]
+    readonly issues: readonly { readonly issue: ValidationIssue; readonly key: string }[]
   }
 
   const layers: readonly IssueLayer[] = ['syntax', 'contract', 'semantic', 'compatibility', 'operational']
@@ -75,7 +75,7 @@
         {
           document,
           path: filePaths[document] ?? document,
-          issues: documentIssues,
+          issues: keyIssues(documentIssues),
         },
       ]
     })
@@ -131,11 +131,6 @@
       .filter(Boolean)
       .join(', ')
   }
-
-  function duplicateOrdinal(values: readonly ValidationIssue[], index: number): number {
-    const fingerprint = issueViewKey(values[index]!, 0)
-    return values.slice(0, index).filter((issue) => issueViewKey(issue, 0) === fingerprint).length
-  }
 </script>
 
 <svelte:element
@@ -190,9 +185,8 @@
         <section class="file-group" aria-labelledby={`${id}-${activeLayer}-${group.document}`}>
           <h3 id={`${id}-${activeLayer}-${group.document}`}>{group.path}</h3>
           <ul>
-            {#each group.issues as issue, occurrence (issueViewKey(issue, duplicateOrdinal(group.issues, occurrence)))}
-              {@const ordinal = duplicateOrdinal(group.issues, occurrence)}
-              <li data-issue-key={issueViewKey(issue, ordinal)}>
+            {#each group.issues as { issue, key } (key)}
+              <li data-issue-key={key}>
                 <button
                   type="button"
                   aria-label={`${issueContext(issue)}${issueContext(issue) ? ': ' : ''}${issue.message}. ${issue.blocking ? 'Blocks save and export' : 'Advisory'}`}
