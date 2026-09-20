@@ -47,6 +47,7 @@ async function expectNoLongTasks(
   browserName: string,
   label: string,
   phaseStart: number | null,
+  soft = false,
 ): Promise<void> {
   if (browserName !== 'chromium' || phaseStart === null) return
   await settleRenderer(page)
@@ -64,7 +65,8 @@ async function expectNoLongTasks(
       entries: observation.phaseEntries,
     })}`,
   )
-  expect(
+  const assertion = soft ? expect.soft : expect
+  assertion(
     observation.phaseEntries.filter(({ duration }) => duration > 50),
     JSON.stringify({ label, ...observation }),
   ).toEqual([])
@@ -1270,7 +1272,9 @@ test.describe('loop group visual authoring', () => {
       await page.getByRole('button', { name: 'Back to root workflow' }).click()
       await expectSingleMountedScope(page, 'root')
       expectNoNavigationAuthorityWork(await editorMetrics(page))
-      await expectNoLongTasks(page, browserName, 'Back to root', backPhase)
+      // Keep the accepted navigation overrun visible as a failed 50 ms check,
+      // but still collect re-entry timings and verify subsequent invariants.
+      await expectNoLongTasks(page, browserName, 'Back to root', backPhase, true)
       const afterBack = await e2eSnapshot(page)
       expect(afterBack.definitionText).toBe(beforeBack.definitionText)
       expect(afterBack.companionText).toBe(beforeBack.companionText)

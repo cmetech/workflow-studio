@@ -417,6 +417,7 @@ interface ArrangeCapacityState {
   runs: ArrangeCapacityRun[]
   dropNext: boolean
   terminations: number
+  nodeSizes: Record<string, number>
 }
 
 declare global {
@@ -427,7 +428,14 @@ declare global {
 
 async function installArrangeCapacityProbe(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const state: ArrangeCapacityState = { requests: 0, responses: 0, runs: [], dropNext: false, terminations: 0 }
+    const state: ArrangeCapacityState = {
+      requests: 0,
+      responses: 0,
+      runs: [],
+      dropNext: false,
+      terminations: 0,
+      nodeSizes: {},
+    }
     window.__ARRANGE_CAPACITY__ = state
     const NativeWorker = window.Worker
     window.Worker = class extends NativeWorker {
@@ -457,6 +465,12 @@ async function installArrangeCapacityProbe(page: Page): Promise<void> {
       override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions): void {
         if (this.layoutWorker) {
           state.requests++
+          if (state.requests === 1) {
+            for (const node of (message as { nodes: { width: number; height: number }[] }).nodes) {
+              const key = `${node.width}x${node.height}`
+              state.nodeSizes[key] = (state.nodeSizes[key] ?? 0) + 1
+            }
+          }
           this.sentAt = performance.now()
           if (state.dropNext) {
             state.dropNext = false
