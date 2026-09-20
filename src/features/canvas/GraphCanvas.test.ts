@@ -3404,6 +3404,37 @@ describe('GraphCanvas', () => {
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
+  it('deactivates the surface without changing each node drag capability', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const node = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    expect(node).toHaveClass('draggable')
+
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, surfaceActive: false })
+
+    expect(node).toHaveClass('draggable')
+    expect(canvas).toHaveAttribute('inert')
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    expect($canvasPositions.get().collect).toEqual({ x: 0, y: 0 })
+
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, surfaceActive: true })
+    expect(canvas).not.toHaveAttribute('inert')
+    expect(node).toHaveClass('draggable')
+  })
+
   it('publishes selection changes only while the authoring surface is active', async () => {
     const rendered = renderCanvas({ projection, layout, surfaceActive: false })
     const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!

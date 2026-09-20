@@ -798,7 +798,9 @@
   })
 
   $effect(() => {
-    const mutable = canDrag()
+    // Inactivity is enforced by the inert surface and gesture guards. Rewriting
+    // every node's capabilities on page navigation needlessly invalidates handles.
+    const mutable = canAuthor()
     untrack(() => {
       flowNodes = flowNodes.map((node) =>
         node.draggable === mutable && node.connectable === mutable
@@ -2283,6 +2285,7 @@
   data-keyboard-viewport-focus="instant"
   aria-label="Workflow graph"
   aria-busy={transitionLocked || arrangeBusy}
+  {...surfaceActive ? {} : { inert: true }}
   bind:this={root}
 >
   <CanvasToolbar commands={toolbarCommands} onExecute={executeToolbarId} />
@@ -2350,8 +2353,8 @@
       bind:viewport={flowViewport}
       {nodeTypes}
       {edgeTypes}
-      nodesDraggable={canDrag()}
-      nodesConnectable={canDrag()}
+      nodesDraggable={canAuthor()}
+      nodesConnectable={canAuthor()}
       elementsSelectable={!transitionLocked}
       onlyRenderVisibleElements={usesCapacityRendering()}
       nodesFocusable={true}
@@ -2381,7 +2384,7 @@
       onedgepointerenter={({ edge }) => hoverEdge(edge.id)}
       onedgepointerleave={({ edge }) => leaveEdge(edge.id)}
       onconnect={({ source, target }) => {
-        if (source && target) {
+        if (canDrag() && source && target) {
           void handleAuthoringResult(
             onConnect
               ? () => onConnect(source, target)

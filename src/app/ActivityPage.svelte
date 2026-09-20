@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, type Snippet } from 'svelte'
+  import type { Snippet } from 'svelte'
   import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import type { PageActivityId } from '$src/stores/shell'
 
@@ -23,9 +23,11 @@
     const requestKey = `${requestedActivity}:${focusRequest}`
     if (requestedActivity === 'welcome' || requestKey === lastFocusRequest) return
     lastFocusRequest = requestKey
-    void tick().then(() => {
-      if (activity === requestedActivity) heading?.focus()
+    // Keep forced focus layout out of the navigation update's microtask flush.
+    const frame = requestAnimationFrame(() => {
+      if (activity === requestedActivity && heading?.isConnected) heading.focus()
     })
+    return () => cancelAnimationFrame(frame)
   })
 </script>
 
