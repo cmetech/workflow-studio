@@ -53,6 +53,13 @@
       title={`Dependencies entering ${data.id}`}
       isConnectable={isConnectable && !data.readOnly}
     />
+  {:else}
+    <div
+      class="svelte-flow__handle svelte-flow__handle-left target geometry-handle"
+      data-handleid="dependency-in"
+      data-handlepos="left"
+      aria-hidden="true"
+    ></div>
   {/if}
   <header>
     <strong>{data.id}</strong>
@@ -132,10 +139,26 @@
       title={`Dependencies leaving ${data.id}`}
       isConnectable={isConnectable && !data.readOnly}
     />
+  {:else}
+    <div
+      class="svelte-flow__handle svelte-flow__handle-right source geometry-handle"
+      data-handleid="dependency-out"
+      data-handlepos="right"
+      aria-hidden="true"
+    ></div>
   {/if}
 </article>
 
 <style>
+  /* Keep measurable anchors for edge placement without mounting interactive
+     Handle components in overview mode. display:none would erase their bounds. */
+  .geometry-handle {
+    width: 32px;
+    height: 32px;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   .workflow-node {
     position: relative;
     width: 13.5rem;

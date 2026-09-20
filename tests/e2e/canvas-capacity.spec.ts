@@ -695,6 +695,23 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   await testInfo.attach('routed-content-capacity.json', { path: contentEvidencePath, contentType: 'application/json' })
 })
 
+test('keeps capacity overview handle geometry available through Arrange', async ({ page }) => {
+  test.setTimeout(30_000)
+  const missingHandles: string[] = []
+  page.on('console', (message) => {
+    if (message.text().includes("Couldn't create edge for")) missingHandles.push(message.text())
+  })
+  await openSeededPair(page, '?scenario=routed-capacity')
+  await invokeArrange(page)
+  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+    'Graph arranged: 250 nodes and 500 dependencies.',
+    { timeout: 10_000 },
+  )
+  await settleRenderer(page)
+  expect(missingHandles).toEqual([])
+  await expect(page.locator('.workflow-edge-overview').first()).toBeAttached()
+})
+
 test('[RG8] times out after 5,000ms without changing layout and recovers with a new worker', async ({ page }) => {
   test.setTimeout(25_000)
   await installArrangeCapacityProbe(page)

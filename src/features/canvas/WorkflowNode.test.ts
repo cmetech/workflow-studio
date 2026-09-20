@@ -3,7 +3,7 @@ import { SvelteFlow } from '@xyflow/svelte'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import WorkflowNode from './WorkflowNode.svelte'
 import workflowNodeSource from './WorkflowNode.svelte?raw'
-import type { CanvasNodeData } from './types'
+import { CANVAS_RENDER_DENSITY_RELATIONSHIP, type CanvasNodeData } from './types'
 
 const baseData: CanvasNodeData = {
   id: 'collect',
@@ -17,6 +17,24 @@ const baseData: CanvasNodeData = {
 }
 
 describe('WorkflowNode edge emphasis', () => {
+  it('retains measurable noninteractive handle anchors when overview hides authoring ports', () => {
+    const { container } = render(WorkflowNode, {
+      props: { data: baseData },
+      context: new Map([[CANVAS_RENDER_DENSITY_RELATIONSHIP, { overview: () => true, portsVisible: () => false }]]),
+    })
+    for (const [type, id, position] of [
+      ['source', 'dependency-out', 'right'],
+      ['target', 'dependency-in', 'left'],
+    ]) {
+      const anchor = container.querySelector(`.${type}`)
+      expect(anchor).not.toBeNull()
+      expect(anchor).toHaveAttribute('data-handleid', id)
+      expect(anchor).toHaveAttribute('data-handlepos', position)
+      expect(anchor).toHaveAttribute('aria-hidden', 'true')
+      expect(anchor).not.toHaveClass('connectable')
+    }
+  })
+
   beforeAll(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,

@@ -233,11 +233,12 @@
   let overviewRendering = $state(initialEdgesDeferred && initialViewport.zoom < OVERVIEW_RENDER_ZOOM)
   let overviewPortsVisible = $state(!initialEdgesDeferred || initialViewport.zoom >= MIN_OVERVIEW_PORT_ZOOM)
   let overviewRenderHold = $state(initialEdgesDeferred)
+  let portRenderHold = $state(initialEdgesDeferred)
   let overviewRenderHoldFrame: number | undefined
   let commandZoomFrame: number | undefined
   const renderDensityRelationship: CanvasRenderDensityRelationship = {
     overview: () => overviewRenderHold || overviewRendering,
-    portsVisible: () => !overviewRenderHold && overviewPortsVisible,
+    portsVisible: () => !portRenderHold && overviewPortsVisible,
   }
   setContext(CANVAS_RENDER_DENSITY_RELATIONSHIP, renderDensityRelationship)
   $effect(() => {
@@ -490,11 +491,12 @@
     stagedScopeViewport = undefined
     untrack(() => {
       overviewRenderHold = true
+      portRenderHold = true
       if (overviewRenderHoldFrame !== undefined) cancelAnimationFrame(overviewRenderHoldFrame)
       setProgrammaticViewport(staged.viewport)
       overviewRenderHoldFrame = requestAnimationFrame(() => {
         overviewRenderHoldFrame = undefined
-        if (workflowIdentity === identity) overviewRenderHold = false
+        if (workflowIdentity === identity) releaseOverviewHold()
       })
     })
   })
@@ -2145,15 +2147,21 @@
     return operation
   }
 
+  function releaseOverviewHold(): void {
+    overviewRenderHold = false
+    // Card/edge detail and live Handle registration are separate bounded updates.
+    overviewRenderHoldFrame = requestAnimationFrame(() => {
+      overviewRenderHoldFrame = undefined
+      portRenderHold = false
+    })
+  }
+
   onMount(() => {
     if (initialEdgesDeferred) {
       overviewRenderHoldFrame = requestAnimationFrame(() => {
         initialEdgesDeferred = false
         flowEdges = withSurfaceEdgeSelection(deriveCanvas().edges, flowEdges)
-        overviewRenderHoldFrame = requestAnimationFrame(() => {
-          overviewRenderHoldFrame = undefined
-          overviewRenderHold = false
-        })
+        overviewRenderHoldFrame = requestAnimationFrame(releaseOverviewHold)
       })
     }
     canvasMounted = true

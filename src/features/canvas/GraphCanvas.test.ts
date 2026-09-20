@@ -3404,6 +3404,33 @@ describe('GraphCanvas', () => {
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
+  it('reveals capacity card detail before mounting interactive ports in a separate frame', async () => {
+    vi.useFakeTimers()
+    const measurements = canvasMeasurements()
+    const rendered = renderCanvas({
+      projection: { ...projection, capacity: { ...projection.capacity, nodeCount: 100 } },
+      layout,
+    })
+    try {
+      await measurements.publish()
+      let detail: Element | null = null
+      for (let frame = 0; frame < 8 && !detail; frame++) {
+        vi.advanceTimersToNextFrame()
+        await tick()
+        detail = rendered.container.querySelector('.workflow-node:not(.overview)')
+      }
+      expect(detail).not.toBeNull()
+      expect(rendered.container.querySelector('[data-port]')).toBeNull()
+      vi.advanceTimersToNextFrame()
+      await tick()
+      expect(rendered.container.querySelector('[data-port="output"]')).not.toBeNull()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      vi.useRealTimers()
+    }
+  })
+
   it('deactivates the surface without changing each node drag capability', async () => {
     const rendered = renderCanvas({ projection, layout })
     const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
