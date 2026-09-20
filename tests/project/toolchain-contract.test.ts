@@ -102,7 +102,7 @@ describe('minimum toolchain contract', () => {
     expect(nativeCommands).toContain('npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json')
 
     const functionalJobs = jobs.filter((job) =>
-      job.steps?.some((step) => step.run?.includes('npm run test:e2e:functional:windows')),
+      job.steps?.some((step) => step.run?.includes('npm.cmd run test:e2e:functional:windows')),
     )
     expect(functionalJobs).toHaveLength(1)
     const functionalMatrix = functionalJobs[0]!.strategy?.matrix?.include

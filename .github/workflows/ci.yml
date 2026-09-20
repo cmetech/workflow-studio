@@ -97,7 +97,7 @@ jobs:
       - name: Install Chromium
         run: npx playwright install chromium
       - name: Run functional Chromium shard
-        run: npm run test:e2e:functional:windows -- --shard=${{ matrix.shard }}
+        run: npm.cmd run test:e2e:functional:windows -- --shard=${{ matrix.shard }}
         env:
           WORKFLOW_STUDIO_E2E_PORT: ${{ matrix.port }}
           WORKFLOW_STUDIO_E2E_OUTPUT_DIR: ${{ matrix.output }}

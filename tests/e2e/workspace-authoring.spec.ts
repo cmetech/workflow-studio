@@ -90,6 +90,10 @@ async function dragPort(
   const target = page.locator(`[data-node-id="${targetId}"] [data-port="${targetPort}"]`)
   await expect(source).toBeInViewport()
   await expect(target).toBeInViewport()
+  // YAML publication precedes worker validation. A visible last-valid graph is
+  // deliberately non-interactive until that validation has finished.
+  await expect(source).toHaveAttribute('aria-disabled', 'false')
+  await expect(target).toHaveAttribute('aria-disabled', 'false')
   const [sourceBounds, targetBounds] = await Promise.all([source.boundingBox(), target.boundingBox()])
   if (!sourceBounds || !targetBounds) throw new Error(`Expected visible ports for ${sourceId} and ${targetId}.`)
   const hitTargets = await page.evaluate(
