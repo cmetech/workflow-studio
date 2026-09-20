@@ -105,7 +105,11 @@ async function openOversizedWorkflow(yaml: string, path: string): Promise<Return
     { relativePath: path, kind: 'file', size: yaml.length, modifiedAt: '0', symlink: 'none', readOnly: false },
   ])
   const rendered = render(App)
-  const entry = await screen.findByRole('treeitem', { name: new RegExp(`${path}.*legacy workflow`, 'i') })
+  const entry = await screen.findByRole(
+    'treeitem',
+    { name: new RegExp(`${path}.*legacy workflow`, 'i') },
+    deferredSurfaceWait,
+  )
   await fireEvent.keyDown(entry, { key: 'Enter' })
   await waitFor(() => {
     const session = $documentSession.get()
