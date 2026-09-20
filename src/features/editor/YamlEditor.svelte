@@ -97,12 +97,12 @@
     )
   }
 
-  function focusNode(nodeId: string): void {
+  function focusNode(nodeId: string, moveFocus = true): void {
     if (!view || documentKind !== 'definition' || !rangeSynchronizationIsCurrent(revision, analysis)) return
     const range = rangeForSelectedNode(nodes, nodeId, view.state.doc.length)
     if (!range) return
     view.dispatch({ selection: { anchor: range.from, head: range.to }, annotations: editorSelectionSync.of('canvas') })
-    if (active && focusOnSelection) view.focus()
+    if (moveFocus && active && focusOnSelection) view.focus()
   }
 
   export function focusProblem(issue: ValidationIssue): boolean {
@@ -160,7 +160,11 @@
     })
     host.setAttribute('aria-label', label)
     refreshDiagnostics()
-    unsubscribeSelection = canvasSelectionStore.subscribe((selection) => {
+    // Hydration is not a new selection gesture: lazy mounting Split must not
+    // steal the canvas focus before responsive pane selection has settled.
+    const initialSelection = canvasSelectionStore.get()
+    if (initialSelection.length === 1) focusNode(initialSelection[0]!, false)
+    unsubscribeSelection = canvasSelectionStore.listen((selection) => {
       const nodeId = selection.length === 1 ? selection[0] : undefined
       if (editorPublishedNode !== undefined && editorPublishedNode === (nodeId ?? null)) {
         editorPublishedNode = undefined

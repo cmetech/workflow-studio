@@ -182,6 +182,32 @@ describe('YamlEditor', () => {
     expect(onTextChange).toHaveBeenCalledOnce()
   })
 
+  it('hydrates an existing canvas selection without stealing focus when the editor mounts', async () => {
+    const canvasControl = document.createElement('button')
+    document.body.append(canvasControl)
+    canvasControl.focus()
+    setCanvasSelection(['collect'])
+    try {
+      const { component } = render(YamlEditor, {
+        document: 'definition',
+        text: 'name: Flow\nnodes:\n  - id: collect\n    command: run\n',
+        revision,
+        analysis: currentAnalysis(),
+        nodes,
+        onTextChange: () => undefined,
+      })
+      await tick()
+      expect(component.getView().state.selection.main).toMatchObject({ from: 20, to: 51 })
+      expect(canvasControl).toHaveFocus()
+      setCanvasSelection([])
+      setCanvasSelection(['collect'])
+      await tick()
+      expect(component.getView().hasFocus).toBe(true)
+    } finally {
+      canvasControl.remove()
+    }
+  })
+
   it('focuses a selected graph node range and selects the node under the YAML cursor without bouncing', async () => {
     const { component } = render(YamlEditor, {
       document: 'definition',
