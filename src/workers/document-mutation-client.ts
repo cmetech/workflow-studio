@@ -38,8 +38,12 @@ export function applyWorkflowMutationInWorker(
   pair: WorkflowPairText,
   mutation: WorkflowMutation,
   contract: AuthoringContract,
-  createWorker: () => DocumentWorkerEndpoint & { terminate(): void } = () =>
-    new Worker(new URL('./document-worker.ts', import.meta.url), { type: 'module' }),
+  createWorker: () => DocumentWorkerEndpoint & { terminate(): void } = () => {
+    if (typeof Worker === 'undefined') {
+      throw new WorkspaceActionError('analysis_unavailable', 'Document analysis worker is unavailable.')
+    }
+    return new Worker(new URL('./document-worker.ts', import.meta.url), { type: 'module' })
+  },
 ): Promise<ApplyWorkflowMutationResult> {
   return new Promise((resolve, reject) => {
     const worker = createWorker()
