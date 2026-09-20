@@ -249,6 +249,9 @@ export async function arrangeWithElk(request: unknown, elk: ElkLike): Promise<La
   ) {
     const orderingGraph = buildElkGraph(request)!
     orderingGraph.layoutOptions!['org.eclipse.elk.randomSeed'] = '2'
+    // Only port order survives this pass. Its node coordinates and routes are
+    // discarded, so reserve the expensive quality placer for final routing.
+    orderingGraph.layoutOptions!['org.eclipse.elk.layered.nodePlacement.strategy'] = 'SIMPLE'
     for (const node of orderingGraph.children!) node.layoutOptions!['org.eclipse.elk.portConstraints'] = 'FIXED_SIDE'
     let orderingResult: unknown
     try {
