@@ -931,6 +931,63 @@ fn candidate_staging_never_hashes_a_path_swapped_through_an_escaping_parent_link
 }
 
 #[test]
+fn authorized_version_checkpoint_accepts_its_own_commit_without_stale_head_warning() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("notes.txt"), "original\n").unwrap();
+    commit_all(root, "initial");
+    fs::write(root.join("flow.yaml"), "name: edited\n").unwrap();
+    fs::write(root.join("notes.txt"), "unrelated staged\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    let context = AuthorizedGitContext::bind(root, root).unwrap();
+    let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let authorization = super::VersionAuthorization::from_preview(
+        &context,
+        "flow.yaml".to_owned(),
+        None,
+        binding,
+        super::mutate::GitBase::capture(root).unwrap(),
+    );
+    super::runner::reset_read_probe_count_for_test();
+    let result = super::mutate::create_pair_version_authorized_with_guard(
+        root,
+        &context.git_metadata.metadata.worktree_dir,
+        &authorization.base,
+        &authorization.binding,
+        "flow.yaml",
+        None,
+        "save edited workflow",
+        || authorization.verify_checkpoint(&context),
+    )
+    .unwrap();
+    eprintln!(
+        "authorized version read probes: {}",
+        super::runner::read_probe_count_for_test()
+    );
+    match result {
+        super::mutate::GitVersionResult::Committed { warnings, .. } => {
+            assert!(
+                warnings.is_empty(),
+                "unexpected commit warnings: {warnings:?}"
+            );
+        }
+        _ => panic!("expected committed version"),
+    }
+    assert_eq!(
+        git_output(root, &["show", "HEAD:flow.yaml"]),
+        "name: edited\n"
+    );
+    assert_eq!(
+        git_output(root, &["diff", "--cached", "--name-only"]).trim(),
+        "notes.txt"
+    );
+}
+
+#[test]
 fn pair_version_authorization_is_exact_single_use_and_rejects_replacement() {
     let directory = tempdir().unwrap();
     let root = directory.path();
@@ -1257,10 +1314,9 @@ fn pair_version_rejects_head_advances_before_index_or_commit_mutation() {
             "flow.yaml",
             None,
             "must reject",
-            || {
-                binding.verify()?;
-                base.verify(root)
-            },
+            // HEAD verification belongs to the mutation routine, not this
+            // filesystem guard. A moved HEAD must still be rejected there.
+            || binding.verify(),
         )
         .unwrap_err();
 

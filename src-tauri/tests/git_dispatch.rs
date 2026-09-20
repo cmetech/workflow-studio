@@ -60,7 +60,11 @@ fn blocking_git_commands_execute_outside_the_window_ipc_thread() {
                 cmd: command.into(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "http://tauri.localhost".parse().unwrap(),
+                url: if cfg!(any(windows, target_os = "android")) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }.parse().unwrap(),
                 body: tauri::ipc::InvokeBody::Json(serde_json::json!({
                     "root": "unused", "definitionPath": "flow.yaml", "companionPath": null,
                     "controllerEpoch": epoch, "requestGeneration": request + 1,
@@ -81,7 +85,11 @@ fn blocking_git_commands_execute_outside_the_window_ipc_thread() {
             .unwrap();
         match response {
             tauri::ipc::InvokeResponse::Err(error) => {
-                assert_eq!(error.0["code"], "workspace_not_selected", "{command}")
+                assert_eq!(
+                    error.0["code"], "workspace_not_selected",
+                    "{command}: {:?}",
+                    error.0
+                )
             }
             _ => panic!("{command} did not enforce workspace selection"),
         }

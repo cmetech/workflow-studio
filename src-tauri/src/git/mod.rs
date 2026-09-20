@@ -657,6 +657,15 @@ struct VersionAuthorization {
 }
 
 impl VersionAuthorization {
+    fn verify_checkpoint(&self, context: &AuthorizedGitContext) -> GitResult<()> {
+        context.verify()?;
+        // The commit routine verifies the accepted HEAD after this guard at
+        // every mutation checkpoint. Repeating it here launches two extra Git
+        // processes per checkpoint and incorrectly rejects our own new HEAD
+        // when the same workspace guard runs during post-commit refresh.
+        self.binding.verify()
+    }
+
     fn from_preview(
         context: &AuthorizedGitContext,
         definition_path: String,
@@ -1756,9 +1765,7 @@ pub fn git_create_pair_version(
         &message,
         || {
             verify_workspace_binding(&state, &binding)?;
-            context.verify()?;
-            authorization.binding.verify()?;
-            authorization.base.verify(&context.repository_root)
+            authorization.verify_checkpoint(&context)
         },
     )
 }
