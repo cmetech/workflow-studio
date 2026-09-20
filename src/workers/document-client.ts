@@ -173,6 +173,7 @@ export class DocumentClient {
   }
 
   private receive(response: DocumentWorkerResponse): void {
+    if (response.type === 'mutation' || response.type === 'mutation-error') return
     if (response.type === 'contract-registered' || response.type === 'contract-registration-error') {
       const resolver = this.registrationResolvers.get(response.requestId)
       if (!resolver) return

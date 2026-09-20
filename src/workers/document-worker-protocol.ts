@@ -1,5 +1,7 @@
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
-import type { ContractDigest, DocumentAnalysis } from '$src/lib/documents/types'
+import type { ContractDigest, DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
+import type { ApplyWorkflowMutationResult } from '$src/lib/documents/transactions'
+import type { WorkflowMutation } from '$src/lib/yaml/mutations'
 
 export type DocumentAnalysisReason = 'edit' | 'contract-change' | 'open' | 'explicit-validate'
 
@@ -29,7 +31,27 @@ export interface AnalyzeDocumentRequest {
   reason: DocumentAnalysisReason
 }
 
-export type DocumentWorkerRequest = ContractRegisterRequest | AnalyzeDocumentRequest
+export interface MutateDocumentRequest {
+  type: 'mutate'
+  requestId: string
+  pair: WorkflowPairText
+  contract: AuthoringContract
+  mutation: WorkflowMutation
+}
+
+export interface MutateDocumentResponse extends DocumentRevision {
+  type: 'mutation'
+  requestId: string
+  result: ApplyWorkflowMutationResult
+}
+
+export interface MutateDocumentErrorResponse extends DocumentRevision {
+  type: 'mutation-error'
+  requestId: string
+  message: string
+}
+
+export type DocumentWorkerRequest = ContractRegisterRequest | AnalyzeDocumentRequest | MutateDocumentRequest
 
 export interface ContractRegisteredResponse {
   type: 'contract-registered'
@@ -72,6 +94,8 @@ export interface AnalyzeDocumentErrorResponse extends AnalyzeResponseIdentity {
 }
 
 export type DocumentWorkerResponse =
+  | MutateDocumentResponse
+  | MutateDocumentErrorResponse
   | ContractRegisteredResponse
   | ContractRegistrationErrorResponse
   | AnalyzeDocumentResponse

@@ -2625,6 +2625,59 @@ nodes:
     expect($documentSession.get().pair).toBe(before)
   })
 
+  it.each([false, true])('prepares Inspector fields in a worker and guards stale publication=%s', async (stale) => {
+    const source = 'name: Worker edit\ndescription: Preserve edits\nnodes:\n  - id: draft\n    prompt: Old\n'
+    const backing = createBrowserBridge({ initialFiles: { 'flow.yaml': source } })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const restoreWorker = installRealDocumentWorker()
+    const post = RealDocumentWorker.prototype.postMessage
+    let held: { worker: RealDocumentWorker; message: DocumentWorkerRequest } | undefined
+    const spy = vi.spyOn(RealDocumentWorker.prototype, 'postMessage').mockImplementation(function (
+      this: RealDocumentWorker,
+      message,
+    ) {
+      if (message.type === 'mutate') held = { worker: this, message }
+      else post.call(this, message)
+    })
+    try {
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow\.yaml/i }, deferredSurfaceWait))
+      const node = await screen.findByRole('group', { name: /prompt node draft$/i }, deferredSurfaceWait)
+      setCanvasSelection(['draft'])
+      await tick()
+      await fireEvent.click(within(node).getByRole('button', { name: 'Inspector for draft' }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveFocus(), deferredSurfaceWait)
+      const field = await screen.findByRole('textbox', { name: /^Prompt/i }, deferredSurfaceWait)
+      await fireEvent.input(field, { target: { value: 'Worker value' } })
+      await fireEvent.click(screen.getByRole('button', { name: 'Apply Prompt' }))
+      await waitFor(() => expect(held).toBeDefined())
+      expect($documentSession.get().pair?.definition.text).toBe(source)
+      if (stale) {
+        const session = $documentSession.get()
+        updateDocumentSession(
+          editDocumentText(session.pair!, 'definition', source.replace('Old', 'Newer edit')),
+          session.revision!.contractDigest,
+          'user',
+        )
+      }
+      post.call(held!.worker, held!.message)
+      if (stale) {
+        await screen.findByText('The inspector binding changed before the edit could commit.')
+        expect($documentSession.get().pair?.definition.text).toContain('prompt: Newer edit')
+      } else {
+        await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('prompt: Worker value'))
+        expect($documentSession.get().analysis?.definitionRevision).toBe(
+          $documentSession.get().pair?.definition.revision,
+        )
+      }
+    } finally {
+      spy.mockRestore()
+      restoreWorker()
+    }
+  })
+
   it('publishes an Inspector node-ID rename once with its prevalidated current analysis', async () => {
     const source = `name: Inspector publication
 description: Exercise the prevalidated rename path.

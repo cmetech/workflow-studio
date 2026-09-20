@@ -112,7 +112,6 @@
   import WorkflowContextMenu from '$src/features/workspace/WorkflowContextMenu.svelte'
   import { runProblemFocusCoordinator } from '$src/features/documents/problem-focus-coordinator'
   import type GraphCanvas from '$src/features/canvas/GraphCanvas.svelte'
-  import LoopGroupEmptyState from '$src/features/canvas/LoopGroupEmptyState.svelte'
   import {
     buildLoopGroupReferenceGuidance,
     LoopGroupReferenceTargetOwner,
@@ -228,6 +227,7 @@
   const loadDeleteImpactDialog = memoizedSurface(() => import('$src/features/canvas/DeleteImpactDialog.svelte'))
   const loadLoopGroupScopeBar = memoizedSurface(() => import('$src/features/canvas/LoopGroupScopeBar.svelte'))
   const loadGraphScopeHeader = memoizedSurface(() => import('$src/features/canvas/GraphScopeHeader.svelte'))
+  const loadLoopGroupEmptyState = memoizedSurface(() => import('$src/features/canvas/LoopGroupEmptyState.svelte'))
   const loadUpdateOverlay = memoizedSurface(() => import('$src/features/updates/UpdateOverlay.svelte'))
 
   const bundledGuideSources = import.meta.glob('../../docs/app-guides/*.md', {
@@ -1592,13 +1592,8 @@
 
     let result: ApplyWorkflowMutationResult
     try {
-      result = await applyWorkflowMutation(
-        session.pair,
-        mutation,
-        mutationContract,
-        analyzePairInWorker,
-        session.analysis ?? undefined,
-      )
+      const { applyWorkflowMutationInWorker } = await import('$src/workers/document-mutation-client')
+      result = await applyWorkflowMutationInWorker(session.pair, mutation, mutationContract)
     } catch (error) {
       workspaceError =
         error instanceof Error ? error.message : 'Document analysis failed before the Inspector edit could be applied.'
@@ -2271,28 +2266,9 @@
     return analyzePairInWorker(pair, input.contract)
   }
 
-  function analyzePairInWorker(pair: WorkflowPairText, contract: AuthoringContract): Promise<DocumentAnalysis> {
-    if (typeof Worker === 'undefined') {
-      return Promise.reject(
-        new WorkspaceActionError('analysis_unavailable', 'Document analysis worker is unavailable.'),
-      )
-    }
-    return new Promise((resolve, reject) => {
-      const worker = new Worker(new URL('../workers/document-worker.ts', import.meta.url), { type: 'module' })
-      const client = new DocumentClient(worker, {
-        onAnalysis: (analysis) => {
-          client.dispose()
-          worker.terminate()
-          resolve(analysis)
-        },
-        onError: (error) => {
-          client.dispose()
-          worker.terminate()
-          reject(new WorkspaceActionError(error.code, error.message))
-        },
-      })
-      client.schedule(pair, contract, 'explicit-validate')
-    })
+  async function analyzePairInWorker(pair: WorkflowPairText, contract: AuthoringContract): Promise<DocumentAnalysis> {
+    const { analyzePairInWorker } = await import('$src/workers/document-mutation-client')
+    return analyzePairInWorker(pair, contract)
   }
 
   function confirmExact(action: 'remove-companion' | 'trash', paths: readonly string[]): Promise<boolean> {
@@ -3202,13 +3178,18 @@
                   }}
                 />
                 {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
-                  <LoopGroupEmptyState
-                    groupId={canvasGraph.scope.groupId}
-                    onAddNode={() => {
-                      if (graphCanvas) graphCanvas.requestAdd()
-                      else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
+                  <DeferredSurface
+                    load={loadLoopGroupEmptyState}
+                    label="empty loop body"
+                    componentProps={{
+                      groupId: canvasGraph.scope.groupId,
+                      onAddNode: () => {
+                        if (graphCanvas) graphCanvas.requestAdd()
+                        else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
+                      },
+                      onEditGroupSettings: (invoker: HTMLElement) =>
+                        editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
                     }}
-                    onEditGroupSettings={(invoker) => editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker)}
                   />
                 {/if}
               </div>
