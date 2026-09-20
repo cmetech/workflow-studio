@@ -142,7 +142,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test Windows checkout and installer contracts
         if: runner.os == 'Windows'
-        run: npm run test:unit -- tests/project/line-ending-contract.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1
+        run: npm.cmd run test:unit -- tests/project/line-ending-contract.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1
       - name: Build Windows renderer bundle
         if: runner.os == 'Windows'
         run: npm run build

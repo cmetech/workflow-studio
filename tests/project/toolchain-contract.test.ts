@@ -35,7 +35,7 @@ const RUST_MINIMUM = '1.88.0'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const WINDOWS_RUST_COMMAND = 'cargo +1.88.0 test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1'
 const WINDOWS_INSTALLER_COMMAND =
-  'npm run test:unit -- tests/project/line-ending-contract.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
+  'npm.cmd run test:unit -- tests/project/line-ending-contract.test.ts tests/installers/install-script.test.ts --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 
 function readPackageManifest(): PackageManifest {
   return JSON.parse(readFileSync('package.json', 'utf8')) as PackageManifest
