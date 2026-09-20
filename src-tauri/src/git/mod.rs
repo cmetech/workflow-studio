@@ -1516,7 +1516,10 @@ pub(crate) fn detect_repository_metadata(
     Ok(detect_repository_context(workspace_root)?.map(|detected| detected.metadata))
 }
 
-#[tauri::command]
+// Git subprocesses and filesystem checks must not run on the window IPC thread.
+// Keep the synchronous implementations (and their authorization guards) intact;
+// Tauri's async command dispatch moves their execution off that thread.
+#[tauri::command(async)]
 pub fn git_detect(
     state: State<'_, crate::workspace::WorkspaceState>,
 ) -> GitResult<Option<GitRepository>> {
@@ -1526,7 +1529,7 @@ pub fn git_detect(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_status(
     root: String,
     state: State<'_, crate::workspace::WorkspaceState>,
@@ -1537,7 +1540,7 @@ pub fn git_status(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_diff_pair(
     root: String,
     definition_path: String,
@@ -1606,7 +1609,7 @@ pub fn git_begin_history_session(git_state: State<'_, GitState>) -> GitResult<u6
     git_state.begin_history_session()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_history_pair(
     root: String,
     definition_path: String,
@@ -1655,7 +1658,7 @@ pub fn git_dispose_history_session(
     git_state.dispose_history_session(controller_epoch)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_show_pair(
     root: String,
     oid: String,
@@ -1679,7 +1682,7 @@ pub fn git_show_pair(
     Ok(snapshot)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_init(
     root: String,
     state: State<'_, crate::workspace::WorkspaceState>,
@@ -1703,7 +1706,7 @@ pub fn git_init(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_set_local_identity(
     root: String,
     user_name: String,
@@ -1720,7 +1723,7 @@ pub fn git_set_local_identity(
     context.verify()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_create_pair_version(
     root: String,
     definition_path: String,
@@ -1760,7 +1763,7 @@ pub fn git_create_pair_version(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_is_tracked(
     root: String,
     path: String,
@@ -1775,7 +1778,7 @@ pub fn git_is_tracked(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_move_path(
     root: String,
     source: String,
@@ -1801,7 +1804,7 @@ pub struct GitMoveRequest {
     destination: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_move_paths(
     root: String,
     moves: Vec<GitMoveRequest>,
