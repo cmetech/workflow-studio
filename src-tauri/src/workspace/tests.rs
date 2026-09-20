@@ -41,6 +41,25 @@ fn assert_code<T>(result: Result<T, super::WorkspaceError>, code: &str) {
     assert_eq!(error.code, code);
 }
 
+#[test]
+fn reading_a_vanished_save_backup_reports_path_not_found() {
+    let root = tempdir().unwrap();
+    let workspace = scope(root.path());
+    let relative = ".workflow-studio-original-123-2-flow.yaml";
+    fs::write(root.path().join(relative), "name: original\n").unwrap();
+    assert_code(
+        files::read_with_bound_hook(&workspace, relative, 1024, || {
+            fs::remove_file(root.path().join(relative)).unwrap();
+        }),
+        "path_not_found",
+    );
+    fs::write(root.path().join("flow.yaml"), "name: saved\n").unwrap();
+    assert_eq!(
+        files::read(&workspace, "flow.yaml", 1024).unwrap().text,
+        "name: saved\n"
+    );
+}
+
 fn workspace_write_residue(path: &std::path::Path) -> Vec<String> {
     let mut residue = fs::read_dir(path)
         .unwrap()

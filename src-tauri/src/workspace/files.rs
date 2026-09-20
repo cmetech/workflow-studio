@@ -356,10 +356,16 @@ fn read_impl(
     require_yaml(relative)?;
     let bound = bind_path(scope, relative)?;
     bound_hook();
-    let file = bound
-        .parent
-        .open(&bound.name)
-        .map_err(|error| capability_error("workspace_read_failed", error))?;
+    let file = bound.parent.open(&bound.name).map_err(|error| {
+        // Watch notifications can outlive a removed atomic-save safety copy.
+        // Preserve the typed absence contract without swallowing other I/O errors.
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            "path_not_found"
+        } else {
+            "workspace_read_failed"
+        };
+        capability_error(code, error)
+    })?;
     let metadata = file
         .metadata()
         .map_err(|error| capability_error("workspace_read_failed", error))?;
