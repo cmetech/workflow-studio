@@ -60,7 +60,7 @@ export default defineConfig(({ mode }) => ({
     port: 1420,
     strictPort: true,
     watch: {
-      ignored: ['**/test-results*/**', '**/playwright-report/**'],
+      ignored: ['**/test-results*/**', '**/playwright-report/**', '**/src-tauri/target/**'],
     },
   },
   test: {
