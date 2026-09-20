@@ -695,18 +695,29 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   await testInfo.attach('routed-content-capacity.json', { path: contentEvidencePath, contentType: 'application/json' })
 })
 
-test('keeps capacity overview handle geometry available through Arrange', async ({ page }) => {
+test('keeps capacity overview handle geometry available through Arrange', async ({ page }, testInfo) => {
   test.setTimeout(30_000)
   const missingHandles: string[] = []
   page.on('console', (message) => {
     if (message.text().includes("Couldn't create edge for")) missingHandles.push(message.text())
   })
+  await installArrangeCapacityProbe(page)
   await openSeededPair(page, '?scenario=routed-capacity')
   await invokeArrange(page)
-  await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
-    'Graph arranged: 250 nodes and 500 dependencies.',
-    { timeout: 10_000 },
-  )
+  try {
+    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+      'Graph arranged: 250 nodes and 500 dependencies.',
+      { timeout: 10_000 },
+    )
+  } finally {
+    const diagnostic = await page.evaluate(() => ({
+      worker: window.__ARRANGE_CAPACITY__,
+      metric: (window.__WORKFLOW_STUDIO_E2E__ as unknown as { metrics(): E2EMetricSnapshot }).metrics().arrange,
+    }))
+    const diagnosticPath = testInfo.outputPath('overview-arrange.json')
+    await writeFile(diagnosticPath, JSON.stringify({ ...diagnostic, missingHandles }, null, 2))
+    await testInfo.attach('overview-arrange.json', { path: diagnosticPath, contentType: 'application/json' })
+  }
   await settleRenderer(page)
   expect(missingHandles).toEqual([])
   await expect(page.locator('.workflow-edge-overview').first()).toBeAttached()
