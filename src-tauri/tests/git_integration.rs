@@ -118,7 +118,12 @@ fn initializes_only_the_exact_requested_root_without_creating_a_commit() {
     let root = tempdir().unwrap();
     let repository = init_repository(root.path()).unwrap();
 
-    assert_eq!(Path::new(&repository.root), root.path());
+    // Windows TEMP may use an 8.3 alias while Git reports the expanded path.
+    // Compare filesystem identity, not two spellings of the same directory.
+    assert_eq!(
+        fs::canonicalize(&repository.root).unwrap(),
+        fs::canonicalize(root.path()).unwrap()
+    );
     assert!(root.path().join(".git").is_dir());
     assert!(!git(root.path(), &["rev-parse", "--verify", "HEAD"])
         .status

@@ -32,12 +32,13 @@ jobs:
       - run: npm run check
       - run: npm run contracts:check
       - run: npm run examples:check
+      # Bundle regression tests inspect the real emitted manifest, including on a clean runner.
+      - run: npm run build
       - name: Phase 3 performance and accessibility
         run: npm run test:unit -- tests/performance tests/accessibility
       - run: npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1
       - run: cargo +1.88.0 check --locked --manifest-path src-tauri/Cargo.toml
       - run: cargo +1.88.0 test --locked --manifest-path src-tauri/Cargo.toml
-      - run: npm run build
 
   renderer-e2e:
     name: Deterministic renderer E2E

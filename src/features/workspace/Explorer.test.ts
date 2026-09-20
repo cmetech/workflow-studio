@@ -246,6 +246,15 @@ describe('Explorer', () => {
     const workspaceTree = await screen.findByRole('tree', { name: 'Workspace workflows' }, deferredSurfaceWait)
     expect(await screen.findByRole('complementary', { name: 'Workspace panel' })).toContainElement(workspaceTree)
     expect(screen.getByRole('treeitem', { name: 'release.yaml, legacy workflow' })).toBeVisible()
+    // Opening a workspace also starts authoring imports. Await that work before
+    // Vitest tears down this shell integration test's environment.
+    await Promise.all([
+      import('$src/lib/forms/widget-registry'),
+      import('$src/lib/contract/scoped-dag-rule'),
+      import('$src/features/canvas/project-canvas'),
+      import('$src/lib/docs/build-index'),
+    ])
+    await tick()
   })
 
   it('preserves an active entry atomically when the same workspace scan still contains it', () => {
