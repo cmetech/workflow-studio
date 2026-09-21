@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/svelte'
+import { fireEvent, render, waitFor } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { parse } from 'yaml'
@@ -165,7 +165,9 @@ describe('[RG12] scoped canvas performance contract', () => {
     await tick()
     expect(rendered.container.querySelectorAll('.svelte-flow')).toHaveLength(1)
     expect(rendered.container.querySelector('.svelte-flow__node[data-id="root-000"]')).toBeNull()
-    expect(rendered.container.querySelector('.svelte-flow__node[data-id="body-0-000"]')).toBeTruthy()
+    await waitFor(() =>
+      expect(rendered.container.querySelector('.svelte-flow__node[data-id="body-0-000"]')).toBeTruthy(),
+    )
     expect(rendered.container.querySelector('.svelte-flow__node[data-id="body-1-000"]')).toBeNull()
     expect(metrics.snapshot()).toMatchObject({
       parseRequests: 0,
@@ -206,6 +208,7 @@ describe('[RG12] scoped canvas performance contract', () => {
       metrics.reset()
       const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
       const beforeText = fixture.definition
+      canvas.dispatchEvent(new CustomEvent('workflowdragstart', { bubbles: true }))
       for (let move = 1; move <= 1_000; move += 1) {
         canvas.dispatchEvent(
           new CustomEvent('workflowdragmove', {

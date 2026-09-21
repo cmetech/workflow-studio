@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use parse::{parse_history_records, parse_status, HistoryRecord};
+#[cfg(test)]
+pub(crate) use runner::{read_probe_count_for_test, reset_read_probe_count_for_test};
 use runner::{run_read, ReadOperation};
 
 #[derive(Debug, Serialize)]
@@ -75,6 +77,12 @@ pub(crate) struct GitRepositoryMetadata {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct DetectedRepository {
+    pub(crate) repository: GitRepository,
+    pub(crate) metadata: GitRepositoryMetadata,
+}
+
+#[derive(Clone, Debug)]
 struct GitMetadataBinding {
     metadata: GitRepositoryMetadata,
     indirection: Option<GitIndirectionBinding>,
@@ -88,13 +96,10 @@ struct GitIndirectionBinding {
 }
 
 impl GitMetadataBinding {
-    fn capture(repository_root: &Path, probe_root: &Path) -> GitResult<Self> {
-        let metadata = detect_repository_metadata(probe_root)?.ok_or_else(|| {
-            GitError::new(
-                "git_repository_unavailable",
-                "Git metadata is no longer available.",
-            )
-        })?;
+    fn capture_detected(
+        repository_root: &Path,
+        metadata: GitRepositoryMetadata,
+    ) -> GitResult<Self> {
         let indirection_path = repository_root.join(".git");
         let indirection = match fs::symlink_metadata(&indirection_path) {
             Ok(metadata) if metadata.file_type().is_file() => {
@@ -652,6 +657,15 @@ struct VersionAuthorization {
 }
 
 impl VersionAuthorization {
+    fn verify_checkpoint(&self, context: &AuthorizedGitContext) -> GitResult<()> {
+        context.verify()?;
+        // The commit routine verifies the accepted HEAD after this guard at
+        // every mutation checkpoint. Repeating it here launches two extra Git
+        // processes per checkpoint and incorrectly rejects our own new HEAD
+        // when the same workspace guard runs during post-commit refresh.
+        self.binding.verify()
+    }
+
     fn from_preview(
         context: &AuthorizedGitContext,
         definition_path: String,
@@ -765,18 +779,20 @@ impl AuthorizedGitContext {
                 "The selected workspace was replaced while Git was running.",
             )
         })?;
-        let detected = detect_repository(&workspace_root)?.ok_or_else(|| {
+        let detected = detect_repository_context(&workspace_root)?.ok_or_else(|| {
             GitError::new(
                 "git_not_repository",
                 "The selected workspace is not inside a Git repository.",
             )
         })?;
-        let repository_root = PathBuf::from(detected.root).canonicalize().map_err(|_| {
-            GitError::new(
-                "git_repository_unavailable",
-                "The detected Git repository root is no longer available.",
-            )
-        })?;
+        let repository_root = PathBuf::from(&detected.repository.root)
+            .canonicalize()
+            .map_err(|_| {
+                GitError::new(
+                    "git_repository_unavailable",
+                    "The detected Git repository root is no longer available.",
+                )
+            })?;
         let requested = requested_root.canonicalize().map_err(|_| {
             GitError::new(
                 "git_repository_unavailable",
@@ -798,7 +814,8 @@ impl AuthorizedGitContext {
                 )
             })
             .and_then(git_relative_path)?;
-        let git_metadata = GitMetadataBinding::capture(&repository_root, &workspace_root)?;
+        let git_metadata =
+            GitMetadataBinding::capture_detected(&repository_root, detected.metadata)?;
         Ok(Self {
             workspace_identity: Arc::new(Handle::from_path(&workspace_root).map_err(|_| {
                 GitError::new(
@@ -938,38 +955,123 @@ impl AuthorizedGitContext {
 }
 
 pub(crate) fn detect_repository(workspace_root: &Path) -> GitResult<Option<GitRepository>> {
-    let root_output = run_read(workspace_root, ReadOperation::RepositoryRoot)?;
-    if !root_output.success() {
-        if root_output.stderr_text().contains("not a git repository") {
-            return Ok(None);
-        }
-        return Err(command_error("git_detect_failed", &root_output));
+    Ok(detect_repository_context(workspace_root)?.map(|detected| detected.repository))
+}
+
+pub(crate) fn detect_repository_context(
+    workspace_root: &Path,
+) -> GitResult<Option<DetectedRepository>> {
+    let output = run_read(workspace_root, ReadOperation::RepositoryContext)?;
+    if !output.success() && output.stderr_text().contains("not a git repository") {
+        return Ok(None);
     }
-    let root_text = output_text(&root_output.stdout)?;
-    let root = Path::new(root_text.trim()).canonicalize().map_err(|_| {
+    let text = output_text(&output.stdout)?;
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.len() != 4 {
+        if !output.success() {
+            return Err(command_error("git_detect_failed", &output));
+        }
+        return Err(GitError::new(
+            "git_output_invalid",
+            "Git repository discovery returned an unexpected response.",
+        ));
+    }
+    let root = Path::new(lines[0]).canonicalize().map_err(|_| {
         GitError::new(
             "git_repository_unavailable",
             "The detected Git repository root is no longer available.",
         )
     })?;
-    let branch_output = run_read(&root, ReadOperation::Branch)?;
-    let (branch, detached_head) = if branch_output.success() {
-        (
-            Some(output_text(&branch_output.stdout)?.trim().to_owned()),
-            None,
-        )
-    } else {
+    let worktree_dir = canonical_git_metadata_path(lines[1])?;
+    let common_dir = canonical_git_metadata_path(lines[2])?;
+    let head_name = lines[3].trim();
+    let (branch, detached_head) = if head_name != "HEAD" {
+        if !output.success() {
+            return Err(command_error("git_detect_failed", &output));
+        }
+        (Some(head_name.to_owned()), None)
+    } else if output.success() {
         let head = run_read(&root, ReadOperation::ShortHead)?;
         if !head.success() {
             return Err(command_error("git_head_unavailable", &head));
         }
         (None, Some(output_text(&head.stdout)?.trim().to_owned()))
+    } else {
+        (Some(read_unborn_branch(&worktree_dir)?), None)
     };
-    Ok(Some(GitRepository {
-        root: root.to_string_lossy().into_owned(),
-        branch,
-        detached_head,
+    let public_root = crate::platform_paths::public_path(&root).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "The detected Git repository root cannot be represented safely.",
+        )
+    })?;
+    let public_root = public_root.to_str().ok_or_else(|| {
+        GitError::new(
+            "git_repository_unavailable",
+            "The detected Git repository root is not valid Unicode.",
+        )
+    })?;
+    let worktree_identity = Arc::new(Handle::from_path(&worktree_dir).map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "Git worktree metadata is no longer available.",
+        )
+    })?);
+    let common_identity = if worktree_dir == common_dir {
+        Arc::clone(&worktree_identity)
+    } else {
+        Arc::new(Handle::from_path(&common_dir).map_err(|_| {
+            GitError::new(
+                "git_repository_unavailable",
+                "Git common metadata is no longer available.",
+            )
+        })?)
+    };
+    Ok(Some(DetectedRepository {
+        repository: GitRepository {
+            root: public_root.to_owned(),
+            branch,
+            detached_head,
+        },
+        metadata: GitRepositoryMetadata {
+            worktree_dir,
+            common_dir,
+            worktree_identity,
+            common_identity,
+        },
     }))
+}
+
+fn canonical_git_metadata_path(value: &str) -> GitResult<PathBuf> {
+    PathBuf::from(value.trim()).canonicalize().map_err(|_| {
+        GitError::new(
+            "git_repository_unavailable",
+            "Git metadata is no longer available.",
+        )
+    })
+}
+
+fn read_unborn_branch(worktree_dir: &Path) -> GitResult<String> {
+    let content = fs::read(worktree_dir.join("HEAD")).map_err(|_| {
+        GitError::new(
+            "git_head_unavailable",
+            "The repository HEAD is unavailable.",
+        )
+    })?;
+    if content.len() > 1024 {
+        return Err(GitError::new(
+            "git_head_unavailable",
+            "The repository HEAD is invalid.",
+        ));
+    }
+    let content = std::str::from_utf8(&content)
+        .map_err(|_| GitError::new("git_head_unavailable", "The repository HEAD is invalid."))?;
+    content
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| GitError::new("git_head_unavailable", "The repository HEAD is invalid."))
 }
 
 pub(crate) fn status(root: &Path) -> GitResult<GitStatus> {
@@ -1420,50 +1522,13 @@ pub(crate) fn authorize_repository_root(
 pub(crate) fn detect_repository_metadata(
     workspace_root: &Path,
 ) -> GitResult<Option<GitRepositoryMetadata>> {
-    if detect_repository(workspace_root)?.is_none() {
-        return Ok(None);
-    }
-    let worktree_output = run_read(workspace_root, ReadOperation::GitDirectory)?;
-    ensure_success("git_detect_failed", &worktree_output)?;
-    let common_output = run_read(workspace_root, ReadOperation::GitCommonDirectory)?;
-    ensure_success("git_detect_failed", &common_output)?;
-    let canonical = |bytes: &[u8]| {
-        PathBuf::from(output_text(bytes)?.trim())
-            .canonicalize()
-            .map_err(|_| {
-                GitError::new(
-                    "git_repository_unavailable",
-                    "Git metadata is no longer available.",
-                )
-            })
-    };
-    let worktree_dir = canonical(&worktree_output.stdout)?;
-    let common_dir = canonical(&common_output.stdout)?;
-    let worktree_identity = Arc::new(Handle::from_path(&worktree_dir).map_err(|_| {
-        GitError::new(
-            "git_repository_unavailable",
-            "Git worktree metadata is no longer available.",
-        )
-    })?);
-    let common_identity = if worktree_dir == common_dir {
-        Arc::clone(&worktree_identity)
-    } else {
-        Arc::new(Handle::from_path(&common_dir).map_err(|_| {
-            GitError::new(
-                "git_repository_unavailable",
-                "Git common metadata is no longer available.",
-            )
-        })?)
-    };
-    Ok(Some(GitRepositoryMetadata {
-        worktree_dir,
-        common_dir,
-        worktree_identity,
-        common_identity,
-    }))
+    Ok(detect_repository_context(workspace_root)?.map(|detected| detected.metadata))
 }
 
-#[tauri::command]
+// Git subprocesses and filesystem checks must not run on the window IPC thread.
+// Keep the synchronous implementations (and their authorization guards) intact;
+// Tauri's async command dispatch moves their execution off that thread.
+#[tauri::command(async)]
 pub fn git_detect(
     state: State<'_, crate::workspace::WorkspaceState>,
 ) -> GitResult<Option<GitRepository>> {
@@ -1473,7 +1538,7 @@ pub fn git_detect(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_status(
     root: String,
     state: State<'_, crate::workspace::WorkspaceState>,
@@ -1484,7 +1549,7 @@ pub fn git_status(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_diff_pair(
     root: String,
     definition_path: String,
@@ -1553,7 +1618,7 @@ pub fn git_begin_history_session(git_state: State<'_, GitState>) -> GitResult<u6
     git_state.begin_history_session()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_history_pair(
     root: String,
     definition_path: String,
@@ -1602,7 +1667,7 @@ pub fn git_dispose_history_session(
     git_state.dispose_history_session(controller_epoch)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_show_pair(
     root: String,
     oid: String,
@@ -1626,7 +1691,7 @@ pub fn git_show_pair(
     Ok(snapshot)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_init(
     root: String,
     state: State<'_, crate::workspace::WorkspaceState>,
@@ -1650,7 +1715,7 @@ pub fn git_init(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_set_local_identity(
     root: String,
     user_name: String,
@@ -1667,7 +1732,7 @@ pub fn git_set_local_identity(
     context.verify()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_create_pair_version(
     root: String,
     definition_path: String,
@@ -1700,14 +1765,12 @@ pub fn git_create_pair_version(
         &message,
         || {
             verify_workspace_binding(&state, &binding)?;
-            context.verify()?;
-            authorization.binding.verify()?;
-            authorization.base.verify(&context.repository_root)
+            authorization.verify_checkpoint(&context)
         },
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_is_tracked(
     root: String,
     path: String,
@@ -1722,7 +1785,7 @@ pub fn git_is_tracked(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_move_path(
     root: String,
     source: String,
@@ -1748,7 +1811,7 @@ pub struct GitMoveRequest {
     destination: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_move_paths(
     root: String,
     moves: Vec<GitMoveRequest>,

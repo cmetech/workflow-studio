@@ -196,6 +196,13 @@ describe('schema-driven widget registry', () => {
     }
   })
 
+  it('reuses immutable field inventories for repeated selection-driven lookups', () => {
+    const current = contract()
+
+    expect(collectContractFields(current)).toBe(collectContractFields(current))
+    expect(fieldsForNode(current, 'prompt')).toBe(fieldsForNode(current, 'prompt'))
+  })
+
   it('normalizes requiredness, explicit defaults, constraints, units, and path templates from schema annotations', () => {
     const fields = collectContractFields(contract())
 

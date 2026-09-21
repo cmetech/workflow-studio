@@ -738,6 +738,14 @@ impl AppDataScope {
         self: &Arc<Self>,
         current: Option<&OsStr>,
     ) -> SetupResult<Vec<SavedSetupLog>> {
+        self.prune_setup_logs_with_current_size(current, None)
+    }
+
+    fn prune_setup_logs_with_current_size(
+        self: &Arc<Self>,
+        current: Option<&OsStr>,
+        current_size: Option<u64>,
+    ) -> SetupResult<Vec<SavedSetupLog>> {
         self.verify()?;
         let mut logs = Vec::new();
         let mut removed = false;
@@ -768,7 +776,12 @@ impl AppDataScope {
             let metadata = entry
                 .metadata()
                 .map_err(|error| io_error("setup_log_prune_failed", error))?;
-            if metadata.len() > MAX_LOG_BYTES as u64 {
+            let bytes = if current == Some(name.as_os_str()) {
+                metadata.len().max(current_size.unwrap_or_default())
+            } else {
+                metadata.len()
+            };
+            if bytes > MAX_LOG_BYTES as u64 {
                 entry
                     .remove_file()
                     .map_err(|error| io_error("setup_log_prune_failed", error))?;
@@ -787,7 +800,7 @@ impl AppDataScope {
             }
             logs.push((
                 name.clone(),
-                metadata.len(),
+                bytes,
                 SavedSetupLog {
                     scope: self.clone(),
                     name,
@@ -927,7 +940,10 @@ impl BoundedSetupLog {
         while self.lines.len() > MAX_RENDERER_LINES {
             self.lines.pop_front();
         }
-        self.saved.scope.prune_setup_logs(Some(&self.saved.name))?;
+        self.saved.scope.prune_setup_logs_with_current_size(
+            Some(&self.saved.name),
+            Some(self.persisted_bytes as u64),
+        )?;
         self.saved.validate_for_open()?;
         Ok(line)
     }

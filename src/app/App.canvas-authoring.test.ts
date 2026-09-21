@@ -13,6 +13,9 @@ import { tick } from 'svelte'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import { editDocumentText } from '$src/lib/documents/revisions'
+import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
+
+const deferredSurfaceWait = { timeout: 20_000 }
 
 const nativeWindow = vi.hoisted(() => ({
   unlistenClose: vi.fn(),
@@ -210,7 +213,31 @@ const contract: AuthoringContract = {
     },
   ],
   compatibility_codes: {},
-  documentation: { topics: [{ field_paths: ['name', 'description', 'nodes'] } as never], examples: [] },
+  documentation: {
+    topics: [
+      {
+        id: 'fixture-authoring-fields',
+        title: 'Fixture authoring fields',
+        description: 'Documents every field exercised by the canvas authoring fixture.',
+        body: 'Use these fields to author the fixture workflow.',
+        field_paths: [
+          'name',
+          'description',
+          'nodes[].id',
+          'nodes[].depends_on',
+          'nodes[].command',
+          'nodes[].prompt',
+          'nodes[].retry',
+          'nodes[].retry.max_attempts',
+          'nodes[].agents',
+          'nodes[].agents.*.description',
+        ],
+        applicability: { profiles: ['hermes-legacy'], documents: ['definition'] },
+        examples: ['name: Flow\nnodes: []\n'],
+      },
+    ],
+    examples: [],
+  },
   limits: { max_document_bytes: 2 * 1024 * 1024 },
   extensions: {},
 }
@@ -437,12 +464,14 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
   const rendered = options.commandSurface
     ? render(App, { props: { commandSurface: options.commandSurface } } as never)
     : render(App)
-  await screen.findByRole('region', { name: 'Workflow graph' })
+  await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
   await waitFor(() =>
     expect(
       screen.getAllByRole('button', { name: 'New Workflow' }).every((button) => !button.hasAttribute('disabled')),
     ).toBe(true),
   )
+  const activeContract = options.scopeContract ?? contract
+  expect(validateContractFormCoverage(activeContract)).toEqual([])
   await waitFor(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F1', bubbles: true }))
     expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
@@ -693,7 +722,7 @@ describe('App canvas authoring composition', () => {
     await fireEvent.focusIn(screen.getByRole('textbox', { name: /until bash/i }))
     await waitFor(() => expect(currentTokens()).toEqual(['$prepare.output', '$child.output']))
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Back to root workflow' }, deferredSurfaceWait))
     await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveFocus())
     const moreActions = screen.getByRole('button', { name: 'More canvas actions' })
     moreActions.focus()
@@ -831,7 +860,7 @@ describe('App canvas authoring composition', () => {
 
     expect(await screen.findByText(/this loop body is preserved.*yaml-only.*250 nodes.*500 edges/i)).toBeVisible()
     expect(rendered.container.querySelector('.svelte-flow')).toBeNull()
-    await fireEvent.click(screen.getByRole('button', { name: 'Back to root workflow' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Back to root workflow' }, deferredSurfaceWait))
     await waitFor(() => expect(rendered.container.querySelector('.svelte-flow')).toBeVisible())
     rendered.unmount()
   })
@@ -849,7 +878,7 @@ describe('App canvas authoring composition', () => {
       companionText: 'language_compatibility: archon-2026-07\n',
     })
     await fireEvent.click(screen.getByRole('button', { name: 'Open loop body' }))
-    const canvas = await screen.findByRole('region', { name: 'Workflow graph' })
+    const canvas = await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
     setCanvasSelection(['child'])
     canvas.focus()
 
@@ -862,8 +891,9 @@ describe('App canvas authoring composition', () => {
     expect($canvasSelection.get()).toEqual(['child'])
 
     await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
-    expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
-    await fireEvent.keyDown(screen.getByRole('dialog', { name: 'Add node' }), { key: 'Escape' })
+    const addNodeDialog = await screen.findByRole('dialog', { name: 'Add node' }, deferredSurfaceWait)
+    expect(addNodeDialog).toBeVisible()
+    await fireEvent.keyDown(addNodeDialog, { key: 'Escape' })
     expect(activeLayoutStore.get()?.activeScopeKey).toBe('loop-group:repeat')
     expect(screen.queryByRole('dialog', { name: 'Add node' })).not.toBeInTheDocument()
 
@@ -1009,7 +1039,7 @@ describe('App canvas authoring composition', () => {
     expect($documentSession.get().pair?.definition.text).toBe(authored)
     expect($documentSession.get().analysis?.structurallyValid).toBe(false)
     await fireEvent.click(screen.getByRole('button', { name: 'Add First Node' }))
-    expect(screen.getByRole('dialog', { name: 'Add node' })).toBeVisible()
+    expect(await screen.findByRole('dialog', { name: 'Add node' }, deferredSurfaceWait)).toBeVisible()
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(
       ['Command', 'Prompt', 'Bash', 'Script', 'Loop', 'Approval', 'Cancel'].map((label) =>
         expect.stringContaining(label),
@@ -1086,7 +1116,7 @@ describe('App canvas authoring composition', () => {
   it('adds, connects, and duplicates through the production YAML transaction path', async () => {
     let rendered = await renderAuthoringApp()
     await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
-    await fireEvent.click(screen.getByRole('option', { name: /command/i }))
+    await fireEvent.click(await screen.findByRole('option', { name: /command/i }, deferredSurfaceWait))
     await waitFor(() => expect($documentSession.get().pair?.definition.text).toContain('id: command'))
     expect(historyStore.get().undo).toHaveLength(1)
     rendered.unmount()
@@ -1190,7 +1220,7 @@ describe('App canvas authoring composition', () => {
 
     try {
       await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
-      await fireEvent.click(screen.getByRole('option', { name: /command/i }))
+      await fireEvent.click(await screen.findByRole('option', { name: /command/i }, deferredSurfaceWait))
       await waitFor(() => expect(ControlledDocumentWorker.pending.length).toBeGreaterThan(0))
       expect(replaced).toBe(false)
       await ControlledDocumentWorker.releaseAll()
@@ -1266,7 +1296,7 @@ describe('App canvas authoring composition', () => {
 
     try {
       await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
-      await fireEvent.click(screen.getByRole('option', { name: /command/i }))
+      await fireEvent.click(await screen.findByRole('option', { name: /command/i }, deferredSurfaceWait))
       await waitFor(() => expect(ControlledDocumentWorker.pending.length).toBeGreaterThan(0))
       showEditorMode('split')
       setActiveLayout(concurrentLayout)
@@ -1447,15 +1477,19 @@ describe('App canvas authoring composition', () => {
     })
     await waitFor(() => expect(screen.queryByText(/delete incomplete nodes.*inspector/i)).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add Node' })).toBeEnabled())
+    expect(screen.getByRole('textbox', { name: 'Command' })).toBeEnabled()
 
+    const repairedCanvas = screen.getByRole('region', { name: 'Workflow graph' })
     await fireEvent(
-      canvas,
+      repairedCanvas,
       new CustomEvent('workflowconnect', { bubbles: true, detail: { source: 'collect', target: 'command' } }),
     )
-    await waitFor(() =>
-      expect($documentSession.get().pair?.definition.text).toContain(
-        '  - id: command\n    command: "/review"\n    depends_on:\n      - collect\n',
-      ),
+    await waitFor(
+      () =>
+        expect($documentSession.get().pair?.definition.text).toContain(
+          '  - id: command\n    command: "/review"\n    depends_on:\n      - collect\n',
+        ),
+      deferredSurfaceWait,
     )
     expect(historyStore.get().undo).toHaveLength(2)
     rendered.unmount()
@@ -1650,14 +1684,14 @@ describe('App canvas authoring composition', () => {
     })
     const yamlMode = screen.getByRole('button', { name: 'YAML' })
     await fireEvent.click(yamlMode)
+    const definitionPanel = await screen.findByRole('tabpanel', { name: 'Definition YAML' }, deferredSurfaceWait)
     await fireEvent.keyDown(yamlMode, { key: 'f', ctrlKey: true })
-    const definitionPanel = screen.getByRole('tabpanel', { name: 'Definition YAML' })
-    await waitFor(() => expect(definitionPanel.querySelector('.cm-search')).not.toBeNull())
+    await waitFor(() => expect(definitionPanel.querySelector('.cm-search')).not.toBeNull(), deferredSurfaceWait)
 
     await fireEvent.click(screen.getByRole('tab', { name: 'Companion YAML' }))
+    const companionPanel = await screen.findByRole('tabpanel', { name: 'Companion YAML' }, deferredSurfaceWait)
     await fireEvent.keyDown(yamlMode, { key: 'f', ctrlKey: true })
-    const companionPanel = screen.getByRole('tabpanel', { name: 'Companion YAML' })
-    await waitFor(() => expect(companionPanel.querySelector('.cm-search')).not.toBeNull())
+    await waitFor(() => expect(companionPanel.querySelector('.cm-search')).not.toBeNull(), deferredSurfaceWait)
 
     await fireEvent.click(screen.getByRole('button', { name: 'Visual' }))
     const canvas = screen.getByRole('region', { name: 'Workflow graph' })
@@ -1848,8 +1882,16 @@ describe('App canvas authoring composition', () => {
       await waitFor(() =>
         expect(screen.queryByRole('dialog', { name: 'Setting up LOOP24 Workflow Studio' })).not.toBeInTheDocument(),
       )
-      await fireEvent.click(screen.getByRole('treeitem', { name: /flow.yaml/i }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /flow.yaml/i }, deferredSurfaceWait))
       await waitFor(() => expect($documentSession.get().pair?.definition.path).toBe('flow.yaml'))
+      await waitFor(
+        () =>
+          expect(
+            workers.flatMap(({ messages }) => messages).some((message) => message.type === 'contract-register'),
+          ).toBe(true),
+        deferredSurfaceWait,
+      )
+      await tick()
       const pair = $documentSession.get().pair!
       const before = pair.definition.text
       await fireEvent.keyDown(window, { key: 'F1' })
@@ -1857,17 +1899,19 @@ describe('App canvas authoring composition', () => {
       await fireEvent.input(search, { target: { value: 'Validate Workflow' } })
       await fireEvent.keyDown(search, { key: 'Enter' })
 
-      await waitFor(() =>
-        expect(
-          workers
-            .flatMap(({ messages }) => messages)
-            .find((message) => message.type === 'analyze' && message.reason === 'explicit-validate'),
-        ).toMatchObject({
-          type: 'analyze',
-          workflowId: pair.workflowId,
-          definition: { path: pair.definition.path, text: before, revision: pair.definition.revision },
-          reason: 'explicit-validate',
-        }),
+      await waitFor(
+        () =>
+          expect(
+            workers
+              .flatMap(({ messages }) => messages)
+              .find((message) => message.type === 'analyze' && message.reason === 'explicit-validate'),
+          ).toMatchObject({
+            type: 'analyze',
+            workflowId: pair.workflowId,
+            definition: { path: pair.definition.path, text: before, revision: pair.definition.revision },
+            reason: 'explicit-validate',
+          }),
+        deferredSurfaceWait,
       )
       expect(screen.getByRole('alert')).toHaveTextContent('Validation scheduled for the current workflow.')
       expect($documentSession.get().pair!.definition.text).toBe(before)
@@ -2091,9 +2135,13 @@ describe('App canvas authoring composition', () => {
     expect(historyStore.get().undo).toHaveLength(1)
 
     await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
-    expect(await screen.findByRole('textbox', { name: /agents reviewer description.*required/i })).toHaveValue(
-      'Review the result.',
+    expect(screen.getByRole('tab', { name: 'Advanced' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('region', { name: 'Workflow inspector' }).querySelector('header strong')).toHaveTextContent(
+      'review',
     )
+    expect(
+      await screen.findByRole('textbox', { name: /agents reviewer description.*required/i }, deferredSurfaceWait),
+    ).toHaveValue('Review the result.')
     rendered.unmount()
   })
 

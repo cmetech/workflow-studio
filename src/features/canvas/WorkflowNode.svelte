@@ -3,9 +3,11 @@
   import { getContext } from 'svelte'
   import {
     CANVAS_INSPECTOR_RELATIONSHIP,
+    CANVAS_RENDER_DENSITY_RELATIONSHIP,
     CANVAS_SCOPE_RELATIONSHIP,
     type CanvasInspectorRelationship,
     type CanvasNodeData,
+    type CanvasRenderDensityRelationship,
     type CanvasScopeRelationship,
   } from './types'
 
@@ -16,9 +18,14 @@
   }: { data: CanvasNodeData; selected?: boolean; isConnectable?: boolean } = $props()
 
   const inspectorRelationship = getContext<CanvasInspectorRelationship | undefined>(CANVAS_INSPECTOR_RELATIONSHIP)
+  const renderDensityRelationship = getContext<CanvasRenderDensityRelationship | undefined>(
+    CANVAS_RENDER_DENSITY_RELATIONSHIP,
+  )
   const scopeRelationship = getContext<CanvasScopeRelationship | undefined>(CANVAS_SCOPE_RELATIONSHIP)
   const inspectorControls = $derived(inspectorRelationship?.controls())
   const inspectorExpanded = $derived(Boolean(selected && inspectorRelationship?.expanded()))
+  const overview = $derived(Boolean(renderDensityRelationship?.overview()))
+  const portsVisible = $derived(renderDensityRelationship?.portsVisible() ?? true)
 </script>
 
 <article
@@ -28,26 +35,36 @@
   class:read-only={data.readOnly}
   class:edge-emphasized={data.edgeEmphasized}
   class:edges-deemphasized={data.edgesDeemphasized}
+  class:overview
   data-node-id={data.id}
   aria-label={data.accessibleLabel}
 >
-  <Handle
-    id="dependency-in"
-    type="target"
-    position={Position.Left}
-    class="workflow-port"
-    style="width: 32px; height: 32px;"
-    data-port="input"
-    role={undefined}
-    aria-label={`Dependencies entering ${data.id}`}
-    aria-disabled={data.readOnly}
-    title={`Dependencies entering ${data.id}`}
-    isConnectable={isConnectable && !data.readOnly}
-  />
+  {#if portsVisible}
+    <Handle
+      id="dependency-in"
+      type="target"
+      position={Position.Left}
+      class="workflow-port"
+      style="width: 32px; height: 32px;"
+      data-port="input"
+      role={undefined}
+      aria-label={`Dependencies entering ${data.id}`}
+      aria-disabled={data.readOnly}
+      title={`Dependencies entering ${data.id}`}
+      isConnectable={isConnectable && !data.readOnly}
+    />
+  {:else}
+    <div
+      class="svelte-flow__handle svelte-flow__handle-left target geometry-handle"
+      data-handleid="dependency-in"
+      data-handlepos="left"
+      aria-hidden="true"
+    ></div>
+  {/if}
   <header>
     <strong>{data.id}</strong>
     <span class="kind">{data.kind || 'unknown'}</span>
-    {#if inspectorControls && inspectorRelationship}
+    {#if !overview && inspectorControls && inspectorRelationship}
       <button
         type="button"
         class="inspector-trigger nodrag nopan"
@@ -61,7 +78,21 @@
       >
     {/if}
   </header>
-  {#if data.compound}
+  {#if overview && data.compound && scopeRelationship}
+    <button
+      type="button"
+      class="open-body nodrag nopan"
+      onpointerdown={(event) => event.stopPropagation()}
+      onclick={(event) => {
+        event.stopPropagation()
+        scopeRelationship.openLoopGroup(data.id, event.currentTarget)
+      }}
+      onkeydown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
+      }}>Open loop body</button
+    >
+  {/if}
+  {#if !overview && data.compound}
     <div class="compound-summary" aria-label="Loop group summary">
       <span>{data.compound.bodyNodeCount} body node{data.compound.bodyNodeCount === 1 ? '' : 's'}</span>
       {#if data.compound.maxIterations !== undefined}<span>Maximum {data.compound.maxIterations} iterations</span>{/if}
@@ -71,16 +102,20 @@
       <button
         type="button"
         class="open-body nodrag nopan"
-        onclick={(event) => scopeRelationship.openLoopGroup(data.id, event.currentTarget)}
+        onpointerdown={(event) => event.stopPropagation()}
+        onclick={(event) => {
+          event.stopPropagation()
+          scopeRelationship.openLoopGroup(data.id, event.currentTarget)
+        }}
         onkeydown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
         }}>Open loop body</button
       >
     {/if}
-  {:else}
+  {:else if !overview}
     <p title={data.summary}>{data.summary || 'No summary'}</p>
   {/if}
-  {#if data.errorCount > 0 || data.requiredIssueCount > 0}
+  {#if !overview && (data.errorCount > 0 || data.requiredIssueCount > 0)}
     <footer aria-label="Node issues">
       {#if data.requiredIssueCount > 0}
         <span class="badge required">{data.requiredIssueCount} required</span>
@@ -90,22 +125,40 @@
       {/if}
     </footer>
   {/if}
-  <Handle
-    id="dependency-out"
-    type="source"
-    position={Position.Right}
-    class="workflow-port"
-    style="width: 32px; height: 32px;"
-    data-port="output"
-    role={undefined}
-    aria-label={`Dependencies leaving ${data.id}`}
-    aria-disabled={data.readOnly}
-    title={`Dependencies leaving ${data.id}`}
-    isConnectable={isConnectable && !data.readOnly}
-  />
+  {#if portsVisible}
+    <Handle
+      id="dependency-out"
+      type="source"
+      position={Position.Right}
+      class="workflow-port"
+      style="width: 32px; height: 32px;"
+      data-port="output"
+      role={undefined}
+      aria-label={`Dependencies leaving ${data.id}`}
+      aria-disabled={data.readOnly}
+      title={`Dependencies leaving ${data.id}`}
+      isConnectable={isConnectable && !data.readOnly}
+    />
+  {:else}
+    <div
+      class="svelte-flow__handle svelte-flow__handle-right source geometry-handle"
+      data-handleid="dependency-out"
+      data-handlepos="right"
+      aria-hidden="true"
+    ></div>
+  {/if}
 </article>
 
 <style>
+  /* Keep measurable anchors for edge placement without mounting interactive
+     Handle components in overview mode. display:none would erase their bounds. */
+  .geometry-handle {
+    width: 32px;
+    height: 32px;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   .workflow-node {
     position: relative;
     width: 13.5rem;

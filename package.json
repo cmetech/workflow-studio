@@ -1,7 +1,7 @@
 {
   "name": "workflow-studio",
   "private": true,
-  "version": "3.0.1",
+  "version": "3.0.2",
   "type": "module",
   "engines": {
     "node": ">=22.13.0",
@@ -26,7 +26,10 @@
     "test:watch": "vitest",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "playwright test",
+    "test:e2e:functional:windows": "playwright test --project=chromium --grep-invert @reference-performance",
+    "test:e2e:performance:windows": "playwright test --project=chromium --grep @reference-performance",
     "test:e2e:headed": "playwright test --headed",
+    "bundle:check": "node scripts/check-bundle-budget.mjs dist/.vite/manifest.json",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -44,7 +47,7 @@
     "@xyflow/svelte": "1.6.2",
     "ajv": "8.20.0",
     "codemirror": "6.0.2",
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.15",
     "elkjs": "0.12.0",
     "fast-png": "8.0.0",
     "lucide-svelte": "1.0.1",
@@ -73,6 +76,6 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0",
     "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

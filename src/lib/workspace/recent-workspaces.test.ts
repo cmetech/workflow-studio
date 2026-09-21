@@ -2,6 +2,47 @@ import { describe, expect, it, vi } from 'vitest'
 import { createRecentWorkspaceStore } from './recent-workspaces'
 
 describe('recent workspace storage', () => {
+  it('migrates prefixed Windows roots to one public record with the newest timestamp', async () => {
+    const publicRoot = String.raw`C:\Work\flows`
+    const prefixedRoot = String.raw`\\?\C:\Work\flows`
+    const checked: string[] = []
+    const store = createRecentWorkspaceStore({
+      load: async () =>
+        JSON.stringify([
+          { rootPath: publicRoot, lastOpenedAt: '2026-09-14T12:00:00.000Z' },
+          { rootPath: prefixedRoot, lastOpenedAt: '2026-09-14T13:00:00.000Z' },
+        ]),
+      save: async () => undefined,
+      isAvailable: async (rootPath) => {
+        checked.push(rootPath)
+        return true
+      },
+    })
+
+    await expect(store.list()).resolves.toEqual([
+      { rootPath: publicRoot, lastOpenedAt: '2026-09-14T13:00:00.000Z', available: true },
+    ])
+    expect(checked).toEqual([publicRoot])
+  })
+
+  it('normalizes Windows roots before serializing recent records', async () => {
+    let persisted = '[]'
+    const store = createRecentWorkspaceStore({
+      load: async () => persisted,
+      save: async (content) => {
+        persisted = content
+      },
+      isAvailable: async () => true,
+    })
+
+    await store.record(String.raw`\\?\C:\Work\flows`, '2026-09-14T13:00:00.000Z')
+
+    expect(JSON.parse(persisted)).toEqual([
+      { rootPath: String.raw`C:\Work\flows`, lastOpenedAt: '2026-09-14T13:00:00.000Z' },
+    ])
+    expect(persisted).not.toContain('\\\\?\\')
+  })
+
   it('deduplicates canonical roots, keeps the newest timestamp, marks unavailable roots, and caps persistence at 20', async () => {
     let persisted = ''
     const store = createRecentWorkspaceStore({

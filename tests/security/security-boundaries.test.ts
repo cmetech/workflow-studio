@@ -69,7 +69,9 @@ describe('release security boundaries', () => {
     const contractRunner = readFileSync('src-tauri/src/contracts.rs', 'utf8')
     expect(contractRunner).toContain('.remove(path)')
     expect(contractRunner).toContain('verify_granted(')
-    expect(contractRunner).toContain('.args([\n            "workflow",\n            "schema",')
+    expect(contractRunner).toMatch(
+      /\.args\(\[\s*"workflow",\s*"schema",\s*"--profile",\s*profile\.as_str\(\),\s*"--json",\s*\]\)/,
+    )
     expect(contractRunner).not.toMatch(/\.args\(request|\.args\(args|shell\s*=|sh -c|cmd \/c/i)
   })
 
@@ -83,9 +85,7 @@ describe('release security boundaries', () => {
 
     expect(enumVariants(gitRunner, 'ReadOperation')).toEqual([
       'Version',
-      'RepositoryRoot',
-      'GitDirectory',
-      'GitCommonDirectory',
+      'RepositoryContext',
       'Branch',
       'HeadReference',
       'ShortHead',
@@ -122,7 +122,7 @@ describe('release security boundaries', () => {
     )
     const approvedMappings = [
       'ReadOperation::Version => strings(&["--version"])',
-      'ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"])',
+      'ReadOperation::RepositoryContext => strings(&[',
       'ReadOperation::Status => {',
       'ReadOperation::HeadDiff { base, paths } => {',
       'ReadOperation::History { follow, paths } => {',

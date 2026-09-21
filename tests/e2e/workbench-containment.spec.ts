@@ -126,7 +126,7 @@ test('keeps Git, version, and the accent picker reachable while narrow status de
 
   const status = page.locator('footer.status-bar[aria-label="Application status"]')
   await expect(status.getByText('Git: no workspace')).toBeVisible()
-  await expect(status.getByText('Version: 3.0.1')).toBeVisible()
+  await expect(status.getByText('Version: 3.0.2')).toBeVisible()
   const accentPicker = status.getByRole('button', { name: 'Choose custom accent' })
   await expect(accentPicker).toBeVisible()
   await accentPicker.click()
@@ -255,7 +255,7 @@ test('many contracts and brand packs retain a reachable final action at every ap
       await advancedBrandPacks.click()
     }
     const brandActions = page.getByRole('list', { name: 'Available brand packs' }).getByRole('button')
-    expect(await brandActions.count()).toBeGreaterThanOrEqual(37)
+    await expect.poll(() => brandActions.count()).toBeGreaterThanOrEqual(37)
     const lastBrandAction = brandActions.last()
     await lastBrandAction.scrollIntoViewIfNeeded()
     await expect(lastBrandAction).toBeVisible()
@@ -263,7 +263,7 @@ test('many contracts and brand packs retain a reachable final action at every ap
 
     await page.getByRole('tab', { name: 'Workflow Contracts' }).click()
     const contracts = page.getByRole('list', { name: 'Available contracts' }).getByRole('listitem')
-    expect(await contracts.count()).toBeGreaterThanOrEqual(14)
+    await expect.poll(() => contracts.count()).toBeGreaterThanOrEqual(14)
     const lastContractAction = contracts.last().getByRole('button', { name: /^Remove / })
     await lastContractAction.scrollIntoViewIfNeeded()
     await expect(lastContractAction).toBeVisible()
@@ -315,7 +315,15 @@ test('Inspector and Problems keep their final controls reachable inside the boun
   const inspectorBody = inspector.locator('[data-scroll-owner="inspector"]')
   expect(await inspectorBody.locator('button, input, textarea, select').count()).toBeGreaterThanOrEqual(12)
   const finalInspectorControl = inspectorBody.locator('button, input, textarea, select').last()
-  await finalInspectorControl.scrollIntoViewIfNeeded()
+  await inspectorBody.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await expect
+    .poll(async () => {
+      const [body, control] = await Promise.all([inspectorBody.boundingBox(), finalInspectorControl.boundingBox()])
+      return Boolean(body && control && control.y >= body.y && control.y + control.height <= body.y + body.height)
+    })
+    .toBe(true)
   await finalInspectorControl.focus()
   await expect(finalInspectorControl).toBeFocused()
 

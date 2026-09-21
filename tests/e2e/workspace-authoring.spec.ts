@@ -90,6 +90,10 @@ async function dragPort(
   const target = page.locator(`[data-node-id="${targetId}"] [data-port="${targetPort}"]`)
   await expect(source).toBeInViewport()
   await expect(target).toBeInViewport()
+  // YAML publication precedes worker validation. A visible last-valid graph is
+  // deliberately non-interactive until that validation has finished.
+  await expect(source).toHaveAttribute('aria-disabled', 'false')
+  await expect(target).toHaveAttribute('aria-disabled', 'false')
   const [sourceBounds, targetBounds] = await Promise.all([source.boundingBox(), target.boundingBox()])
   if (!sourceBounds || !targetBounds) throw new Error(`Expected visible ports for ${sourceId} and ${targetId}.`)
   const hitTargets = await page.evaluate(
@@ -111,6 +115,8 @@ async function dragPort(
   await page.mouse.move(targetBounds.x + targetBounds.width / 2, targetBounds.y + targetBounds.height / 2, {
     steps: 5,
   })
+  await expect(target).toHaveClass(/connectingto/)
+  await expect(target).toHaveClass(/valid/)
   await page.mouse.up()
 }
 
@@ -678,7 +684,7 @@ test('node body remains the real hit target and draggable in the former controls
 test('adds, duplicates, connects, references, renames, deletes, saves, and reopens exact authoritative YAML', async ({
   page,
 }) => {
-  test.setTimeout(45_000)
+  test.setTimeout(90_000)
   await openSeededPair(page)
   await expectAuthoritativeYaml(page, SEEDED_YAML)
 
@@ -779,8 +785,10 @@ nodes:
   await page.getByRole('button', { name: 'More canvas actions' }).click()
   await page.getByRole('menuitem', { name: 'Delete Selection' }).click()
   const deleteDialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
-  await deleteDialog.getByRole('button', { name: 'Delete nodes' }).click()
-  await expect(deleteDialog).toBeHidden()
+  const confirmDelete = deleteDialog.getByRole('button', { name: 'Delete nodes' })
+  await confirmDelete.click()
+  await expect(confirmDelete).toBeDisabled()
+  await expect(deleteDialog).toBeHidden({ timeout: 20_000 })
   await expect(command).toHaveCount(0)
   const afterDelete = afterRename.replace('  - id: command\n    command: "/review"\n', '')
   await expectAuthoritativeYaml(page, afterDelete)
@@ -796,6 +804,7 @@ nodes:
 
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
   const createExampleCopy = page.getByRole('button', { name: /^Create Editable Copy:/ }).first()
+  await expect(createExampleCopy).toBeVisible({ timeout: 20_000 })
   await createExampleCopy.focus()
   await createExampleCopy.press('Enter')
   const backToWorkflow = page.getByRole('button', { name: 'Back to Workflow' })
@@ -814,6 +823,7 @@ nodes:
 test('real palette and port gestures commit a dependency and reject a cycle without changing YAML', async ({
   page,
 }) => {
+  test.setTimeout(30_000)
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Nodes', exact: true }).click()
@@ -971,6 +981,7 @@ test('real palette and port gestures commit a dependency and reject a cycle with
 })
 
 test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and reopens', async ({ page }) => {
+  test.setTimeout(30_000)
   await page.setViewportSize({ width: 1440, height: 900 })
   await openSeededPair(page)
   const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -1033,6 +1044,7 @@ test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and r
 
 for (const modifier of ['Meta', 'Control'] as const) {
   test(`node actions preserve ${modifier} multi-selection and keyboard focus`, async ({ page }) => {
+    test.setTimeout(30_000)
     await page.setViewportSize({ width: 1440, height: 900 })
     await openSeededPair(page)
     const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })

@@ -356,10 +356,16 @@ fn read_impl(
     require_yaml(relative)?;
     let bound = bind_path(scope, relative)?;
     bound_hook();
-    let file = bound
-        .parent
-        .open(&bound.name)
-        .map_err(|error| capability_error("workspace_read_failed", error))?;
+    let file = bound.parent.open(&bound.name).map_err(|error| {
+        // Watch notifications can outlive a removed atomic-save safety copy.
+        // Preserve the typed absence contract without swallowing other I/O errors.
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            "path_not_found"
+        } else {
+            "workspace_read_failed"
+        };
+        capability_error(code, error)
+    })?;
     let metadata = file
         .metadata()
         .map_err(|error| capability_error("workspace_read_failed", error))?;
@@ -433,6 +439,7 @@ pub fn write_with_precommit_hook(
             post_hash: || {},
             post_quarantine: || {},
             permission: noop_permission_hook,
+            restore_permissions: restore_file_permissions,
         },
     )
 }
@@ -455,6 +462,7 @@ pub fn write_with_post_hash_hook(
             post_hash: hook,
             post_quarantine: || {},
             permission: noop_permission_hook,
+            restore_permissions: restore_file_permissions,
         },
     )
 }
@@ -477,6 +485,7 @@ pub fn write_with_post_quarantine_hook(
             post_hash: || {},
             post_quarantine: hook,
             permission: noop_permission_hook,
+            restore_permissions: restore_file_permissions,
         },
     )
 }
@@ -499,48 +508,83 @@ pub fn write_with_permission_order_hook(
             post_hash: || {},
             post_quarantine: || {},
             permission: permission_hook,
+            restore_permissions: restore_file_permissions,
         },
     )
 }
 
-struct WriteHooks<PreHash, PostHash, PostQuarantine, Permission> {
+#[cfg(test)]
+pub fn write_with_permission_restore_failure(
+    scope: &WorkspaceScope,
+    relative: &str,
+    text: &str,
+    expected_current_hash: Option<&str>,
+) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_impl(
+        scope,
+        relative,
+        text,
+        expected_current_hash,
+        WriteHooks {
+            pre_hash: || {},
+            post_hash: || {},
+            post_quarantine: || {},
+            permission: noop_permission_hook,
+            restore_permissions: fail_permission_restore,
+        },
+    )
+}
+
+#[cfg(test)]
+fn fail_permission_restore(_: &File, _: Permissions) -> WorkspaceResult<()> {
+    Err(WorkspaceError::new(
+        "workspace_permission_restore_failed",
+        "Simulated permission restoration failure.",
+    ))
+}
+
+struct WriteHooks<PreHash, PostHash, PostQuarantine, Permission, RestorePermissions> {
     pre_hash: PreHash,
     post_hash: PostHash,
     post_quarantine: PostQuarantine,
     permission: Permission,
+    restore_permissions: RestorePermissions,
 }
 
-impl WriteHooks<fn(), fn(), fn(), fn(&str, bool)> {
+impl WriteHooks<fn(), fn(), fn(), fn(&str, bool), fn(&File, Permissions) -> WorkspaceResult<()>> {
     fn none() -> Self {
         Self {
             pre_hash: || {},
             post_hash: || {},
             post_quarantine: || {},
             permission: noop_permission_hook,
+            restore_permissions: restore_file_permissions,
         }
     }
 }
 
 fn noop_permission_hook(_: &str, _: bool) {}
 
-fn write_impl<PreHash, PostHash, PostQuarantine, Permission>(
+fn write_impl<PreHash, PostHash, PostQuarantine, Permission, RestorePermissions>(
     scope: &WorkspaceScope,
     relative: &str,
     text: &str,
     expected_current_hash: Option<&str>,
-    hooks: WriteHooks<PreHash, PostHash, PostQuarantine, Permission>,
+    hooks: WriteHooks<PreHash, PostHash, PostQuarantine, Permission, RestorePermissions>,
 ) -> WorkspaceResult<WorkspaceWriteResult>
 where
     PreHash: FnOnce(),
     PostHash: FnOnce(),
     PostQuarantine: FnOnce(),
     Permission: FnMut(&str, bool),
+    RestorePermissions: FnMut(&File, Permissions) -> WorkspaceResult<()>,
 {
     let WriteHooks {
         pre_hash: pre_hash_hook,
         post_hash: post_hash_hook,
         post_quarantine: post_quarantine_hook,
         permission: mut permission_hook,
+        restore_permissions: mut restore_permissions_hook,
     } = hooks;
     require_yaml(relative)?;
     if text.len() as u64 > MAX_YAML_BYTES {
@@ -621,9 +665,12 @@ where
         }
         temporary.disarm();
         permission_hook("afterCommit", bound_read_only(&bound)?);
-        if let Err(error) =
-            restore_committed_permissions(&bound, &staged_identity, prior_permissions.clone())
-        {
+        if let Err(error) = restore_committed_permissions(
+            &bound,
+            &staged_identity,
+            prior_permissions.clone(),
+            &mut restore_permissions_hook,
+        ) {
             let commit_cleanup = remove_verified_name(&bound, &staged_identity);
             let rollback = if commit_cleanup.is_ok() {
                 move_noclobber_with_expected(&quarantine, &bound, &original_identity, || {}, || {})
@@ -695,6 +742,7 @@ fn restore_committed_permissions(
     committed: &BoundPath,
     expected_identity: &Handle,
     permissions: Permissions,
+    mut restore_permissions: impl FnMut(&File, Permissions) -> WorkspaceResult<()>,
 ) -> WorkspaceResult<()> {
     let file = committed
         .parent
@@ -708,6 +756,14 @@ fn restore_committed_permissions(
             "The committed target changed before permissions could be restored.",
         ));
     }
+    restore_permissions(&file, permissions)
+}
+
+fn restore_file_permissions(file: &File, permissions: Permissions) -> WorkspaceResult<()> {
+    #[cfg(windows)]
+    return crate::native_fs::set_file_permissions_by_handle(file, permissions)
+        .map_err(|error| io_error("workspace_permission_restore_failed", error));
+    #[cfg(not(windows))]
     file.set_permissions(permissions)
         .map_err(|error| io_error("workspace_permission_restore_failed", error))
 }
@@ -934,6 +990,7 @@ fn rename_pair_impl(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(capability_error("workspace_rename_failed", error)),
     };
+    ensure_bound_file(&source)?;
     let source_identity = named_identity(&source, "path_not_found")
         .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
     let source_companion_identity = if has_companion {
@@ -1173,19 +1230,30 @@ pub fn trash_paths_with_handoff_hook(
 }
 
 #[cfg(test)]
-pub fn trash_paths_with_post_delete_hook(
+pub fn trash_paths_with_scope_verification_failure(
     scope: &WorkspaceScope,
     relative_paths: &[String],
-    mut delete: impl FnMut(&Path) -> Result<(), String>,
+    failure_phase: &'static str,
     mut post_delete_hook: impl FnMut(),
+    mut delete: impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     let requests = unchecked_trash_requests(relative_paths);
-    trash_paths_impl(
+    trash_paths_impl_with_verification(
         scope,
         &requests,
         || {},
         |_| {},
         &mut post_delete_hook,
+        |phase| {
+            if phase == failure_phase {
+                Err(WorkspaceError::new(
+                    "workspace_root_changed",
+                    "The selected workspace root was replaced and must be reopened.",
+                ))
+            } else {
+                Ok(())
+            }
+        },
         &mut delete,
     )
 }
@@ -1194,8 +1262,28 @@ fn trash_paths_impl(
     scope: &WorkspaceScope,
     requests: &[TrashPathExpectation],
     bound_hook: impl FnOnce(),
+    handoff_hook: impl FnMut(&Path),
+    post_delete_hook: impl FnMut(),
+    delete: &mut impl FnMut(&Path) -> Result<(), String>,
+) -> WorkspaceResult<WorkspaceTrashResult> {
+    trash_paths_impl_with_verification(
+        scope,
+        requests,
+        bound_hook,
+        handoff_hook,
+        post_delete_hook,
+        |_| Ok(()),
+        delete,
+    )
+}
+
+fn trash_paths_impl_with_verification(
+    scope: &WorkspaceScope,
+    requests: &[TrashPathExpectation],
+    bound_hook: impl FnOnce(),
     mut handoff_hook: impl FnMut(&Path),
     mut post_delete_hook: impl FnMut(),
+    mut scope_verification_hook: impl FnMut(&str) -> WorkspaceResult<()>,
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<WorkspaceTrashResult> {
     if requests.is_empty() || requests.len() > 2 {
@@ -1233,6 +1321,7 @@ fn trash_paths_impl(
                 request.expected_current_hash.as_deref(),
                 &mut handoff_hook,
                 &mut post_delete_hook,
+                &mut scope_verification_hook,
                 delete,
             )
         }) {
@@ -1261,6 +1350,7 @@ fn trash_bound_path(
     expected_current_hash: Option<&str>,
     handoff_hook: &mut impl FnMut(&Path),
     post_delete_hook: &mut impl FnMut(),
+    scope_verification_hook: &mut impl FnMut(&str) -> WorkspaceResult<()>,
     delete: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> WorkspaceResult<()> {
     ensure_bound_file(source)?;
@@ -1304,17 +1394,18 @@ fn trash_bound_path(
 
     let candidate_path = scope.root.join(&quarantine_name);
     handoff_hook(&candidate_path);
-    let ambient_path = match scope.root_path() {
-        Ok(root_path) => root_path.join(&quarantine_name),
-        Err(error) => {
-            return Err(trash_rollback_error(
-                &quarantine,
-                source,
-                &original_identity,
-                error,
-            ))
-        }
-    };
+    let ambient_path =
+        match scope_verification_hook("beforeHandoff").and_then(|_| scope.root_path()) {
+            Ok(root_path) => root_path.join(&quarantine_name),
+            Err(error) => {
+                return Err(trash_rollback_error(
+                    &quarantine,
+                    source,
+                    &original_identity,
+                    error,
+                ))
+            }
+        };
     if !named_identity_matches(&quarantine, &original_identity) {
         return Err(trash_rollback_error(
             &quarantine,
@@ -1353,7 +1444,9 @@ fn trash_bound_path(
             ),
         ));
     }
-    if let Err(error) = scope.verify() {
+    if let Err(error) =
+        scope_verification_hook("beforeDelete").and_then(|_| scope.verify().map(|_| ()))
+    {
         return Err(trash_rollback_error(
             &quarantine,
             source,
@@ -1373,7 +1466,9 @@ fn trash_bound_path(
     }
     let delete_result = delete(&ambient_path);
     post_delete_hook();
-    if let Err(error) = scope.verify() {
+    if let Err(error) =
+        scope_verification_hook("afterDelete").and_then(|_| scope.verify().map(|_| ()))
+    {
         return Err(trash_rollback_error(
             &quarantine,
             source,
@@ -1459,10 +1554,17 @@ fn trash_rollback_error(
 }
 
 fn ensure_bound_file(path: &BoundPath) -> WorkspaceResult<()> {
-    let metadata = path
+    let link_metadata = path
         .parent
-        .metadata(&path.name)
+        .symlink_metadata(&path.name)
         .map_err(|error| capability_error("path_not_found", error))?;
+    let metadata = if link_metadata.file_type().is_symlink() {
+        path.parent
+            .metadata(&path.name)
+            .map_err(|error| capability_error("path_not_found", error))?
+    } else {
+        link_metadata
+    };
     if !metadata.is_file() {
         return Err(WorkspaceError::new(
             "not_a_file",
@@ -1930,7 +2032,7 @@ fn make_windows_file_replaceable(
     if prior_permissions.readonly() {
         let mut writable = prior_permissions.clone();
         writable.set_readonly(false);
-        file.set_permissions(writable)
+        crate::native_fs::set_file_permissions_by_handle(file, writable)
             .map_err(|error| io_error("workspace_write_failed", error))?;
     }
     Ok(())
@@ -1941,7 +2043,7 @@ fn restore_windows_file_permissions(
     file: &File,
     prior_permissions: &Permissions,
 ) -> WorkspaceResult<()> {
-    file.set_permissions(prior_permissions.clone())
+    crate::native_fs::set_file_permissions_by_handle(file, prior_permissions.clone())
         .map_err(|error| io_error("workspace_permission_restore_failed", error))
 }
 

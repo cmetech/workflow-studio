@@ -11,6 +11,68 @@ function keyboard(key: string, options: KeyboardEventInit = {}): KeyboardEvent {
 }
 
 describe('keybindings', () => {
+  it.each(['Enter', ' '])(
+    'leaves native button activation for %j to the browser with a canvas selection',
+    async (key) => {
+      const executed: string[] = []
+      const registry = createCommandRegistry()
+      registry.registerCommand({
+        id: 'canvas.inspect',
+        label: 'Inspect',
+        category: 'Canvas',
+        defaultBindings: [key === ' ' ? 'space' : 'Enter'],
+        enabled: () => true,
+        run: () => {
+          executed.push('inspect')
+        },
+      })
+      const button = document.createElement('button')
+      button.setAttribute('role', 'menuitem')
+      const icon = document.createElement('span')
+      button.append(icon)
+      const event = keyboard(key)
+      expect(await dispatchKeybinding(event, { registry, context: canvas, target: icon, platform: 'windows' })).toEqual(
+        { status: 'unhandled' },
+      )
+      expect(event.defaultPrevented).toBe(false)
+      expect(executed).toEqual([])
+    },
+  )
+
+  it('retains Enter on canvas nodes and modified shortcuts on native buttons', async () => {
+    const executed: string[] = []
+    const registry = createCommandRegistry()
+    for (const [id, binding] of [
+      ['canvas.inspect', 'Enter'],
+      ['document.save', 'Mod+S'],
+    ]) {
+      registry.registerCommand({
+        id: id!,
+        label: id!,
+        category: 'Canvas',
+        defaultBindings: [binding!],
+        enabled: () => true,
+        run: () => {
+          executed.push(id!)
+        },
+      })
+    }
+    const node = document.createElement('div')
+    node.setAttribute('role', 'button')
+    const enter = keyboard('Enter')
+    await dispatchKeybinding(enter, { registry, context: canvas, target: node, platform: 'windows' })
+    const save = keyboard('s', { ctrlKey: true })
+    await dispatchKeybinding(save, {
+      registry,
+      context: canvas,
+      target: document.createElement('button'),
+      platform: 'windows',
+    })
+    expect(executed).toEqual(['canvas.inspect', 'document.save'])
+    expect(enter.defaultPrevented).toBe(true)
+    expect(save.defaultPrevented).toBe(true)
+  })
+
   it('normalizes Mod to the current platform without changing fixed bindings', () => {
     expect(normalizeKeybinding('Mod + Shift + P', 'mac')).toBe('meta+shift+p')
     expect(normalizeKeybinding('Mod + Shift + P', 'windows')).toBe('ctrl+shift+p')

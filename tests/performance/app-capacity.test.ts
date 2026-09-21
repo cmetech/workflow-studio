@@ -29,6 +29,7 @@ interface NativeHarness {
   writes: string[]
 }
 
+const deferredSurfaceWait = { timeout: 20_000 }
 const nativeHarness: NativeHarness = { yaml: '', writes: [] }
 let App: (typeof import('$src/app/App.svelte'))['default']
 
@@ -104,7 +105,11 @@ async function openOversizedWorkflow(yaml: string, path: string): Promise<Return
     { relativePath: path, kind: 'file', size: yaml.length, modifiedAt: '0', symlink: 'none', readOnly: false },
   ])
   const rendered = render(App)
-  const entry = await screen.findByRole('treeitem', { name: new RegExp(`${path}.*legacy workflow`, 'i') })
+  const entry = await screen.findByRole(
+    'treeitem',
+    { name: new RegExp(`${path}.*legacy workflow`, 'i') },
+    deferredSurfaceWait,
+  )
   await fireEvent.keyDown(entry, { key: 'Enter' })
   await waitFor(() => {
     const session = $documentSession.get()
@@ -118,7 +123,9 @@ async function expectYamlOnlySave(yaml: string, expectedNodes: number, expectedE
   expect($documentSession.get().pair?.definition.text).toBe(yaml)
   expect($documentSession.get().analysis?.issues.filter(({ blocking }) => blocking)).toEqual([])
   expect(screen.queryByRole('region', { name: 'Workflow graph' })).not.toBeInTheDocument()
-  expect(screen.getByText(/visual canvas supports at most 250 nodes and 500 edges/)).toHaveAttribute('role', 'status')
+  expect(
+    await screen.findByText(/visual canvas supports at most 250 nodes and 500 edges/, {}, deferredSurfaceWait),
+  ).toHaveAttribute('role', 'status')
   expect(screen.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
 
   const parsed = parse(yaml) as { nodes: { depends_on?: string[] }[] }
@@ -141,7 +148,9 @@ async function expectYamlOnlySave(yaml: string, expectedNodes: number, expectedE
   closeCommandPalette()
 
   const editedYaml = `# Edited above visual capacity\n${yaml}`
-  const editor = EditorView.findFromDOM(screen.getByRole('textbox', { name: 'Definition YAML' }))!
+  const editor = EditorView.findFromDOM(
+    await screen.findByRole('textbox', { name: 'Definition YAML' }, deferredSurfaceWait),
+  )!
   editor.dispatch({ changes: { from: 0, insert: '# Edited above visual capacity\n' } })
   await waitFor(() => {
     const session = $documentSession.get()

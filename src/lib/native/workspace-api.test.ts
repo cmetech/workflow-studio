@@ -29,6 +29,7 @@ describe('browser workspace bridge', () => {
     expect(selected).toEqual({
       workspaceId: 'browser-workspace',
       rootPath: '/browser/workspace',
+      repository: null,
     })
     expect(entries.map((entry) => entry.relativePath)).toEqual([
       'examples',
@@ -261,6 +262,46 @@ describe('Tauri workspace bridge', () => {
 })
 
 describe('workspace change API', () => {
+  it.each(['path_not_found', 'path_outside_workspace', 'workspace_read_failed'])(
+    'handles a vanished watcher path without hiding %s errors',
+    async (code) => {
+      let notify!: (event: WorkspaceChangedEvent) => void | Promise<void>
+      const survivingFile = {
+        relativePath: 'flow.yaml',
+        text: 'name: saved\n',
+        sha256: 'a'.repeat(64),
+        size: 12,
+        modifiedAt: '0',
+        readOnly: false,
+      }
+      invoke.mockImplementation(async (_command, { relativePath }) => {
+        if (relativePath === 'flow.yaml') return survivingFile
+        throw { code, message: 'Native read failed.' }
+      })
+      setNativeBridgeForTest({
+        ...createBrowserBridge(),
+        workspaceRead: tauriBridge.workspaceRead,
+        onWorkspaceChanged: async (handler) => {
+          notify = handler
+          return () => undefined
+        },
+      })
+      const handler = vi.fn()
+      await watchWorkspaceChanges(handler)
+      const event: WorkspaceChangedEvent = {
+        paths: ['.workflow-studio-original-123-2-flow.yaml', 'flow.yaml'],
+        kind: 'modify',
+      }
+      if (code === 'path_not_found') {
+        await notify(event)
+        expect(handler).toHaveBeenCalledWith({ event, files: [survivingFile] })
+      } else {
+        await expect(notify(event)).rejects.toMatchObject({ code })
+        expect(handler).not.toHaveBeenCalled()
+      }
+    },
+  )
+
   it('re-reads changed YAML paths before delivering a watcher notification', async () => {
     let notify: ((event: WorkspaceChangedEvent) => void | Promise<void>) | undefined
     const workspaceRead = vi.fn().mockResolvedValue({

@@ -1367,7 +1367,7 @@ impl BrandStorageScope {
         Ok(())
     }
 
-    fn bind_pack(&self, id: &str) -> BrandResult<(Dir, Handle)> {
+    fn bind_pack(&self, id: &str) -> BrandResult<(Dir, RenameCompatibleDirectoryIdentity)> {
         self.verify()?;
         let metadata = self
             .brands
@@ -1383,24 +1383,29 @@ impl BrandStorageScope {
             .brands
             .open_dir(id)
             .map_err(|error| io_error("brand_storage_scope_invalid", error))?;
-        let identity = cap_directory_identity(&directory, "brand_storage_scope_invalid")?;
+        let identity = rename_compatible_directory_identity(
+            &self.brands,
+            Path::new(id),
+            &directory,
+            "brand_storage_scope_invalid",
+        )?;
         if !self.named_pack_identity_matches(id, &identity) {
             return Err(brand_storage_scope_changed());
         }
         Ok((directory, identity))
     }
 
-    fn named_pack_identity_matches(&self, id: &str, expected: &Handle) -> bool {
-        self.brands
-            .symlink_metadata(id)
-            .ok()
-            .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
-            .and_then(|_| self.brands.open_dir(id).ok())
-            .and_then(|directory| {
-                cap_directory_identity(&directory, "brand_storage_scope_invalid").ok()
-            })
-            .as_ref()
-            == Some(expected)
+    fn named_pack_identity_matches(
+        &self,
+        id: &str,
+        expected: &RenameCompatibleDirectoryIdentity,
+    ) -> bool {
+        named_directory_identity_matches(
+            &self.brands,
+            Path::new(id),
+            expected,
+            "brand_storage_scope_invalid",
+        )
     }
 }
 
@@ -1439,9 +1444,153 @@ fn write_private_file_at(directory: &Dir, relative: &Path, bytes: &[u8]) -> Bran
 struct StagedBrandDirectory<'a> {
     parent: &'a Dir,
     name: OsString,
-    directory: Dir,
-    identity: Handle,
+    directory: Option<Dir>,
+    identity: RenameCompatibleDirectoryIdentity,
     active: bool,
+}
+
+#[cfg(not(windows))]
+type RenameCompatibleDirectoryIdentity = Handle;
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowsDirectoryFileId {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(windows)]
+struct RenameCompatibleDirectoryIdentity {
+    _handle: CapFile,
+    file_id: WindowsDirectoryFileId,
+}
+
+#[cfg(windows)]
+fn windows_directory_file_id(
+    directory: &Dir,
+    code: &'static str,
+) -> BrandResult<WindowsDirectoryFileId> {
+    use std::os::windows::io::AsRawHandle;
+
+    windows_file_id_from_raw_handle(directory.as_raw_handle(), code)
+}
+
+#[cfg(windows)]
+fn windows_file_id_from_raw_handle(
+    handle: std::os::windows::io::RawHandle,
+    code: &'static str,
+) -> BrandResult<WindowsDirectoryFileId> {
+    use std::mem::{size_of, MaybeUninit};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+
+    let mut information = MaybeUninit::<FILE_ID_INFO>::uninit();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            information.as_mut_ptr().cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io_error(code, std::io::Error::last_os_error()));
+    }
+    let information = unsafe { information.assume_init() };
+    Ok(WindowsDirectoryFileId {
+        volume_serial_number: information.VolumeSerialNumber,
+        file_id: information.FileId.Identifier,
+    })
+}
+
+#[cfg(not(windows))]
+fn rename_compatible_directory_identity(
+    _parent: &Dir,
+    _name: &Path,
+    directory: &Dir,
+    code: &'static str,
+) -> BrandResult<Handle> {
+    cap_directory_identity(directory, code)
+}
+
+#[cfg(windows)]
+fn windows_named_plain_directory_identity(
+    parent: &Dir,
+    name: &Path,
+    code: &'static str,
+) -> BrandResult<RenameCompatibleDirectoryIdentity> {
+    use cap_std::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = CapOpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    let opened = parent
+        .open_with(name, &options)
+        .map_err(|error| io_error(code, error))?;
+    let metadata = opened.metadata().map_err(|error| io_error(code, error))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(brand_error(
+            code,
+            "Brand storage directories cannot be symbolic links or reparse points.",
+        ));
+    }
+    let file_id = windows_file_id_from_raw_handle(opened.as_raw_handle(), code)?;
+    Ok(RenameCompatibleDirectoryIdentity {
+        _handle: opened,
+        file_id,
+    })
+}
+
+fn named_directory_identity_matches(
+    parent: &Dir,
+    name: &Path,
+    expected: &RenameCompatibleDirectoryIdentity,
+    code: &'static str,
+) -> bool {
+    #[cfg(not(windows))]
+    {
+        let identity = parent
+            .symlink_metadata(name)
+            .ok()
+            .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
+            .and_then(|_| parent.open_dir(name).ok())
+            .and_then(|directory| cap_directory_identity(&directory, code).ok());
+
+        identity.as_ref() == Some(expected)
+    }
+    #[cfg(windows)]
+    {
+        windows_named_plain_directory_identity(parent, name, code)
+            .is_ok_and(|identity| identity.file_id == expected.file_id)
+    }
+}
+
+#[cfg(windows)]
+fn rename_compatible_directory_identity(
+    parent: &Dir,
+    name: &Path,
+    directory: &Dir,
+    code: &'static str,
+) -> BrandResult<RenameCompatibleDirectoryIdentity> {
+    let identity = windows_named_plain_directory_identity(parent, name, code)?;
+    if windows_directory_file_id(directory, code)? != identity.file_id {
+        return Err(brand_error(
+            code,
+            "A brand storage directory changed while it was bound.",
+        ));
+    }
+    Ok(identity)
 }
 
 impl<'a> StagedBrandDirectory<'a> {
@@ -1463,11 +1612,16 @@ impl<'a> StagedBrandDirectory<'a> {
                             )
                             .map_err(|error| io_error("brand_storage_failed", error))?;
                     }
-                    let identity = cap_directory_identity(&directory, "brand_storage_failed")?;
+                    let identity = rename_compatible_directory_identity(
+                        parent,
+                        Path::new(&name),
+                        &directory,
+                        "brand_storage_failed",
+                    )?;
                     return Ok(Self {
                         parent,
                         name,
-                        directory,
+                        directory: Some(directory),
                         identity,
                         active: true,
                     });
@@ -1482,13 +1636,27 @@ impl<'a> StagedBrandDirectory<'a> {
         ))
     }
 
-    fn named_identity_matches(&self) -> bool {
-        self.parent
-            .open_dir(&self.name)
-            .ok()
-            .and_then(|directory| cap_directory_identity(&directory, "brand_storage_failed").ok())
+    fn directory(&self) -> BrandResult<&Dir> {
+        self.directory
             .as_ref()
-            == Some(&self.identity)
+            .ok_or_else(brand_storage_scope_changed)
+    }
+
+    fn named_identity_matches(&self) -> bool {
+        named_directory_identity_matches(
+            self.parent,
+            Path::new(&self.name),
+            &self.identity,
+            "brand_storage_failed",
+        )
+    }
+
+    fn close_for_commit(&mut self) -> BrandResult<()> {
+        if self.directory.is_none() || !self.named_identity_matches() {
+            return Err(brand_storage_scope_changed());
+        }
+        drop(self.directory.take());
+        Ok(())
     }
 
     fn disarm(&mut self) {
@@ -1498,7 +1666,11 @@ impl<'a> StagedBrandDirectory<'a> {
 
 impl Drop for StagedBrandDirectory<'_> {
     fn drop(&mut self) {
-        if self.active {
+        if !self.active {
+            return;
+        }
+        drop(self.directory.take());
+        if self.named_identity_matches() {
             let _ = self.parent.remove_dir_all(&self.name);
         }
     }
@@ -1596,10 +1768,14 @@ fn import_brand_pack_at_with_commit_hook(
     }
     enforce_storage_quota(&scope, new_pack_bytes, None)?;
     let mut staging = StagedBrandDirectory::new(&scope.brands, &request.manifest.id)?;
-    write_private_file_at(&staging.directory, Path::new("brand.yaml"), &manifest_bytes)?;
+    write_private_file_at(
+        staging.directory()?,
+        Path::new("brand.yaml"),
+        &manifest_bytes,
+    )?;
     for asset in &request.assets {
         write_private_file_at(
-            &staging.directory,
+            staging.directory()?,
             Path::new(&asset.path),
             &asset.sanitized_bytes,
         )?;
@@ -1617,15 +1793,16 @@ fn import_brand_pack_at_with_commit_hook(
         Err(error) => return Err(io_error("brand_storage_failed", error)),
     }
     enforce_storage_quota(&scope, new_pack_bytes, Some(&staging.name))?;
+    staging.close_for_commit()?;
     scope
         .brands
         .rename(&staging.name, &scope.brands, &request.manifest.id)
         .map_err(|error| io_error("brand_storage_failed", error))?;
-    staging.disarm();
     scope.verify()?;
     if !scope.named_pack_identity_matches(&request.manifest.id, &staging.identity) {
         return Err(brand_storage_scope_changed());
     }
+    staging.disarm();
     let id = request.manifest.id.clone();
     let display_name = request.manifest.display_name.clone();
     locked.remove(&request.grant_token);
@@ -1947,7 +2124,7 @@ fn load_stored_pack_from_directory(
     scope: &BrandStorageScope,
     id: &str,
     directory: &Dir,
-    directory_identity: &Handle,
+    directory_identity: &RenameCompatibleDirectoryIdentity,
 ) -> BrandResult<StoredBrandPack> {
     let (bytes, _) =
         read_bounded_cap_file(directory, Path::new("brand.yaml"), "brand_storage_invalid")?;
@@ -3027,6 +3204,160 @@ mod tests {
     }
 
     #[test]
+    fn complete_custom_brand_import_publishes_after_closing_staging_handle() {
+        let (_source, path) = source_pack();
+        let app_data = tempfile::tempdir().unwrap();
+        let grants = BrandGrantState::default();
+        let selection = grant_brand_source(&path, &grants).unwrap();
+        let sources = read_brand_source_assets(
+            &selection.grant_token,
+            &["logo.svg".to_owned(), "mark.svg".to_owned()],
+            &grants,
+        )
+        .unwrap();
+        let expected_manifest = manifest();
+        let expected_logo = sources
+            .iter()
+            .find(|asset| asset.path == "logo.svg")
+            .unwrap()
+            .bytes
+            .clone();
+        let expected_mark = sources
+            .iter()
+            .find(|asset| asset.path == "mark.svg")
+            .unwrap()
+            .bytes
+            .clone();
+
+        let imported =
+            import_brand_pack_at(app_data.path(), request(&selection, &sources), &grants).unwrap();
+
+        assert_eq!(imported.id, "acme");
+        assert_eq!(imported.display_name, "Acme Studio");
+        let storage = app_data.path().join("brands");
+        let published = storage.join("acme");
+        let stored_manifest: NativeBrandManifest =
+            serde_json::from_slice(&fs::read(published.join("brand.yaml")).unwrap()).unwrap();
+        assert_eq!(stored_manifest, expected_manifest);
+        assert_eq!(fs::read(published.join("logo.svg")).unwrap(), expected_logo);
+        assert_eq!(fs::read(published.join("mark.svg")).unwrap(), expected_mark);
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let (published_directory, published_identity) = scope.bind_pack("acme").unwrap();
+        #[cfg(not(windows))]
+        assert_eq!(
+            cap_directory_identity(&published_directory, "brand_storage_scope_invalid").unwrap(),
+            published_identity
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            windows_directory_file_id(&published_directory, "brand_storage_scope_invalid").unwrap(),
+            published_identity.file_id
+        );
+        assert!(scope.named_pack_identity_matches("acme", &published_identity));
+        assert!(fs::read_dir(storage).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+    }
+
+    #[test]
+    fn staged_cleanup_rejects_a_replacement_link_to_the_original_directory() {
+        let app_data = tempfile::tempdir().unwrap();
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let mut staging = StagedBrandDirectory::new(&scope.brands, "acme").unwrap();
+        write_private_file_at(
+            staging.directory().unwrap(),
+            Path::new("sentinel"),
+            b"original",
+        )
+        .unwrap();
+        let storage = app_data.path().join("brands");
+        let staging_path = storage.join(&staging.name);
+        let outside = app_data.path().join("outside-staging");
+
+        staging.close_for_commit().unwrap();
+        fs::rename(&staging_path, &outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &staging_path).unwrap();
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_dir(&outside, &staging_path) {
+            if error.raw_os_error() == Some(1314) {
+                eprintln!(
+                    "skipping directory-link replacement assertion without symlink privilege"
+                );
+                return;
+            }
+            panic!("failed to create replacement directory link: {error}");
+        }
+
+        let replacement_was_accepted = staging.named_identity_matches();
+        drop(staging);
+
+        assert!(!replacement_was_accepted);
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"original");
+        assert!(fs::symlink_metadata(&staging_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staging_identity_handle_stays_live_without_blocking_capability_rename() {
+        let app_data = tempfile::tempdir().unwrap();
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let mut staging = StagedBrandDirectory::new(&scope.brands, "acme").unwrap();
+
+        staging.close_for_commit().unwrap();
+        let retained_identity: &RenameCompatibleDirectoryIdentity = &staging.identity;
+        let before_rename = retained_identity.file_id;
+        scope
+            .brands
+            .rename(&staging.name, &scope.brands, "parked-staging")
+            .unwrap();
+        let parked = scope.brands.open_dir("parked-staging").unwrap();
+
+        assert_eq!(
+            windows_directory_file_id(&parked, "brand_storage_failed").unwrap(),
+            before_rename
+        );
+        assert!(retained_identity._handle.metadata().unwrap().is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staging_comparison_uses_the_full_128_bit_file_id() {
+        let app_data = tempfile::tempdir().unwrap();
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let mut staging = StagedBrandDirectory::new(&scope.brands, "acme").unwrap();
+
+        assert!(staging.named_identity_matches());
+        staging.identity.file_id.file_id[15] ^= 0xff;
+
+        assert!(!staging.named_identity_matches());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staged_cleanup_uses_the_full_128_bit_file_id() {
+        let app_data = tempfile::tempdir().unwrap();
+        let scope = BrandStorageScope::bind(app_data.path()).unwrap();
+        let mut staging = StagedBrandDirectory::new(&scope.brands, "acme").unwrap();
+        write_private_file_at(staging.directory().unwrap(), Path::new("sentinel"), b"keep")
+            .unwrap();
+        let staging_path = app_data.path().join("brands").join(&staging.name);
+
+        staging.close_for_commit().unwrap();
+        staging.identity.file_id.file_id[15] ^= 0xff;
+        drop(staging);
+
+        assert_eq!(fs::read(staging_path.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[test]
     fn list_retains_inactive_valid_packs_and_reports_corrupt_entries_without_hiding_valid_ones() {
         let (_source, path) = source_pack();
         let app_data = tempfile::tempdir().unwrap();
@@ -3540,18 +3871,30 @@ mod tests {
         )
         .unwrap();
         let parked = source.path().with_extension("parked");
-        fs::rename(source.path(), &parked).unwrap();
-        fs::create_dir(source.path()).unwrap();
-        assert_eq!(
-            import_brand_pack_at(
+        let replaced = replace_directory_name_for_test(source.path(), &parked);
+        if replaced {
+            fs::create_dir(source.path()).unwrap();
+            assert_eq!(
+                import_brand_pack_at(
+                    app_data.path(),
+                    request(&replacement, &replacement_sources),
+                    &replacement_grants,
+                )
+                .unwrap_err()
+                .code,
+                "brand_source_changed"
+            );
+        } else {
+            assert!(cfg!(windows));
+            let imported = import_brand_pack_at(
                 app_data.path(),
                 request(&replacement, &replacement_sources),
                 &replacement_grants,
             )
-            .unwrap_err()
-            .code,
-            "brand_source_changed"
-        );
+            .unwrap();
+            assert_eq!(imported.id, "acme");
+            assert!(!parked.exists());
+        }
     }
 
     #[test]

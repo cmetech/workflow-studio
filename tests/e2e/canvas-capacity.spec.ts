@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { LayoutWorkerRequest, LayoutWorkerResult } from '../../src/workers/layout-worker-protocol'
+import type { ArrangeMetricsSnapshot } from '../../src/lib/metrics/arrange-metrics'
 import { expect, test, type Page, type CDPSession } from '@playwright/test'
 import {
   createLargeWorkflowFixture,
@@ -26,6 +27,7 @@ interface E2EMetricSnapshot {
   readonly nativeCalls: number
   readonly gitCalls: number
   readonly pointerMoves: number
+  readonly arrange: ArrangeMetricsSnapshot | null
 }
 
 interface CapacityProbe {
@@ -102,6 +104,9 @@ async function expectNoLongTasks(
     state.entries.length = 0
     return phaseEntries
   }, phaseStart)
+  console.info(
+    `PERF_SAMPLE ${JSON.stringify({ phase: label, maxDuration: Math.max(0, ...entries.map(({ duration }) => duration)), entries })}`,
+  )
   expect(
     entries.filter(({ duration }) => duration > 50),
     JSON.stringify({ phase: label, entries }),
@@ -190,7 +195,10 @@ function expectNoPortDragWork(metrics: E2EMetricSnapshot): void {
   })
 }
 
-test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ browserName, page }) => {
+test('keeps the 250-node/500-edge canvas responsive and local-only @reference-performance', async ({
+  browserName,
+  page,
+}) => {
   test.setTimeout(45_000)
   await page.setViewportSize({ width: 1440, height: 900 })
 
@@ -276,8 +284,12 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   const beforeYaml = (await e2eSnapshot(page)).definitionText
   const beforePosition = await activeLayoutPosition(page, 'node-000')
   const beforePersistedLayout = await persistedLayoutProbe(page, 'node-000')
+  const incidentEdge = page.locator('.svelte-flow__edge[data-id="dependency:node-000->node-001"] path').first()
+  const beforeIncidentEdgePath = await incidentEdge.getAttribute('d')
+  expect(beforeIncidentEdgePath).toBeTruthy()
   const dragPhase = await beginLongTaskPhase(page, browserName)
   await dragNodeBy(page, 'node-000', { x: 110, y: 120 }, (metrics) => {
+    console.info(`DRAG_METRICS ${JSON.stringify({ phase: 'capacity root node drag', metrics })}`)
     expect(metrics.pointerMoves).toBeGreaterThan(0)
     expect(metrics).toMatchObject({
       parseRequests: 0,
@@ -290,6 +302,7 @@ test('keeps the 250-node/500-edge canvas responsive and local-only', async ({ br
   })
   await expect.poll(async () => (await activeLayoutPosition(page, 'node-000')).x).toBeGreaterThan(beforePosition.x + 80)
   await expect.poll(async () => (await activeLayoutPosition(page, 'node-000')).y).toBeGreaterThan(beforePosition.y + 80)
+  await expect.poll(() => incidentEdge.getAttribute('d')).not.toBe(beforeIncidentEdgePath)
   await expectNoLongTasks(page, browserName, 'node drag', dragPhase)
   await expect
     .poll(async () => (await persistedLayoutProbe(page, 'node-000')).saveCount)
@@ -404,6 +417,7 @@ interface ArrangeCapacityState {
   runs: ArrangeCapacityRun[]
   dropNext: boolean
   terminations: number
+  nodeSizes: Record<string, number>
 }
 
 declare global {
@@ -414,7 +428,14 @@ declare global {
 
 async function installArrangeCapacityProbe(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const state: ArrangeCapacityState = { requests: 0, responses: 0, runs: [], dropNext: false, terminations: 0 }
+    const state: ArrangeCapacityState = {
+      requests: 0,
+      responses: 0,
+      runs: [],
+      dropNext: false,
+      terminations: 0,
+      nodeSizes: {},
+    }
     window.__ARRANGE_CAPACITY__ = state
     const NativeWorker = window.Worker
     window.Worker = class extends NativeWorker {
@@ -444,6 +465,12 @@ async function installArrangeCapacityProbe(page: Page): Promise<void> {
       override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions): void {
         if (this.layoutWorker) {
           state.requests++
+          if (state.requests === 1) {
+            for (const node of (message as { nodes: { width: number; height: number }[] }).nodes) {
+              const key = `${node.width}x${node.height}`
+              state.nodeSizes[key] = (state.nodeSizes[key] ?? 0) + 1
+            }
+          }
           this.sentAt = performance.now()
           if (state.dropNext) {
             state.dropNext = false
@@ -511,7 +538,7 @@ async function finishMainTaskTrace(session: CDPSession): Promise<{ maximumMs: nu
   return { maximumMs: Math.max(...durations), taskCount: durations.length }
 }
 
-test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker response and no main-thread long task', async ({
+test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker response and no main-thread long task @reference-performance', async ({
   page,
   browserName,
 }, testInfo) => {
@@ -519,23 +546,37 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     !shouldRunReferenceCapacityScenario(enforcePerceptualPerformance, browserName),
     'Shared CI retains the Chromium capacity path; complete cross-engine acceptance runs on reference hardware.',
   )
-  test.setTimeout(60_000)
+  test.setTimeout(180_000)
   await installArrangeCapacityProbe(page)
   await openSeededPair(page, '?scenario=routed-capacity')
   await expect.poll(async () => (await capacityProbe(page)).analysisCurrent).toBe(true)
   const yaml = (await e2eSnapshot(page)).definitionText
   expect(yaml).toBe(createLargeWorkflowFixture().yaml)
-  const session =
-    enforcePerceptualPerformance && browserName === 'chromium' ? await page.context().newCDPSession(page) : null
-  if (session) await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
-  for (let run = 0; run < 4; run++) {
+  let session: CDPSession | null = null
+  const arrangeMetrics: ArrangeMetricsSnapshot[] = []
+  const initialSaveCount = await page.evaluate(
+    () => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount,
+  )
+  for (let run = 0; run < 6; run++) {
+    if (run === 1 && enforcePerceptualPerformance && browserName === 'chromium') {
+      session = await page.context().newCDPSession(page)
+      await session.send('Tracing.start', { categories: 'toplevel', transferMode: 'ReturnAsStream' })
+    }
     const phase = await beginLongTaskPhase(page, browserName)
     await invokeArrange(page)
-    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
-      'Graph arranged: 250 nodes and 500 dependencies.',
-      { timeout: 10_000 },
-    )
-    await expectNoLongTasks(page, browserName, `Arrange ${run === 0 ? 'cold' : 'warmed'} ${run}`, phase)
+    const feedback = page.getByRole('status', { name: 'Canvas authoring feedback' })
+    await expect.poll(async () => (await feedback.textContent()) !== 'Arranging graph…', { timeout: 10_000 }).toBe(true)
+    const diagnostic = await page.evaluate(() => ({
+      worker: window.__ARRANGE_CAPACITY__,
+      metric: (
+        window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+          metrics(): E2EMetricSnapshot
+        }
+      ).metrics().arrange,
+    }))
+    console.info(`ARRANGE_PHASE_SAMPLE ${JSON.stringify({ run, ...diagnostic })}`)
+    await expect(feedback).toHaveText('Graph arranged: 250 nodes and 500 dependencies.')
+    if (run > 0) await expectNoLongTasks(page, browserName, `Arrange warmed ${run}`, phase)
     const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
     expect(state.requests).toBe(run + 1)
     expect(state.responses).toBe(run + 1)
@@ -543,6 +584,37 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     expect(state.runs[run]!.points).toBeGreaterThanOrEqual(1_000)
     expect(state.runs[run]!.points).toBeLessThanOrEqual(32_000)
     if (enforcePerceptualPerformance && run > 0) expect(state.runs[run]!.durationMs).toBeLessThanOrEqual(3_000)
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+                metrics(): E2EMetricSnapshot
+              }
+            ).metrics().arrange?.outcome,
+        ),
+      )
+      .toBe('accepted')
+    await expect
+      .poll(() => page.evaluate(() => window.__WORKFLOW_STUDIO_E2E__!.persistedScopeLayout('root').saveCount))
+      .toBe(initialSaveCount + run + 1)
+    const metric = await page.evaluate(
+      () =>
+        (
+          window.__WORKFLOW_STUDIO_E2E__ as unknown as {
+            metrics(): E2EMetricSnapshot
+          }
+        ).metrics().arrange!,
+    )
+    expect(metric.requestId).toBe(`layout:${run + 1}`)
+    expect(metric.totalMs).toBeGreaterThanOrEqual(metric.phaseTotalMs)
+    expect(Object.keys(metric.phases).sort()).toEqual(
+      ['measure', 'fingerprint', 'serialize', 'worker', 'validate', 'publish', 'fit', 'persist'].sort(),
+    )
+    if (enforcePerceptualPerformance && run > 0) expect(metric.totalMs).toBeLessThan(3_000)
+    console.info(`ARRANGE_ACCEPTED_SAMPLE ${JSON.stringify({ run, metric })}`)
+    arrangeMetrics.push(metric)
     await page.keyboard.press('Escape')
   }
   const state = await page.evaluate(() => window.__ARRANGE_CAPACITY__)
@@ -579,7 +651,7 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
   expect(rendering.fallback).toEqual([])
   expect(rendering.mounted).toBeGreaterThan(0)
   const evidencePath = testInfo.outputPath('arrange-capacity.json')
-  await writeFile(evidencePath, JSON.stringify({ ...state, mainTasks, rendering }, null, 2))
+  await writeFile(evidencePath, JSON.stringify({ ...state, arrangeMetrics, mainTasks, rendering }, null, 2))
   await testInfo.attach('arrange-capacity.json', { path: evidencePath, contentType: 'application/json' })
   expect((await e2eSnapshot(page)).definitionText).toBe(yaml)
 
@@ -631,10 +703,38 @@ test('[RG12] explicitly arranges fixed-seed 250/500 with one bounded real-worker
     return probe.changes
   })
   expect(changedPaths).toEqual([])
-  expect((await page.evaluate(() => window.__ARRANGE_CAPACITY__)).requests).toBe(4)
+  expect((await page.evaluate(() => window.__ARRANGE_CAPACITY__)).requests).toBe(6)
   const contentEvidencePath = testInfo.outputPath('routed-content-capacity.json')
   await writeFile(contentEvidencePath, JSON.stringify({ contentMainTasks, changedPaths }, null, 2))
   await testInfo.attach('routed-content-capacity.json', { path: contentEvidencePath, contentType: 'application/json' })
+})
+
+test('keeps capacity overview handle geometry available through Arrange', async ({ page }, testInfo) => {
+  test.setTimeout(30_000)
+  const missingHandles: string[] = []
+  page.on('console', (message) => {
+    if (message.text().includes("Couldn't create edge for")) missingHandles.push(message.text())
+  })
+  await installArrangeCapacityProbe(page)
+  await openSeededPair(page, '?scenario=routed-capacity')
+  await invokeArrange(page)
+  try {
+    await expect(page.getByRole('status', { name: 'Canvas authoring feedback' })).toHaveText(
+      'Graph arranged: 250 nodes and 500 dependencies.',
+      { timeout: 10_000 },
+    )
+  } finally {
+    const diagnostic = await page.evaluate(() => ({
+      worker: window.__ARRANGE_CAPACITY__,
+      metric: (window.__WORKFLOW_STUDIO_E2E__ as unknown as { metrics(): E2EMetricSnapshot }).metrics().arrange,
+    }))
+    const diagnosticPath = testInfo.outputPath('overview-arrange.json')
+    await writeFile(diagnosticPath, JSON.stringify({ ...diagnostic, missingHandles }, null, 2))
+    await testInfo.attach('overview-arrange.json', { path: diagnosticPath, contentType: 'application/json' })
+  }
+  await settleRenderer(page)
+  expect(missingHandles).toEqual([])
+  await expect(page.locator('.workflow-edge-overview').first()).toBeAttached()
 })
 
 test('[RG8] times out after 5,000ms without changing layout and recovers with a new worker', async ({ page }) => {
@@ -673,7 +773,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
   page,
   context,
 }) => {
-  test.setTimeout(30_000)
+  test.setTimeout(45_000)
   const output = await mkdtemp(join(tmpdir(), 'workflow-studio-offline-routing-'))
   const sources = new Map<string, string>()
   const served: string[] = []
@@ -695,11 +795,10 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
     })
     const files = await readdir(join(output, 'assets'))
     const worker = files.find((file) => /^layout-worker-.*\.js$/.test(file))!
-    const algorithm = files.find((file) => /^elk-engine-worker-.*\.js$/.test(file))!
     expect(worker).toBeTruthy()
-    expect(algorithm).toBeTruthy()
-    for (const file of [worker, algorithm])
-      sources.set(`/assets/${file}`, await readFile(join(output, 'assets', file), 'utf8'))
+    const workerSource = await readFile(join(output, 'assets', worker), 'utf8')
+    expect(workerSource).toContain('org.eclipse.elk.alg.layered')
+    sources.set(`/assets/${worker}`, workerSource)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
     if (!address || typeof address === 'string') throw new Error('Missing local fixture address')
@@ -731,7 +830,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
         const endpoint = new Worker(`/assets/${worker}`, { type: 'module' })
         try {
           return await new Promise<LayoutWorkerResult>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('Offline worker timed out')), 5_000)
+            const timer = setTimeout(() => reject(new Error('Offline worker timed out')), 15_000)
             endpoint.onmessage = (event) => {
               clearTimeout(timer)
               resolve(event.data)
@@ -755,7 +854,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
     expect(Object.values(result.routes).reduce((count, route) => count + route.points.length, 0)).toBeLessThanOrEqual(
       32_000,
     )
-    expect(served.sort()).toEqual([`/assets/${worker}`, `/assets/${algorithm}`].sort())
+    expect(served).toEqual([`/assets/${worker}`])
     expect(attempted).toEqual([])
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))

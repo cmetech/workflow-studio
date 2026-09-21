@@ -486,6 +486,10 @@ describe('bounded port ordering before final routing', () => {
     ).toBe(true)
     expect(calls[0]!.layoutOptions!['org.eclipse.elk.randomSeed']).toBe('2')
     expect(calls[1]!.layoutOptions!['org.eclipse.elk.randomSeed']).toBe('1')
+    // Preliminary coordinates are discarded: only its bounded port order is
+    // consumed. Do not pay for the final-quality node placer twice.
+    expect(calls[0]!.layoutOptions!['org.eclipse.elk.layered.nodePlacement.strategy']).toBe('SIMPLE')
+    expect(calls[1]!.layoutOptions!['org.eclipse.elk.layered.nodePlacement.strategy']).toBeUndefined()
   })
   it.each([
     'missing-node',

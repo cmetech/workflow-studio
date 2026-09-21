@@ -1,18 +1,25 @@
 use std::fs;
 #[cfg(unix)]
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
 use std::process::{Command, Output};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use tempfile::tempdir;
 use workflow_studio_lib::git::{
-    create_pair_version, init_repository, move_tracked_path, set_local_identity, GitError,
+    create_pair_version, init_repository, move_tracked_path, move_tracked_paths,
+    set_local_identity, GitError,
 };
 
 static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
+fn environment_lock() -> MutexGuard<'static, ()> {
+    ENVIRONMENT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn git(root: &Path, args: &[&str]) -> Output {
     Command::new("git")
@@ -65,6 +72,29 @@ fn repository() -> tempfile::TempDir {
     root
 }
 
+fn git_directory(root: &Path) -> PathBuf {
+    PathBuf::from(
+        assert_git(root, &["rev-parse", "--absolute-git-dir"])
+            .trim()
+            .to_owned(),
+    )
+}
+
+fn assert_no_mutation_residue(root: &Path) {
+    let git_dir = git_directory(root);
+    let residue = fs::read_dir(&git_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("workflow-studio-") || name.ends_with(".lock"))
+        .collect::<Vec<_>>();
+    assert!(
+        residue.is_empty(),
+        "Git mutation residue remained in {}: {residue:?}",
+        git_dir.display()
+    );
+}
+
 fn write_pair(root: &Path) {
     fs::write(
         root.join("flow.yaml"),
@@ -84,13 +114,15 @@ fn assert_code<T>(result: Result<T, GitError>, code: &str) {
 
 #[test]
 fn initializes_only_the_exact_requested_root_without_creating_a_commit() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = tempdir().unwrap();
     let repository = init_repository(root.path()).unwrap();
 
+    // Windows TEMP may use an 8.3 alias while Git reports the expanded path.
+    // Compare filesystem identity, not two spellings of the same directory.
     assert_eq!(
-        Path::new(&repository.root),
-        root.path().canonicalize().unwrap()
+        fs::canonicalize(&repository.root).unwrap(),
+        fs::canonicalize(root.path()).unwrap()
     );
     assert!(root.path().join(".git").is_dir());
     assert!(!git(root.path(), &["rev-parse", "--verify", "HEAD"])
@@ -100,7 +132,7 @@ fn initializes_only_the_exact_requested_root_without_creating_a_commit() {
 
 #[test]
 fn writes_identity_to_the_repository_only() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = tempdir().unwrap();
     assert_git(root.path(), &["init", "-b", "main"]);
 
@@ -118,7 +150,7 @@ fn writes_identity_to_the_repository_only() {
 
 #[test]
 fn commits_a_tracked_pair_and_returns_the_new_oid() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     assert_git(root.path(), &["add", "flow.yaml", "flow.hermes.yaml"]);
@@ -145,11 +177,12 @@ fn commits_a_tracked_pair_and_returns_the_new_oid() {
         assert_git(root.path(), &["show", "-s", "--format=%s", "HEAD"]).trim(),
         "pair version"
     );
+    assert_no_mutation_residue(root.path());
 }
 
 #[test]
 fn commits_untracked_literal_unicode_pair_paths() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     fs::write(root.path().join("flow space ☃.yaml"), "name: Snow\n").unwrap();
     fs::write(
@@ -182,8 +215,92 @@ fn commits_untracked_literal_unicode_pair_paths() {
 }
 
 #[test]
+fn commits_unicode_pair_paths_from_a_unicode_workspace() {
+    let _environment = environment_lock();
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("workflow 工作区");
+    fs::create_dir(&root).unwrap();
+    assert_git(&root, &["init", "-b", "main"]);
+    assert_git(&root, &["config", "--local", "user.name", "Fixture User"]);
+    assert_git(
+        &root,
+        &["config", "--local", "user.email", "fixture@example.test"],
+    );
+    let definition = "流程 雪.yaml";
+    let companion = "流程 雪.hermes.yaml";
+    fs::write(root.join(definition), "name: Snow\n").unwrap();
+    fs::write(root.join(companion), "profile: legacy\n").unwrap();
+
+    create_pair_version(&root, definition, Some(companion), "unicode workspace").unwrap();
+
+    let names = assert_git(
+        &root,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--pretty=",
+            "--name-only",
+            "HEAD",
+        ],
+    );
+    assert!(names.contains(definition));
+    assert!(names.contains(companion));
+    assert_no_mutation_residue(&root);
+}
+
+#[test]
+fn commits_pair_from_a_linked_worktree_without_changing_the_main_index() {
+    let _environment = environment_lock();
+    let main = repository();
+    write_pair(main.path());
+    assert_git(main.path(), &["add", "."]);
+    assert_git(main.path(), &["commit", "-m", "initial"]);
+    let main_head = assert_git(main.path(), &["rev-parse", "HEAD"]);
+    let main_index = fs::read(main.path().join(".git/index")).unwrap();
+
+    let linked_parent = tempdir().unwrap();
+    let linked = linked_parent.path().join("linked 工作区");
+    assert_git(
+        main.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "linked-version",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fs::write(linked.join("flow.yaml"), "name: linked\n").unwrap();
+    fs::write(linked.join("unrelated.txt"), "staged in linked worktree\n").unwrap();
+    assert_git(&linked, &["add", "unrelated.txt"]);
+
+    create_pair_version(
+        &linked,
+        "flow.yaml",
+        Some("flow.hermes.yaml"),
+        "linked pair",
+    )
+    .unwrap();
+
+    assert_eq!(assert_git(main.path(), &["rev-parse", "HEAD"]), main_head);
+    assert_eq!(
+        fs::read(main.path().join(".git/index")).unwrap(),
+        main_index
+    );
+    let linked_commit = assert_git(&linked, &["show", "--pretty=", "--name-only", "HEAD"]);
+    assert!(linked_commit.contains("flow.yaml"));
+    assert!(!linked_commit.contains("unrelated.txt"));
+    assert_eq!(
+        assert_git(&linked, &["diff", "--cached", "--name-only"]).trim(),
+        "unrelated.txt"
+    );
+    assert_no_mutation_residue(&linked);
+}
+
+#[test]
 fn records_a_deleted_companion() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     assert_git(root.path(), &["add", "."]);
@@ -207,7 +324,7 @@ fn records_a_deleted_companion() {
 
 #[test]
 fn preserves_unrelated_staged_unstaged_and_untracked_work() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     fs::write(root.path().join("staged.txt"), "base\n").unwrap();
@@ -234,10 +351,35 @@ fn preserves_unrelated_staged_unstaged_and_untracked_work() {
     .unwrap();
 
     let committed = assert_git(root.path(), &["show", "--pretty=", "--name-only", "HEAD"]);
-    assert!(committed.contains("flow.yaml"));
-    assert!(!committed.contains("staged.txt"));
+    let committed_paths = committed.lines().collect::<Vec<_>>();
+    assert!(committed_paths.contains(&"flow.yaml"));
+    assert!(!committed_paths.contains(&"staged.txt"));
+    assert!(!committed_paths.contains(&"unstaged.txt"));
+    assert!(!committed_paths.contains(&"untracked.txt"));
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:unstaged.txt"]),
+        "base\n"
+    );
+    assert!(!git(root.path(), &["cat-file", "-e", "HEAD:untracked.txt"])
+        .status
+        .success());
     let staged = assert_git(root.path(), &["diff", "--cached", "--", "staged.txt"]);
     assert!(staged.contains("-base\n+staged change\n"));
+    assert_eq!(
+        assert_git(
+            root.path(),
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                "staged.txt",
+                "unstaged.txt",
+                "untracked.txt",
+            ],
+        ),
+        "M  staged.txt\n M unstaged.txt\n?? untracked.txt\n"
+    );
     assert_eq!(
         fs::read_to_string(root.path().join("unstaged.txt")).unwrap(),
         "unstaged change\n"
@@ -246,11 +388,12 @@ fn preserves_unrelated_staged_unstaged_and_untracked_work() {
         fs::read_to_string(root.path().join("untracked.txt")).unwrap(),
         "untracked\n"
     );
+    assert_no_mutation_residue(root.path());
 }
 
 #[test]
 fn rejects_nothing_to_commit() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     assert_git(root.path(), &["add", "."]);
@@ -264,7 +407,7 @@ fn rejects_nothing_to_commit() {
 
 #[test]
 fn rejects_missing_identity_before_mutating_the_index() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = tempdir().unwrap();
     assert_git(root.path(), &["init", "-b", "main"]);
     write_pair(root.path());
@@ -286,7 +429,7 @@ fn rejects_missing_identity_before_mutating_the_index() {
 fn a_rejected_commit_hook_returns_diagnostics_without_committing() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     let hook = root.path().join(".git/hooks/pre-commit");
@@ -314,7 +457,7 @@ fn a_rejected_commit_hook_returns_diagnostics_without_committing() {
 fn hook_cannot_broaden_pair_commit_or_mutate_the_real_index() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     fs::write(root.path().join("tracked.txt"), "base\n").unwrap();
@@ -361,7 +504,7 @@ fn hook_cannot_broaden_pair_commit_or_mutate_the_real_index() {
 fn hooks_cannot_change_pair_tree_or_stage_unrelated_content() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     for scenario in ["pair", "message-hooks"] {
         let root = repository();
         write_pair(root.path());
@@ -423,7 +566,7 @@ fn hooks_cannot_change_pair_tree_or_stage_unrelated_content() {
 fn hooks_run_in_git_order_with_exact_arguments_and_post_commit_is_advisory() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     assert_git(root.path(), &["add", "."]);
@@ -484,7 +627,7 @@ fn hooks_run_in_git_order_with_exact_arguments_and_post_commit_is_advisory() {
 #[cfg(unix)]
 #[test]
 fn clean_filter_cannot_change_the_accepted_pair_bytes() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     fs::write(
@@ -528,7 +671,7 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
 #[cfg(unix)]
 #[test]
 fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blob() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     fs::write(
@@ -589,7 +732,7 @@ fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blo
 fn commits_untracked_contained_pair_symlinks_as_exact_link_blobs() {
     use std::os::unix::fs::symlink;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     fs::create_dir(root.path().join("targets")).unwrap();
     fs::write(
@@ -649,7 +792,7 @@ fn commits_untracked_contained_pair_symlinks_as_exact_link_blobs() {
 fn commits_existing_executable_and_mode_only_pair_entries_without_drift() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
 
     let executable = repository();
     write_pair(executable.path());
@@ -714,7 +857,7 @@ fn commits_existing_executable_and_mode_only_pair_entries_without_drift() {
 fn core_filemode_false_preserves_the_base_mode_during_content_commit() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     assert_git(root.path(), &["add", "flow.yaml", "flow.hermes.yaml"]);
@@ -748,7 +891,7 @@ fn core_filemode_false_preserves_the_base_mode_during_content_commit() {
 fn core_filemode_false_uses_644_for_untracked_exec_and_preserves_tracked_755() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
 
     let untracked = repository();
     assert_git(untracked.path(), &["config", "core.fileMode", "false"]);
@@ -802,7 +945,7 @@ fn core_filemode_false_uses_644_for_untracked_exec_and_preserves_tracked_755() {
 fn tracked_symlink_retarget_commits_link_bytes_and_target_content_only_is_not_pair_change() {
     use std::os::unix::fs::symlink;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
     fs::write(root.path().join("two.yaml"), "name: two\n").unwrap();
@@ -837,7 +980,7 @@ fn tracked_symlink_retarget_commits_link_bytes_and_target_content_only_is_not_pa
 fn rejects_escaping_symlink_before_candidate_index_staging() {
     use std::os::unix::fs::symlink;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("outside.yaml"), "name: outside\n").unwrap();
@@ -870,7 +1013,7 @@ fn rejects_escaping_symlink_before_candidate_index_staging() {
 fn hook_symlink_escape_rejects_without_ref_or_real_index_publication() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     let outside = tempdir().unwrap();
     fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
@@ -906,7 +1049,7 @@ fn hook_symlink_escape_rejects_without_ref_or_real_index_publication() {
 
 #[test]
 fn init_honors_configured_default_branch_and_local_identity_leaves_global_config_unchanged() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let config_dir = tempdir().unwrap();
     let global = config_dir.path().join("global.gitconfig");
     let original = "[init]\n\tdefaultBranch = configured-default\n[user]\n\tname = Global User\n\temail = global@example.test\n";
@@ -935,14 +1078,35 @@ fn init_honors_configured_default_branch_and_local_identity_leaves_global_config
 
 #[test]
 fn tracked_move_is_exact_and_untracked_move_is_rejected() {
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     fs::write(root.path().join("tracked old.yaml"), "name: tracked\n").unwrap();
     fs::write(root.path().join("untracked old.yaml"), "name: untracked\n").unwrap();
-    assert_git(root.path(), &["add", "tracked old.yaml"]);
+    write_pair(root.path());
+    fs::write(root.path().join("staged.txt"), "base\n").unwrap();
+    assert_git(
+        root.path(),
+        &[
+            "add",
+            "tracked old.yaml",
+            "flow.yaml",
+            "flow.hermes.yaml",
+            "staged.txt",
+        ],
+    );
     assert_git(root.path(), &["commit", "-m", "initial"]);
+    fs::write(root.path().join("staged.txt"), "preserved staged change\n").unwrap();
+    assert_git(root.path(), &["add", "staged.txt"]);
 
     move_tracked_path(root.path(), "tracked old.yaml", "tracked new.yaml").unwrap();
+    move_tracked_paths(
+        root.path(),
+        &[
+            ("flow.yaml", "renamed.yaml"),
+            ("flow.hermes.yaml", "renamed.hermes.yaml"),
+        ],
+    )
+    .unwrap();
     assert_code(
         move_tracked_path(root.path(), "untracked old.yaml", "untracked new.yaml"),
         "git_path_not_tracked",
@@ -950,8 +1114,15 @@ fn tracked_move_is_exact_and_untracked_move_is_rejected() {
 
     assert!(!root.path().join("tracked old.yaml").exists());
     assert!(root.path().join("tracked new.yaml").exists());
+    assert!(!root.path().join("flow.yaml").exists());
+    assert!(!root.path().join("flow.hermes.yaml").exists());
+    assert!(root.path().join("renamed.yaml").exists());
+    assert!(root.path().join("renamed.hermes.yaml").exists());
     assert!(root.path().join("untracked old.yaml").exists());
     assert!(!root.path().join("untracked new.yaml").exists());
+    let staged = assert_git(root.path(), &["diff", "--cached", "--name-only"]);
+    assert!(staged.lines().any(|path| path == "staged.txt"));
+    assert_no_mutation_residue(root.path());
 }
 
 #[cfg(unix)]
@@ -959,7 +1130,7 @@ fn tracked_move_is_exact_and_untracked_move_is_rejected() {
 fn rejected_hook_output_is_bounded() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment = ENVIRONMENT.lock().unwrap();
+    let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
     let hook = root.path().join(".git/hooks/pre-commit");

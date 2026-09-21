@@ -136,18 +136,139 @@ describe('Git inspection lifecycle', () => {
   it('resets without a workspace, refreshes repository-only without a pair, and refreshes the pair when open', async () => {
     const controller = {
       reset: vi.fn(),
+      activateWorkspace: vi.fn(async () => undefined),
       refreshRepository: vi.fn(async () => undefined),
       refreshPair: vi.fn(async () => undefined),
+      refreshWorkspaceMetadata: vi.fn(async () => undefined),
     }
-    await synchronizeGitLifecycle(controller, { workspaceId: null, pair: null })
+    const repository = { root: '/repo', branch: 'main', detachedHead: null }
+    await synchronizeGitLifecycle(controller, { workspaceId: null, repository: null, pair: null })
     expect(controller.reset).toHaveBeenCalledOnce()
 
-    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', pair: null })
-    expect(controller.refreshRepository).toHaveBeenCalledOnce()
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair: null })
+    expect(controller.activateWorkspace).toHaveBeenCalledWith('workspace', repository)
+    expect(controller.refreshRepository).not.toHaveBeenCalled()
 
     const pair = { definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' }
-    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', pair })
-    expect(controller.refreshPair).toHaveBeenCalledWith(pair)
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair })
+    expect(controller.refreshPair).toHaveBeenCalledWith(pair, 'workspace')
+  })
+
+  it('seeds repository status without detection and prevents a superseded workspace from starting pair inspection', async () => {
+    const native = nativeFixture()
+    const oldStatus = deferred<{ entries: readonly never[] }>()
+    vi.mocked(native.gitStatus).mockReturnValueOnce(oldStatus.promise).mockResolvedValueOnce({ entries: [] })
+    const controller = createGitInspectionController(native)
+    const activated = controller as typeof controller & {
+      activateWorkspace(
+        workspaceId: string,
+        repository: { root: string; branch: string | null; detachedHead: string | null },
+      ): Promise<void>
+      refreshPair(pair: { definitionPath: string; companionPath: string | null }, workspaceId: string): Promise<void>
+    }
+    expect(typeof activated.activateWorkspace).toBe('function')
+
+    const oldActivation = activated.activateWorkspace('old', {
+      root: '/old-repo',
+      branch: 'old',
+      detachedHead: null,
+    })
+    await vi.waitFor(() => expect(native.gitStatus).toHaveBeenCalledWith('/old-repo'))
+    await activated.activateWorkspace('new', { root: '/new-repo', branch: 'main', detachedHead: null })
+    await activated.refreshPair({ definitionPath: 'stale.yaml', companionPath: null }, 'old')
+    oldStatus.resolve({ entries: [] })
+    await oldActivation
+
+    expect(native.gitDetect).not.toHaveBeenCalled()
+    expect(native.gitStatus).toHaveBeenCalledTimes(2)
+    expect(native.gitDiffPair).not.toHaveBeenCalled()
+    expect(native.gitHistoryPair).not.toHaveBeenCalled()
+    expect($gitState.get().inspection.repository).toEqual({ root: '/new-repo', branch: 'main', detachedHead: null })
+  })
+
+  it('upgrades immediate pair activation on the seeded workspace without detecting or duplicating status', async () => {
+    const native = nativeFixture()
+    const controller = createGitInspectionController(native)
+    const repository = { root: '/repo', branch: 'main', detachedHead: null }
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair })
+
+    expect(native.gitDetect).not.toHaveBeenCalled()
+    expect(native.gitStatus).toHaveBeenCalledTimes(1)
+    expect(native.gitDiffPair).toHaveBeenCalledOnce()
+    expect(native.gitHistoryPair).toHaveBeenCalledOnce()
+    expect($gitState.get().inspection.repository).toEqual(repository)
+    expect($gitState.get().inspection.pair).toEqual(pair)
+  })
+
+  it('retires pair authority and publishes repository status when the same seeded workspace closes its pair', async () => {
+    const native = nativeFixture()
+    vi.mocked(native.gitStatus).mockResolvedValue({
+      entries: [{ path: 'other.txt', index: ' ', worktree: 'M', untracked: false }],
+    })
+    const controller = createGitInspectionController(native)
+    const repository = { root: '/repo', branch: 'main', detachedHead: null }
+    const pair = { definitionPath: 'flow.yaml', companionPath: 'flow.hermes.yaml' }
+
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair })
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository, pair: null })
+
+    expect(native.gitDetect).not.toHaveBeenCalled()
+    expect(native.gitStatus).toHaveBeenCalledTimes(2)
+    expect(native.gitRevokeHistoryAuthorization).toHaveBeenCalledWith('default-token')
+    expect(native.gitRevokeVersionAuthorization).toHaveBeenCalledWith('default-version-token')
+    expect(native.gitDisposeHistorySession).toHaveBeenCalledWith(1)
+    expect($gitState.get().inspection).toMatchObject({
+      repository,
+      pair: null,
+      status: { entries: [{ path: 'other.txt', index: ' ', worktree: 'M', untracked: false }] },
+      diff: { working: '', index: '', authorizationToken: '' },
+      history: [],
+      historyAuthorizationToken: null,
+    })
+  })
+
+  it('uses only the latest detected descriptor when Git metadata refreshes race', async () => {
+    const native = nativeFixture()
+    const controller = createGitInspectionController(native)
+    const initialRepository = { root: '/repo', branch: 'main', detachedHead: null }
+    const detachedRepository = { root: '/repo', branch: null, detachedHead: '123456789abc' }
+    const staleRepository = { root: '/stale-repo', branch: 'stale', detachedHead: null }
+    const pair = { definitionPath: 'flow.yaml', companionPath: null }
+    const staleDetection = deferred<typeof staleRepository>()
+    vi.mocked(native.gitDetect).mockReturnValueOnce(staleDetection.promise).mockResolvedValueOnce(detachedRepository)
+    await synchronizeGitLifecycle(controller, { workspaceId: 'workspace', repository: initialRepository, pair })
+
+    const refreshMetadata = Reflect.get(controller, 'refreshWorkspaceMetadata') as
+      | undefined
+      | ((
+          workspaceId: string,
+          pairInput: { readonly definitionPath: string; readonly companionPath: string | null },
+        ) => Promise<unknown>)
+    expect(refreshMetadata).toBeTypeOf('function')
+    if (!refreshMetadata) return
+
+    const staleRefresh = refreshMetadata.call(controller, 'workspace', pair)
+    await vi.waitFor(() => expect(native.gitDetect).toHaveBeenCalledTimes(1))
+    await refreshMetadata.call(controller, 'workspace', pair)
+    staleDetection.resolve(staleRepository)
+    await staleRefresh
+
+    expect(native.gitDetect).toHaveBeenCalledTimes(2)
+    expect(native.gitStatus).toHaveBeenCalledTimes(2)
+    expect(native.gitDiffPair).toHaveBeenCalledTimes(2)
+    expect(native.gitHistoryPair).toHaveBeenCalledTimes(2)
+    expect(native.gitStatus).not.toHaveBeenCalledWith('/stale-repo')
+    expect(native.gitDiffPair).toHaveBeenLastCalledWith(
+      '/repo',
+      'flow.yaml',
+      null,
+      expect.any(Number),
+      expect.any(Number),
+    )
+    expect($gitState.get().inspection.repository).toEqual(detachedRepository)
+    expect($gitState.get().inspection.pair).toEqual(pair)
   })
 
   it('prevents an old controller from publishing or revoking a newly mounted controller winner', async () => {

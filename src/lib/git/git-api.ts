@@ -1,9 +1,12 @@
 import type { GitNativeBridge } from '$src/lib/native/types'
-import type { GitInspection, GitPairPaths, GitPairSnapshot } from './types'
+import type { GitInspection, GitPairPaths, GitPairSnapshot, GitRepository } from './types'
 import { emptyGitInspection } from './types'
 
-export async function inspectGitRepository(native: GitNativeBridge): Promise<GitInspection> {
-  const repository = await native.gitDetect()
+export async function inspectGitRepository(
+  native: GitNativeBridge,
+  seededRepository?: GitRepository | null,
+): Promise<GitInspection> {
+  const repository = seededRepository === undefined ? await native.gitDetect() : seededRepository
   if (!repository) return emptyGitInspection
   return {
     pair: null,
@@ -18,8 +21,9 @@ export async function inspectGitPair(
   native: GitNativeBridge,
   pair: GitPairPaths,
   acquireActivation: () => Promise<{ readonly controllerEpoch: number; readonly requestGeneration: number }>,
+  seededRepository?: GitRepository | null,
 ): Promise<GitInspection> {
-  const repository = await native.gitDetect()
+  const repository = seededRepository === undefined ? await native.gitDetect() : seededRepository
   if (!repository) return emptyGitInspection
   const activation = await acquireActivation()
   const status = await native.gitStatus(repository.root)

@@ -3,6 +3,7 @@ import { Position, getSmoothStepPath } from '@xyflow/svelte'
 import { describe, expect, it } from 'vitest'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import workflowEdgeSource from './WorkflowEdge.svelte?raw'
+import { CANVAS_RENDER_DENSITY_RELATIONSHIP } from './types'
 
 function renderEdge(
   options: {
@@ -12,41 +13,61 @@ function renderEdge(
     readOnly?: boolean
     emphasized?: boolean
     deemphasized?: boolean
+    overview?: boolean
   } = {},
 ) {
   return render(WorkflowEdge, {
-    id: 'dependency:collect->review',
-    sourceX: 0,
-    sourceY: 0,
-    targetX: 320,
-    targetY: 80,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    markerEnd: 'url(#arrow)',
-    selected: options.selected,
-    data: {
-      stale: options.stale ?? false,
-      readOnly: options.readOnly ?? false,
-      emphasized: options.emphasized,
-      deemphasized: options.deemphasized,
-      ...(options.routed
-        ? {
-            route: {
-              edgeId: 'dependency:collect->review',
-              points: [
-                { x: 20, y: 20 },
-                { x: 120, y: 20 },
-                { x: 120, y: 100 },
-                { x: 300, y: 100 },
-              ],
-            },
-          }
-        : {}),
-    },
-  } as never)
+    props: {
+      id: 'dependency:collect->review',
+      sourceX: 0,
+      sourceY: 0,
+      targetX: 320,
+      targetY: 80,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      markerEnd: 'url(#arrow)',
+      selected: options.selected,
+      data: {
+        stale: options.stale ?? false,
+        readOnly: options.readOnly ?? false,
+        emphasized: options.emphasized,
+        deemphasized: options.deemphasized,
+        ...(options.routed
+          ? {
+              route: {
+                edgeId: 'dependency:collect->review',
+                points: [
+                  { x: 20, y: 20 },
+                  { x: 120, y: 20 },
+                  { x: 120, y: 100 },
+                  { x: 300, y: 100 },
+                ],
+              },
+            }
+          : {}),
+      },
+    } as never,
+    context: new Map([
+      [
+        CANVAS_RENDER_DENSITY_RELATIONSHIP,
+        {
+          overview: () => options.overview ?? false,
+          portsVisible: () => !options.overview,
+        },
+      ],
+    ]),
+  })
 }
 
 describe('WorkflowEdge routed rendering', () => {
+  it('keeps overview edges attached to the normal, selected, and forced-color stroke rules', () => {
+    const { container } = renderEdge({ overview: true, routed: true, selected: true, stale: true })
+    const edge = container.querySelector('.workflow-edge-overview')!
+    expect(edge).toHaveClass('svelte-flow__edge-path', 'workflow-edge', 'selected', 'stale')
+    expect(edge).toHaveAttribute('marker-end', 'url(#arrow)')
+    expect(edge.getAttribute('d')).not.toBe('')
+  })
+
   it('[RG4] renders the routed path with casing below the semantic stroke and no casing marker', () => {
     const { container } = renderEdge({ routed: true })
     const casing = container.querySelector<SVGPathElement>('.workflow-edge-casing')!

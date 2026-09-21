@@ -11,8 +11,8 @@ test('creates an editable copy from every bundled example and opens contextual o
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
 
   const copyButtons = page.getByRole('button', { name: /^Create Editable Copy:/ })
+  await expect.poll(() => copyButtons.count()).toBeGreaterThanOrEqual(10)
   const total = await copyButtons.count()
-  expect(total).toBeGreaterThanOrEqual(10)
   for (let index = total - 1; index >= 0; index -= 1) await copyButtons.nth(index).click()
 
   await expect

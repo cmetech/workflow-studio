@@ -1,11 +1,12 @@
 import type { ValidationIssue } from '$src/lib/documents/types'
 import type { ProjectedGraph } from '$src/lib/projection/types'
-import type { CanvasPosition } from './types'
+import type { CanvasPosition, LoopGroupNodeSummary } from './types'
 
 export interface CanvasProjectionRefreshSnapshot {
   readonly routingFingerprint?: string | undefined
   readonly projection: ProjectedGraph
   readonly issues: readonly ValidationIssue[]
+  readonly groupSummaries: Readonly<Record<string, LoopGroupNodeSummary>>
   readonly workflowIdentity: string
   readonly stale: boolean
   readonly readOnly: boolean
@@ -23,6 +24,7 @@ export function shouldRefreshCanvasProjection(
     previous.projection !== next.projection ||
     previous.routingFingerprint !== next.routingFingerprint ||
     previous.issues !== next.issues ||
+    previous.groupSummaries !== next.groupSummaries ||
     previous.workflowIdentity !== next.workflowIdentity ||
     previous.stale !== next.stale ||
     previous.readOnly !== next.readOnly ||

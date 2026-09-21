@@ -95,6 +95,28 @@ describe('DeleteImpactDialog', () => {
     opener.remove()
   })
 
+  it('prevents a second delete while the authoritative mutation is pending', async () => {
+    let finishDelete!: () => void
+    const deletion = new Promise<void>((resolve) => {
+      finishDelete = resolve
+    })
+    const onConfirm = vi.fn(() => deletion)
+    render(DeleteImpactDialog, {
+      impact: { ...referencedImpact, references: [] },
+      onConfirm,
+    })
+    const confirm = screen.getByRole('button', { name: 'Delete nodes' })
+
+    await fireEvent.click(confirm)
+
+    expect(confirm).toBeDisabled()
+    await fireEvent.click(confirm)
+    expect(onConfirm).toHaveBeenCalledOnce()
+
+    finishDelete()
+    await tick()
+  })
+
   it('traps focus and cancels with Escape', async () => {
     const opener = document.createElement('button')
     document.body.append(opener)

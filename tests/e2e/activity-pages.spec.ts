@@ -79,6 +79,8 @@ test('preserves exact authoring state across full-workbench page navigation', as
 test('keeps the inactive authoring graph laid out and isolated behind full-workbench pages', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await openSeededPair(page)
+  await expect(page.locator('.svelte-flow__node')).toHaveCount(2)
+  await expect(page.locator('.svelte-flow__edge')).toHaveCount(1)
 
   const retainedAuthoring = await page.evaluateHandle(() => ({
     workspace: document.querySelector<HTMLElement>('[aria-label="Workflow workspace"]')!,
@@ -91,6 +93,7 @@ test('keeps the inactive authoring graph laid out and isolated behind full-workb
   const settingsPage = page.getByRole('region', { name: 'Settings' })
   const contracts = settingsPage.getByRole('tab', { name: 'Workflow Contracts' })
   await expect(settingsPage).toBeVisible()
+  await expect(contracts).toBeVisible()
 
   const inactiveState = await retainedAuthoring.evaluate((retained) => {
     const workspaceBounds = retained.workspace.getBoundingClientRect()

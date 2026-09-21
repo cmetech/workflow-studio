@@ -7,6 +7,11 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    static READ_PROBE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
@@ -25,11 +30,12 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
-};
+use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
 use super::{GitError, GitResult};
+#[cfg(windows)]
+use crate::native_process::background_creation_flags;
+use crate::platform_paths::subprocess_path;
 
 const MAX_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,9 +43,7 @@ const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) enum ReadOperation<'a> {
     Version,
-    RepositoryRoot,
-    GitDirectory,
-    GitCommonDirectory,
+    RepositoryContext,
     Branch,
     HeadReference,
     ShortHead,
@@ -148,7 +152,19 @@ impl CommandOutput {
 }
 
 pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<CommandOutput> {
-    run_command(build_read_command(root, operation), READ_TIMEOUT, None)
+    #[cfg(test)]
+    READ_PROBE_COUNT.with(|count| count.set(count.get() + 1));
+    run_command(build_read_command(root, operation)?, READ_TIMEOUT, None)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_read_probe_count_for_test() {
+    READ_PROBE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn read_probe_count_for_test() -> usize {
+    READ_PROBE_COUNT.with(std::cell::Cell::get)
 }
 
 pub(crate) fn run_mutation(
@@ -156,7 +172,7 @@ pub(crate) fn run_mutation(
     operation: MutationOperation<'_>,
 ) -> GitResult<CommandOutput> {
     run_command(
-        build_mutation_command(root, operation),
+        build_mutation_command(root, operation)?,
         MUTATION_TIMEOUT,
         None,
     )
@@ -167,11 +183,11 @@ pub(crate) fn run_mutation_with_index(
     operation: MutationOperation<'_>,
     index_path: &Path,
 ) -> GitResult<CommandOutput> {
-    let mut command = build_mutation_command(root, operation);
-    command
-        .env("GIT_INDEX_FILE", index_path)
-        .env("GIT_EDITOR", ":");
-    run_command(command, MUTATION_TIMEOUT, None)
+    run_command(
+        build_mutation_with_index_command(root, operation, index_path)?,
+        MUTATION_TIMEOUT,
+        None,
+    )
 }
 
 fn run_command(
@@ -186,7 +202,7 @@ fn run_command(
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
-    command.creation_flags(CREATE_SUSPENDED);
+    command.creation_flags(background_creation_flags());
 
     let started = Instant::now();
     let mut child = command.spawn().map_err(|_| {
@@ -420,11 +436,12 @@ fn primary_thread_for(process_id: u32) -> GitResult<HANDLE> {
     found.ok_or_else(|| process_containment_error("open the suspended Git primary thread"))
 }
 
-pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> Command {
+pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> GitResult<Command> {
     let raw_objects = matches!(
         &operation,
         ReadOperation::RawTreeEntry { .. } | ReadOperation::RawBlob { .. }
     );
+    let root = git_subprocess_path(root)?;
     let mut command = Command::new("git");
     command
         .arg("--literal-pathspecs")
@@ -470,21 +487,23 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> C
     if raw_objects {
         command.env("GIT_NO_REPLACE_OBJECTS", "1");
     }
-    command
+    Ok(command)
 }
 
-fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Command {
+fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> GitResult<Command> {
     let mut command = Command::new("git");
     command.arg("--literal-pathspecs");
     match operation {
         MutationOperation::Init { workspace_root } => {
-            command.arg("init").arg(workspace_root);
+            command
+                .arg("init")
+                .arg(git_subprocess_path(workspace_root)?);
         }
         operation => {
             command
                 .arg("-C")
-                .arg(root)
-                .args(mutation_arguments(operation));
+                .arg(git_subprocess_path(root)?)
+                .args(mutation_arguments(operation)?);
         }
     }
     for key in [
@@ -520,39 +539,65 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> Comm
         .env("GIT_PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C");
+    Ok(command)
+}
+
+fn build_mutation_with_index_command(
+    root: &Path,
+    operation: MutationOperation<'_>,
+    index_path: &Path,
+) -> GitResult<Command> {
+    let index_path = git_subprocess_path(index_path)?;
+    let mut command = build_mutation_command(root, operation)?;
     command
+        .env("GIT_INDEX_FILE", index_path)
+        .env("GIT_EDITOR", ":");
+    Ok(command)
 }
 
 #[cfg(test)]
 pub(crate) fn read_command_arguments_for_test(
     root: &Path,
     operation: ReadOperation<'_>,
-) -> Vec<String> {
-    build_read_command(root, operation)
+) -> GitResult<Vec<String>> {
+    Ok(build_read_command(root, operation)?
         .get_args()
         .map(|argument| argument.to_string_lossy().into_owned())
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
 pub(crate) fn mutation_command_arguments_for_test(
     root: &Path,
     operation: MutationOperation<'_>,
-) -> Vec<String> {
-    build_mutation_command(root, operation)
+) -> GitResult<Vec<String>> {
+    Ok(build_mutation_command(root, operation)?
         .get_args()
         .map(|argument| argument.to_string_lossy().into_owned())
-        .collect()
+        .collect())
+}
+
+#[cfg(test)]
+pub(crate) fn mutation_command_with_index_for_test(
+    root: &Path,
+    operation: MutationOperation<'_>,
+    index_path: &Path,
+) -> GitResult<Command> {
+    build_mutation_with_index_command(root, operation, index_path)
 }
 
 fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     match operation {
         ReadOperation::Version => strings(&["--version"]),
-        ReadOperation::RepositoryRoot => strings(&["rev-parse", "--show-toplevel"]),
-        ReadOperation::GitDirectory => strings(&["rev-parse", "--absolute-git-dir"]),
-        ReadOperation::GitCommonDirectory => {
-            strings(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        }
+        ReadOperation::RepositoryContext => strings(&[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref=strict",
+            "HEAD",
+        ]),
         ReadOperation::Branch => strings(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
         ReadOperation::HeadReference => strings(&["symbolic-ref", "--quiet", "HEAD"]),
         ReadOperation::ShortHead => strings(&["rev-parse", "--short=12", "HEAD"]),
@@ -596,7 +641,8 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
                 "--no-textconv",
                 "--no-color",
                 "--",
-                "/dev/null",
+                // A real C:\dev\null directory shadows Git's POSIX spelling on Windows.
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
             ]);
             values.push(path.into());
             values
@@ -673,8 +719,8 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
     }
 }
 
-fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
-    match operation {
+fn mutation_arguments(operation: MutationOperation<'_>) -> GitResult<Vec<OsString>> {
+    Ok(match operation {
         MutationOperation::Init { .. } => unreachable!("init does not use -C arguments"),
         MutationOperation::SetLocalConfig { key, value } => {
             let mut values = strings(&["config", "--local"]);
@@ -701,7 +747,7 @@ fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
             values.push(name.into());
             if let Some(message_file) = message_file {
                 values.push("--".into());
-                values.push(message_file.as_os_str().into());
+                values.push(git_subprocess_path(message_file)?);
                 if let Some(source) = source {
                     values.push(source.into());
                 }
@@ -720,7 +766,7 @@ fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
                 values.push(parent.into());
             }
             values.push("-F".into());
-            values.push(message_file.as_os_str().into());
+            values.push(git_subprocess_path(message_file)?);
             values
         }
         MutationOperation::UpdateRef {
@@ -744,7 +790,16 @@ fn mutation_arguments(operation: MutationOperation<'_>) -> Vec<OsString> {
             values.extend([OsString::from(source), OsString::from(destination)]);
             values
         }
-    }
+    })
+}
+
+fn git_subprocess_path(path: &Path) -> GitResult<OsString> {
+    subprocess_path(path).map_err(|_| {
+        GitError::new(
+            "git_path_unsupported",
+            "A path cannot be passed safely to the local Git process.",
+        )
+    })
 }
 
 fn strings(values: &[&str]) -> Vec<OsString> {
@@ -783,4 +838,33 @@ pub(crate) fn read_for_test(reader: impl Read) -> GitResult<Vec<u8>> {
         Arc::new(AtomicBool::new(false)),
     )
     .map_err(|_| GitError::new("git_read_failed", "Git output could not be read."))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::run_command;
+    use crate::native_process::test_support::{
+        assert_hidden_and_descendant_terminated, fixture_command, run_fixture,
+    };
+    use std::time::{Duration, Instant};
+
+    const FIXTURE_TEST: &str = "git::runner::tests::runner_background_child_fixture";
+
+    #[test]
+    fn runner_background_child_fixture() {
+        run_fixture(FIXTURE_TEST, "git");
+    }
+
+    #[test]
+    fn runner_hides_console_and_terminates_descendants_on_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = fixture_command(FIXTURE_TEST, "git", directory.path());
+        let started = Instant::now();
+
+        let error = run_command(command, Duration::from_secs(2), None).unwrap_err();
+
+        assert_eq!(error.code, "git_timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_hidden_and_descendant_terminated(directory.path());
+    }
 }

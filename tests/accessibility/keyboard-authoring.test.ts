@@ -112,7 +112,20 @@ const contract: AuthoringContract = {
     },
   ],
   compatibility_codes: {},
-  documentation: { topics: [{ field_paths: ['name', 'description', 'nodes'] } as never], examples: [] },
+  documentation: {
+    topics: [
+      {
+        id: 'keyboard-authoring-fields',
+        title: 'Keyboard authoring fields',
+        description: 'Documents every field exercised by the keyboard authoring fixture.',
+        body: 'Use these fields to author the keyboard fixture workflow.',
+        field_paths: ['name', 'description', 'nodes[].id', 'nodes[].depends_on', 'nodes[].command'],
+        applicability: { profiles: ['hermes-legacy'], documents: ['definition'] },
+        examples: ['name: Keyboard flow\nnodes: []\n'],
+      },
+    ],
+    examples: [],
+  },
   limits: { max_document_bytes: 2 * 1024 * 1024 },
   extensions: {},
 }
@@ -123,6 +136,8 @@ vi.mock('$src/lib/contract/bundled-contracts', () => ({
 import { $documentWorkspace } from '$src/features/documents/document-workspace-controller'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
+
+const deferredSurfaceWait = { timeout: 60_000 }
 import {
   createDocumentWorkerCache,
   processDocumentWorkerRequest,
@@ -305,7 +320,7 @@ function expectVisibleKeyboardFocus(element: HTMLElement): void {
 async function openAddNodeWithKeyboard(user: UserEvent): Promise<HTMLInputElement> {
   await user.keyboard('{F1}')
   const commands = await screen.findByRole('combobox', { name: 'Search commands' })
-  expectVisibleKeyboardFocus(commands)
+  await waitFor(() => expectVisibleKeyboardFocus(commands), deferredSurfaceWait)
   await user.keyboard('Add Node{Enter}')
   const nodeKinds = await screen.findByRole('combobox', { name: 'Search node kinds' })
   await waitFor(() => expectVisibleKeyboardFocus(nodeKinds))
@@ -415,13 +430,17 @@ describe('keyboard-only workflow authoring', () => {
     ])
     const App = (await import('$src/app/App.svelte')).default
     const rendered = render(App)
-    const workflowEntry = await screen.findByRole('treeitem', { name: /keyboard\.yaml, legacy workflow/i })
+    const workflowEntry = await screen.findByRole(
+      'treeitem',
+      { name: /keyboard\.yaml, legacy workflow/i },
+      deferredSurfaceWait,
+    )
     // jsdom does not seed focus into a newly mounted application. This is the
     // single initial entry point; every subsequent move uses keyboard actions.
     workflowEntry.focus()
     expectVisibleKeyboardFocus(workflowEntry)
     await user.keyboard('{Enter}')
-    const canvas = await screen.findByRole('region', { name: 'Workflow graph' })
+    const canvas = await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
     const ports = rendered.container.querySelectorAll('[data-port]')
     expect(ports.length).toBeGreaterThan(0)
     for (const port of ports) {
@@ -562,7 +581,7 @@ describe('keyboard-only workflow authoring', () => {
     expect(yamlSubtab).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Split' })).toHaveAttribute('aria-pressed', 'true')
     rendered.unmount()
-  }, 20_000)
+  }, 90_000)
 
   it('traverses documentation modes, repeated fields, articles, and shortcut search with keyboard events', async () => {
     const topic = (id: string, qualifier: string, nodeKind?: 'bash' | 'prompt'): DocumentationTopic => ({

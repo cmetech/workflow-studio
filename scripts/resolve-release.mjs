@@ -2,6 +2,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 
 const MODES = new Set(['absent', 'exact-draft', 'validate-json'])
 const OUTPUTS = new Set(['id', 'json'])
@@ -40,13 +41,9 @@ function required(options, name) {
   return value
 }
 
-function listReleases(repository) {
+function listReleases(repository, runGh) {
   const endpoint = `repos/${repository}/releases?per_page=100`
-  const result = spawnSync('gh', ['api', '--paginate', '--slurp', endpoint], {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    shell: false,
-  })
+  const result = runGh(['api', '--paginate', '--slurp', endpoint])
   if (result.error) {
     throw new Error(`GitHub release list failed: ${result.error.message}`)
   }
@@ -140,14 +137,14 @@ function validateExpectedId(release, expectedIdOption, tag) {
   }
 }
 
-function writeRelease(release, output) {
-  process.stdout.write(output === 'id' ? `${release.id}\n` : `${JSON.stringify(release)}\n`)
+function serializeRelease(release, output) {
+  return output === 'id' ? `${release.id}\n` : `${JSON.stringify(release)}\n`
 }
 
-function readReleaseJson(input) {
+function readReleaseJson(input, readInput) {
   let serialized
   try {
-    serialized = readFileSync(input === '-' ? 0 : input, 'utf8')
+    serialized = readInput(input)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     throw new Error(`Could not read release JSON: ${message}`)
@@ -159,8 +156,11 @@ function readReleaseJson(input) {
   }
 }
 
-function main() {
-  const options = parseOptions(process.argv.slice(2))
+function resolveReleaseText(arguments_, dependencies) {
+  const { runGh, readInput } = dependencies ?? {}
+  if (typeof runGh !== 'function') throw new Error('Missing required injected dependency: runGh')
+  if (typeof readInput !== 'function') throw new Error('Missing required injected dependency: readInput')
+  const options = parseOptions(arguments_)
   const mode = required(options, 'mode')
   const tag = required(options, 'tag')
   const expectedCommit = required(options, 'expected-commit')
@@ -173,24 +173,23 @@ function main() {
 
   if (mode === 'validate-json') {
     if (options.has('repository')) throw new Error('--repository is not supported in validate-json mode')
-    const release = validateRelease(readReleaseJson(required(options, 'input')), tag, expectedCommit)
+    const release = validateRelease(readReleaseJson(required(options, 'input'), readInput), tag, expectedCommit)
     validateExpectedId(release, expectedIdOption, tag)
     if (release.assets.length !== 0) {
       throw new Error(`Release tagged ${tag} must contain exactly zero assets`)
     }
-    writeRelease(release, output)
-    return
+    return serializeRelease(release, output)
   }
 
   if (options.has('input')) throw new Error('--input is supported only in validate-json mode')
   const repository = required(options, 'repository')
   if (!REPOSITORY_PATTERN.test(repository)) throw new Error(`Invalid repository: ${repository}`)
-  const matching = listReleases(repository).filter((release) => release?.tag_name === tag)
+  const matching = listReleases(repository, runGh).filter((release) => release?.tag_name === tag)
   if (mode === 'absent') {
     if (matching.length !== 0) {
       throw new Error(`Expected no release tagged ${tag}; found ${matching.length}`)
     }
-    return
+    return ''
   }
   if (matching.length !== 1) {
     if (matching.length === 0) {
@@ -201,13 +200,37 @@ function main() {
 
   const release = validateRelease(matching[0], tag, expectedCommit)
   validateExpectedId(release, expectedIdOption, tag)
-  writeRelease(release, output)
+  return serializeRelease(release, output)
 }
 
-try {
-  main()
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`Release resolution failed: ${message}\n`)
-  process.exitCode = error instanceof NoMatchingReleaseError ? 3 : 1
+export function resolveRelease(arguments_, dependencies) {
+  try {
+    return { status: 0, stdout: resolveReleaseText(arguments_, dependencies), stderr: '' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      status: error instanceof NoMatchingReleaseError ? 3 : 1,
+      stdout: '',
+      stderr: `Release resolution failed: ${message}\n`,
+    }
+  }
+}
+
+function resolveCommandLineRelease(arguments_) {
+  return resolveRelease(arguments_, {
+    runGh: (ghArguments) =>
+      spawnSync('gh', ghArguments, {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        shell: false,
+      }),
+    readInput: (input) => readFileSync(input === '-' ? 0 : input, 'utf8'),
+  })
+}
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const result = resolveCommandLineRelease(process.argv.slice(2))
+  process.stdout.write(result.stdout)
+  process.stderr.write(result.stderr)
+  process.exitCode = result.status
 }

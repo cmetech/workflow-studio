@@ -19,12 +19,18 @@
     graphFingerprint,
     routingFingerprint,
     resolveCurrentRouting,
-    validateRoutedLayout,
+    validateRoutedLayoutSafety,
     MAX_ROUTING_COORDINATE,
   } from './routed-layout'
   import CanvasViewportController from './CanvasViewportController.svelte'
   import type { ScopeLayoutV1 } from '$src/lib/layout/types'
   import { recordEditorMetric } from '$src/lib/metrics/editor-metrics'
+  import {
+    beginArrangeMetrics,
+    finishArrangeMetrics,
+    recordArrangePhase,
+    type ArrangeMetricsAttempt,
+  } from '$src/lib/metrics/arrange-metrics'
   import type { ValidationIssue } from '$src/lib/documents/types'
   import { VISUAL_NODE_CAPACITY, VISUAL_EDGE_CAPACITY, type ProjectedGraph } from '$src/lib/projection/types'
   import {
@@ -38,6 +44,8 @@
   import { CANVAS_NODE_HEIGHT, CANVAS_NODE_WIDTH } from './types'
   import {
     CANVAS_INSPECTOR_RELATIONSHIP,
+    CANVAS_RENDER_DENSITY_RELATIONSHIP,
+    type CanvasRenderDensityRelationship,
     type CanvasDragDetail,
     type CanvasEdge,
     type CanvasEdgeData,
@@ -111,6 +119,12 @@
 
   type PointerSelectionGesture = 'edge' | 'surface' | 'marquee'
   type Mutable<T> = { -readonly [Key in keyof T]: T[Key] }
+  const MIN_EDGE_HOVER_ZOOM = 0.5
+  const MIN_OVERVIEW_PORT_ZOOM = 0.19
+  const DENSE_RENDER_NODE_COUNT = 100
+  // Keep capacity graphs in their lightweight semantic-zoom representation until
+  // viewport culling has reduced the number of rich node cards mounted at once.
+  const OVERVIEW_RENDER_ZOOM = 0.9
 
   let {
     commandSurface,
@@ -147,6 +161,7 @@
 
   const nodeTypes = { workflow: WorkflowNode }
   const edgeTypes = { workflow: WorkflowEdge }
+  const draggableNodeIds = $derived(new Set(projection.nodes.map(({ id }) => id)))
   const projectMemoizedCanvas = createMemoizedCanvasProjector()
   const reconcileSelection = createCanvasSelectionReconciler()
   const reconcileSurfaceEdges = createCanvasEdgeSelectionReconciler()
@@ -188,12 +203,50 @@
         routing: ScopeRoutingV1 | undefined
       }
     | undefined
+  let manualRouteRetention:
+    | {
+        readonly projection: ProjectedGraph
+        readonly workflowIdentity: string
+        readonly generation: number
+        readonly dimensions: string
+      }
+    | undefined
   let routingActivation = 0
   let dragging = $state(false)
-  const initialProjection = deriveCanvas()
+  interface PendingDrag {
+    readonly workflowIdentity: string
+    readonly generation: number
+    readonly scopeKey: ProjectedGraph['scope']['key']
+    readonly positions: readonly { readonly id: string; readonly position: CanvasPosition }[]
+  }
+  let pendingDrag: PendingDrag | undefined
+  const initialProjection = untrack(deriveCanvas)
+  const initialViewport = untrack(() => ({ ...layout.viewport }))
+  function usesCapacityRendering(): boolean {
+    return projection.capacity.nodeCount >= DENSE_RENDER_NODE_COUNT
+  }
+  let initialEdgesDeferred = untrack(usesCapacityRendering)
   let flowNodes = $state.raw<CanvasNode[]>(withAuthoritativeSelection(initialProjection.nodes))
-  let flowEdges = $state.raw<CanvasEdge[]>(initialProjection.edges)
-  let flowViewport = $state.raw<Viewport>({ x: 0, y: 0, zoom: 1 })
+  let flowEdges = $state.raw<CanvasEdge[]>(initialEdgesDeferred ? [] : initialProjection.edges)
+  let measurementNodes = $state.raw<CanvasNode[]>([])
+  let flowViewport = $state.raw<Viewport>(initialViewport)
+  let overviewRendering = $state(initialEdgesDeferred && initialViewport.zoom < OVERVIEW_RENDER_ZOOM)
+  let overviewPortsVisible = $state(!initialEdgesDeferred || initialViewport.zoom >= MIN_OVERVIEW_PORT_ZOOM)
+  let overviewRenderHold = $state(initialEdgesDeferred)
+  let portRenderHold = $state(initialEdgesDeferred)
+  let overviewRenderHoldFrame: number | undefined
+  let commandZoomFrame: number | undefined
+  const renderDensityRelationship: CanvasRenderDensityRelationship = {
+    overview: () => overviewRenderHold || overviewRendering,
+    portsVisible: () => !portRenderHold && overviewPortsVisible,
+  }
+  setContext(CANVAS_RENDER_DENSITY_RELATIONSHIP, renderDensityRelationship)
+  $effect(() => {
+    const next = usesCapacityRendering() && flowViewport.zoom < OVERVIEW_RENDER_ZOOM
+    if (overviewRendering !== next) overviewRendering = next
+    const nextPortsVisible = !usesCapacityRendering() || flowViewport.zoom >= MIN_OVERVIEW_PORT_ZOOM
+    if (overviewPortsVisible !== nextPortsVisible) overviewPortsVisible = nextPortsVisible
+  })
   let restoredWorkflowIdentity = $state<string | null>(null)
   let restoredVersion = $state(0)
   let selection = $state<readonly string[]>(canvasSelectionStore.get())
@@ -208,6 +261,15 @@
   let destroyed = false
   let ownedLayoutClient: LayoutClientLike | undefined
   let viewportController: ReturnType<typeof CanvasViewportController> | undefined
+  interface CachedNodeMeasurement {
+    readonly renderedKind: string
+    readonly width: number
+    readonly height: number
+  }
+  let measurementCacheContext = ''
+  // Ephemeral bounded performance cache; its mutations must not schedule component work.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const measurementCache = new Map<string, CachedNodeMeasurement>()
   interface ArrangeAttempt {
     readonly revision: number
     readonly projection: ProjectedGraph
@@ -219,16 +281,20 @@
     publishedPositions?: ScopeLayoutV1['nodePositions']
     releasePersistence?: () => void
     readonly client: LayoutClientLike
+    readonly metrics: ArrangeMetricsAttempt
     nodes?: readonly LayoutWorkerNode[]
     restoreMeasurementVisibility?: () => void
     cancelFrame?: () => void
     published?: boolean
+    metricsFinished?: boolean
   }
   let activeArrange = $state.raw<ArrangeAttempt | undefined>()
   let edgeSourceId = $state<string | null>(null)
   let edgeTargetIndex = $state(0)
   let reducedMotion = $state(false)
   let arrangedViewport: Viewport | undefined
+  let suppressedProgrammaticViewport: Viewport | undefined
+  let stagedScopeViewport: { readonly identity: string; readonly viewport: Viewport } | undefined
   let root: HTMLElement
   let nodeMenu = $state<{ x: number; y: number; invoker: HTMLElement; identity: string; nodeId: string } | null>(null)
   let nodeMenuElement = $state<HTMLDivElement>()
@@ -245,12 +311,13 @@
   let pendingKeyboardSelectionGesture: KeyboardSelectionGesture | null = null
   let keyboardSelectionGestureToken = 0
   let keyboardSelectionGestureExpiry: ReturnType<typeof setTimeout> | undefined
-  let pointerSelectionGesture: PointerSelectionGesture | null = null
+  let pointerSelectionGesture = $state<PointerSelectionGesture | null>(null)
   let pointerSelectionGestureExpiry: ReturnType<typeof setTimeout> | undefined
   let pendingSurfaceSelectionPayload:
     { readonly nodeIds: readonly string[]; readonly edgeIds: readonly string[] } | undefined
   let selectionPublicationQueued = false
   let surfaceSelectionPublicationQueued = false
+  let surfaceSelectionPublicationTimer: ReturnType<typeof setTimeout> | undefined
   let canvasMounted = false
   let surfaceWasInactive = false
   let restoringSurfaceSelection = false
@@ -417,6 +484,23 @@
       closeNodeMenu()
   })
 
+  $effect.pre(() => {
+    const identity = workflowIdentity
+    const staged = stagedScopeViewport
+    if (staged?.identity !== identity) return
+    stagedScopeViewport = undefined
+    untrack(() => {
+      overviewRenderHold = true
+      portRenderHold = true
+      if (overviewRenderHoldFrame !== undefined) cancelAnimationFrame(overviewRenderHoldFrame)
+      setProgrammaticViewport(staged.viewport)
+      overviewRenderHoldFrame = requestAnimationFrame(() => {
+        overviewRenderHoldFrame = undefined
+        if (workflowIdentity === identity) releaseOverviewHold()
+      })
+    })
+  })
+
   function deriveCanvas() {
     return projectMemoizedCanvas(projection, layout, {
       issues,
@@ -428,10 +512,24 @@
   }
 
   $effect(() => {
+    const dragContext = { workflowIdentity, generation: pairGeneration, scopeKey: projection.scope.key }
+    untrack(() => {
+      if (
+        pendingDrag &&
+        (pendingDrag.workflowIdentity !== dragContext.workflowIdentity ||
+          pendingDrag.generation !== dragContext.generation ||
+          pendingDrag.scopeKey !== dragContext.scopeKey)
+      )
+        clearPendingDrag()
+    })
+  })
+
+  $effect(() => {
     if (!surfaceActive) return
     const nextRefresh: CanvasProjectionRefreshSnapshot = {
       projection,
       issues,
+      groupSummaries,
       workflowIdentity,
       stale,
       readOnly,
@@ -463,9 +561,11 @@
         : projected.nodes
     const nextNodes = withAuthoritativeSelection(measuredNodes, currentNodes)
     if (nextNodes !== currentNodes) flowNodes = nextNodes
-    const currentEdges = untrack(() => flowEdges)
-    const nextEdges = withSurfaceEdgeSelection(projected.edges, currentEdges)
-    if (nextEdges !== currentEdges) flowEdges = nextEdges
+    if (!initialEdgesDeferred) {
+      const currentEdges = untrack(() => flowEdges)
+      const nextEdges = withSurfaceEdgeSelection(projected.edges, currentEdges)
+      if (nextEdges !== currentEdges) flowEdges = nextEdges
+    }
     publishCurrentEdgeEmphasis()
     replaceCanvasPositions(projected.positions)
     previousProjectionRefresh = nextRefresh
@@ -475,6 +575,20 @@
   const routingDimensions = $derived(
     JSON.stringify(flowNodes.map(({ id, measured }) => [id, measured?.width, measured?.height])),
   )
+
+  $effect(() => {
+    const dimensions = routingDimensions
+    untrack(() => {
+      if (!dimensions) return
+      ensureMeasurementCacheContext()
+      for (const node of flowNodes) {
+        const cached = measurementCache.get(node.id)
+        if (!cached || cached.renderedKind !== renderedKind(node) || !validMeasurement(node.measured)) continue
+        if (cached.width !== node.measured.width || cached.height !== node.measured.height)
+          measurementCache.set(node.id, { ...cached, width: node.measured.width, height: node.measured.height })
+      }
+    })
+  })
 
   function currentActiveRouting(): boolean {
     return (
@@ -524,14 +638,16 @@
     }
   }
 
-  function clearRenderedRouting(): void {
+  function clearRenderedRouting(nodeIds?: ReadonlySet<string>): void {
     activeRouting = undefined
-    flowEdges = flowEdges.map((edge) => {
-      if (!edge.data?.route) return edge
+    if (!nodeIds) manualRouteRetention = undefined
+    const nextEdges = flowEdges.map((edge) => {
+      if (!edge.data?.route || (nodeIds && !nodeIds.has(edge.source) && !nodeIds.has(edge.target))) return edge
       const data = { ...edge.data }
       delete data.route
       return { ...edge, data }
     })
+    if (nextEdges.some((edge, index) => edge !== flowEdges[index])) flowEdges = nextEdges
   }
 
   function invalidateRouting(persist: boolean): void {
@@ -564,9 +680,18 @@
       const nodes = measuredLayoutNodes()
       const positions = canvasPositionsStore.get()
       if (!candidate) {
+        if (
+          manualRouteRetention &&
+          manualRouteRetention.workflowIdentity === workflowIdentity &&
+          manualRouteRetention.generation === pairGeneration &&
+          manualRouteRetention.dimensions === inputs.dimensions &&
+          sameRoutingTopology(manualRouteRetention.projection, projection)
+        )
+          return
         clearRenderedRouting()
         return
       }
+      manualRouteRetention = undefined
       const sanitized = sanitizeScopeRouting(candidate)
       if (!sanitized) {
         invalidateRouting(true)
@@ -580,7 +705,6 @@
       )
         return
       const firstActivation = !currentActiveRouting()
-      clearRenderedRouting()
       // Absence of measurements is temporary, not evidence of a stale cache.
       if (!nodes) {
         if (
@@ -590,6 +714,7 @@
           invalidateRouting(true)
         return
       }
+      clearRenderedRouting()
       const revision = layoutRevision
       const isCurrent = () =>
         !destroyed &&
@@ -657,7 +782,7 @@
     if (workflowIdentity === restoredWorkflowIdentity && version <= restoredVersion) return
     restoredWorkflowIdentity = workflowIdentity
     restoredVersion = version
-    flowViewport = { ...layout.viewport }
+    setProgrammaticViewport(layout.viewport)
     if (viewportElement) {
       viewportElement.scrollLeft = layout.canvasScroll.left
       viewportElement.scrollTop = layout.canvasScroll.top
@@ -669,8 +794,15 @@
     if (attempt && !arrangeIsCurrent(attempt)) untrack(() => cancelArrange())
   })
 
+  $effect.pre(() => {
+    const available = canDrag()
+    if (!available) untrack(() => clearPendingDrag())
+  })
+
   $effect(() => {
-    const mutable = !readOnly && !stale && !transitionLocked && !arrangeBusy
+    // Inactivity is enforced by the inert surface and gesture guards. Rewriting
+    // every node's capabilities on page navigation needlessly invalidates handles.
+    const mutable = canAuthor()
     untrack(() => {
       flowNodes = flowNodes.map((node) =>
         node.draggable === mutable && node.connectable === mutable
@@ -681,37 +813,87 @@
   })
 
   function handleDragStart(): void {
-    if (!canAuthor()) return
+    if (!canDrag()) return
+    if (dragging) return
+    viewportController?.beginNodeDrag()
     dragging = true
-    layoutRevision += 1
-    invalidateRouting(false)
+    pendingDrag = {
+      workflowIdentity,
+      generation: pairGeneration,
+      scopeKey: projection.scope.key,
+      positions: [],
+    }
+    routingActivation += 1
   }
 
   function handleDrag(detail: CanvasDragDetail): void {
     recordEditorMetric('pointerMoves')
-    if (!canAuthor()) return
-    layoutRevision += 1
-    moveCanvasPositions(draggedPositions(detail))
+    const pending = pendingDrag
+    if (
+      !canDrag() ||
+      !dragging ||
+      !pending ||
+      pending.workflowIdentity !== workflowIdentity ||
+      pending.generation !== pairGeneration ||
+      pending.scopeKey !== projection.scope.key
+    )
+      return
+    const positions = draggedPositions(detail)
+    if (positions.length === 0) return
+    pendingDrag = {
+      ...pending,
+      positions,
+    }
   }
 
   function handleDragStop(detail: CanvasDragDetail): void {
     recordEditorMetric('dragCompletions')
-    dragging = false
-    if (!canAuthor()) return
-    rememberRoutingPublication(undefined)
-    clearRenderedRouting()
-    layoutRevision += 1
-    const updates = draggedPositions(detail)
+    const stopped = draggedPositions(detail)
+    const pending = pendingDrag
+    const pendingIsCurrent =
+      pending?.workflowIdentity === workflowIdentity &&
+      pending.generation === pairGeneration &&
+      pending.scopeKey === projection.scope.key
+    const updates =
+      pendingIsCurrent && pending.positions.length > 0 ? (stopped.length > 0 ? stopped : pending.positions) : []
+    clearPendingDrag()
+    if (pointerSelectionGesture === 'surface') deferSurfaceSelectionPublication()
+    if (!canDrag()) return
     if (updates.length === 0) return
+    rememberRoutingPublication(undefined)
+    manualRouteRetention = {
+      projection,
+      workflowIdentity,
+      generation: pairGeneration,
+      dimensions: routingDimensions,
+    }
+    clearRenderedRouting(new Set(updates.map(({ id }) => id)))
+    if (previousProjectionRefresh?.workflowIdentity === workflowIdentity)
+      previousProjectionRefresh = { ...previousProjectionRefresh, routingFingerprint: undefined }
+    layoutRevision += 1
     moveCanvasPositions(updates)
     schedulePersist(layoutWithPositions())
+  }
+
+  function clearPendingDrag(): boolean {
+    const active = dragging || pendingDrag !== undefined
+    if (active) viewportController?.cancelNodeDrag()
+    dragging = false
+    pendingDrag = undefined
+    return active
   }
 
   function draggedPositions(
     detail: CanvasDragDetail,
   ): readonly { readonly id: string; readonly position: CanvasPosition }[] {
-    if (detail.nodes) return detail.nodes
-    return detail.id && detail.position ? [{ id: detail.id, position: detail.position }] : []
+    const candidates =
+      detail.nodes ?? (detail.id && detail.position ? [{ id: detail.id, position: detail.position }] : [])
+    return candidates
+      .slice(0, projection.nodes.length)
+      .filter(
+        ({ id, position }) => draggableNodeIds.has(id) && Number.isFinite(position.x) && Number.isFinite(position.y),
+      )
+      .map(({ id, position }) => ({ id, position: { x: position.x, y: position.y } }))
   }
 
   function dragDetail(
@@ -768,11 +950,17 @@
   }
 
   function finishArrange(attempt: ArrangeAttempt): void {
-    if (pendingLayout?.owner === attempt) {
-      if (arrangeIsCurrent(attempt)) {
-        delete pendingLayout.waiting
+    const current = arrangeIsCurrent(attempt)
+    const ownedPendingPersistence = pendingLayout?.owner === attempt ? pendingLayout : undefined
+    if (ownedPendingPersistence) {
+      if (current) {
+        delete ownedPendingPersistence.waiting
         schedulePersistenceFlush()
       } else pendingLayout = null
+    }
+    if (!attempt.metricsFinished && !(ownedPendingPersistence && current)) {
+      finishArrangeMetrics(attempt.metrics, current ? 'failed' : 'cancelled')
+      attempt.metricsFinished = true
     }
     attempt.releasePersistence?.()
     delete attempt.releasePersistence
@@ -790,6 +978,8 @@
     layoutRevision += 1
     attempt.cancelFrame?.()
     attempt.client.cancel()
+    finishArrangeMetrics(attempt.metrics, 'cancelled')
+    attempt.metricsFinished = true
     if (!destroyed) authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
     finishArrange(attempt)
     return true
@@ -825,6 +1015,101 @@
     )
       return
     return nodes as readonly LayoutWorkerNode[]
+  }
+
+  function currentMeasurementContext(): string {
+    return JSON.stringify([workflowIdentity, pairGeneration, projection.scope.key])
+  }
+
+  function ensureMeasurementCacheContext(): void {
+    const context = currentMeasurementContext()
+    if (measurementCacheContext === context) return
+    measurementCacheContext = context
+    measurementCache.clear()
+  }
+
+  function renderedKind(node: CanvasNode): string {
+    return JSON.stringify([
+      node.type,
+      node.data?.kind,
+      node.data?.summary,
+      node.data?.errorCount,
+      node.data?.requiredIssueCount,
+      node.data?.compound,
+    ])
+  }
+
+  function validMeasurement(measured: CanvasNode['measured']): measured is { width: number; height: number } {
+    return (
+      typeof measured?.width === 'number' &&
+      Number.isFinite(measured.width) &&
+      measured.width >= CANVAS_NODE_WIDTH &&
+      typeof measured.height === 'number' &&
+      Number.isFinite(measured.height) &&
+      measured.height >= CANVAS_NODE_HEIGHT
+    )
+  }
+
+  function rememberMeasurements(nodes: readonly CanvasNode[]): void {
+    ensureMeasurementCacheContext()
+    for (const node of nodes) {
+      if (!validMeasurement(node.measured)) continue
+      measurementCache.set(node.id, {
+        renderedKind: renderedKind(node),
+        width: node.measured.width,
+        height: node.measured.height,
+      })
+    }
+  }
+
+  function mountedMeasurementSnapshot(
+    primaryFlow: Element | null,
+  ): ReadonlyMap<string, { width: number; height: number }> {
+    // One-shot DOM snapshot, never mutated after publication or consumed reactively.
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const measurements = new Map<string, { width: number; height: number }>()
+    for (const element of primaryFlow?.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]') ?? []) {
+      const id = element.dataset.id
+      const card = element.querySelector<HTMLElement>('.workflow-node')
+      const width = element.offsetWidth || card?.offsetWidth || 0
+      const height = element.offsetHeight || card?.offsetHeight || 0
+      if (!id || width < CANVAS_NODE_WIDTH || height < CANVAS_NODE_HEIGHT) continue
+      measurements.set(id, { width, height })
+    }
+    return measurements
+  }
+
+  function withMeasurementSnapshot(
+    nodes: CanvasNode[],
+    measurements: ReadonlyMap<string, { width: number; height: number }>,
+  ): CanvasNode[] {
+    let changed = false
+    const next = nodes.map((node) => {
+      if (validMeasurement(node.measured)) return node
+      const measured = measurements.get(node.id)
+      if (!measured) return node
+      changed = true
+      return { ...node, measured }
+    })
+    return changed ? next : nodes
+  }
+
+  function withCachedMeasurements(nodes: CanvasNode[]): CanvasNode[] {
+    ensureMeasurementCacheContext()
+    let changed = false
+    const next = nodes.map((node) => {
+      if (validMeasurement(node.measured)) return node
+      const cached = measurementCache.get(node.id)
+      if (!cached || cached.renderedKind !== renderedKind(node)) return node
+      changed = true
+      return { ...node, measured: { width: cached.width, height: cached.height } }
+    })
+    return changed ? next : nodes
+  }
+
+  function hasCachedMeasurement(node: CanvasNode): boolean {
+    const cached = measurementCache.get(node.id)
+    return Boolean(cached && cached.renderedKind === renderedKind(node))
   }
 
   function validResultMetadata(result: LayoutWorkerSuccess): boolean {
@@ -881,51 +1166,70 @@
     return next
   }
 
+  function arrangeClient(): LayoutClientLike {
+    return (
+      layoutClient ??
+      (ownedLayoutClient ??= new LayoutClient(
+        () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' }),
+      ))
+    )
+  }
+
   async function measureArrangement(attempt: ArrangeAttempt): Promise<void> {
-    // Mount offscreen cards in bounded batches. Existing visible cards and edges
-    // stay in place; the full node/edge topology remains bound throughout.
+    // Mount offscreen cards in a separate bounded layer. The primary graph stays
+    // bound exactly once instead of republishing all nodes for every batch.
+    const primaryFlow = viewportElement.querySelector(':scope > .svelte-flow')
+    const mountedMeasurements = usesCapacityRendering() ? mountedMeasurementSnapshot(primaryFlow) : new Map()
+    flowNodes = withMeasurementSnapshot(flowNodes, mountedMeasurements)
+    rememberMeasurements(flowNodes)
+    flowNodes = withCachedMeasurements(flowNodes)
     const mountedNodes = new Set(
-      [...root.querySelectorAll('.svelte-flow__node')].map((node) => node.getAttribute('data-id')),
+      Array.from(primaryFlow?.querySelectorAll<HTMLElement>('.svelte-flow__node[data-id]') ?? []).map(
+        (element) => element.dataset.id,
+      ),
     )
-    const mountedEdges = new Set(
-      [...root.querySelectorAll('.svelte-flow__edge')].map((edge) => edge.getAttribute('data-id')),
-    )
-    const offscreen = flowNodes.filter((node) => !mountedNodes.has(node.id)).map((node) => node.id)
-    const hiddenNodes = new Map(flowNodes.map((node) => [node.id, node.hidden]))
-    const hiddenEdges = new Map(flowEdges.map((edge) => [edge.id, edge.hidden]))
+    const uncached = flowNodes.filter((node) => !hasCachedMeasurement(node))
+    if (uncached.length === 0) return
+    const missing = uncached.filter((node) => !mountedNodes.has(node.id)).map(({ id }) => id)
+    if (missing.length === 0) {
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      rememberMeasurements(flowNodes)
+      flowNodes = withCachedMeasurements(withMeasurementSnapshot(flowNodes, mountedMeasurements))
+      return
+    }
     const restore = () => {
-      flowNodes = flowNodes.map((node) => measurementVisibility(node, hiddenNodes.get(node.id)))
-      flowEdges = flowEdges.map((edge) => measurementVisibility(edge, hiddenEdges.get(edge.id)))
+      measurementNodes = []
       arrangeMeasuring = false
       delete attempt.restoreMeasurementVisibility
     }
     attempt.restoreMeasurementVisibility = restore
     arrangeMeasuring = true
-    flowEdges = flowEdges.map((edge) => (mountedEdges.has(edge.id) ? edge : { ...edge, hidden: true }))
-    // This local accumulator never participates in reactive state; flowNodes is reassigned per batch.
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const revealed = new Set(mountedNodes)
-    for (let offset = 0; offset < Math.max(1, offscreen.length); offset += 40) {
-      for (const id of offscreen.slice(offset, offset + 40)) revealed.add(id)
-      flowNodes = flowNodes.map((node) =>
-        measurementVisibility(node, revealed.has(node.id) ? hiddenNodes.get(node.id) : true),
-      )
-      await measurementFrame(attempt)
-      if (!arrangeIsCurrent(attempt)) return
+    const byId = new Map(uncached.map((node) => [node.id, node]))
+    const maxSettleFrames = usesCapacityRendering() ? 3 : 1
+    for (let offset = 0; offset < missing.length; offset += 40) {
+      measurementNodes = missing.slice(offset, offset + 40).map((id) => measurementVisibility(byId.get(id)!, undefined))
+      for (let settle = 0; settle < maxSettleFrames; settle += 1) {
+        await measurementFrame(attempt)
+        if (!arrangeIsCurrent(attempt)) return
+        rememberMeasurements(measurementNodes)
+        if (measurementNodes.every((node) => hasCachedMeasurement(node))) break
+      }
     }
     restore()
     await tick()
+    if (!arrangeIsCurrent(attempt)) return
+    rememberMeasurements(flowNodes)
+    flowNodes = withCachedMeasurements(withMeasurementSnapshot(flowNodes, mountedMeasurements))
   }
 
   export async function arrange(): Promise<void> {
     if (!canAuthor() || !surfaceActive || !canvasMounted || arrangeBusy) return
-    const client =
-      layoutClient ??
-      (ownedLayoutClient ??= new LayoutClient(
-        () => new Worker(new URL('../../workers/layout-worker.ts', import.meta.url), { type: 'module' }),
-      ))
+    const client = arrangeClient()
+    const revision = ++layoutRevision
+    const requestId = `layout:${revision}`
     const attempt: ArrangeAttempt = {
-      revision: ++layoutRevision,
+      revision,
       projection,
       workflowIdentity,
       generation: pairGeneration,
@@ -933,26 +1237,33 @@
       positions: canvasPositionsStore.get(),
       incomingPositions: layout.nodePositions,
       client,
+      metrics: beginArrangeMetrics(requestId),
     }
     activeArrange = attempt
+    clearPendingDrag()
     arrangeBusy = true
     authoringFeedback = 'Arranging graph…'
     onArrangeBusyChange(true, attempt.workflowIdentity)
     try {
+      let phaseStartedAt = performance.now()
       await measureArrangement(attempt)
+      recordArrangePhase(attempt.metrics, 'measure', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
       const nodes = measuredLayoutNodes()
       if (!nodes) throw new Error('Canvas measurements unavailable.')
       attempt.nodes = nodes
       const edges = projection.edges.map(({ id, source, target }, order) => ({ id, source, target, order }))
+      phaseStartedAt = performance.now()
       const fingerprint = await graphFingerprint({ engine: ROUTING_ENGINE, scopeKey: attempt.scopeKey, nodes, edges })
+      recordArrangePhase(attempt.metrics, 'fingerprint', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       const request: LayoutWorkerRequest = snapshotLayoutRequest({
         type: 'layout',
         nodes,
         edges,
         identity: {
-          requestId: `layout:${attempt.revision}`,
+          requestId,
           workflowIdentity: attempt.workflowIdentity,
           pairGeneration: attempt.generation,
           scopeKey: attempt.scopeKey,
@@ -960,9 +1271,17 @@
           layoutRevision: attempt.revision,
         },
       })
+      recordArrangePhase(attempt.metrics, 'serialize', performance.now() - phaseStartedAt)
       recordEditorMetric('layouts')
+      phaseStartedAt = performance.now()
       const result = await client.arrange(request)
+      recordArrangePhase(attempt.metrics, 'worker', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      // Worker delivery, result validation, and the single accepted publication
+      // must not collapse into one renderer task at capacity.
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       if (
         result.type !== 'layout-result' ||
         !result.identity ||
@@ -970,13 +1289,19 @@
         !validResultMetadata(result)
       )
         throw new Error('Invalid layout response.')
-      const validated = validateRoutedLayout({ nodes, edges, positions: result.positions, routes: result.routes })
+      const validated = validateRoutedLayoutSafety({ nodes, edges, positions: result.positions, routes: result.routes })
       if (!validated.ok || !boundsContainLayout(result, nodes)) throw new Error('Invalid routed layout.')
+      recordArrangePhase(attempt.metrics, 'validate', performance.now() - phaseStartedAt)
+      phaseStartedAt = performance.now()
       const finalFingerprint = await routingFingerprint({
         graphFingerprint: fingerprint,
         positions: validated.layout.positions,
       })
+      recordArrangePhase(attempt.metrics, 'fingerprint', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      await measurementFrame(attempt)
+      if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       const next: ScopeLayoutV1 = {
         ...layoutWithPositions(),
         nodePositions: validated.layout.positions,
@@ -1030,8 +1355,11 @@
       }
       onLayoutChange(next, attempt.workflowIdentity)
       await tick()
+      recordArrangePhase(attempt.metrics, 'publish', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
+      phaseStartedAt = performance.now()
       await viewportController?.fitGraph(result.bounds)
+      recordArrangePhase(attempt.metrics, 'fit', performance.now() - phaseStartedAt)
       if (!arrangeIsCurrent(attempt)) return
       arrangedViewport = viewportController?.viewport()
       if (arrangedViewport && pendingLayout?.owner === attempt) {
@@ -1042,10 +1370,15 @@
       }
       authoringFeedback = `Graph arranged: ${nodes.length} nodes and ${edges.length} dependencies.`
     } catch {
-      if (arrangeIsCurrent(attempt))
+      if (arrangeIsCurrent(attempt)) {
         authoringFeedback = attempt.published
           ? `Graph arranged: ${projection.nodes.length} nodes and ${projection.edges.length} dependencies.`
           : ARRANGE_FAILURE
+        if (!attempt.published) {
+          finishArrangeMetrics(attempt.metrics, 'failed')
+          attempt.metricsFinished = true
+        }
+      }
     } finally {
       if (!destroyed && activeArrange === attempt && authoringFeedback === 'Arranging graph…')
         authoringFeedback = attempt.published ? ARRANGE_INTERRUPTED : ARRANGE_FAILURE
@@ -1056,11 +1389,18 @@
   function withCurrentMeasurements(nodes: CanvasNode[], currentNodes: CanvasNode[]): CanvasNode[] {
     // Same-scope content changes keep their observed footprint until the next
     // ResizeObserver update. Other workflows/scopes must obtain their own sizes.
+    ensureMeasurementCacheContext()
+    rememberMeasurements(currentNodes)
     const previous = new Map(currentNodes.map((node) => [node.id, node]))
-    return nodes.map((node) => {
-      const measured = previous.get(node.id)?.measured
-      return node.measured || !measured ? node : { ...node, measured }
-    })
+    return withCachedMeasurements(
+      nodes.map((node) => {
+        const prior = previous.get(node.id)
+        const sameRenderedKind = prior !== undefined && renderedKind(prior) === renderedKind(node)
+        const measured = sameRenderedKind ? prior.measured : undefined
+        if (prior && !sameRenderedKind) measurementCache.delete(node.id)
+        return node.measured || !measured ? node : { ...node, measured }
+      }),
+    )
   }
 
   function withAuthoritativeSelection(nodes: CanvasNode[], currentNodes?: CanvasNode[]): CanvasNode[] {
@@ -1144,6 +1484,7 @@
   }
 
   function hoverEdge(edgeId: string): void {
+    if (usesCapacityRendering() && flowViewport.zoom < MIN_EDGE_HOVER_ZOOM) return
     if (hoveredEdgeId === edgeId) return
     hoveredEdgeId = edgeId
     publishCurrentEdgeEmphasis()
@@ -1289,6 +1630,7 @@
   }
 
   export function cancel(): boolean {
+    if (clearPendingDrag()) return true
     if (cancelArrange()) return true
     if (closeNodeMenu(true)) return true
     if (cancelEdge()) return true
@@ -1359,11 +1701,28 @@
     schedulePersist(layoutWithPositions())
   }
 
+  function stepCommandZoom(targetZoom: number): void {
+    if (commandZoomFrame !== undefined) cancelAnimationFrame(commandZoomFrame)
+    const startZoom = flowViewport.zoom
+    const boundedTarget = Math.max(0.1, Math.min(4, targetZoom))
+    if (!usesCapacityRendering()) {
+      flowViewport = { ...flowViewport, zoom: boundedTarget }
+      return
+    }
+    flowViewport = { ...flowViewport, zoom: Math.sqrt(startZoom * boundedTarget) }
+    commandZoomFrame = requestAnimationFrame(() => {
+      commandZoomFrame = requestAnimationFrame(() => {
+        commandZoomFrame = undefined
+        flowViewport = { ...flowViewport, zoom: boundedTarget }
+      })
+    })
+  }
+
   export function zoomIn(): void {
-    flowViewport = { ...flowViewport, zoom: Math.min(4, flowViewport.zoom * 1.2) }
+    stepCommandZoom(flowViewport.zoom * 1.2)
   }
   export function zoomOut(): void {
-    flowViewport = { ...flowViewport, zoom: Math.max(0.1, flowViewport.zoom / 1.2) }
+    stepCommandZoom(flowViewport.zoom / 1.2)
   }
   export function actualSize(): void {
     flowViewport = { ...flowViewport, zoom: 1 }
@@ -1401,6 +1760,17 @@
   function viewportChanged(viewport: Viewport, event: MouseEvent | TouchEvent | null): void {
     if (
       !event &&
+      suppressedProgrammaticViewport &&
+      viewport.x === suppressedProgrammaticViewport.x &&
+      viewport.y === suppressedProgrammaticViewport.y &&
+      viewport.zoom === suppressedProgrammaticViewport.zoom
+    ) {
+      suppressedProgrammaticViewport = undefined
+      return
+    }
+    if (event) suppressedProgrammaticViewport = undefined
+    if (
+      !event &&
       arrangedViewport &&
       viewport.x === arrangedViewport.x &&
       viewport.y === arrangedViewport.y &&
@@ -1409,7 +1779,15 @@
       return
     // Auto-pan emits move-end every drag frame. The viewport binding stays live;
     // drag completion saves that final camera together with the manual positions.
-    if (dragging || readOnly || stale || transitionLocked || activeArrange?.published) return
+    if (
+      dragging ||
+      pointerSelectionGesture === 'marquee' ||
+      readOnly ||
+      stale ||
+      transitionLocked ||
+      activeArrange?.published
+    )
+      return
     schedulePersist({ ...layoutWithPositions(), viewport: { ...viewport } })
   }
 
@@ -1465,6 +1843,22 @@
     }, 0)
   }
 
+  function finishSurfaceSelectionGesture(): void {
+    if (pointerSelectionGesture === 'marquee') {
+      deferSurfaceSelectionPublication()
+      if (canAuthor()) schedulePersist({ ...layoutWithPositions(), viewport: { ...flowViewport } })
+    }
+    schedulePointerSelectionEnd()
+  }
+
+  function deferSurfaceSelectionPublication(): void {
+    if (surfaceSelectionPublicationTimer) clearTimeout(surfaceSelectionPublicationTimer)
+    surfaceSelectionPublicationTimer = setTimeout(() => {
+      surfaceSelectionPublicationTimer = undefined
+      queueSurfaceSelectionPublication()
+    }, 0)
+  }
+
   function finishPointerSelectionGesture(event: MouseEvent): void {
     if (event.button !== 0) return
     const target = event.target
@@ -1472,6 +1866,7 @@
       if (target.closest('.svelte-flow__edge')) beginPointerSelectionGesture('edge')
       else if (target.closest('.svelte-flow__node, .svelte-flow__pane')) beginPointerSelectionGesture('surface')
     }
+    if (pointerSelectionGesture === 'surface') deferSurfaceSelectionPublication()
     schedulePointerSelectionEnd()
   }
 
@@ -1479,6 +1874,9 @@
     pointerSelectionGesture = null
     if (pointerSelectionGestureExpiry) clearTimeout(pointerSelectionGestureExpiry)
     pointerSelectionGestureExpiry = undefined
+    if (surfaceSelectionPublicationTimer) clearTimeout(surfaceSelectionPublicationTimer)
+    surfaceSelectionPublicationTimer = undefined
+    pendingSurfaceSelectionPayload = undefined
   }
 
   function clearSelectionGestures(): void {
@@ -1532,6 +1930,11 @@
       nodeIds: nodes.map(({ id }) => id),
       edgeIds: edges.map(({ id }) => id),
     }
+    if (pointerSelectionGesture === 'marquee' || pointerSelectionGesture === 'surface' || dragging) return
+    queueSurfaceSelectionPublication()
+  }
+
+  function queueSurfaceSelectionPublication(): void {
     if (surfaceSelectionPublicationQueued) return
     surfaceSelectionPublicationQueued = true
     queueMicrotask(() => {
@@ -1576,6 +1979,10 @@
     return !readOnly && !stale && !transitionLocked && !arrangeBusy
   }
 
+  function canDrag(): boolean {
+    return surfaceActive && canAuthor()
+  }
+
   function canAdd(): boolean {
     return !readOnly && !transitionLocked && !arrangeBusy && (!stale || (blankDraft && projection.nodes.length === 0))
   }
@@ -1603,6 +2010,29 @@
   export function requestAdd(afterNodeId?: string): void {
     if (!canAdd() || !onRequestAdd) return
     void onRequestAdd({ ...(afterNodeId ? { afterNodeId } : {}), viewportCenter: viewportCenterPosition() })
+  }
+
+  export function prepareScopeViewport(identity: string, viewport: Viewport): void {
+    stagedScopeViewport = { identity, viewport: { ...viewport } }
+    if (identity === workflowIdentity) {
+      stagedScopeViewport = undefined
+      setProgrammaticViewport(viewport)
+    }
+  }
+
+  export async function prepareScopeExit(): Promise<void> {
+    if (flowEdges.length === 0) return
+    flowEdges = flowEdges.slice(0, Math.ceil(flowEdges.length / 2))
+    await tick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    flowEdges = []
+    await tick()
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
+
+  function setProgrammaticViewport(viewport: Viewport): void {
+    suppressedProgrammaticViewport = { ...viewport }
+    flowViewport = { ...viewport }
   }
 
   function acceptsNodeDrop(event: DragEvent): boolean {
@@ -1668,7 +2098,13 @@
 
   function schedulePersist(next: ScopeLayoutV1): void {
     onLayoutChange({ ...next, routing: next.routing }, workflowIdentity)
-    pendingLayout = { scope: structuredClone(next), identity: workflowIdentity }
+    const ownedArrange = pendingLayout?.identity === workflowIdentity ? pendingLayout : undefined
+    pendingLayout = {
+      scope: structuredClone(next),
+      identity: workflowIdentity,
+      ...(ownedArrange?.owner ? { owner: ownedArrange.owner } : {}),
+      ...(ownedArrange?.waiting ? { waiting: ownedArrange.waiting } : {}),
+    }
     schedulePersistenceFlush()
   }
 
@@ -1688,16 +2124,48 @@
     if (!next) return persistenceQueue
     const operation = persistenceQueue
       .catch(() => undefined)
-      .then(() => {
+      .then(async () => {
+        const startedAt = performance.now()
         recordEditorMetric('layoutSaves')
-        return onPersistLayout(next.scope, next.identity)
+        try {
+          await onPersistLayout(next.scope, next.identity)
+          if (next.owner && !next.owner.metricsFinished) {
+            recordArrangePhase(next.owner.metrics, 'persist', performance.now() - startedAt)
+            finishArrangeMetrics(next.owner.metrics, 'accepted')
+            next.owner.metricsFinished = true
+          }
+        } catch (error) {
+          if (next.owner && !next.owner.metricsFinished) {
+            recordArrangePhase(next.owner.metrics, 'persist', performance.now() - startedAt)
+            finishArrangeMetrics(next.owner.metrics, 'failed')
+            next.owner.metricsFinished = true
+          }
+          throw error
+        }
       })
     persistenceQueue = operation
     return operation
   }
 
+  function releaseOverviewHold(): void {
+    overviewRenderHold = false
+    // Card/edge detail and live Handle registration are separate bounded updates.
+    overviewRenderHoldFrame = requestAnimationFrame(() => {
+      overviewRenderHoldFrame = undefined
+      portRenderHold = false
+    })
+  }
+
   onMount(() => {
+    if (initialEdgesDeferred) {
+      overviewRenderHoldFrame = requestAnimationFrame(() => {
+        initialEdgesDeferred = false
+        flowEdges = withSurfaceEdgeSelection(deriveCanvas().edges, flowEdges)
+        overviewRenderHoldFrame = requestAnimationFrame(releaseOverviewHold)
+      })
+    }
     canvasMounted = true
+    arrangeClient().warm?.()
     root.tabIndex = 0
     let menuCanvasWidth = root.clientWidth
     let menuCanvasHeight = root.clientHeight
@@ -1766,7 +2234,7 @@
     root.addEventListener('focusin', focusEdge)
     root.addEventListener('focusout', blurEdge)
     root.addEventListener('dblclick', openLoopGroupFromEvent)
-    root.addEventListener('keydown', openLoopGroupFromEvent)
+    root.addEventListener('keydown', openLoopGroupFromEvent, true)
     motionQuery.addEventListener?.('change', motionChanged)
     const unsubscribeSelection = canvasSelectionStore.subscribe((ids) => {
       selection = [...ids]
@@ -1795,7 +2263,7 @@
       root.removeEventListener('focusin', focusEdge)
       root.removeEventListener('focusout', blurEdge)
       root.removeEventListener('dblclick', openLoopGroupFromEvent)
-      root.removeEventListener('keydown', openLoopGroupFromEvent)
+      root.removeEventListener('keydown', openLoopGroupFromEvent, true)
       motionQuery.removeEventListener?.('change', motionChanged)
       unsubscribeSelection()
     }
@@ -1803,9 +2271,14 @@
 
   onDestroy(() => {
     destroyed = true
+    if (overviewRenderHoldFrame !== undefined) cancelAnimationFrame(overviewRenderHoldFrame)
+    if (commandZoomFrame !== undefined) cancelAnimationFrame(commandZoomFrame)
+    if (surfaceSelectionPublicationTimer) clearTimeout(surfaceSelectionPublicationTimer)
+    clearPendingDrag()
     const client = activeArrange?.client ?? layoutClient ?? ownedLayoutClient
     cancelArrange()
     client?.destroy()
+    measurementCache.clear()
     clearSelectionGestures()
     void flushPersistence().catch(onPersistenceError)
   })
@@ -1820,6 +2293,7 @@
   data-keyboard-viewport-focus="instant"
   aria-label="Workflow graph"
   aria-busy={transitionLocked || arrangeBusy}
+  {...surfaceActive ? {} : { inert: true }}
   bind:this={root}
 >
   <CanvasToolbar commands={toolbarCommands} onExecute={executeToolbarId} />
@@ -1862,19 +2336,39 @@
     ondragover={dragNodeKindOver}
     ondrop={dropNodeKind}
   >
+    {#if arrangeMeasuring}
+      <div class="arrange-measurement-layer" data-testid="arrange-measurement-layer" aria-hidden="true" inert>
+        <SvelteFlow
+          bind:nodes={measurementNodes}
+          edges={[]}
+          {nodeTypes}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          onlyRenderVisibleElements={false}
+          nodesFocusable={false}
+          edgesFocusable={false}
+          panOnDrag={false}
+          zoomOnScroll={false}
+          zoomOnPinch={false}
+          zoomOnDoubleClick={false}
+        />
+      </div>
+    {/if}
     <SvelteFlow
       bind:nodes={flowNodes}
       bind:edges={flowEdges}
       bind:viewport={flowViewport}
       {nodeTypes}
       {edgeTypes}
-      nodesDraggable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
-      nodesConnectable={!readOnly && !stale && !transitionLocked && !arrangeBusy}
+      nodesDraggable={canAuthor()}
+      nodesConnectable={canAuthor()}
       elementsSelectable={!transitionLocked}
-      onlyRenderVisibleElements={!arrangeMeasuring && projection.capacity.nodeCount !== 1}
+      onlyRenderVisibleElements={usesCapacityRendering()}
       nodesFocusable={true}
       edgesFocusable={true}
       elevateEdgesOnSelect={false}
+      defaultEdgeOptions={{ selectable: pointerSelectionGesture !== 'marquee' }}
       selectionOnDrag={true}
       selectionMode={SelectionMode.Partial}
       selectionKey="Shift"
@@ -1893,12 +2387,12 @@
         handleDragStop(dragDetail(nodes, targetNode))
       }}
       onselectionstart={() => beginPointerSelectionGesture('marquee')}
-      onselectionend={schedulePointerSelectionEnd}
+      onselectionend={finishSurfaceSelectionGesture}
       onselectionchange={surfaceSelectionChanged}
       onedgepointerenter={({ edge }) => hoverEdge(edge.id)}
       onedgepointerleave={({ edge }) => leaveEdge(edge.id)}
       onconnect={({ source, target }) => {
-        if (source && target) {
+        if (canDrag() && source && target) {
           void handleAuthoringResult(
             onConnect
               ? () => onConnect(source, target)
@@ -2011,6 +2505,16 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .arrange-measurement-layer {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    contain: strict;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
   }
 
   .graph-canvas:focus {

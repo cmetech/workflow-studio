@@ -995,17 +995,34 @@ fn app_data_scope_rejects_replaced_root_and_ancestor_names_for_read_write_and_pr
     fs::create_dir_all(&app_data).unwrap();
     let scope = AppDataScope::bind(&app_data).unwrap();
 
+    #[cfg(windows)]
+    {
+        let error = fs::rename(&ancestor, outer.path().join("private-old")).unwrap_err();
+        assert!(
+            matches!(error.raw_os_error(), Some(5 | 32 | 33)),
+            "unexpected Windows rename error: {error:?}"
+        );
+        assert!(app_data.is_dir());
+        assert!(scope.load_remembered_workspace().is_ok());
+        return;
+    }
+
+    #[cfg(not(windows))]
     fs::rename(&ancestor, outer.path().join("private-old")).unwrap();
+    #[cfg(not(windows))]
     fs::create_dir_all(&app_data).unwrap();
 
+    #[cfg(not(windows))]
     assert_eq!(
         scope.load_remembered_workspace().unwrap_err().code,
         "setup_app_data_changed"
     );
+    #[cfg(not(windows))]
     assert_eq!(
         scope.persist_readiness(1, "0.1.0").unwrap_err().code,
         "setup_app_data_changed"
     );
+    #[cfg(not(windows))]
     assert_eq!(
         scope.prune_setup_logs(None).err().unwrap().code,
         "setup_app_data_changed"

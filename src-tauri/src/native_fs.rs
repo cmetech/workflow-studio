@@ -3,10 +3,36 @@ use std::io;
 use cap_std::fs::Dir;
 
 #[cfg(windows)]
-use cap_std::fs::File;
+use cap_std::fs::{File, Permissions};
 
 pub(crate) fn sync_capability_directory(directory: &Dir) -> io::Result<()> {
     directory.open(".")?.sync_all()
+}
+
+#[cfg(windows)]
+pub(crate) fn set_file_permissions_by_handle(
+    file: &File,
+    permissions: Permissions,
+) -> io::Result<()> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        ReOpenFile, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+    };
+
+    let reopened = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if reopened == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let reopened = unsafe { OwnedHandle::from_raw_handle(reopened) };
+    File::from(reopened).set_permissions(permissions)
 }
 
 #[cfg(windows)]

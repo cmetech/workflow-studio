@@ -1,6 +1,7 @@
 import { isAlias, isMap, isScalar, isSeq, Scalar, stringify, Document, type YAMLMap, type YAMLSeq } from 'yaml'
 import type { AuthoringContract, SemanticRuleDescriptor } from '$src/lib/contract/types'
 import type { DocumentKind } from '$src/lib/documents/types'
+import type { GraphScopeKey } from '$src/lib/projection/types'
 import { projectWorkflow } from '$src/lib/projection/project-workflow'
 import { buildReferenceIndex, prepareReferenceContract, type ReferenceIndex } from '$src/lib/references/reference-index'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
@@ -51,6 +52,7 @@ export function patchWorkflowDocument(
   mutation: Exclude<WorkflowMutation, { type: 'replace-document' }>,
   contract: AuthoringContract,
   referenceIndex?: ReferenceIndex,
+  verification: 'immediate' | 'deferred' = 'immediate',
 ): PatchWorkflowDocumentResult {
   const documentKind: DocumentKind = 'document' in mutation ? mutation.document : 'definition'
   const parsed = parseWorkflowYaml(source, {
@@ -109,6 +111,7 @@ export function patchWorkflowDocument(
         mutation.value,
         contract,
         documentKind,
+        verification,
       )
       if (scalarPatch) return scalarPatch
       const working = document.clone() as Document.Parsed
@@ -313,7 +316,9 @@ export function patchWorkflowDocument(
       (dependency) => authored.get(dependency) ?? document.createNode(dependency),
     )
     const edit = isolatedNodeEdit(source, existing, workingExisting)
-    return edit ? verifiedPatch(applySourceEdits(source, [edit]), contract, 'definition') : ambiguousAlias()
+    return edit
+      ? verifiedPatch(applySourceEdits(source, [edit]), contract, 'definition', verification)
+      : ambiguousAlias()
   }
   if (fields.dependenciesPath.length !== 1) {
     return {
@@ -332,6 +337,7 @@ export function patchWorkflowDocument(
     ]),
     contract,
     'definition',
+    verification,
   )
 }
 
@@ -357,11 +363,18 @@ export function patchWorkflowPair(
   mutation: Exclude<WorkflowMutation, { type: 'replace-document' }>,
   contract: AuthoringContract,
   referenceIndex?: ReferenceIndex,
+  verification: 'immediate' | 'deferred' = 'immediate',
+  currentProjection?: unknown,
 ): { ok: true; texts: WorkflowPairSources } | Exclude<PatchWorkflowDocumentResult, { ok: true }> {
   const kind = 'document' in mutation ? mutation.document : 'definition'
   const source = sources[kind]
   if (source === null) return { ok: false, code: 'mutation_path_missing', message: 'The requested document is absent.' }
-  const result = patchWorkflowDocument(source, mutation, contract, referenceIndex)
+  const projectedDependencyPatch =
+    kind === 'definition' && mutation.type === 'set-dependencies' && verification === 'deferred'
+      ? patchProjectedDependencies(source, mutation, contract, currentProjection)
+      : null
+  const result =
+    projectedDependencyPatch ?? patchWorkflowDocument(source, mutation, contract, referenceIndex, verification)
   if (!result.ok) return result
   let companion = kind === 'companion' ? result.text : sources.companion
   if (
@@ -417,6 +430,102 @@ export function patchWorkflowPair(
   return { ok: true, texts: { definition: kind === 'definition' ? result.text : sources.definition, companion } }
 }
 
+function patchProjectedDependencies(
+  source: string,
+  mutation: Extract<WorkflowMutation, { type: 'set-dependencies' }>,
+  contract: AuthoringContract,
+  projection: unknown,
+): PatchWorkflowDocumentResult | null {
+  if (!projection || typeof projection !== 'object' || !('graphs' in projection) || !Array.isArray(projection.graphs))
+    return null
+  const graph = projection.graphs.find(
+    (
+      candidate,
+    ): candidate is {
+      readonly scope: { readonly key: GraphScopeKey }
+      readonly nodes: readonly {
+        readonly id: string
+        readonly dependsOn: readonly string[]
+        readonly source: { readonly start: number; readonly end: number }
+      }[]
+    } =>
+      Boolean(
+        candidate &&
+        typeof candidate === 'object' &&
+        'scope' in candidate &&
+        candidate.scope &&
+        typeof candidate.scope === 'object' &&
+        'key' in candidate.scope &&
+        candidate.scope.key === mutation.scopeKey &&
+        'nodes' in candidate &&
+        Array.isArray(candidate.nodes),
+      ),
+  )
+  const projectedNode = graph?.nodes.find(({ id }) => id === mutation.nodeId)
+  if (!projectedNode || !Array.isArray(projectedNode.dependsOn)) return null
+  const { start, end } = projectedNode.source
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > source.length)
+    return null
+
+  const rootFields = graphFields(contract)
+  if (!rootFields) return null
+  let idPath = rootFields.idPath
+  let dependenciesPath = rootFields.dependenciesPath
+  if (mutation.scopeKey !== 'root') {
+    try {
+      const scoped = readScopedDagCapabilities(contract)
+      idPath = [scoped.nodeIdField]
+      dependenciesPath = [scoped.dependsOnField]
+    } catch {
+      return null
+    }
+  }
+
+  const column = start - lineStart(source, start)
+  const prefix = `node:\n${' '.repeat(column)}`
+  const wrapped = prefix + source.slice(start, end)
+  const parsed = parseWorkflowYaml(wrapped, {
+    document: 'definition',
+    maxBytes: contract.limits.max_document_bytes,
+  })
+  const node = parsed.parsed?.document.get('node', true)
+  if (!parsed.parsed || !isMap(node) || containsSharedNode(node) || node.getIn(idPath) !== mutation.nodeId) return null
+  const existing = node.getIn(dependenciesPath, true)
+  if (
+    existing !== undefined &&
+    (!isSeq(existing) || existing.items.some((item) => !isScalar(item) || typeof item.value !== 'string'))
+  )
+    return null
+  const authoredDependencies = isSeq(existing) ? existing.items.map((item) => String((item as Scalar).value)) : []
+  if (
+    authoredDependencies.length !== projectedNode.dependsOn.length ||
+    !authoredDependencies.every((dependency, index) => dependency === projectedNode.dependsOn[index])
+  )
+    return null
+
+  let edit: SourceEdit | null
+  if (isSeq(existing)) {
+    const replacement = existing.clone() as YAMLSeq
+    const authored = new Map(replacement.items.filter(isScalar).map((scalar) => [scalar.value, scalar]))
+    replacement.items = mutation.dependsOn.map(
+      (dependency) => authored.get(dependency) ?? parsed.parsed!.document.createNode(dependency),
+    )
+    edit = isolatedNodeEdit(wrapped, existing, replacement)
+  } else if (dependenciesPath.length === 1) {
+    edit = node.flow
+      ? flowMappingInsertion(node, dependenciesPath[0] ?? '', mutation.dependsOn)
+      : mappingEntryInsertion(wrapped, node, dependenciesPath[0] ?? '', mutation.dependsOn)
+  } else return null
+  if (!edit || edit.start < prefix.length || edit.end < edit.start) return null
+  const translated = {
+    start: start + edit.start - prefix.length,
+    end: start + edit.end - prefix.length,
+    text: edit.text,
+  }
+  if (translated.start < start || translated.end > end) return null
+  return { ok: true, text: applySourceEdits(source, [translated]) }
+}
+
 interface SourceEdit {
   start: number
   end: number
@@ -430,6 +539,7 @@ function patchExistingScalarSourceRange(
   value: unknown,
   contract: AuthoringContract,
   documentKind: DocumentKind,
+  verification: 'immediate' | 'deferred',
 ): PatchWorkflowDocumentResult | null {
   const current = document.getIn(path, true)
   if (!isScalar(current) || !isScalarCompatible(value) || current.anchor || current.tag) return null
@@ -451,6 +561,9 @@ function patchExistingScalarSourceRange(
     ? indentBlockScalar(rendered, blockContentIndentation(source, range))
     : rendered.slice(0, -1)
   const text = applySourceEdits(source, [{ start: range[0], end: range[1], text: replacementText }])
+  // Nested multiline serialization can change scalar semantics even when the
+  // result remains structurally valid. Keep the exact-value guard for those edits.
+  if (verification === 'deferred' && !block && !rendered.slice(0, -1).includes('\n')) return { ok: true, text }
   const verified = parseWorkflowYaml(text, { document: documentKind, maxBytes: contract.limits.max_document_bytes })
   if (!verified.parsed) return null
   const patched = verified.parsed.document.getIn(path, true)
@@ -505,7 +618,9 @@ function verifiedPatch(
   text: string,
   contract: AuthoringContract,
   documentKind: DocumentKind,
+  verification: 'immediate' | 'deferred' = 'immediate',
 ): PatchWorkflowDocumentResult {
+  if (verification === 'deferred') return { ok: true, text }
   const result = parseWorkflowYaml(text, { document: documentKind, maxBytes: contract.limits.max_document_bytes })
   return result.parsed
     ? { ok: true, text }

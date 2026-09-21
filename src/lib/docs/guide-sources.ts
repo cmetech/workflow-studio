@@ -20,3 +20,12 @@ export function createDocumentationGuides(
     })
     .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
 }
+
+export async function loadDocumentationGuides(
+  sources: Readonly<Record<string, () => Promise<string>>>,
+): Promise<readonly DocumentationGuide[]> {
+  const loaded = await Promise.all(
+    Object.entries(sources).map(async ([path, load]) => [path, await load()] as const),
+  )
+  return createDocumentationGuides(Object.fromEntries(loaded))
+}

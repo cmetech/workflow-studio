@@ -704,6 +704,7 @@ fn safe_symlink_binding_tracks_link_and_target_identity_but_not_target_content()
 }
 
 #[test]
+#[cfg(not(windows))]
 fn pair_binding_rejects_a_replaced_capability_root_even_with_the_same_file_inode() {
     let parent = tempdir().unwrap();
     let root = parent.path().join("repo");
@@ -719,6 +720,46 @@ fn pair_binding_rejects_a_replaced_capability_root_even_with_the_same_file_inode
     fs::hard_link(parked.join("flow.yaml"), root.join("flow.yaml")).unwrap();
 
     assert_eq!(binding.verify().unwrap_err().code, "git_pair_changed");
+}
+
+#[cfg(windows)]
+fn assert_windows_directory_rename_denied(error: std::io::Error) {
+    assert!(
+        matches!(error.raw_os_error(), Some(5 | 32)),
+        "unexpected Windows rename error: {error}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_holds_pair_binding_until_drop() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: retained\n").unwrap();
+    let binding = super::mutate::PairPathBinding::capture(&root, &["flow.yaml"]).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join("flow.yaml").is_file());
+    assert!(!parked.exists());
+    binding.verify().unwrap();
+
+    drop(binding);
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("flow.yaml"), "name: replacement\n").unwrap();
+    assert_eq!(
+        fs::read_to_string(parked.join("flow.yaml")).unwrap(),
+        "name: retained\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("flow.yaml")).unwrap(),
+        "name: replacement\n"
+    );
 }
 
 #[cfg(unix)]
@@ -887,6 +928,63 @@ fn candidate_staging_never_hashes_a_path_swapped_through_an_escaping_parent_link
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn authorized_version_checkpoint_accepts_its_own_commit_without_stale_head_warning() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: original\n").unwrap();
+    fs::write(root.join("notes.txt"), "original\n").unwrap();
+    commit_all(root, "initial");
+    fs::write(root.join("flow.yaml"), "name: edited\n").unwrap();
+    fs::write(root.join("notes.txt"), "unrelated staged\n").unwrap();
+    git(root, &["add", "notes.txt"]);
+    let context = AuthorizedGitContext::bind(root, root).unwrap();
+    let (_, binding) = super::mutate::preview_pair_version(root, "flow.yaml", None).unwrap();
+    let authorization = super::VersionAuthorization::from_preview(
+        &context,
+        "flow.yaml".to_owned(),
+        None,
+        binding,
+        super::mutate::GitBase::capture(root).unwrap(),
+    );
+    super::runner::reset_read_probe_count_for_test();
+    let result = super::mutate::create_pair_version_authorized_with_guard(
+        root,
+        &context.git_metadata.metadata.worktree_dir,
+        &authorization.base,
+        &authorization.binding,
+        "flow.yaml",
+        None,
+        "save edited workflow",
+        || authorization.verify_checkpoint(&context),
+    )
+    .unwrap();
+    eprintln!(
+        "authorized version read probes: {}",
+        super::runner::read_probe_count_for_test()
+    );
+    match result {
+        super::mutate::GitVersionResult::Committed { warnings, .. } => {
+            assert!(
+                warnings.is_empty(),
+                "unexpected commit warnings: {warnings:?}"
+            );
+        }
+        _ => panic!("expected committed version"),
+    }
+    assert_eq!(
+        git_output(root, &["show", "HEAD:flow.yaml"]),
+        "name: edited\n"
+    );
+    assert_eq!(
+        git_output(root, &["diff", "--cached", "--name-only"]).trim(),
+        "notes.txt"
+    );
 }
 
 #[test]
@@ -1216,10 +1314,9 @@ fn pair_version_rejects_head_advances_before_index_or_commit_mutation() {
             "flow.yaml",
             None,
             "must reject",
-            || {
-                binding.verify()?;
-                base.verify(root)
-            },
+            // HEAD verification belongs to the mutation routine, not this
+            // filesystem guard. A moved HEAD must still be rejected there.
+            || binding.verify(),
         )
         .unwrap_err();
 
@@ -2056,16 +2153,20 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
         &["commit", "-m", "unrelated commit"],
         "2026-07-29T11:00:00Z",
     );
-    git(
-        root,
-        &["mv", "flows/pair ü.yaml", "flows/renamed\tflow.yaml"],
-    );
+    let renamed_path = if cfg!(windows) {
+        "flows/renamed flow.yaml"
+    } else {
+        "flows/renamed\tflow.yaml"
+    };
+    git(root, &["mv", "flows/pair ü.yaml", renamed_path]);
     fs::write(root.join("unrelated scratch.txt"), "leave me alone\n").unwrap();
 
     let repository = detect_repository(root).unwrap().expect("repository");
     assert_eq!(
         repository.root,
-        root.canonicalize().unwrap().to_string_lossy()
+        crate::platform_paths::public_path(&root.canonicalize().unwrap())
+            .unwrap()
+            .to_string_lossy()
     );
     assert_eq!(repository.branch.as_deref(), Some("main"));
     assert!(repository.detached_head.is_none());
@@ -2074,7 +2175,7 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
     let rename = current
         .entries
         .iter()
-        .find(|entry| entry.path == "flows/renamed\tflow.yaml")
+        .find(|entry| entry.path == renamed_path)
         .expect("rename status");
     assert_eq!(rename.original_path.as_deref(), Some("flows/pair ü.yaml"));
     assert_eq!(rename.index, "R");
@@ -2083,13 +2184,13 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
         .iter()
         .any(|entry| entry.path == "unrelated scratch.txt" && entry.untracked));
 
-    let diff = diff_pair(
-        root,
-        "flows/renamed\tflow.yaml",
-        Some("flows/pair ü.hermes.yaml"),
-    )
-    .unwrap();
-    assert!(diff.index.contains("renamed\\tflow.yaml"));
+    let diff = diff_pair(root, renamed_path, Some("flows/pair ü.hermes.yaml")).unwrap();
+    let renamed_diff = if cfg!(windows) {
+        "renamed flow.yaml"
+    } else {
+        "renamed\\tflow.yaml"
+    };
+    assert!(diff.index.contains(renamed_diff));
     assert!(diff.working.is_empty());
 
     git(root, &["add", "--all"]);
@@ -2099,12 +2200,7 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
         "2026-07-29T12:00:00Z",
     );
 
-    let history = history_pair(
-        root,
-        "flows/renamed\tflow.yaml",
-        Some("flows/pair ü.hermes.yaml"),
-    )
-    .unwrap();
+    let history = history_pair(root, renamed_path, Some("flows/pair ü.hermes.yaml")).unwrap();
     assert_eq!(
         history
             .iter()
@@ -2115,7 +2211,7 @@ fn inspects_real_repositories_and_merges_pair_history_without_unrelated_entries(
     let snapshot = show_pair(
         root,
         &history[1].oid,
-        "flows/renamed\tflow.yaml",
+        renamed_path,
         Some("flows/pair ü.hermes.yaml"),
     )
     .unwrap();
@@ -2197,12 +2293,38 @@ fn bound_context_rejects_workspace_and_repository_replacement_races() {
     fs::create_dir(root.join("selected")).unwrap();
     assert_eq!(context.verify().unwrap_err().code, "git_workspace_changed");
 
-    let context = AuthorizedGitContext::bind(&root.join("selected"), &root).unwrap();
+    #[cfg(not(windows))]
+    {
+        let context = AuthorizedGitContext::bind(&root.join("selected"), &root).unwrap();
+        let parked = parent.path().join("parked-repo");
+        fs::rename(&root, &parked).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("selected")).unwrap();
+        assert_eq!(context.verify().unwrap_err().code, "git_repository_changed");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_holds_context_until_drop() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
     let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let context = AuthorizedGitContext::bind(&root, &root).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join(".git").is_dir());
+    assert!(!parked.exists());
+    context.verify().unwrap();
+
+    drop(context);
     fs::rename(&root, &parked).unwrap();
     fs::create_dir(&root).unwrap();
-    fs::create_dir(root.join("selected")).unwrap();
-    assert_eq!(context.verify().unwrap_err().code, "git_repository_changed");
+    git(&root, &["init", "-b", "main"]);
+    AuthorizedGitContext::bind(&root, &root).unwrap();
 }
 
 #[test]
@@ -2578,6 +2700,7 @@ fn lower_server_epoch_cannot_activate_after_a_newer_session_even_if_it_completes
 }
 
 #[test]
+#[cfg(not(windows))]
 fn retained_token_rejects_a_replacement_at_the_same_workspace_and_repository_paths() {
     let parent = tempdir().unwrap();
     let root = parent.path().join("repo");
@@ -2605,6 +2728,46 @@ fn retained_token_rejects_a_replacement_at_the_same_workspace_and_repository_pat
             .authorized_history(&token, &replacement_context, "flow.yaml", None)
             .err()
             .expect("a token must not cross stable directory identities")
+            .code,
+        "git_pair_not_authorized"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repository_replacement_protection_retained_token_rejects_new_identity() {
+    let parent = tempdir().unwrap();
+    let root = parent.path().join("repo");
+    let parked = parent.path().join("parked-repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let original_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+    let state = GitState::default();
+    let controller_epoch = state.begin_history_session().unwrap();
+    let request = state.begin_history(controller_epoch, 1).unwrap();
+    let token = state
+        .issue_history(
+            request,
+            authorization(&original_context, "flow.yaml", Default::default()),
+        )
+        .unwrap();
+    state.retain_history(controller_epoch, 1, &token).unwrap();
+
+    let error = fs::rename(&root, &parked).unwrap_err();
+    assert_windows_directory_rename_denied(error);
+    assert!(root.join(".git").is_dir());
+    assert!(!parked.exists());
+
+    drop(original_context);
+    fs::rename(&root, &parked).unwrap();
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let replacement_context = AuthorizedGitContext::bind(&root, &root).unwrap();
+    assert_eq!(
+        state
+            .authorized_history(&token, &replacement_context, "flow.yaml", None)
+            .err()
+            .expect("a retained token must not cross stable directory identities")
             .code,
         "git_pair_not_authorized"
     );
@@ -2721,9 +2884,37 @@ fn reports_no_repository_and_detached_head_without_mutating_working_state() {
     commit_all(root, "initial");
     git(root, &["checkout", "--detach"]);
 
+    super::runner::reset_read_probe_count_for_test();
     let repository = detect_repository(root).unwrap().expect("repository");
     assert!(repository.branch.is_none());
     assert_eq!(repository.detached_head.as_deref().map(str::len), Some(12));
+    assert_eq!(super::runner::read_probe_count_for_test(), 2);
+}
+
+#[test]
+fn repository_metadata_discovery_uses_one_attached_head_probe() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "user.name", "Workflow Test"]);
+    git(root, &["config", "user.email", "workflow@example.test"]);
+    fs::write(root.join("flow.yaml"), "name: attached\n").unwrap();
+    commit_all(root, "initial");
+
+    super::runner::reset_read_probe_count_for_test();
+    let metadata = super::detect_repository_metadata(root)
+        .unwrap()
+        .expect("repository metadata");
+
+    assert_eq!(super::runner::read_probe_count_for_test(), 1);
+    assert_eq!(
+        metadata.worktree_dir,
+        root.join(".git").canonicalize().unwrap()
+    );
+    assert_eq!(
+        metadata.common_dir,
+        root.join(".git").canonicalize().unwrap()
+    );
 }
 
 #[test]
@@ -2755,8 +2946,10 @@ fn treats_an_initialized_repository_without_commits_as_empty_history() {
     let root = directory.path();
     git(root, &["init", "-b", "main"]);
 
+    super::runner::reset_read_probe_count_for_test();
     let repository = detect_repository(root).unwrap().expect("repository");
     assert_eq!(repository.branch.as_deref(), Some("main"));
+    assert_eq!(super::runner::read_probe_count_for_test(), 1);
     assert!(history_pair(root, "flow.yaml", None).unwrap().is_empty());
 }
 
@@ -2840,7 +3033,16 @@ fn pair_version_rejects_a_file_replaced_after_preflight_before_index_mutation() 
 
 #[test]
 fn builds_a_fixed_noninteractive_literal_diff_command() {
-    let root = Path::new("/selected workspace");
+    let root = if cfg!(windows) {
+        Path::new(r"C:\selected workspace")
+    } else {
+        Path::new("/selected workspace")
+    };
+    let root_argument = if cfg!(windows) {
+        r"C:\selected workspace"
+    } else {
+        "/selected workspace"
+    };
     let paths = ["flows/a b.yaml"];
     let command = build_read_command(
         root,
@@ -2848,7 +3050,8 @@ fn builds_a_fixed_noninteractive_literal_diff_command() {
             cached: false,
             paths: &paths,
         },
-    );
+    )
+    .unwrap();
     let arguments = command
         .get_args()
         .map(|value| value.to_string_lossy().into_owned())
@@ -2862,7 +3065,7 @@ fn builds_a_fixed_noninteractive_literal_diff_command() {
             "-c",
             "core.untrackedCache=false",
             "-C",
-            "/selected workspace",
+            root_argument,
             "diff",
             "--no-ext-diff",
             "--no-textconv",
@@ -2894,11 +3097,128 @@ fn builds_a_fixed_noninteractive_literal_diff_command() {
     assert_eq!(environment.get("GIT_EXTERNAL_DIFF"), Some(&None));
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_git_commands_strip_verbatim_prefixes_from_every_process_path() {
+    let root = Path::new(r"\\?\C:\selected workspace");
+    let index = Path::new(r"\\?\C:\selected workspace\.git\candidate index");
+    let message = Path::new(r"\\?\C:\selected workspace\.git\commit message");
+
+    let read = build_read_command(root, ReadOperation::Version).unwrap();
+    assert_eq!(
+        read.get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        vec![
+            "--literal-pathspecs",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-C",
+            r"C:\selected workspace",
+            "--version",
+        ]
+    );
+    assert_eq!(
+        super::runner::mutation_command_arguments_for_test(
+            root,
+            MutationOperation::Init {
+                workspace_root: root,
+            },
+        )
+        .unwrap(),
+        vec!["--literal-pathspecs", "init", r"C:\selected workspace"]
+    );
+    assert_eq!(
+        super::runner::mutation_command_arguments_for_test(
+            root,
+            MutationOperation::RunHook {
+                name: "commit-msg",
+                message_file: Some(message),
+                source: None,
+            },
+        )
+        .unwrap(),
+        vec![
+            "--literal-pathspecs",
+            "-C",
+            r"C:\selected workspace",
+            "hook",
+            "run",
+            "--ignore-missing",
+            "commit-msg",
+            "--",
+            r"C:\selected workspace\.git\commit message",
+        ]
+    );
+    assert_eq!(
+        super::runner::mutation_command_arguments_for_test(
+            root,
+            MutationOperation::CommitTree {
+                tree: "tree-oid",
+                parent: None,
+                message_file: message,
+            },
+        )
+        .unwrap(),
+        vec![
+            "--literal-pathspecs",
+            "-C",
+            r"C:\selected workspace",
+            "commit-tree",
+            "tree-oid",
+            "-F",
+            r"C:\selected workspace\.git\commit message",
+        ]
+    );
+
+    let indexed = super::runner::mutation_command_with_index_for_test(
+        root,
+        MutationOperation::WriteTree,
+        index,
+    )
+    .unwrap();
+    let environment = indexed
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        environment.get("GIT_INDEX_FILE"),
+        Some(&Some(
+            r"C:\selected workspace\.git\candidate index".to_owned()
+        ))
+    );
+
+    let read_error = super::runner::read_command_arguments_for_test(
+        Path::new(r"\\.\PhysicalDrive0"),
+        ReadOperation::Version,
+    )
+    .unwrap_err();
+    assert_eq!(read_error.code, "git_path_unsupported");
+    let index_error = super::runner::mutation_command_with_index_for_test(
+        root,
+        MutationOperation::WriteTree,
+        Path::new(r"\\.\PhysicalDrive0"),
+    )
+    .unwrap_err();
+    assert_eq!(index_error.code, "git_path_unsupported");
+}
+
 #[test]
 fn raw_object_reads_disable_replacements_without_changing_historical_show() {
-    let root = Path::new("/selected workspace");
+    let root = if cfg!(windows) {
+        Path::new(r"C:\selected workspace")
+    } else {
+        Path::new("/selected workspace")
+    };
     let oid = "a".repeat(40);
-    let raw = build_read_command(root, ReadOperation::RawBlob { oid: &oid });
+    let raw = build_read_command(root, ReadOperation::RawBlob { oid: &oid }).unwrap();
     let raw_environment = raw
         .get_envs()
         .map(|(key, value)| {
@@ -2919,7 +3239,8 @@ fn raw_object_reads_disable_replacements_without_changing_historical_show() {
             oid: &oid,
             path: "flow.yaml",
         },
-    );
+    )
+    .unwrap();
     let show_environment = show
         .get_envs()
         .map(|(key, value)| {
@@ -2984,24 +3305,46 @@ fn runner_cleans_up_the_process_tree_on_injected_wait_and_reader_failures() {
 
 #[test]
 fn maps_every_closed_git_operation_to_exact_argv() {
-    let root = Path::new("workspace-root");
+    let root = if cfg!(windows) {
+        Path::new(r"C:\workspace-root")
+    } else {
+        Path::new("workspace-root")
+    };
+    let init_root = if cfg!(windows) {
+        Path::new(r"C:\init-root")
+    } else {
+        Path::new("init-root")
+    };
+    let init_root_argument = if cfg!(windows) {
+        r"C:\init-root"
+    } else {
+        "init-root"
+    };
+    let message_file = if cfg!(windows) {
+        Path::new(r"C:\message.txt")
+    } else {
+        Path::new("message.txt")
+    };
+    let message_file_argument = if cfg!(windows) {
+        r"C:\message.txt"
+    } else {
+        "message.txt"
+    };
     let paths = ["flows/main.yaml", "flows/main.hermes.yaml"];
 
     assert_read_argv(root, ReadOperation::Version, &["--version"]);
     assert_read_argv(
         root,
-        ReadOperation::RepositoryRoot,
-        &["rev-parse", "--show-toplevel"],
-    );
-    assert_read_argv(
-        root,
-        ReadOperation::GitDirectory,
-        &["rev-parse", "--absolute-git-dir"],
-    );
-    assert_read_argv(
-        root,
-        ReadOperation::GitCommonDirectory,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ReadOperation::RepositoryContext,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--abbrev-ref=strict",
+            "HEAD",
+        ],
     );
     assert_read_argv(
         root,
@@ -3089,7 +3432,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
             "--no-textconv",
             "--no-color",
             "--",
-            "/dev/null",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
             paths[0],
         ],
     );
@@ -3192,9 +3535,9 @@ fn maps_every_closed_git_operation_to_exact_argv() {
     assert_mutation_argv(
         root,
         MutationOperation::Init {
-            workspace_root: Path::new("init-root"),
+            workspace_root: init_root,
         },
-        &["--literal-pathspecs", "init", "init-root"],
+        &["--literal-pathspecs", "init", init_root_argument],
     );
     assert_mutation_suffix(
         root,
@@ -3230,7 +3573,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         root,
         MutationOperation::RunHook {
             name: "commit-msg",
-            message_file: Some(Path::new("message.txt")),
+            message_file: Some(message_file),
             source: Some("message"),
         },
         &[
@@ -3239,7 +3582,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
             "--ignore-missing",
             "commit-msg",
             "--",
-            "message.txt",
+            message_file_argument,
             "message",
         ],
     );
@@ -3248,16 +3591,16 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         MutationOperation::CommitTree {
             tree: "tree-oid",
             parent: None,
-            message_file: Path::new("message.txt"),
+            message_file,
         },
-        &["commit-tree", "tree-oid", "-F", "message.txt"],
+        &["commit-tree", "tree-oid", "-F", message_file_argument],
     );
     assert_mutation_suffix(
         root,
         MutationOperation::CommitTree {
             tree: "tree-oid",
             parent: Some("parent-oid"),
-            message_file: Path::new("message.txt"),
+            message_file,
         },
         &[
             "commit-tree",
@@ -3265,7 +3608,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
             "-p",
             "parent-oid",
             "-F",
-            "message.txt",
+            message_file_argument,
         ],
     );
     assert_mutation_suffix(
@@ -3288,6 +3631,11 @@ fn maps_every_closed_git_operation_to_exact_argv() {
 }
 
 fn assert_read_argv(root: &Path, operation: ReadOperation<'_>, suffix: &[&str]) {
+    let root_argument = if cfg!(windows) {
+        r"C:\workspace-root"
+    } else {
+        "workspace-root"
+    };
     let mut expected = vec![
         "--literal-pathspecs",
         "-c",
@@ -3295,24 +3643,29 @@ fn assert_read_argv(root: &Path, operation: ReadOperation<'_>, suffix: &[&str]) 
         "-c",
         "core.untrackedCache=false",
         "-C",
-        "workspace-root",
+        root_argument,
     ];
     expected.extend_from_slice(suffix);
     assert_eq!(
-        super::runner::read_command_arguments_for_test(root, operation),
+        super::runner::read_command_arguments_for_test(root, operation).unwrap(),
         expected
     );
 }
 
 fn assert_mutation_suffix(root: &Path, operation: MutationOperation<'_>, suffix: &[&str]) {
-    let mut expected = vec!["--literal-pathspecs", "-C", "workspace-root"];
+    let root_argument = if cfg!(windows) {
+        r"C:\workspace-root"
+    } else {
+        "workspace-root"
+    };
+    let mut expected = vec!["--literal-pathspecs", "-C", root_argument];
     expected.extend_from_slice(suffix);
     assert_mutation_argv(root, operation, &expected);
 }
 
 fn assert_mutation_argv(root: &Path, operation: MutationOperation<'_>, expected: &[&str]) {
     assert_eq!(
-        super::runner::mutation_command_arguments_for_test(root, operation),
+        super::runner::mutation_command_arguments_for_test(root, operation).unwrap(),
         expected
     );
 }

@@ -13,6 +13,11 @@ import type { ContractCacheStoredEntry } from '$src/lib/contract/contract-cache'
 import { loadBrandManifest } from '$src/lib/branding/load-brand'
 import type { StoredBrandPack } from '$src/lib/native/types'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import {
+  latestArrangeMetrics,
+  resetArrangeMetrics,
+  type ArrangeMetricsSnapshot,
+} from '$src/lib/metrics/arrange-metrics'
 import { isWorkflowProjection } from '$src/features/canvas/project-canvas'
 import { isAnalysisCurrent } from '$src/lib/documents/revisions'
 import { $activeLayout } from '$src/stores/layout'
@@ -257,7 +262,9 @@ declare global {
       persistedLayoutProbe(nodeId: string): PersistedLayoutProbe
       triggerExternalChange(): Promise<void>
       prepareCapacityConnection(): Promise<void>
-      metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']>
+      metrics(): ReturnType<ReturnType<typeof createEditorMetricsCollector>['snapshot']> & {
+        readonly arrange: ArrangeMetricsSnapshot | null
+      }
       resetMetrics(): void
       scopeSnapshot(): E2EScopeSnapshot
       projectionScopes(): readonly {
@@ -635,8 +642,26 @@ nodes:
     })
   }
 
+  function activatedRepository(root = selectedRoot) {
+    if (scenario === 'initialize-repository-modal') return null
+    return {
+      root,
+      branch:
+        scenario === 'unbroken-git-ref'
+          ? UNBROKEN_GIT_REF
+          : scenario === 'long-git'
+            ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference'
+            : 'base',
+      detachedHead: null,
+    }
+  }
+
   const bridge: WorkspaceNativeBridge = {
     ...base,
+    workspaceSetRoot: async (rootPath) => ({
+      ...(await base.workspaceSetRoot(rootPath)),
+      repository: activatedRepository(rootPath),
+    }),
     contractCacheLoad: async () =>
       scenario === 'long-settings' ? { entries: longContractEntries, advisories: [] } : base.contractCacheLoad(),
     brandListPacks: async () =>
@@ -773,19 +798,7 @@ nodes:
       updateDeferred = true
       return updateSnapshot('deferred')
     },
-    gitDetect: async () =>
-      scenario === 'initialize-repository-modal'
-        ? null
-        : {
-            root: scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace',
-            branch:
-              scenario === 'unbroken-git-ref'
-                ? UNBROKEN_GIT_REF
-                : scenario === 'long-git'
-                  ? 'feature/document-the-exceptionally-long-windows-release-workflow-reference'
-                  : 'base',
-            detachedHead: null,
-          },
+    gitDetect: async () => activatedRepository(),
     gitStatus: async () => ({ entries: gitStatusEntries.map((entry) => ({ ...entry })) }),
     gitDiffPair: async () => ({
       working: pairVersioned
@@ -881,8 +894,11 @@ nodes:
 
   setNativeBridgeForTest(bridge)
   window.__WORKFLOW_STUDIO_E2E__ = {
-    metrics: () => metrics.snapshot(),
-    resetMetrics: () => metrics.reset(),
+    metrics: () => ({ ...metrics.snapshot(), arrange: latestArrangeMetrics() }),
+    resetMetrics: () => {
+      metrics.reset()
+      resetArrangeMetrics()
+    },
     capacityProbe(nodeId): CapacityProbe {
       const session = $documentSession.get()
       const projection = session.analysis?.projection

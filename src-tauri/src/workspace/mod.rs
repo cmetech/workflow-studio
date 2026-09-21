@@ -164,6 +164,7 @@ impl WorkspaceScope {
 pub struct WorkspaceRootInfo {
     workspace_id: String,
     root_path: String,
+    repository: Option<crate::git::GitRepository>,
 }
 
 #[tauri::command]
@@ -175,18 +176,8 @@ pub fn workspace_set_root(
 ) -> WorkspaceResult<WorkspaceRootInfo> {
     let scope = WorkspaceScope::new(Path::new(&root_path))?;
     let root = scope.verify()?;
-    let git_metadata = crate::git::detect_repository_metadata(root).ok().flatten();
+    let (info, git_metadata) = discover_workspace_root(root)?;
     let watcher = watcher::start(root, git_metadata.as_ref(), app)?;
-    let root_path = root
-        .to_str()
-        .ok_or_else(|| {
-            WorkspaceError::new(
-                "workspace_root_invalid",
-                "The selected workspace root is not valid Unicode.",
-            )
-        })?
-        .to_string();
-    let workspace_id = files::hash_bytes(root_path.as_bytes());
     let mut active = state.active.lock().map_err(|_| state_error())?;
     let generation = state.next_generation.fetch_add(1, Ordering::Relaxed);
     *active = Some(ActiveWorkspace {
@@ -195,9 +186,51 @@ pub fn workspace_set_root(
         generation,
     });
     git_state.clear();
+    Ok(info)
+}
+
+fn discover_workspace_root(
+    root: &Path,
+) -> WorkspaceResult<(WorkspaceRootInfo, Option<crate::git::GitRepositoryMetadata>)> {
+    let detected = crate::git::detect_repository_context(root).ok().flatten();
+    match detected {
+        Some(detected) => Ok((
+            workspace_root_info(root, Some(detected.repository))?,
+            Some(detected.metadata),
+        )),
+        None => Ok((workspace_root_info(root, None)?, None)),
+    }
+}
+
+fn workspace_root_info(
+    root: &Path,
+    repository: Option<crate::git::GitRepository>,
+) -> WorkspaceResult<WorkspaceRootInfo> {
+    let canonical = root.to_str().ok_or_else(|| {
+        WorkspaceError::new(
+            "workspace_root_invalid",
+            "The selected workspace root is not valid Unicode.",
+        )
+    })?;
+    let public = crate::platform_paths::public_path(root).map_err(|error| {
+        WorkspaceError::new(
+            "workspace_root_invalid",
+            format!("The selected workspace root cannot be displayed safely: {error}"),
+        )
+    })?;
+    let root_path = public
+        .to_str()
+        .ok_or_else(|| {
+            WorkspaceError::new(
+                "workspace_root_invalid",
+                "The selected workspace root is not valid Unicode.",
+            )
+        })?
+        .to_string();
     Ok(WorkspaceRootInfo {
-        workspace_id,
+        workspace_id: files::hash_bytes(canonical.as_bytes()),
         root_path,
+        repository,
     })
 }
 
@@ -288,3 +321,74 @@ fn state_error() -> WorkspaceError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod path_boundary_tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::{files, workspace_root_info, WorkspaceScope};
+
+    #[test]
+    fn public_root_info_does_not_replace_a_long_canonical_workspace_identity() {
+        let parent = tempdir().unwrap();
+        let mut selected = parent.path().join("workspace");
+        while selected.to_string_lossy().len() <= 280 {
+            selected.push("nested-long-path-segment");
+        }
+        fs::create_dir_all(&selected).unwrap();
+        let scope = WorkspaceScope::new(&selected).unwrap();
+        let canonical = scope.root_path().unwrap().to_path_buf();
+
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        assert!(canonical.to_string_lossy().len() > 260);
+        let info = workspace_root_info(&canonical, None).unwrap();
+        let serialized = serde_json::to_value(&info).unwrap();
+
+        assert!(!info.root_path.starts_with(r"\\?\"));
+        assert_eq!(serialized["rootPath"], info.root_path);
+        assert_eq!(scope.root_path().unwrap(), canonical);
+        assert_eq!(
+            info.workspace_id,
+            files::hash_bytes(canonical.to_str().unwrap().as_bytes())
+        );
+    }
+}
+
+#[cfg(test)]
+mod repository_result_tests {
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::discover_workspace_root;
+
+    #[test]
+    fn root_info_includes_the_repository_discovered_for_watcher_binding() {
+        let directory = tempdir().unwrap();
+        let root = directory.path();
+        assert!(Command::new("git")
+            .args(["-C", root.to_str().unwrap(), "init", "-b", "main"])
+            .status()
+            .unwrap()
+            .success());
+        crate::git::reset_read_probe_count_for_test();
+        let (info, metadata) = discover_workspace_root(root).unwrap();
+        let repository = info.repository.clone().unwrap();
+
+        let serialized = serde_json::to_value(info).unwrap();
+
+        assert_eq!(crate::git::read_probe_count_for_test(), 1);
+        assert!(metadata.is_some());
+        assert_eq!(
+            serialized["repository"],
+            serde_json::to_value(repository).unwrap()
+        );
+        #[cfg(windows)]
+        assert!(!serialized["repository"]["root"]
+            .as_str()
+            .unwrap()
+            .starts_with(r"\\?\"));
+    }
+}

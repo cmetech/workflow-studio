@@ -3,6 +3,8 @@
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { ContractDigest } from '$src/lib/documents/types'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
+import { applyWorkflowMutation } from '$src/lib/documents/transactions'
+import { createDocumentRevision } from '$src/lib/documents/revisions'
 import { analysisIdentity, type DocumentWorkerRequest, type DocumentWorkerResponse } from './document-worker-protocol'
 
 export interface DocumentWorkerCache {
@@ -17,6 +19,25 @@ export async function processDocumentWorkerRequest(
   request: DocumentWorkerRequest,
   cache: DocumentWorkerCache,
 ): Promise<DocumentWorkerResponse> {
+  if (request.type === 'mutate') {
+    const identity = {
+      requestId: request.requestId,
+      ...createDocumentRevision(request.pair, request.contract.contract_digest),
+    }
+    try {
+      return {
+        type: 'mutation',
+        ...identity,
+        result: await applyWorkflowMutation(request.pair, request.mutation, request.contract),
+      }
+    } catch (error) {
+      return {
+        type: 'mutation-error',
+        ...identity,
+        message: error instanceof Error ? error.message : 'Document mutation failed.',
+      }
+    }
+  }
   if (request.type === 'contract-register') {
     if (request.contract.contract_digest !== request.contractDigest || request.contract.profile !== request.profile) {
       return {

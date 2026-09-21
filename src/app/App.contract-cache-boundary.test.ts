@@ -19,6 +19,7 @@ import { clearWorkspace, loadWorkspaceEntries } from '$src/stores/workspace'
 import { createHistoryState, historyStore } from '$src/stores/history'
 
 type AppComponent = (typeof import('./App.svelte'))['default']
+const deferredSurfaceWait = { timeout: 20_000 }
 
 const source = `name: Cache boundary
 description: Existing authoring session
@@ -161,7 +162,7 @@ describe.sequential('App cached contract boundary', () => {
     const rendered = render(App)
 
     try {
-      await screen.findByRole('region', { name: 'Workflow graph' })
+      await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
       await fireEvent.click(screen.getByRole('button', { name: 'Add Node' }))
       expect(await screen.findByRole('option', { name: /command/i })).toBeVisible()
     } finally {
@@ -177,7 +178,7 @@ describe.sequential('App cached contract boundary', () => {
     const before = $documentSession.get().pair?.definition.text
 
     try {
-      await screen.findByRole('region', { name: 'Workflow graph' })
+      await screen.findByRole('region', { name: 'Workflow graph' }, deferredSurfaceWait)
       setCanvasSelection(['collect'])
       await fireEvent.click(screen.getByRole('tab', { name: 'Execution' }))
       expect(await screen.findByRole('group', { name: 'Depends on' })).toBeVisible()

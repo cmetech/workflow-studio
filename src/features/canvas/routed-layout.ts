@@ -49,6 +49,10 @@ export type RoutedLayoutValidation =
   | { readonly ok: true; readonly layout: ValidatedRoutedLayout; readonly crossingCount: number }
   | { readonly ok: false; readonly code: RoutedLayoutFailureCode }
 
+export type RoutedLayoutSafetyValidation =
+  | { readonly ok: true; readonly layout: ValidatedRoutedLayout }
+  | { readonly ok: false; readonly code: RoutedLayoutFailureCode }
+
 interface Rectangle {
   readonly left: number
   readonly top: number
@@ -126,6 +130,18 @@ export function normalizeRoute(points: readonly EdgeRoutePointV1[]): readonly Ed
 }
 
 export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutValidation {
+  return validateRoutedLayoutInternal(input, true) as RoutedLayoutValidation
+}
+
+/** Validates every persisted-geometry invariant without computing informational crossing statistics. */
+export function validateRoutedLayoutSafety(input: RoutedLayoutInput): RoutedLayoutSafetyValidation {
+  return validateRoutedLayoutInternal(input, false) as RoutedLayoutSafetyValidation
+}
+
+function validateRoutedLayoutInternal(
+  input: RoutedLayoutInput,
+  collectCrossings: boolean,
+): RoutedLayoutValidation | RoutedLayoutSafetyValidation {
   const nodeIds = input.nodes.map(({ id }) => id)
   if (!exactMembership(nodeIds, Object.keys(input.positions))) return failure('node_membership_mismatch')
 
@@ -227,11 +243,8 @@ export function validateRoutedLayout(input: RoutedLayoutInput): RoutedLayoutVali
 
   if (hasLongCoincidentSegment(routes)) return failure('coincident_route_segment')
 
-  return {
-    ok: true,
-    layout: { positions, routes },
-    crossingCount: countOrthogonalCrossings(routes),
-  }
+  const accepted = { ok: true, layout: { positions, routes } } as const
+  return collectCrossings ? { ...accepted, crossingCount: countOrthogonalCrossings(routes) } : accepted
 }
 
 export function countOrthogonalCrossings(routes: Readonly<Record<string, EdgeRouteV1>>): number {
@@ -391,40 +404,37 @@ function segmentEntersRectangle(segment: Segment, rectangle: Rectangle): boolean
   )
 }
 
-function hasLongCoincidentSegment(routes: Readonly<Record<string, EdgeRouteV1>>): boolean {
-  const routeValues = Object.values(routes).map((route) => segments(route.points))
-  for (let leftIndex = 0; leftIndex < routeValues.length; leftIndex += 1) {
-    const leftSegments = routeValues[leftIndex]!
-    for (let rightIndex = leftIndex + 1; rightIndex < routeValues.length; rightIndex += 1) {
-      const rightSegments = routeValues[rightIndex]!
-      for (const left of leftSegments) {
-        for (const right of rightSegments) {
-          if (coincidentLength(left, right) > ROUTING_ENDPOINT_FAN_ZONE + ROUTING_GEOMETRY_TOLERANCE) {
-            return true
-          }
-        }
+export function hasLongCoincidentSegment(routes: Readonly<Record<string, EdgeRouteV1>>): boolean {
+  const ordered = Object.values(routes).flatMap((route, owner) =>
+    segments(route.points).map((segment) => {
+      const along = segment.orientation === 'horizontal' ? 'x' : 'y'
+      return {
+        owner,
+        orientation: segment.orientation,
+        axis: axisCoordinate(segment),
+        low: Math.min(segment.start[along], segment.end[along]),
+        high: Math.max(segment.start[along], segment.end[along]),
+      }
+    }),
+  )
+  ordered.sort((a, b) => compareText(a.orientation, b.orientation) || a.axis - b.axis)
+  // Only parallel segments within the exact axis tolerance can coincide.
+  // Compare actual coordinates, not rounded buckets: tolerance spans buckets.
+  for (let index = 0; index < ordered.length; index++) {
+    const left = ordered[index]!
+    for (let other = index + 1; other < ordered.length; other++) {
+      const right = ordered[other]!
+      if (right.orientation !== left.orientation || right.axis - left.axis > ROUTING_GEOMETRY_TOLERANCE) break
+      if (
+        left.owner !== right.owner &&
+        Math.min(left.high, right.high) - Math.max(left.low, right.low) >
+          ROUTING_ENDPOINT_FAN_ZONE + ROUTING_GEOMETRY_TOLERANCE
+      ) {
+        return true
       }
     }
   }
   return false
-}
-
-function coincidentLength(left: Segment, right: Segment): number {
-  if (left.orientation !== right.orientation) return 0
-  if (left.orientation === 'horizontal') {
-    if (!nearlyEqual(axisCoordinate(left), axisCoordinate(right))) return 0
-    return intervalOverlap(left.start.x, left.end.x, right.start.x, right.end.x)
-  }
-  if (!nearlyEqual(axisCoordinate(left), axisCoordinate(right))) return 0
-  return intervalOverlap(left.start.y, left.end.y, right.start.y, right.end.y)
-}
-
-function intervalOverlap(firstStart: number, firstEnd: number, secondStart: number, secondEnd: number): number {
-  return Math.max(
-    0,
-    Math.min(Math.max(firstStart, firstEnd), Math.max(secondStart, secondEnd)) -
-      Math.max(Math.min(firstStart, firstEnd), Math.min(secondStart, secondEnd)),
-  )
 }
 
 function axisCoordinate(segment: Segment): number {

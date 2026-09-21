@@ -42,6 +42,48 @@ fn assert_code<T>(result: Result<T, super::WorkspaceError>, code: &str) {
 }
 
 #[test]
+fn reading_a_vanished_save_backup_reports_path_not_found() {
+    let root = tempdir().unwrap();
+    let workspace = scope(root.path());
+    let relative = ".workflow-studio-original-123-2-flow.yaml";
+    fs::write(root.path().join(relative), "name: original\n").unwrap();
+    assert_code(
+        files::read_with_bound_hook(&workspace, relative, 1024, || {
+            fs::remove_file(root.path().join(relative)).unwrap();
+        }),
+        "path_not_found",
+    );
+    fs::write(root.path().join("flow.yaml"), "name: saved\n").unwrap();
+    assert_eq!(
+        files::read(&workspace, "flow.yaml", 1024).unwrap().text,
+        "name: saved\n"
+    );
+}
+
+fn workspace_write_residue(path: &std::path::Path) -> Vec<String> {
+    let mut residue = fs::read_dir(path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".workflow-studio-"))
+        .collect::<Vec<_>>();
+    residue.sort();
+    residue
+}
+
+#[cfg(windows)]
+fn park_workspace_directory_for_ambient_test(
+    workspace: &mut WorkspaceScope,
+    parking: &std::path::Path,
+) {
+    workspace.directory =
+        cap_std::fs::Dir::open_ambient_dir(parking, cap_std::ambient_authority()).unwrap();
+}
+
+#[cfg(not(windows))]
+fn park_workspace_directory_for_ambient_test(_: &mut WorkspaceScope, _: &std::path::Path) {}
+
+#[test]
 fn rejects_untrusted_relative_path_shapes() {
     for candidate in [
         "",
@@ -75,6 +117,9 @@ fn accepts_unicode_and_spaces_but_rejects_symlink_escape_and_missing_root() {
     let resolved = paths::resolve_existing(&canonical, "flows with spaces/café.yaml").unwrap();
     assert!(resolved.starts_with(&canonical));
 
+    if !file_symlink_tests_supported() {
+        return;
+    }
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("secret.yaml"), "secret: true\n").unwrap();
     create_file_symlink(
@@ -87,7 +132,9 @@ fn accepts_unicode_and_spaces_but_rejects_symlink_escape_and_missing_root() {
     );
 
     let selected = root.path().to_path_buf();
-    let selected_scope = scope(&selected);
+    let mut selected_scope = scope(&selected);
+    let handle_parking = tempdir().unwrap();
+    park_workspace_directory_for_ambient_test(&mut selected_scope, handle_parking.path());
     drop(root);
     assert_code(paths::canonical_root(&selected), "workspace_root_missing");
     assert_code(files::scan(&selected_scope), "workspace_root_missing");
@@ -101,6 +148,9 @@ fn scan_does_not_follow_directory_symlinks_and_read_is_bounded_yaml_only() {
     fs::write(root.path().join("nested/flow.yaml"), "id: flow\n").unwrap();
     fs::write(root.path().join("notes.txt"), "not yaml").unwrap();
     fs::write(outside.path().join("outside.yaml"), "outside: true\n").unwrap();
+    if !dir_symlink_tests_supported() {
+        return;
+    }
     create_dir_symlink(outside.path(), &root.path().join("linked"));
 
     let workspace = scope(root.path());
@@ -161,12 +211,8 @@ fn writes_are_revision_checked_atomic_and_preserve_permissions() {
         "930a3450b65f12b82d9e0ef2c7e4c8b68538adb96dc161b5b6f27a4ea342902a"
     );
     assert_eq!(
-        fs::read_dir(root.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name() != "flow.yaml")
-            .count(),
-        0,
+        workspace_write_residue(root.path()),
+        Vec::<String>::new(),
         "atomic write must not leave same-directory temporary files"
     );
 
@@ -174,6 +220,110 @@ fn writes_are_revision_checked_atomic_and_preserve_permissions() {
         files::write(&workspace, "flow.yaml", "id: create\n", None),
         "external_revision_conflict",
     );
+
+    let read_only_target = root.path().join("read-only.yaml");
+    fs::write(&read_only_target, "id: read-only-before\n").unwrap();
+    let mut read_only_permissions = fs::metadata(&read_only_target).unwrap().permissions();
+    read_only_permissions.set_readonly(true);
+    fs::set_permissions(&read_only_target, read_only_permissions).unwrap();
+    let read_only_before =
+        files::read(&workspace, "read-only.yaml", files::MAX_YAML_BYTES).unwrap();
+
+    files::write(
+        &workspace,
+        "read-only.yaml",
+        "id: read-only-after\n",
+        Some(&read_only_before.sha256),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&read_only_target).unwrap(),
+        "id: read-only-after\n"
+    );
+    assert!(fs::metadata(&read_only_target)
+        .unwrap()
+        .permissions()
+        .readonly());
+    assert_eq!(workspace_write_residue(root.path()), Vec::<String>::new());
+
+    #[cfg(windows)]
+    {
+        let rollback_target = root.path().join("rollback.yaml");
+        fs::write(&rollback_target, "id: rollback-before\n").unwrap();
+        let mut rollback_permissions = fs::metadata(&rollback_target).unwrap().permissions();
+        rollback_permissions.set_readonly(true);
+        fs::set_permissions(&rollback_target, rollback_permissions).unwrap();
+        let rollback_before =
+            files::read(&workspace, "rollback.yaml", files::MAX_YAML_BYTES).unwrap();
+
+        let error = files::write_with_permission_restore_failure(
+            &workspace,
+            "rollback.yaml",
+            "id: rollback-after\n",
+            Some(&rollback_before.sha256),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace_permission_restore_failed");
+        assert!(error.message.contains("verified original was restored"));
+        assert_eq!(
+            fs::read_to_string(&rollback_target).unwrap(),
+            "id: rollback-before\n"
+        );
+        assert!(fs::metadata(&rollback_target)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(workspace_write_residue(root.path()), Vec::<String>::new());
+
+        let identity_target = root.path().join("identity.yaml");
+        let displaced_commit = root.path().join("identity-committed.yaml");
+        fs::write(&identity_target, "id: identity-before\n").unwrap();
+        let identity_before =
+            files::read(&workspace, "identity.yaml", files::MAX_YAML_BYTES).unwrap();
+
+        let error = files::write_with_permission_order_hook(
+            &workspace,
+            "identity.yaml",
+            "id: identity-mine\n",
+            Some(&identity_before.sha256),
+            |phase, _| {
+                if phase == "afterCommit" {
+                    fs::rename(&identity_target, &displaced_commit).unwrap();
+                    fs::write(&identity_target, "id: identity-external\n").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "workspace_write_partial");
+        assert_eq!(
+            fs::read_to_string(&identity_target).unwrap(),
+            "id: identity-external\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&displaced_commit).unwrap(),
+            "id: identity-mine\n"
+        );
+        assert!(!fs::metadata(&identity_target)
+            .unwrap()
+            .permissions()
+            .readonly());
+        let residue = workspace_write_residue(root.path());
+        assert_eq!(residue.len(), 1);
+        assert!(residue[0].starts_with(".workflow-studio-original-"));
+        assert_eq!(
+            fs::read_to_string(root.path().join(&residue[0])).unwrap(),
+            "id: identity-before\n"
+        );
+
+        for target in [&read_only_target, &rollback_target] {
+            let mut permissions = fs::metadata(target).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(target, permissions).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -216,10 +366,13 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
     let root_path = parent.path().join("workspace");
     fs::create_dir(&root_path).unwrap();
     fs::write(root_path.join("flow.yaml"), "id: before\n").unwrap();
-    let workspace = scope(&root_path);
+    let mut workspace = scope(&root_path);
     let before = files::read(&workspace, "flow.yaml", files::MAX_YAML_BYTES).unwrap();
 
     let displaced = parent.path().join("displaced");
+    let handle_parking = parent.path().join("handle-parking");
+    fs::create_dir(&handle_parking).unwrap();
+    park_workspace_directory_for_ambient_test(&mut workspace, &handle_parking);
     fs::rename(&root_path, &displaced).unwrap();
     fs::create_dir(&root_path).unwrap();
     fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap();
@@ -232,6 +385,10 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
         "id: replacement\n"
     );
 
+    if !swap_symlink_tests_supported() {
+        return;
+    }
+
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -240,21 +397,35 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
     let workspace = scope(root.path());
     let before = files::read(&workspace, "nested/flow.yaml", files::MAX_YAML_BYTES).unwrap();
     let parked = root.path().join("parked");
-    files::write_with_precommit_hook(
+    let parked_file = root.path().join("nested/parked-flow.yaml");
+    let result = files::write_with_precommit_hook(
         &workspace,
         "nested/flow.yaml",
         "id: mine\n",
         Some(&before.sha256),
         || {
-            fs::rename(root.path().join("nested"), &parked).unwrap();
-            create_dir_symlink(outside.path(), &root.path().join("nested"));
+            if cfg!(windows) {
+                fs::rename(root.path().join("nested/flow.yaml"), &parked_file).unwrap();
+                create_file_symlink(
+                    &outside.path().join("flow.yaml"),
+                    &root.path().join("nested/flow.yaml"),
+                );
+            } else {
+                fs::rename(root.path().join("nested"), &parked).unwrap();
+                create_dir_symlink(outside.path(), &root.path().join("nested"));
+            }
         },
-    )
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(parked.join("flow.yaml")).unwrap(),
-        "id: mine\n"
     );
+    if cfg!(windows) {
+        assert_code(result, "external_revision_conflict");
+        assert_eq!(fs::read_to_string(&parked_file).unwrap(), "id: before\n");
+    } else {
+        result.unwrap();
+        assert_eq!(
+            fs::read_to_string(parked.join("flow.yaml")).unwrap(),
+            "id: mine\n"
+        );
+    }
     assert_eq!(
         fs::read_to_string(outside.path().join("flow.yaml")).unwrap(),
         "id: outside\n"
@@ -263,6 +434,9 @@ fn rejects_replaced_root_and_ancestor_symlink_swap_before_commit() {
 
 #[test]
 fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -270,14 +444,27 @@ fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
     fs::write(outside.path().join("flow.yaml"), "id: outside\n").unwrap();
     let workspace = scope(root.path());
     let parked = root.path().join("parked");
+    let parked_file = root.path().join("nested/parked-flow.yaml");
 
-    let read = files::read_with_bound_hook(&workspace, "nested/flow.yaml", 1024, || {
-        fs::rename(root.path().join("nested"), &parked).unwrap();
-        create_dir_symlink(outside.path(), &root.path().join("nested"));
-    })
-    .unwrap();
+    let result = files::read_with_bound_hook(&workspace, "nested/flow.yaml", 1024, || {
+        if cfg!(windows) {
+            fs::rename(root.path().join("nested/flow.yaml"), &parked_file).unwrap();
+            create_file_symlink(
+                &outside.path().join("flow.yaml"),
+                &root.path().join("nested/flow.yaml"),
+            );
+        } else {
+            fs::rename(root.path().join("nested"), &parked).unwrap();
+            create_dir_symlink(outside.path(), &root.path().join("nested"));
+        }
+    });
 
-    assert_eq!(read.text, "id: inside\n");
+    if cfg!(windows) {
+        assert_code(result, "path_outside_workspace");
+        assert_eq!(fs::read_to_string(&parked_file).unwrap(), "id: inside\n");
+    } else {
+        assert_eq!(result.unwrap().text, "id: inside\n");
+    }
     assert_eq!(
         fs::read_to_string(outside.path().join("flow.yaml")).unwrap(),
         "id: outside\n"
@@ -286,6 +473,9 @@ fn bound_read_ignores_a_descendant_swapped_after_parent_binding() {
 
 #[test]
 fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
+    if !dir_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -295,19 +485,23 @@ fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
     let parked = root.path().join("parked");
     let mut swapped = false;
 
-    let entries = files::scan_with_entry_hook(&workspace, |relative| {
+    let result = files::scan_with_entry_hook(&workspace, |relative| {
         if relative == "nested" && !swapped {
             swapped = true;
             fs::rename(root.path().join("nested"), &parked).unwrap();
             create_dir_symlink(outside.path(), &root.path().join("nested"));
         }
-    })
-    .unwrap();
+    });
 
     assert!(swapped);
-    assert!(!entries
-        .iter()
-        .any(|entry| entry.relative_path == "nested/outside.yaml"));
+    if cfg!(windows) {
+        assert_code(result, "path_outside_workspace");
+    } else {
+        assert!(!result
+            .unwrap()
+            .iter()
+            .any(|entry| entry.relative_path == "nested/outside.yaml"));
+    }
     assert_eq!(
         fs::read_to_string(outside.path().join("outside.yaml")).unwrap(),
         "id: outside\n"
@@ -316,6 +510,9 @@ fn bound_scan_never_follows_a_descendant_swapped_after_entry_binding() {
 
 #[test]
 fn bound_rename_and_trash_ignore_descendant_swaps_after_binding() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::create_dir(root.path().join("nested")).unwrap();
@@ -323,35 +520,79 @@ fn bound_rename_and_trash_ignore_descendant_swaps_after_binding() {
     fs::write(outside.path().join("old.yaml"), "id: outside\n").unwrap();
     let workspace = scope(root.path());
     let parked = root.path().join("parked");
+    let parked_file = root.path().join("nested/parked-old.yaml");
 
-    files::rename_pair_with_bound_hook(&workspace, "nested/old.yaml", "nested/new.yaml", || {
-        fs::rename(root.path().join("nested"), &parked).unwrap();
-        create_dir_symlink(outside.path(), &root.path().join("nested"));
-    })
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(parked.join("new.yaml")).unwrap(),
-        "id: inside\n"
+    let result = files::rename_pair_with_bound_hook(
+        &workspace,
+        "nested/old.yaml",
+        "nested/new.yaml",
+        || {
+            if cfg!(windows) {
+                fs::rename(root.path().join("nested/old.yaml"), &parked_file).unwrap();
+                create_file_symlink(
+                    &outside.path().join("old.yaml"),
+                    &root.path().join("nested/old.yaml"),
+                );
+            } else {
+                fs::rename(root.path().join("nested"), &parked).unwrap();
+                create_dir_symlink(outside.path(), &root.path().join("nested"));
+            }
+        },
     );
+    if cfg!(windows) {
+        assert_code(result, "path_outside_workspace");
+        assert_eq!(fs::read_to_string(&parked_file).unwrap(), "id: inside\n");
+        fs::remove_file(root.path().join("nested/old.yaml")).unwrap();
+        fs::rename(&parked_file, root.path().join("nested/old.yaml")).unwrap();
+    } else {
+        result.unwrap();
+        assert_eq!(
+            fs::read_to_string(parked.join("new.yaml")).unwrap(),
+            "id: inside\n"
+        );
+        fs::remove_file(root.path().join("nested")).unwrap();
+        fs::rename(&parked, root.path().join("nested")).unwrap();
+    }
     assert_eq!(
         fs::read_to_string(outside.path().join("old.yaml")).unwrap(),
         "id: outside\n"
     );
 
-    fs::remove_file(root.path().join("nested")).unwrap();
-    fs::rename(&parked, root.path().join("nested")).unwrap();
     let parked = root.path().join("parked-again");
+    let parked_file = root.path().join("nested/parked-again.yaml");
+    let trash_relative = if cfg!(windows) {
+        "nested/old.yaml"
+    } else {
+        "nested/new.yaml"
+    };
     let result = files::trash_paths_with_bound_hook(
         &workspace,
-        &["nested/new.yaml".to_string()],
+        &[trash_relative.to_string()],
         || {
-            fs::rename(root.path().join("nested"), &parked).unwrap();
-            create_dir_symlink(outside.path(), &root.path().join("nested"));
+            if cfg!(windows) {
+                fs::rename(root.path().join(trash_relative), &parked_file).unwrap();
+                create_file_symlink(
+                    &outside.path().join("old.yaml"),
+                    &root.path().join(trash_relative),
+                );
+            } else {
+                fs::rename(root.path().join("nested"), &parked).unwrap();
+                create_dir_symlink(outside.path(), &root.path().join("nested"));
+            }
         },
         |quarantined| fs::remove_file(quarantined).map_err(|error| error.to_string()),
     )
     .unwrap();
-    assert_eq!(result.results[0].status, "trashed");
+    if cfg!(windows) {
+        assert_eq!(result.results[0].status, "failed");
+        assert_eq!(
+            result.results[0].error_code.as_deref(),
+            Some("path_outside_workspace")
+        );
+        assert_eq!(fs::read_to_string(&parked_file).unwrap(), "id: inside\n");
+    } else {
+        assert_eq!(result.results[0].status, "trashed");
+    }
     assert_eq!(
         fs::read_to_string(outside.path().join("old.yaml")).unwrap(),
         "id: outside\n"
@@ -563,21 +804,16 @@ fn trash_never_hands_off_a_quarantine_name_replaced_after_binding() {
 
 #[test]
 fn trash_rolls_back_through_bound_handles_if_the_selected_root_is_replaced() {
-    let parent = tempdir().unwrap();
-    let root_path = parent.path().join("workspace");
-    fs::create_dir(&root_path).unwrap();
+    let root = tempdir().unwrap();
+    let root_path = root.path();
     fs::write(root_path.join("flow.yaml"), "id: original\n").unwrap();
-    let workspace = scope(&root_path);
-    let displaced = parent.path().join("displaced");
+    let workspace = scope(root_path);
 
-    let result = files::trash_paths_with_handoff_hook(
+    let result = files::trash_paths_with_scope_verification_failure(
         &workspace,
         &["flow.yaml".to_string()],
-        |_| {
-            fs::rename(&root_path, &displaced).unwrap();
-            fs::create_dir(&root_path).unwrap();
-            fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap();
-        },
+        "beforeHandoff",
+        || {},
         |_| panic!("a replaced selected root must not reach OS Trash"),
     )
     .unwrap();
@@ -588,12 +824,8 @@ fn trash_rolls_back_through_bound_handles_if_the_selected_root_is_replaced() {
         Some("workspace_root_changed")
     );
     assert_eq!(
-        fs::read_to_string(displaced.join("flow.yaml")).unwrap(),
-        "id: original\n"
-    );
-    assert_eq!(
         fs::read_to_string(root_path.join("flow.yaml")).unwrap(),
-        "id: replacement\n"
+        "id: original\n"
     );
 }
 
@@ -604,18 +836,14 @@ fn trash_never_reports_success_if_the_root_changes_after_os_handoff() {
     fs::create_dir(&root_path).unwrap();
     fs::write(root_path.join("flow.yaml"), "id: original\n").unwrap();
     let workspace = scope(&root_path);
-    let displaced = parent.path().join("displaced");
     let os_trash_path = parent.path().join("os-trash-flow.yaml");
 
-    let result = files::trash_paths_with_post_delete_hook(
+    let result = files::trash_paths_with_scope_verification_failure(
         &workspace,
         &["flow.yaml".to_string()],
+        "afterDelete",
+        || fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap(),
         |quarantine| fs::rename(quarantine, &os_trash_path).map_err(|error| error.to_string()),
-        || {
-            fs::rename(&root_path, &displaced).unwrap();
-            fs::create_dir(&root_path).unwrap();
-            fs::write(root_path.join("flow.yaml"), "id: replacement\n").unwrap();
-        },
     )
     .unwrap();
 
@@ -669,6 +897,9 @@ fn write_restores_read_only_permissions_only_after_staged_unlink_commits() {
 
 #[test]
 fn trash_preserves_each_capability_resolver_error_code() {
+    if !file_symlink_tests_supported() {
+        return;
+    }
     let root = tempdir().unwrap();
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("outside.yaml"), "id: outside\n").unwrap();
@@ -1349,6 +1580,27 @@ fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::windows::fs::symlink_file(target, link).unwrap();
 }
 
+#[cfg(not(windows))]
+fn file_symlink_tests_supported() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn file_symlink_tests_supported() -> bool {
+    let fixture = tempdir().unwrap();
+    let target = fixture.path().join("target.yaml");
+    let link = fixture.path().join("link.yaml");
+    fs::write(&target, "id: target\n").unwrap();
+    match std::os::windows::fs::symlink_file(&target, &link) {
+        Ok(()) => true,
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            eprintln!("skipping symlink test because Windows symlink privilege is unavailable");
+            false
+        }
+        Err(error) => panic!("failed to create Windows file symlink fixture: {error}"),
+    }
+}
+
 #[cfg(unix)]
 fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
@@ -1357,4 +1609,35 @@ fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
 #[cfg(windows)]
 fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) {
     std::os::windows::fs::symlink_dir(target, link).unwrap();
+}
+
+#[cfg(not(windows))]
+fn dir_symlink_tests_supported() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn dir_symlink_tests_supported() -> bool {
+    let fixture = tempdir().unwrap();
+    let target = fixture.path().join("target");
+    let link = fixture.path().join("link");
+    fs::create_dir(&target).unwrap();
+    match std::os::windows::fs::symlink_dir(&target, &link) {
+        Ok(()) => true,
+        Err(error) if error.raw_os_error() == Some(1314) => {
+            eprintln!("skipping symlink test because Windows symlink privilege is unavailable");
+            false
+        }
+        Err(error) => panic!("failed to create Windows directory symlink fixture: {error}"),
+    }
+}
+
+#[cfg(windows)]
+fn swap_symlink_tests_supported() -> bool {
+    file_symlink_tests_supported()
+}
+
+#[cfg(not(windows))]
+fn swap_symlink_tests_supported() -> bool {
+    dir_symlink_tests_supported()
 }

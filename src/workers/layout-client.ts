@@ -30,6 +30,7 @@ interface PendingLayout {
 }
 
 export interface LayoutClientLike {
+  warm?(): void
   arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult>
   cancel(): void
   destroy(): void
@@ -51,6 +52,16 @@ export class LayoutClient implements LayoutClientLike {
     private readonly workerFactory: LayoutWorkerFactory,
     private readonly options: LayoutClientOptions = {},
   ) {}
+
+  warm(): void {
+    if (this.destroyed) return
+    try {
+      const worker = this.ensureWorker()
+      this.attachWorkerListeners(worker)
+    } catch {
+      this.disposeWorker()
+    }
+  }
 
   arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult> {
     if (this.destroyed) return Promise.reject(new Error('Layout worker client has been destroyed.'))

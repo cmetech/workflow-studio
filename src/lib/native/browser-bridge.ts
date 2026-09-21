@@ -196,7 +196,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     chooseExportDirectory: async () => null,
     workspaceSetRoot: async (rootPath) => {
       selectedRoot = rootPath
-      return { workspaceId: 'browser-workspace', rootPath: selectedRoot }
+      return { workspaceId: 'browser-workspace', rootPath: selectedRoot, repository: null }
     },
     workspaceScan: async () => scanFixture(files),
     workspaceRead: async (relativePath) => readFixture(files, relativePath),

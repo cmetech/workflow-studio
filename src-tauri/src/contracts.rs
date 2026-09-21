@@ -24,10 +24,10 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
-};
+use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
+#[cfg(windows)]
+use crate::native_process::background_creation_flags;
 use same_file::Handle;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -631,17 +631,25 @@ fn run_hermes_cli(executable: &Path, profile: ContractProfile) -> ContractResult
 fn run_hermes_cli_with_spawn(
     executable: &Path,
     profile: ContractProfile,
-    mut spawn: impl FnMut(&mut Command) -> std::io::Result<std::process::Child>,
+    spawn: impl FnMut(&mut Command) -> std::io::Result<std::process::Child>,
 ) -> ContractResult<Vec<u8>> {
     let mut command = Command::new(executable);
+    command.args([
+        "workflow",
+        "schema",
+        "--profile",
+        profile.as_str(),
+        "--json",
+    ]);
+    run_hermes_command_with_spawn(command, CLI_TIMEOUT, spawn)
+}
+
+fn run_hermes_command_with_spawn(
+    mut command: Command,
+    timeout: Duration,
+    mut spawn: impl FnMut(&mut Command) -> std::io::Result<std::process::Child>,
+) -> ContractResult<Vec<u8>> {
     command
-        .args([
-            "workflow",
-            "schema",
-            "--profile",
-            profile.as_str(),
-            "--json",
-        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -651,14 +659,14 @@ fn run_hermes_cli_with_spawn(
         command.process_group(0);
     }
     #[cfg(windows)]
-    command.creation_flags(CREATE_SUSPENDED);
+    command.creation_flags(background_creation_flags());
     let started = Instant::now();
     let mut child = loop {
         match spawn(&mut command) {
             Ok(child) => break child,
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
-                    && started.elapsed() < CLI_TIMEOUT =>
+                    && started.elapsed() < timeout =>
             {
                 thread::sleep(CLI_SPAWN_RETRY_DELAY);
             }
@@ -693,7 +701,7 @@ fn run_hermes_cli_with_spawn(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < CLI_TIMEOUT => thread::sleep(Duration::from_millis(10)),
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
                 terminate_process_tree(
                     &mut child,
@@ -722,7 +730,7 @@ fn run_hermes_cli_with_spawn(
             }
         }
     };
-    let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
+    let remaining = timeout.saturating_sub(started.elapsed());
     let stdout = stdout_receiver.recv_timeout(remaining).map_err(|_| {
         terminate_process_tree(
             &mut child,
@@ -736,7 +744,7 @@ fn run_hermes_cli_with_spawn(
             "Hermes schema output exceeded the 10-second timeout.",
         )
     })??;
-    let remaining = CLI_TIMEOUT.saturating_sub(started.elapsed());
+    let remaining = timeout.saturating_sub(started.elapsed());
     let stderr = stderr_receiver.recv_timeout(remaining).map_err(|_| {
         terminate_process_tree(
             &mut child,
@@ -1115,6 +1123,13 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    #[cfg(windows)]
+    use std::process::Command;
+
+    #[cfg(windows)]
+    use crate::native_process::test_support::{
+        assert_hidden_and_descendant_terminated, fixture_command, run_fixture,
+    };
 
     #[cfg(unix)]
     fn fixture(script: &str) -> (tempfile::TempDir, PathBuf) {
@@ -1207,6 +1222,38 @@ mod tests {
 
         assert_eq!(output, b"{}");
         assert_eq!(attempts, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn contracts_background_child_fixture() {
+        run_fixture(
+            "contracts::tests::contracts_background_child_fixture",
+            "contracts",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn contracts_runner_hides_console_and_terminates_descendants_on_timeout() {
+        let directory = tempfile::tempdir().unwrap();
+        let command = fixture_command(
+            "contracts::tests::contracts_background_child_fixture",
+            "contracts",
+            directory.path(),
+        );
+        let started = std::time::Instant::now();
+
+        let error = super::run_hermes_command_with_spawn(
+            command,
+            std::time::Duration::from_secs(2),
+            Command::spawn,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "contract_cli_timeout", "{}", error.message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_hidden_and_descendant_terminated(directory.path());
     }
 
     #[test]

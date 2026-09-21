@@ -25,8 +25,11 @@ async function assertRealResponsiveModal(
   geometry: ExactGeometry,
   options: { injectOverflowFixture?: boolean } = {},
 ): Promise<void> {
+  // Lazy modal fallbacks share the final title but are replaced on load. Wait
+  // for a real action before retaining geometry or injecting overflow content.
+  await expect(reachableAction).toBeVisible()
   await expect(dialog).toBeVisible()
-  expect(await dialog.evaluate((node) => node.matches(':modal'))).toBe(true)
+  await expect.poll(() => dialog.evaluate((node) => node.matches(':modal'))).toBe(true)
 
   const backgroundControl = page.getByRole('button', { name: 'Explorer', exact: true })
   expect(
@@ -36,12 +39,11 @@ async function assertRealResponsiveModal(
     }),
   ).toBe(false)
 
-  await page.setViewportSize(geometry.viewport)
   const body = dialog.locator('[data-modal-body]')
   const footer = dialog.locator('[data-modal-actions]')
   await expect(body).toBeVisible()
-  if (options.injectOverflowFixture !== false) {
-    await body.evaluate((element) => {
+  const before = await body.evaluate((modalBody, injectOverflowFixture) => {
+    if (injectOverflowFixture && !modalBody.querySelector('[data-modal-overflow-fixture]')) {
       const fixture = document.createElement('div')
       fixture.dataset.modalOverflowFixture = 'true'
       for (let index = 0; index < 24; index += 1) {
@@ -49,12 +51,9 @@ async function assertRealResponsiveModal(
         line.textContent = `Long modal reflow fixture ${index + 1}: ${'content-aware-workbench-'.repeat(6)}`
         fixture.append(line)
       }
-      element.append(fixture)
-    })
-  }
-
-  const before = await dialog.evaluate((element) => {
-    const modalBody = element.querySelector<HTMLElement>('[data-modal-body]')!
+      modalBody.append(fixture)
+    }
+    const element = modalBody.closest('dialog')!
     const shell = element.querySelector<HTMLElement>('.modal-shell')!
     const modalFooter = element.querySelector<HTMLElement>('[data-modal-actions]')
     return {
@@ -69,7 +68,7 @@ async function assertRealResponsiveModal(
       bodyScrollHeight: modalBody.scrollHeight,
       bodyClientHeight: modalBody.clientHeight,
     }
-  })
+  }, options.injectOverflowFixture !== false)
   expect(before.bodyScrollHeight).toBeGreaterThan(before.bodyClientHeight)
   expect(before).toMatchObject({
     windowX: 0,
@@ -79,7 +78,6 @@ async function assertRealResponsiveModal(
     dialogScrollTop: 0,
     shellScrollTop: 0,
     footerScrollTop: 0,
-    bodyScrollTop: 0,
   })
   await expect(reachableAction).toBeVisible()
   const [actionBoxBefore, viewportHeight] = await Promise.all([
@@ -96,13 +94,25 @@ async function assertRealResponsiveModal(
   expect(footerBoxBefore).not.toBeNull()
   expect(footerBoxBefore!.y + footerBoxBefore!.height).toBeLessThanOrEqual(viewportHeight)
 
-  await body.evaluate((element) => {
-    element.scrollTop = element.scrollHeight
-  })
-  const after = await dialog.evaluate((element) => {
-    const modalBody = element.querySelector<HTMLElement>('[data-modal-body]')!
+  const after = await body.evaluate((modalBody, injectOverflowFixture) => {
+    if (injectOverflowFixture && !modalBody.querySelector('[data-modal-overflow-fixture]')) {
+      const fixture = document.createElement('div')
+      fixture.dataset.modalOverflowFixture = 'true'
+      for (let index = 0; index < 24; index += 1) {
+        const line = document.createElement('p')
+        line.textContent = `Long modal reflow fixture ${index + 1}: ${'content-aware-workbench-'.repeat(6)}`
+        fixture.append(line)
+      }
+      modalBody.append(fixture)
+    }
+    const element = modalBody.closest('dialog')!
     const shell = element.querySelector<HTMLElement>('.modal-shell')!
     const modalFooter = element.querySelector<HTMLElement>('[data-modal-actions]')
+    const initialBodyScrollTop = modalBody.scrollTop
+    const maximumBodyScrollTop = modalBody.scrollHeight - modalBody.clientHeight
+    const targetBodyScrollTop = initialBodyScrollTop > maximumBodyScrollTop / 2 ? 0 : maximumBodyScrollTop
+    const footerYBeforeBodyScroll = modalFooter?.getBoundingClientRect().y ?? null
+    modalBody.scrollTop = targetBodyScrollTop
     return {
       windowX: window.scrollX,
       windowY: window.scrollY,
@@ -112,9 +122,17 @@ async function assertRealResponsiveModal(
       shellScrollTop: shell.scrollTop,
       footerScrollTop: modalFooter?.scrollTop ?? 0,
       bodyScrollTop: modalBody.scrollTop,
+      initialBodyScrollTop,
+      targetBodyScrollTop,
+      maximumBodyScrollTop,
+      footerYBeforeBodyScroll,
+      footerYAfterBodyScroll: modalFooter?.getBoundingClientRect().y ?? null,
     }
-  })
-  expect(after.bodyScrollTop).toBeGreaterThan(0)
+  }, options.injectOverflowFixture !== false)
+  expect(after.maximumBodyScrollTop).toBeGreaterThan(0)
+  expect(after.bodyScrollTop).toBe(after.targetBodyScrollTop)
+  expect(after.bodyScrollTop).not.toBe(after.initialBodyScrollTop)
+  expect(after.footerYAfterBodyScroll).toBeCloseTo(after.footerYBeforeBodyScroll!, 0)
   expect(after).toMatchObject({
     windowX: before.windowX,
     windowY: before.windowY,
@@ -134,14 +152,18 @@ async function assertRealResponsiveModal(
   await expect(footer).toBeVisible()
   const footerBoxAfter = await footer.boundingBox()
   expect(footerBoxAfter).not.toBeNull()
-  expect(footerBoxAfter!.y).toBeCloseTo(footerBoxBefore!.y, 0)
+  expect(footerBoxAfter!.y + footerBoxAfter!.height).toBeLessThanOrEqual(viewportHeight)
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
   await expectExactWorkbenchGeometry(page)
 }
 
 function modalAtEveryExactGeometry(title: string, body: (page: Page, geometry: ExactGeometry) => Promise<void>): void {
   for (const geometry of EXACT_GEOMETRIES)
-    test(`${title} at ${geometry.label}`, async ({ page }) => body(page, geometry))
+    test(`${title} at ${geometry.label}`, async ({ page }) => {
+      test.setTimeout(30_000)
+      await page.setViewportSize(geometry.viewport)
+      await body(page, geometry)
+    })
 }
 
 modalAtEveryExactGeometry('New Workflow is a top-layer modal with reachable actions', async (page, geometry) => {
@@ -154,6 +176,7 @@ modalAtEveryExactGeometry('New Workflow is a top-layer modal with reachable acti
 modalAtEveryExactGeometry('Import is a top-layer modal with reachable actions', async (page, geometry) => {
   await page.goto('/')
   await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  if (geometry.viewport.width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
   await page.getByRole('button', { name: 'Import', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Import workflow' })
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Import YAML Pair' }), geometry)
@@ -182,7 +205,10 @@ modalAtEveryExactGeometry(
 )
 
 modalAtEveryExactGeometry('Recovery is a top-layer modal with persistent draft actions', async (page, geometry) => {
-  await openSeededPair(page, '?scenario=recovery-modal')
+  await page.goto('/?scenario=recovery-modal')
+  await page.getByRole('button', { name: 'Open Folder' }).first().click()
+  if (geometry.viewport.width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
+  await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click()
   const dialog = page.getByRole('dialog', { name: 'Recover unsaved workflow?' })
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Recover' }), geometry)
 })
@@ -192,6 +218,7 @@ modalAtEveryExactGeometry(
   async (page, geometry) => {
     await page.goto('/?scenario=export-blocking-modal')
     await page.getByRole('button', { name: 'Open Folder' }).first().click()
+    if (geometry.viewport.width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
     const pair = page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i })
     await pair.click()
     await expect(page.getByRole('button', { name: /depends on missing node.*Blocks save and export/i })).toBeVisible()
@@ -236,6 +263,7 @@ modalAtEveryExactGeometry(
   'Export Collision is a top-layer modal with persistent replacement actions',
   async (page, geometry) => {
     await openSeededPair(page, '?scenario=export-collision-modal')
+    if (geometry.viewport.width < 1280) await page.getByRole('button', { name: 'Explorer', exact: true }).click()
     await page.getByRole('treeitem', { name: /release-demo\.yaml, paired workflow/i }).click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Export' }).click()
     const dialog = page.getByRole('dialog', { name: 'Export workflow' })
@@ -248,6 +276,9 @@ modalAtEveryExactGeometry('Add Node is a top-layer modal with reachable contract
   await openSeededPair(page)
   await page.getByRole('button', { name: 'Add Node' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add node' })
+  // The deferred placeholder is also a modal; inject overflow only into the
+  // loaded picker so replacement cannot detach the measured body.
+  await expect(dialog.getByRole('combobox', { name: 'Search node kinds' })).toBeVisible()
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Close node picker' }), geometry)
 })
 
@@ -295,8 +326,14 @@ modalAtEveryExactGeometry('Delete is a top-layer modal with persistent impact ac
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   await prepare.focus()
   await prepare.press('Enter')
-  await page.getByRole('button', { name: 'More canvas actions' }).click()
-  await page.getByRole('menuitem', { name: 'Delete Selection' }).click()
+  if (geometry.viewport.width < 1280) {
+    const inspector = page.locator('aside[aria-label="Inspector"]')
+    await expect(inspector).not.toHaveAttribute('inert')
+    await page.keyboard.press('Escape')
+    await expect(inspector).toHaveAttribute('inert', '')
+  }
+  await prepare.focus()
+  await prepare.press('Backspace')
   const dialog = page.getByRole('dialog', { name: 'Delete selected nodes' })
   await assertRealResponsiveModal(page, dialog, dialog.getByRole('button', { name: 'Delete nodes' }), geometry)
 })

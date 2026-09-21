@@ -14,6 +14,27 @@ import type { CanvasEdge, CanvasNode, CanvasProjection, CanvasPosition, LoopGrou
 import type { ScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 
 const SUMMARY_LIMIT = 72
+const PORT_SIZE = 32
+const WORKFLOW_NODE_HANDLES: NonNullable<CanvasNode['handles']> = [
+  {
+    id: 'dependency-in',
+    type: 'target',
+    position: Position.Left,
+    x: -PORT_SIZE / 2,
+    y: (CANVAS_NODE_HEIGHT - PORT_SIZE) / 2,
+    width: PORT_SIZE,
+    height: PORT_SIZE,
+  },
+  {
+    id: 'dependency-out',
+    type: 'source',
+    position: Position.Right,
+    x: CANVAS_NODE_WIDTH - PORT_SIZE / 2,
+    y: (CANVAS_NODE_HEIGHT - PORT_SIZE) / 2,
+    width: PORT_SIZE,
+    height: PORT_SIZE,
+  },
+]
 export const MAX_VISUAL_NODES = VISUAL_NODE_CAPACITY
 export const MAX_VISUAL_EDGES = VISUAL_EDGE_CAPACITY
 
@@ -269,6 +290,7 @@ export function projectCanvas(
       position: clonePosition(positions[node.id] ?? { x: 0, y: 0 }),
       initialWidth: CANVAS_NODE_WIDTH,
       initialHeight: CANVAS_NODE_HEIGHT,
+      handles: WORKFLOW_NODE_HANDLES,
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       draggable: !readOnly,
@@ -382,14 +404,7 @@ export function isProjectedGraph(value: unknown): value is ProjectedGraph {
   )
 }
 
-export function isWorkflowProjection(value: unknown): value is WorkflowProjection {
-  return (
-    isRecord(value) &&
-    typeof value.name === 'string' &&
-    typeof value.profile === 'string' &&
-    Array.isArray(value.graphs)
-  )
-}
+export { isWorkflowProjection } from './projection-guard'
 
 function resolvePositions(
   projection: ProjectedGraph,

@@ -21,6 +21,9 @@ export interface RecentWorkspaceStore {
 }
 
 const MAX_RECENT_WORKSPACES = 20
+const WINDOWS_VERBATIM_PREFIX = '\\\\?\\'
+const WINDOWS_VERBATIM_UNC_PREFIX = '\\\\?\\UNC\\'
+const WINDOWS_DEVICE_PREFIX = '\\\\.\\'
 
 export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWorkspaceStore {
   let queue: Promise<void> = Promise.resolve()
@@ -46,9 +49,12 @@ export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWor
     const byRoot = new Map<string, RecentWorkspaceRecord>()
     for (const candidate of value) {
       if (!isRecord(candidate) || !nonEmpty(candidate.rootPath) || !validTimestamp(candidate.lastOpenedAt)) continue
-      const prior = byRoot.get(candidate.rootPath)
-      if (!prior || prior.lastOpenedAt < candidate.lastOpenedAt) {
-        byRoot.set(candidate.rootPath, { rootPath: candidate.rootPath, lastOpenedAt: candidate.lastOpenedAt })
+      const rootPath = publicRootPath(candidate.rootPath)
+      if (rootPath === null) continue
+      const identity = rootIdentity(rootPath)
+      const prior = byRoot.get(identity)
+      if (!prior || Date.parse(prior.lastOpenedAt) < Date.parse(candidate.lastOpenedAt)) {
+        byRoot.set(identity, { rootPath, lastOpenedAt: candidate.lastOpenedAt })
       }
     }
     return [...byRoot.values()].sort(newestFirst).slice(0, MAX_RECENT_WORKSPACES)
@@ -64,24 +70,31 @@ export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWor
       })
     },
     record(rootPath, openedAt) {
-      if (!nonEmpty(rootPath) || !validTimestamp(openedAt)) {
+      const publicRoot = publicRootPath(rootPath)
+      if (publicRoot === null || !validTimestamp(openedAt)) {
         return Promise.reject(new TypeError('A recent workspace requires a root path and ISO timestamp.'))
       }
       return exclusive(async () => {
         const current = await records()
-        const next = [{ rootPath, lastOpenedAt: openedAt }, ...current.filter((entry) => entry.rootPath !== rootPath)]
+        const identity = rootIdentity(publicRoot)
+        const next = [
+          { rootPath: publicRoot, lastOpenedAt: openedAt },
+          ...current.filter((entry) => rootIdentity(entry.rootPath) !== identity),
+        ]
           .sort(newestFirst)
           .slice(0, MAX_RECENT_WORKSPACES)
         await port.save(JSON.stringify(next))
       })
     },
     remove(rootPath) {
-      if (!nonEmpty(rootPath)) {
+      const publicRoot = publicRootPath(rootPath)
+      if (publicRoot === null) {
         return Promise.reject(new TypeError('A recent workspace requires a root path.'))
       }
       return exclusive(async () => {
         const current = await records()
-        await port.save(JSON.stringify(current.filter((entry) => entry.rootPath !== rootPath)))
+        const identity = rootIdentity(publicRoot)
+        await port.save(JSON.stringify(current.filter((entry) => rootIdentity(entry.rootPath) !== identity)))
       })
     },
     clearUnavailable() {
@@ -95,7 +108,25 @@ export function createRecentWorkspaceStore(port: RecentWorkspacePort): RecentWor
 }
 
 function newestFirst(left: RecentWorkspaceRecord, right: RecentWorkspaceRecord): number {
-  return right.lastOpenedAt.localeCompare(left.lastOpenedAt) || left.rootPath.localeCompare(right.rootPath)
+  return Date.parse(right.lastOpenedAt) - Date.parse(left.lastOpenedAt) || left.rootPath.localeCompare(right.rootPath)
+}
+
+function publicRootPath(path: unknown): string | null {
+  if (!nonEmpty(path)) return null
+  if (path.slice(0, WINDOWS_VERBATIM_UNC_PREFIX.length).toUpperCase() === WINDOWS_VERBATIM_UNC_PREFIX) {
+    const remainder = path.slice(WINDOWS_VERBATIM_UNC_PREFIX.length)
+    return remainder.length > 0 ? `\\\\${remainder}` : null
+  }
+  if (path.startsWith(WINDOWS_VERBATIM_PREFIX)) {
+    const remainder = path.slice(WINDOWS_VERBATIM_PREFIX.length)
+    return /^[A-Za-z]:\\/.test(remainder) ? remainder : null
+  }
+  if (path.startsWith(WINDOWS_DEVICE_PREFIX)) return null
+  return path
+}
+
+function rootIdentity(path: string): string {
+  return path
 }
 
 function validTimestamp(value: unknown): value is string {

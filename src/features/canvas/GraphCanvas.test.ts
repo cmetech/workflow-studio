@@ -20,15 +20,155 @@ import {
 } from '$src/lib/commands/registry'
 import { $canvasPositions, $canvasSelection, clearCanvasState, setCanvasSelection } from '$src/stores/canvas'
 import GraphCanvas from './GraphCanvas.svelte'
+import { deferTransientNodePositionUpdates } from './CanvasViewportController.svelte'
 import GraphCanvasInspectorHarness from './GraphCanvasInspectorHarness.svelte'
 import WorkflowEdge from './WorkflowEdge.svelte'
 import { createCanvasActivationBarrier } from './canvas-activation-barrier'
 import { createEditorMetricsCollector, installEditorMetrics } from '$src/lib/metrics/editor-metrics'
+import { latestArrangeMetrics, resetArrangeMetrics } from '$src/lib/metrics/arrange-metrics'
 import { ROUTING_ENGINE, type ScopeRoutingV1 } from '$src/lib/layout/routing'
 import * as routedLayout from './routed-layout'
 import { graphFingerprint, routingFingerprint } from './routed-layout'
 import type { LayoutWorkerRequest, LayoutWorkerResult, LayoutWorkerSuccess } from '$src/workers/layout-worker-protocol'
 import { NODE_KIND_DRAG_TYPE } from './node-kind-options'
+
+describe('deferTransientNodePositionUpdates', () => {
+  function fixture() {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <div class="svelte-flow__node" data-id="first" style="transform: translate(7px, 8px)"></div>
+      <div class="svelte-flow__node dragging" data-id="second" style="transform: scale(0.9)"></div>
+      <div class="svelte-flow__node" data-id="other"></div>
+    `
+    const original = vi.fn()
+    const store = { domNode: root, updateNodePositions: original }
+    return { root, original, store }
+  }
+
+  it('applies already-computed absolute positions locally and delegates one durable synchronization at stop', () => {
+    const { root, original, store } = fixture()
+    const transientUpdates = deferTransientNodePositionUpdates(store)
+    const dragItems = new Map([
+      [
+        'first',
+        {
+          id: 'first',
+          position: { x: 10, y: 20 },
+          internals: { positionAbsolute: { x: 110, y: 120 } },
+        },
+      ],
+      [
+        'second',
+        {
+          id: 'second',
+          position: { x: 30, y: 40 },
+          internals: { positionAbsolute: { x: 140, y: 160 } },
+        },
+      ],
+    ])
+
+    transientUpdates.begin()
+    store.updateNodePositions(dragItems, true)
+
+    expect(original).not.toHaveBeenCalled()
+    expect(root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(110px, 120px)')
+    expect(root.querySelector<HTMLElement>('[data-id="second"]')?.style.transform).toBe('translate(140px, 160px)')
+    expect(root.querySelector<HTMLElement>('[data-id="other"]')?.style.transform).toBe('')
+    expect(root.querySelector('[data-id="first"]')).toHaveClass('dragging')
+    expect(root.querySelector('[data-id="second"]')).toHaveClass('dragging')
+
+    store.updateNodePositions(dragItems, false)
+
+    expect(original).toHaveBeenCalledOnce()
+    expect(original).toHaveBeenCalledWith(dragItems, false)
+    transientUpdates.destroy()
+    expect(store.updateNodePositions).toBe(original)
+  })
+
+  it('matches Svelte Flow cancellation ordering and restores every touched element exactly', () => {
+    const { root, original, store } = fixture()
+    const transientUpdates = deferTransientNodePositionUpdates(store)
+    const first = root.querySelector<HTMLElement>('[data-id="first"]')!
+    const second = root.querySelector<HTMLElement>('[data-id="second"]')!
+    const moved = new Map([
+      ['first', { internals: { positionAbsolute: { x: 110, y: 120 } } }],
+      ['second', { internals: { positionAbsolute: { x: 140, y: 160 } } }],
+    ])
+
+    transientUpdates.begin()
+    store.updateNodePositions(moved, true)
+    transientUpdates.cancel()
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
+
+    store.updateNodePositions(new Map([['first', { internals: { positionAbsolute: { x: 210, y: 220 } } }]]), true)
+    store.updateNodePositions(moved, false)
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
+    expect(original).not.toHaveBeenCalled()
+
+    transientUpdates.begin()
+    store.updateNodePositions(moved, true)
+    store.updateNodePositions(moved, false)
+
+    expect(original).toHaveBeenCalledOnce()
+    expect(original).toHaveBeenCalledWith(moved, false)
+    transientUpdates.destroy()
+  })
+
+  it('restores exact touched DOM state and the owned action during teardown', () => {
+    const { root, original, store } = fixture()
+    const transientUpdates = deferTransientNodePositionUpdates(store)
+    const first = root.querySelector<HTMLElement>('[data-id="first"]')!
+    const second = root.querySelector<HTMLElement>('[data-id="second"]')!
+
+    transientUpdates.begin()
+    store.updateNodePositions(
+      new Map([
+        ['first', { internals: { positionAbsolute: { x: 30, y: 40 } } }],
+        ['second', { internals: { positionAbsolute: { x: 50, y: 60 } } }],
+      ]),
+      true,
+    )
+    transientUpdates.destroy()
+
+    expect(first.style.transform).toBe('translate(7px, 8px)')
+    expect(first).not.toHaveClass('dragging')
+    expect(second.style.transform).toBe('scale(0.9)')
+    expect(second).toHaveClass('dragging')
+    expect(store.updateNodePositions).toBe(original)
+  })
+
+  it('isolates each canvas store and does not overwrite a later owner during teardown', () => {
+    const first = fixture()
+    const second = fixture()
+    const firstUpdates = deferTransientNodePositionUpdates(first.store)
+    const secondUpdates = deferTransientNodePositionUpdates(second.store)
+    const firstWrapper = first.store.updateNodePositions
+    const replacement = vi.fn()
+    const dragItems = new Map([
+      ['first', { id: 'first', position: { x: 1, y: 2 }, internals: { positionAbsolute: { x: 3, y: 4 } } }],
+    ])
+
+    firstUpdates.begin()
+    first.store.updateNodePositions(dragItems, true)
+
+    expect(first.root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(3px, 4px)')
+    expect(second.root.querySelector<HTMLElement>('[data-id="first"]')?.style.transform).toBe('translate(7px, 8px)')
+    first.store.updateNodePositions = replacement
+    firstUpdates.destroy()
+    expect(first.store.updateNodePositions).toBe(replacement)
+    expect(second.store.updateNodePositions).not.toBe(firstWrapper)
+    secondUpdates.destroy()
+    expect(second.store.updateNodePositions).toBe(second.original)
+  })
+})
 
 function renderCanvas(props: Record<string, unknown>) {
   return render(GraphCanvas, { commandSurface: commandRegistry, ...props } as never)
@@ -104,6 +244,7 @@ class DeferredLayoutClient {
   requests: LayoutWorkerRequest[] = []
   resolve!: (result: LayoutWorkerResult) => void
   reject!: (reason: Error) => void
+  warm = vi.fn()
   arrange(request: LayoutWorkerRequest): Promise<LayoutWorkerResult> {
     this.requests.push(request)
     return new Promise((resolve, reject) => {
@@ -265,7 +406,263 @@ describe('GraphCanvas', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    resetArrangeMetrics()
     clearCanvasState()
+  })
+
+  it('records one complete phase snapshot for the accepted arrange and its persistence', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+      await rendered.component.flushPersistence()
+
+      const metric = latestArrangeMetrics()
+      expect(metric).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'accepted',
+        phases: {
+          measure: expect.any(Number),
+          fingerprint: expect.any(Number),
+          serialize: expect.any(Number),
+          worker: expect.any(Number),
+          validate: expect.any(Number),
+          publish: expect.any(Number),
+          fit: expect.any(Number),
+          persist: expect.any(Number),
+        },
+      })
+      expect(metric!.totalMs).toBeGreaterThanOrEqual(metric!.phaseTotalMs)
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('keeps arrange metrics owned when a position update replaces the post-arrange debounced save', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client, onPersistLayout })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await arranging
+
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 72, y: 96 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 72, y: 96 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(onPersistLayout).toHaveBeenCalledOnce()
+      expect(onPersistLayout.mock.calls[0]![0]).toMatchObject({
+        nodePositions: expect.objectContaining({ collect: { x: 72, y: 96 } }),
+      })
+      expect(latestArrangeMetrics()).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'accepted',
+      })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('warms the reusable layout endpoint when the canvas mounts', async () => {
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await tick()
+      expect(client.warm).toHaveBeenCalledOnce()
+    } finally {
+      rendered.unmount()
+    }
+  })
+
+  it('reuses current rendered measurements without scheduling another measurement frame', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const rendered = renderCanvas({ projection, layout, layoutClient: client })
+    try {
+      await measurements.publish()
+      const first = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await first
+      await rendered.component.flushPersistence()
+      await measurements.publish()
+
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame')
+      const second = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(2))
+      expect(frame).not.toHaveBeenCalled()
+      client.resolve(successfulArrangement(client.requests[1]!))
+      await second
+      await rendered.component.flushPersistence()
+      frame.mockRestore()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('requires a fresh node measurement after issue badges change rendered height', async () => {
+    const sizes = { collect: { width: 240, height: 104 }, review: { width: 240, height: 168 } }
+    const measurements = canvasMeasurements(sizes)
+    const client = new DeferredLayoutClient()
+    const props = { projection, layout, layoutClient: client, issues: [] }
+    const rendered = renderCanvas(props)
+    let arranging: Promise<void> | undefined
+    const frames: FrameRequestCallback[] = []
+    try {
+      await measurements.publish()
+      sizes.collect.height = 144
+      await rendered.rerender({
+        ...props,
+        issues: [
+          {
+            code: 'schema_required',
+            layer: 'contract',
+            severity: 'error',
+            blocking: true,
+            message: 'Command is required.',
+            document: 'definition',
+            nodeId: 'collect',
+          },
+        ],
+      })
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      arranging = rendered.component.arrange()
+      await waitFor(() => expect(frames).toHaveLength(1))
+      frames.shift()!(performance.now())
+      await waitFor(() =>
+        expect(client.requests.length > 0 || latestArrangeMetrics()?.outcome !== 'pending').toBe(true),
+      )
+
+      expect(client.requests).toHaveLength(0)
+      await arranging
+      frame.mockRestore()
+
+      await measurements.publish()
+      const measuredArrange = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      expect(client.requests[0]!.nodes.find(({ id }) => id === 'collect')).toMatchObject({ height: 144 })
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await measuredArrange
+    } finally {
+      rendered.unmount()
+      await arranging
+      measurements.restore()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('requires a fresh node measurement after a compound summary changes rendered height', async () => {
+    const loopProjection: ProjectedGraph = {
+      ...projection,
+      nodes: projection.nodes.map((node, index) => (index === 0 ? { ...node, kind: 'loop_group' } : node)),
+    }
+    const sizes = { collect: { width: 240, height: 136 }, review: { width: 240, height: 168 } }
+    const measurements = canvasMeasurements(sizes)
+    const client = new DeferredLayoutClient()
+    const props = {
+      projection: loopProjection,
+      layout,
+      layoutClient: client,
+      groupSummaries: {
+        collect: { bodyNodeCount: 1, errorCount: 0, requiredIssueCount: 0 },
+      },
+    }
+    const rendered = renderCanvas(props)
+    let arranging: Promise<void> | undefined
+    const frames: FrameRequestCallback[] = []
+    try {
+      await measurements.publish()
+      sizes.collect.height = 184
+      await rendered.rerender({
+        ...props,
+        groupSummaries: {
+          collect: {
+            bodyNodeCount: 3,
+            maxIterations: 5,
+            primarySinkId: 'review',
+            errorCount: 0,
+            requiredIssueCount: 0,
+          },
+        },
+      })
+      const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback)
+        return frames.length
+      })
+      arranging = rendered.component.arrange()
+      await waitFor(() => expect(frames).toHaveLength(1))
+      frames.shift()!(performance.now())
+      await waitFor(() =>
+        expect(client.requests.length > 0 || latestArrangeMetrics()?.outcome !== 'pending').toBe(true),
+      )
+
+      expect(client.requests).toHaveLength(0)
+      await arranging
+      frame.mockRestore()
+
+      await measurements.publish()
+      const measuredArrange = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      expect(client.requests[0]!.nodes.find(({ id }) => id === 'collect')).toMatchObject({ height: 184 })
+      client.resolve(successfulArrangement(client.requests[0]!))
+      await measuredArrange
+    } finally {
+      rendered.unmount()
+      await arranging
+      measurements.restore()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('marks a cancelled arrange without allowing its late persistence to replace newer metrics', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const props = { commandSurface: commandRegistry, projection, layout, layoutClient: client }
+    const rendered = renderCanvas(props)
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(client.requests).toHaveLength(1))
+      await rendered.rerender({ ...props, pairGeneration: 1 })
+      await arranging
+
+      expect(latestArrangeMetrics()).toMatchObject({
+        requestId: client.requests[0]!.identity.requestId,
+        outcome: 'cancelled',
+      })
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+    }
   })
 
   it('emphasizes a hovered or focused dependency and both endpoints while keeping other connections visible', async () => {
@@ -318,6 +715,41 @@ describe('GraphCanvas', () => {
     expect(container.querySelector('.workflow-edge.emphasized')).not.toBeInTheDocument()
     expect(onLayoutChange).not.toHaveBeenCalled()
     expect(onPersistLayout).not.toHaveBeenCalled()
+    measurements.restore()
+  })
+
+  it.each([3, 100])('limits overview hover suppression to capacity graphs: %i nodes', async (nodeCount) => {
+    const measurements = canvasMeasurements({
+      collect: { width: 216, height: 104 },
+      review: { width: 216, height: 104 },
+      publish: { width: 216, height: 104 },
+    })
+    const rendered = renderCanvas({
+      projection: { ...denseProjection, capacity: { ...denseProjection.capacity, nodeCount } },
+      layout: { ...denseLayout, viewport: { x: 0, y: 0, zoom: 0.49 } },
+    })
+    await measurements.publish()
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__edge')).toBeInTheDocument())
+    const edge = rendered.container.querySelector<SVGGElement>(
+      '.svelte-flow__edge[data-id="dependency:collect->review"]',
+    )!
+
+    await fireEvent.pointerEnter(edge)
+    if (nodeCount >= 100) expect(edge.querySelector('.workflow-edge')).not.toHaveClass('emphasized')
+    else expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    edge.focus()
+    await tick()
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+    edge.blur()
+    await tick()
+
+    rendered.component.actualSize()
+    await tick()
+    await fireEvent.pointerEnter(edge)
+    expect(edge.querySelector('.workflow-edge')).toHaveClass('emphasized')
+
+    rendered.unmount()
     measurements.restore()
   })
 
@@ -512,7 +944,7 @@ describe('GraphCanvas', () => {
     }
   })
 
-  it('[RG6] clears routing at drag start and does no expensive work during 1,000 moves', async () => {
+  it('[RG6] invalidates routing locally while retaining frozen routes until 1,000 moves stop', async () => {
     const measurements = canvasMeasurements()
     const routing = await savedRouting()
     const onLayoutChange = vi.fn(),
@@ -536,8 +968,8 @@ describe('GraphCanvas', () => {
       )
       const canvas = screen.getByTestId('workflow-canvas')
       await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
-      expect(onLayoutChange).toHaveBeenCalledWith(expect.objectContaining({ routing: undefined }), expect.any(String))
-      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40')
       metrics.reset()
       hashing.mockClear()
       resolving.mockClear()
@@ -569,12 +1001,22 @@ describe('GraphCanvas', () => {
       expect(resolving).not.toHaveBeenCalled()
       expect(onLayoutChange).not.toHaveBeenCalled()
       expect(onPersistLayout).not.toHaveBeenCalled()
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40')
       await fireEvent(
         canvas,
         new CustomEvent('workflowdragstop', {
           bubbles: true,
           detail: { id: 'collect', position: { x: 1_000, y: 2_000 } },
         }),
+      )
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).not.toBe('M 240 40 L 320 40')
+      expect(onLayoutChange).toHaveBeenCalledOnce()
+      expect(onLayoutChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routing: undefined,
+          nodePositions: expect.objectContaining({ collect: { x: 1_000, y: 2_000 } }),
+        }),
+        expect.any(String),
       )
       await vi.advanceTimersByTimeAsync(300)
       expect(onPersistLayout).toHaveBeenCalledOnce()
@@ -586,6 +1028,45 @@ describe('GraphCanvas', () => {
       restoreMetrics()
       hashing.mockRestore()
       resolving.mockRestore()
+    }
+  })
+
+  it('[RG6] retains valid routing without publication when an unfinished drag is cancelled', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({
+      projection,
+      layout: { ...layout, routing },
+      onLayoutChange,
+      onPersistLayout,
+    })
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      const canvas = screen.getByTestId('workflow-canvas')
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 60, y: 80 } },
+        }),
+      )
+
+      expect(rendered.component.cancel()).toBe(true)
+      await tick()
+
+      expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40')
+      expect($canvasPositions.get()).toEqual(layout.nodePositions)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
     }
   })
 
@@ -639,6 +1120,10 @@ describe('GraphCanvas', () => {
       )
       const canvas = screen.getByTestId('workflow-canvas')
       await fireEvent(canvas, new CustomEvent('workflowdragstart'))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', { detail: { id: 'collect', position: { x: 0, y: 0 } } }),
+      )
       await rendered.rerender({ ...props, layout: structuredClone(props.layout) })
       await fireEvent(
         canvas,
@@ -660,7 +1145,7 @@ describe('GraphCanvas', () => {
     }
   })
 
-  it('[RG6] keeps a delayed drag-start layout echo from resetting live pointer positions', async () => {
+  it('[RG6] keeps pending pointer positions local across a delayed drag-start layout echo', async () => {
     const measurements = canvasMeasurements()
     const routing = await savedRouting()
     const props = { commandSurface: commandRegistry, projection, layout: { ...layout, routing } }
@@ -677,6 +1162,8 @@ describe('GraphCanvas', () => {
         new CustomEvent('workflowdragmove', { detail: { id: 'collect', position: { x: 60, y: 80 } } }),
       )
       await rendered.rerender({ ...props, layout: { ...layout } })
+      expect($canvasPositions.get()).toEqual(layout.nodePositions)
+      await fireEvent(canvas, new CustomEvent('workflowdragstop', { detail: {} }))
       expect($canvasPositions.get().collect).toEqual({ x: 60, y: 80 })
     } finally {
       rendered.unmount()
@@ -1264,6 +1751,45 @@ describe('GraphCanvas', () => {
     }
   })
 
+  it('terminalizes an unpublished attempt invalidated at an await boundary before reactive cancellation', async () => {
+    const measurements = canvasMeasurements()
+    const client = new DeferredLayoutClient()
+    const mutableProjection = structuredClone(projection) as ProjectedGraph
+    let finish!: (fingerprint: `sha256:${string}`) => void
+    const hashing = vi.spyOn(routedLayout, 'graphFingerprint').mockImplementation(
+      () =>
+        new Promise<`sha256:${string}`>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const onLayoutChange = vi.fn()
+    const onPersistLayout = vi.fn()
+    const rendered = renderCanvas({
+      projection: mutableProjection,
+      layout,
+      layoutClient: client,
+      onLayoutChange,
+      onPersistLayout,
+    })
+    try {
+      await measurements.publish()
+      const arranging = rendered.component.arrange()
+      await waitFor(() => expect(hashing).toHaveBeenCalledOnce())
+      ;(mutableProjection.scope as { key: ProjectedGraph['scope']['key'] }).key = 'loop-group:replacement'
+      finish(`sha256:${'b'.repeat(64)}`)
+      await arranging
+
+      expect(client.requests).toHaveLength(0)
+      expect(onLayoutChange).not.toHaveBeenCalled()
+      expect(onPersistLayout).not.toHaveBeenCalled()
+      expect(latestArrangeMetrics()).toMatchObject({ outcome: 'cancelled' })
+    } finally {
+      rendered.unmount()
+      hashing.mockRestore()
+      measurements.restore()
+    }
+  })
+
   it('keeps a newer Arrange busy when an obsolete request finally settles', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()
@@ -1339,7 +1865,7 @@ describe('GraphCanvas', () => {
     }
   })
 
-  it('[RG8] [RG12] cancels a partial capacity measurement without posting or persisting layout', async () => {
+  it('[RG8] [RG12] measures capacity in bounded batches without republishing the primary graph', async () => {
     const fixture = createLargeWorkflowFixture()
     const measurements = canvasMeasurements(
       Object.fromEntries(fixture.projection.nodes.map(({ id }) => [id, { width: 216, height: 104 }])),
@@ -1356,32 +1882,56 @@ describe('GraphCanvas', () => {
       onPersistLayout: persist,
     })
     await measurements.publish()
-    const before = rendered.container.querySelectorAll('.svelte-flow__node').length
-    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockReturnValue(321)
+    await waitFor(() => expect(rendered.container.querySelector('.svelte-flow__edge')).toBeInTheDocument())
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    const primary = rendered.container.querySelector<HTMLElement>(
+      '[data-testid="workflow-canvas-viewport"] > .svelte-flow',
+    )!
+    const primaryIds = () =>
+      [...primary.querySelectorAll<HTMLElement>('.svelte-flow__node')].map((node) => node.dataset.id)
+    const before = primaryIds()
+    const frames: FrameRequestCallback[] = []
+    const frame = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
     const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame')
+    let mounted = true
     try {
       const arranging = rendered.component.arrange()
-      await tick()
-      const during = rendered.container.querySelectorAll('.svelte-flow__node').length
-      expect(during).toBeGreaterThan(before)
-      expect(during).toBeLessThanOrEqual(before + 40)
-      expect(during).toBeLessThan(250)
+      await waitFor(() => expect(frames).toHaveLength(1))
+      const layer = rendered.container.querySelector<HTMLElement>('[data-testid="arrange-measurement-layer"]')!
+      const batchIds = () =>
+        [...layer.querySelectorAll<HTMLElement>('.svelte-flow__node')].map((node) => node.dataset.id)
+      const firstBatch = batchIds()
+      expect(firstBatch.length).toBeGreaterThan(0)
+      expect(firstBatch.length).toBeLessThanOrEqual(40)
+      expect(primaryIds()).toEqual(before)
       expect(client.arrange).not.toHaveBeenCalled()
-      await waitFor(() => expect(frame).toHaveBeenCalled())
+
+      await measurements.publish()
+      frames.shift()!(performance.now())
+      await waitFor(() => expect(frames).toHaveLength(1))
+      expect(batchIds()).not.toEqual(firstBatch)
+      expect(batchIds().length).toBeLessThanOrEqual(40)
+      expect(primaryIds()).toEqual(before)
+
       rendered.unmount()
+      mounted = false
       await arranging
-      expect(cancel).toHaveBeenCalledWith(321)
+      expect(cancel).toHaveBeenCalled()
       expect(client.arrange).not.toHaveBeenCalled()
       expect(publish).not.toHaveBeenCalled()
       expect(persist).not.toHaveBeenCalled()
     } finally {
+      if (mounted) rendered.unmount()
       measurements.restore()
       frame.mockRestore()
       cancel.mockRestore()
     }
   })
 
-  it('mounts offscreen cards for the measured Arrange frame', async () => {
+  it('mounts capacity-mode offscreen cards for the measured Arrange frame', async () => {
     const measurements = canvasMeasurements()
     const client = new DeferredLayoutClient()
     const offscreenLayout = { ...layout, nodePositions: { collect: { x: 0, y: 0 }, review: { x: 10000, y: 10000 } } }
@@ -1389,7 +1939,7 @@ describe('GraphCanvas', () => {
       ...projection,
       nodes: projection.nodes.map((node) => ({ ...node, dependsOn: [] })),
       edges: [],
-      capacity: { ...projection.capacity, edgeCount: 0 },
+      capacity: { ...projection.capacity, nodeCount: 100, edgeCount: 0 },
     }
     const rendered = renderCanvas({ projection: disconnectedProjection, layout: offscreenLayout, layoutClient: client })
     try {
@@ -1468,6 +2018,7 @@ describe('GraphCanvas', () => {
         },
       })
       let reopened: ReturnType<typeof renderCanvas> | undefined
+      let renderedMounted = true
       try {
         await measurements.publish()
         const before = rendered.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')
@@ -1486,12 +2037,13 @@ describe('GraphCanvas', () => {
         expect(persisted.viewport).not.toEqual(layout.viewport)
         expect(persisted.routing).toBeDefined()
         rendered.unmount()
+        renderedMounted = false
         reopened = renderCanvas({ projection, layout: persisted })
         await tick()
         expect(reopened.container.querySelector('.svelte-flow__viewport')!.getAttribute('style')).toBe(fitted)
       } finally {
         reopened?.unmount()
-        rendered.unmount()
+        if (renderedMounted) rendered.unmount()
         measurements.restore()
       }
     },
@@ -1868,10 +2420,13 @@ describe('GraphCanvas', () => {
     expect(container.querySelector('[data-port="output"]')).toBeInTheDocument()
 
     const open = screen.getByRole('button', { name: 'Open loop body' })
+    await fireEvent.pointerDown(open, { button: 0 })
     await fireEvent.click(open)
+    expect($canvasSelection.get()).toEqual([])
     await fireEvent.dblClick(node)
     node.focus()
     await fireEvent.keyDown(node, { key: 'Enter' })
+    expect($canvasSelection.get()).toEqual([])
     await fireEvent.keyDown(open, { key: 'Enter' })
 
     expect(onOpenLoopGroup).toHaveBeenCalledTimes(3)
@@ -1881,12 +2436,13 @@ describe('GraphCanvas', () => {
 
     rendered.component.arrange()
     await tick()
-    expect(screen.getByText('2 body nodes')).toBeVisible()
-    expect(screen.getByText('Maximum 3 iterations')).toBeVisible()
-    expect(screen.getByText('Group output: publish')).toBeVisible()
-    expect(screen.getByText('1 required')).toBeVisible()
-    expect(screen.getByText('1 error')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Open loop body' })).toBeVisible()
+    const primaryFlow = container.querySelector<HTMLElement>('[data-testid="workflow-canvas-viewport"] > .svelte-flow')!
+    expect(within(primaryFlow).getByText('2 body nodes')).toBeVisible()
+    expect(within(primaryFlow).getByText('Maximum 3 iterations')).toBeVisible()
+    expect(within(primaryFlow).getByText('Group output: publish')).toBeVisible()
+    expect(within(primaryFlow).getByText('1 required')).toBeVisible()
+    expect(within(primaryFlow).getByText('1 error')).toBeVisible()
+    expect(within(primaryFlow).getByRole('button', { name: 'Open loop body' })).toBeVisible()
     expect(container.querySelector('.svelte-flow__node[data-id="repeat"]')).toHaveAttribute(
       'aria-label',
       'loop group repeat, 2 body nodes, maximum 3 iterations, primary output publish, 1 error, 1 required issue',
@@ -1938,12 +2494,18 @@ describe('GraphCanvas', () => {
     expect(flow?.querySelector('.svelte-flow__pane')).toHaveClass('draggable')
   })
 
-  it('isolates 100 drag moves to position state and persists one layout only after drag-stop debounce', async () => {
+  it('publishes no durable positions during 100 drag moves and publishes and persists once at drag stop', async () => {
     vi.useFakeTimers()
     const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
     const before = structuredClone(projection)
     const { container } = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
 
     for (let move = 1; move <= 100; move += 1) {
       await fireEvent(
@@ -1955,7 +2517,8 @@ describe('GraphCanvas', () => {
       )
     }
 
-    expect($canvasPositions.get().collect).toEqual({ x: 100, y: 200 })
+    expect(publications).toEqual([])
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
     expect(persistLayout).not.toHaveBeenCalled()
     expect(projection).toEqual(before)
 
@@ -1966,6 +2529,7 @@ describe('GraphCanvas', () => {
         detail: { id: 'collect', position: { x: 100, y: 200 } },
       }),
     )
+    expect(publications).toEqual([{ collect: { x: 100, y: 200 }, review: { x: 320, y: 0 } }])
     await vi.advanceTimersByTimeAsync(299)
     expect(persistLayout).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
@@ -1975,6 +2539,7 @@ describe('GraphCanvas', () => {
       expect.objectContaining({ nodePositions: { collect: { x: 100, y: 200 }, review: { x: 320, y: 0 } } }),
       expect.any(String),
     )
+    unsubscribe()
   })
 
   it('applies every selected node in one drag payload, persists once, and restores both positions on reopen', async () => {
@@ -1989,12 +2554,19 @@ describe('GraphCanvas', () => {
       { id: 'collect', position: { x: 140, y: 160 } },
       { id: 'review', position: { x: 460, y: 160 } },
     ]
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
 
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
     await fireEvent(canvas, new CustomEvent('workflowdragmove', { bubbles: true, detail: { nodes } }))
-    expect($canvasPositions.get()).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
+    expect(publications).toEqual([])
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
     expect(persistLayout).not.toHaveBeenCalled()
 
     await fireEvent(canvas, new CustomEvent('workflowdragstop', { bubbles: true, detail: { nodes } }))
+    expect(publications).toEqual([{ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } }])
     await vi.advanceTimersByTimeAsync(300)
     expect(persistLayout).toHaveBeenCalledOnce()
     expect(persisted?.nodePositions).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
@@ -2004,6 +2576,451 @@ describe('GraphCanvas', () => {
     canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     expect(canvas).toBeVisible()
     expect($canvasPositions.get()).toEqual({ collect: { x: 140, y: 160 }, review: { x: 460, y: 160 } })
+    unsubscribe()
+  })
+
+  it('discards an unfinished drag when cancelled or unmounted without publishing or persisting it', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 75, y: 90 } },
+      }),
+    )
+    expect(rendered.component.cancel()).toBe(true)
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 175, y: 190 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 175, y: 190 } },
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(publications).toEqual([])
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
+    expect(persistLayout).not.toHaveBeenCalled()
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'review', position: { x: 500, y: 120 } },
+      }),
+    )
+    rendered.unmount()
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(publications).toEqual([])
+    expect(persistLayout).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it.each([
+    ['inactive surface', { surfaceActive: false }],
+    ['read-only mode', { readOnly: true }],
+    ['stale analysis', { stale: true }],
+    ['transition lock', { transitionLocked: true }],
+  ] as const)(
+    'cancels transient drag state when authorability is lost to %s and accepts a later gesture',
+    async (_reason, replacement) => {
+      const measurements = canvasMeasurements()
+      const routing = await savedRouting()
+      const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        layout: { ...layout, routing },
+        onPersistLayout: persistLayout,
+      }
+      const rendered = renderCanvas(props)
+      const publications: (typeof layout.nodePositions)[] = []
+      const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+      try {
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+        )
+        publications.length = 0
+        let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+
+        await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 75, y: 90 } },
+          }),
+        )
+        await rendered.rerender({ ...props, ...replacement })
+        await tick()
+
+        expect(rendered.component.cancel()).toBe(false)
+
+        canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 175, y: 190 } },
+          }),
+        )
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragstop', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 175, y: 190 } },
+          }),
+        )
+        await rendered.component.flushPersistence()
+
+        expect(publications).toEqual([])
+        expect($canvasPositions.get()).toEqual(layout.nodePositions)
+        expect(persistLayout).not.toHaveBeenCalled()
+
+        await rendered.rerender({
+          ...props,
+          surfaceActive: true,
+          readOnly: false,
+          stale: false,
+          transitionLocked: false,
+        })
+        await measurements.publish()
+        await waitFor(() =>
+          expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+        )
+        publications.length = 0
+        canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+        await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragmove', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 125, y: 150 } },
+          }),
+        )
+        await fireEvent(
+          canvas,
+          new CustomEvent('workflowdragstop', {
+            bubbles: true,
+            detail: { id: 'collect', position: { x: 125, y: 150 } },
+          }),
+        )
+        await rendered.component.flushPersistence()
+
+        expect(publications).toEqual([{ collect: { x: 125, y: 150 }, review: { x: 320, y: 0 } }])
+        expect(persistLayout).toHaveBeenCalledOnce()
+      } finally {
+        unsubscribe()
+        rendered.unmount()
+        measurements.restore()
+      }
+    },
+  )
+
+  it('cancels an active drag before arrange makes authoring busy and accepts a gesture after arrange cancellation', async () => {
+    const measurements = canvasMeasurements()
+    const routing = await savedRouting()
+    const client = new DeferredLayoutClient()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({
+      projection,
+      layout: { ...layout, routing },
+      layoutClient: client,
+      onPersistLayout: persistLayout,
+    })
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    try {
+      await measurements.publish()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+      publications.length = 0
+      let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 75, y: 90 } },
+        }),
+      )
+
+      const arranging = rendered.component.arrange()
+      await tick()
+      expect(rendered.component.cancel()).toBe(true)
+      expect(client.cancel).toHaveBeenCalledOnce()
+      await arranging
+      await tick()
+
+      canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 175, y: 190 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 175, y: 190 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(publications).toEqual([])
+      expect($canvasPositions.get()).toEqual(layout.nodePositions)
+      expect(persistLayout).not.toHaveBeenCalled()
+      await waitFor(() =>
+        expect(rendered.container.querySelector('.workflow-edge')?.getAttribute('d')).toBe('M 240 40 L 320 40'),
+      )
+
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'review', position: { x: 500, y: 120 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'review', position: { x: 500, y: 120 } },
+        }),
+      )
+      await rendered.component.flushPersistence()
+
+      expect(publications).toEqual([{ collect: { x: 0, y: 0 }, review: { x: 500, y: 120 } }])
+      expect(persistLayout).toHaveBeenCalledOnce()
+    } finally {
+      unsubscribe()
+      rendered.unmount()
+      measurements.restore()
+    }
+  })
+
+  it('does not publish a drag start and stop that contains no move event', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 0, y: 0 } },
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(publications).toEqual([])
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
+    expect(persistLayout).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('discards pending drag positions when the workflow identity changes', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({
+      projection,
+      layout,
+      workflowIdentity: 'workflow-a',
+      onPersistLayout: persistLayout,
+    })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 75, y: 90 } },
+      }),
+    )
+    await rendered.rerender({
+      commandSurface: commandRegistry,
+      projection,
+      layout,
+      workflowIdentity: 'workflow-b',
+      onPersistLayout: persistLayout,
+    })
+    await tick()
+    publications.length = 0
+    await fireEvent(canvas, new CustomEvent('workflowdragstop', { bubbles: true, detail: {} }))
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(publications).toEqual([])
+    expect($canvasPositions.get()).toEqual(layout.nodePositions)
+    expect(persistLayout).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it.each(['workflow', 'generation', 'scope'] as const)(
+    'cancels a drag owned by the previous %s before its first move and accepts the next gesture',
+    async (change) => {
+      vi.useFakeTimers()
+      const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+      const props = {
+        commandSurface: commandRegistry,
+        projection,
+        layout,
+        workflowIdentity: 'workflow-a',
+        pairGeneration: 1,
+        onPersistLayout: persistLayout,
+      }
+      const rendered = renderCanvas(props)
+      let canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await tick()
+      const publications: (typeof layout.nodePositions)[] = []
+      const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+      publications.length = 0
+
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+
+      const nextProjection: ProjectedGraph =
+        change === 'scope'
+          ? {
+              ...projection,
+              scope: {
+                ...projection.scope,
+                key: 'loop-group:refine',
+                kind: 'loop-group',
+                groupId: 'refine',
+              },
+            }
+          : projection
+      await rendered.rerender({
+        ...props,
+        projection: nextProjection,
+        workflowIdentity: change === 'workflow' ? 'workflow-b' : props.workflowIdentity,
+        pairGeneration: change === 'generation' ? 2 : props.pairGeneration,
+      })
+      await tick()
+      publications.length = 0
+
+      expect(rendered.component.cancel()).toBe(false)
+
+      canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+      await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragmove', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 125, y: 150 } },
+        }),
+      )
+      await fireEvent(
+        canvas,
+        new CustomEvent('workflowdragstop', {
+          bubbles: true,
+          detail: { id: 'collect', position: { x: 125, y: 150 } },
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(300)
+
+      expect(publications).toEqual([{ collect: { x: 125, y: 150 }, review: { x: 320, y: 0 } }])
+      expect(persistLayout).toHaveBeenCalledOnce()
+      unsubscribe()
+    },
+  )
+
+  it('keeps keyboard nudge as one immediate durable publication and one persistence write', async () => {
+    vi.useFakeTimers()
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({ projection, layout, onPersistLayout: persistLayout })
+    setCanvasSelection(['collect'])
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    rendered.component.nudge(false, 'right')
+
+    expect(publications).toEqual([{ collect: { x: 5, y: 0 }, review: { x: 320, y: 0 } }])
+    await vi.advanceTimersByTimeAsync(300)
+    expect(persistLayout).toHaveBeenCalledOnce()
+    expect(persistLayout.mock.calls[0]![0].nodePositions.collect).toEqual({ x: 5, y: 0 })
+    unsubscribe()
+  })
+
+  it('publishes one completed drag only inside the active loop scope', async () => {
+    vi.useFakeTimers()
+    const loopProjection: ProjectedGraph = {
+      ...projection,
+      scope: { ...projection.scope, key: 'loop-group:refine', kind: 'loop-group', groupId: 'refine' },
+    }
+    const persistLayout = vi.fn<(next: ScopeLayoutV1) => Promise<void>>().mockResolvedValue(undefined)
+    const rendered = renderCanvas({
+      projection: loopProjection,
+      layout,
+      workflowIdentity: 'release-loop-refine',
+      onPersistLayout: persistLayout,
+    })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await tick()
+    const publications: (typeof layout.nodePositions)[] = []
+    const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
+    publications.length = 0
+
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'review', position: { x: 410, y: 70 } },
+      }),
+    )
+    expect(publications).toEqual([])
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'review', position: { x: 410, y: 70 } },
+      }),
+    )
+
+    expect(publications).toEqual([{ collect: { x: 0, y: 0 }, review: { x: 410, y: 70 } }])
+    await vi.advanceTimersByTimeAsync(300)
+    expect(persistLayout).toHaveBeenCalledOnce()
+    expect(persistLayout).toHaveBeenCalledWith(
+      expect.objectContaining({ nodePositions: { collect: { x: 0, y: 0 }, review: { x: 410, y: 70 } } }),
+      'release-loop-refine',
+    )
+    unsubscribe()
   })
 
   it('does not republish live positions for an updated-at-only persistence echo', async () => {
@@ -2042,7 +3059,7 @@ describe('GraphCanvas', () => {
     unsubscribe()
   })
 
-  it('does not reset positions between consecutive bound node updates after an edge-only projection refresh', async () => {
+  it('does not reset positions between a completed drag and keyboard nudge after an edge-only projection refresh', async () => {
     const rendered = renderCanvas({ projection, layout })
     const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
     setCanvasSelection(['collect'])
@@ -2057,9 +3074,17 @@ describe('GraphCanvas', () => {
     const unsubscribe = $canvasPositions.subscribe((positions) => publications.push(positions))
     publications.length = 0
 
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
     await fireEvent(
       canvas,
       new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 5, y: 0 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
         bubbles: true,
         detail: { id: 'collect', position: { x: 5, y: 0 } },
       }),
@@ -2379,6 +3404,64 @@ describe('GraphCanvas', () => {
     expect(persistLayout).not.toHaveBeenCalled()
   })
 
+  it('reveals capacity card detail before mounting interactive ports in a separate frame', async () => {
+    vi.useFakeTimers()
+    const measurements = canvasMeasurements()
+    const rendered = renderCanvas({
+      projection: { ...projection, capacity: { ...projection.capacity, nodeCount: 100 } },
+      layout,
+    })
+    try {
+      await measurements.publish()
+      let detail: Element | null = null
+      for (let frame = 0; frame < 8 && !detail; frame++) {
+        vi.advanceTimersToNextFrame()
+        await tick()
+        detail = rendered.container.querySelector('.workflow-node:not(.overview)')
+      }
+      expect(detail).not.toBeNull()
+      expect(rendered.container.querySelector('[data-port]')).toBeNull()
+      vi.advanceTimersToNextFrame()
+      await tick()
+      expect(rendered.container.querySelector('[data-port="output"]')).not.toBeNull()
+    } finally {
+      rendered.unmount()
+      measurements.restore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('deactivates the surface without changing each node drag capability', async () => {
+    const rendered = renderCanvas({ projection, layout })
+    const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    const node = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="collect"]')!
+    expect(node).toHaveClass('draggable')
+
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, surfaceActive: false })
+
+    expect(node).toHaveClass('draggable')
+    expect(canvas).toHaveAttribute('inert')
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragstop', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 100, y: 200 } },
+      }),
+    )
+    expect($canvasPositions.get().collect).toEqual({ x: 0, y: 0 })
+
+    await rendered.rerender({ commandSurface: commandRegistry, projection, layout, surfaceActive: true })
+    expect(canvas).not.toHaveAttribute('inert')
+    expect(node).toHaveClass('draggable')
+  })
+
   it('publishes selection changes only while the authoring surface is active', async () => {
     const rendered = renderCanvas({ projection, layout, surfaceActive: false })
     const canvas = rendered.container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
@@ -2412,9 +3495,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
     expect(selectedNode).toHaveClass('selected')
     expect(screen.getByRole('button', { name: 'Create Edge' })).toBeEnabled()
 
@@ -2455,8 +3536,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
     expect(selectedNode).toHaveClass('selected')
 
     rendered.component.cancel()
@@ -2495,8 +3575,7 @@ describe('GraphCanvas', () => {
     const selectedNode = rendered.container.querySelector<HTMLElement>('.svelte-flow__node[data-id="review"]')!
 
     await fireEvent.click(selectedNode)
-    await tick()
-    expect($canvasSelection.get()).toEqual(['review'])
+    await waitFor(() => expect($canvasSelection.get()).toEqual(['review']))
 
     await rendered.rerender({
       commandSurface: commandRegistry,
@@ -2577,6 +3656,14 @@ describe('GraphCanvas', () => {
       onPersistLayout: persistLayout,
     })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 88, y: 99 } },
+      }),
+    )
     await fireEvent(
       canvas,
       new CustomEvent('workflowdragstop', {
@@ -2717,6 +3804,14 @@ describe('GraphCanvas', () => {
     })
     const canvas = container.querySelector<HTMLElement>('[data-testid="workflow-canvas"]')!
 
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 88, y: 99 } },
+      }),
+    )
     await fireEvent(
       canvas,
       new CustomEvent('workflowdragstop', {
@@ -2741,6 +3836,14 @@ describe('GraphCanvas', () => {
         layout: secondLayout,
         workflowIdentity: 'workspace-b\0workflow:workspace-b:deploy.yaml',
         onPersistLayout: persistLayout,
+      }),
+    )
+    await fireEvent(canvas, new CustomEvent('workflowdragstart', { bubbles: true }))
+    await fireEvent(
+      canvas,
+      new CustomEvent('workflowdragmove', {
+        bubbles: true,
+        detail: { id: 'collect', position: { x: 44, y: 55 } },
       }),
     )
     await fireEvent(

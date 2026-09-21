@@ -45,6 +45,9 @@ export const widgetRegistry: ReadonlyMap<string, WidgetDefinition> = new Map(
   definitions.map((definition) => [definition.id, definition]),
 )
 
+const contractFieldsCache = new WeakMap<AuthoringContract, readonly FormField[]>()
+const nodeFieldsCache = new WeakMap<AuthoringContract, Map<string, readonly FormField[]>>()
+
 export function resolveWidget(field: FieldDescriptor | FormField): WidgetResolution {
   const definition = widgetRegistry.get(field.widget)
   if (!definition) {
@@ -67,6 +70,8 @@ export function resolveWidget(field: FieldDescriptor | FormField): WidgetResolut
 }
 
 export function collectContractFields(contract: AuthoringContract): readonly FormField[] {
+  const cached = contractFieldsCache.get(contract)
+  if (cached) return cached
   const fields: FormField[] = []
   collectDocumentFields(contract, contract.definition_schema, 'definition', '', [], fields, true)
   collectDocumentFields(contract, contract.sidecar_schema, 'companion', 'sidecar', [], fields, false)
@@ -79,7 +84,7 @@ export function collectContractFields(contract: AuthoringContract): readonly For
     }
   }
 
-  return Object.freeze(
+  const collected = Object.freeze(
     fields.sort(
       (left, right) =>
         left.document.localeCompare(right.document) ||
@@ -88,12 +93,25 @@ export function collectContractFields(contract: AuthoringContract): readonly For
         left.id.localeCompare(right.id),
     ),
   )
+  contractFieldsCache.set(contract, collected)
+  return collected
 }
 
 export function fieldsForNode(contract: AuthoringContract, nodeKind: string): readonly FormField[] {
-  return collectContractFields(contract).filter(
-    (field) => field.document === 'definition' && field.nodeKinds?.includes(nodeKind),
+  let byKind = nodeFieldsCache.get(contract)
+  if (!byKind) {
+    byKind = new Map()
+    nodeFieldsCache.set(contract, byKind)
+  }
+  const cached = byKind.get(nodeKind)
+  if (cached) return cached
+  const fields = Object.freeze(
+    collectContractFields(contract).filter(
+      (field) => field.document === 'definition' && field.nodeKinds?.includes(nodeKind),
+    ),
   )
+  byKind.set(nodeKind, fields)
+  return fields
 }
 
 export function fieldsForScopedNode(

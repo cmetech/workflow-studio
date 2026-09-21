@@ -7,9 +7,13 @@ if (!Number.isInteger(e2ePort) || e2ePort < 1024 || e2ePort > 65_535) {
   throw new Error('WORKFLOW_STUDIO_E2E_PORT must be an integer from 1024 through 65535.')
 }
 const e2eUrl = `http://127.0.0.1:${e2ePort}`
+const e2eOutputDir = process.env.WORKFLOW_STUDIO_E2E_OUTPUT_DIR?.trim() || 'test-results'
+const reuseExistingE2EServer = process.env.WORKFLOW_STUDIO_E2E_REUSE_SERVER === 'true'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: e2eOutputDir,
+  globalSetup: './tests/e2e/global-setup.ts',
   fullyParallel: false,
   workers: 1,
   timeout: process.env.CI ? 30_000 : 15_000,
@@ -33,7 +37,7 @@ export default defineConfig({
   webServer: {
     command: `npm run dev -- --mode e2e --host 127.0.0.1 --port ${e2ePort} --strictPort`,
     url: e2eUrl,
-    reuseExistingServer: false,
+    reuseExistingServer: reuseExistingE2EServer,
     timeout: 120_000,
   },
 })
