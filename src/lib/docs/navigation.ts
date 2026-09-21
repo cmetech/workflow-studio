@@ -27,7 +27,7 @@ export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
   'node-types': {
     group: 'getting-started',
     order: 15,
-    description: 'Choose the node kind that matches the work you want Hermes to perform.',
+    description: 'Choose the node kind that matches the work you want loop24 to perform.',
     useWhen: 'Use this when you are deciding which node type to add.',
   },
   'workflow-pairs': {

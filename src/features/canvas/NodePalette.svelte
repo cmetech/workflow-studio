@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import { workflowCopy } from '$src/lib/branding/workflow-copy'
   export { NODE_KIND_DRAG_TYPE } from './node-kind-options'
 </script>
 
@@ -98,7 +99,7 @@
               <small>{status}</small>
             </span>
           </span>
-          <span class="description">{descriptor.description}</span>
+          <span class="description">{workflowCopy(descriptor.description)}</span>
         </button>
       {:else}
         {#if !disabledReason}

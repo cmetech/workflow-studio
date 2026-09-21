@@ -45,7 +45,7 @@ nodes:
 
 ## Legacy total attempts
 
-In `hermes-legacy` contract v2, `max_attempts` accepts 1 through 5 and retains total-attempt semantics. Authoring that field produces the non-blocking compatibility finding `legacy_retry_total_attempts`; consult its migration guidance before relying on it. Zero is invalid in this profile.
+In the Legacy profile contract v2, `max_attempts` accepts 1 through 5 and retains total-attempt semantics. Authoring that field produces the non-blocking compatibility finding `legacy_retry_total_attempts`; consult its migration guidance before relying on it. Zero is invalid in this profile.
 
 ```yaml profile=hermes-legacy
 name: legacy-retry
@@ -59,4 +59,4 @@ nodes:
       delay_ms: 1000
 ```
 
-Workflow Studio validates enum values, ranges, types, and profile status. Hermes owns dependency outcomes, retry classification, delays, and execution. An unavailable command, provider, script runtime, service, or credential remains a runtime concern rather than proof that the YAML structure is invalid. See [Trigger rule](#field:prompt.node.trigger_rule), [Retry](#field:prompt.node.retry), and [Problems and validation](#guide:problems-and-validation).
+Workflow Studio validates enum values, ranges, types, and profile status. loop24 owns dependency outcomes, retry classification, delays, and execution. An unavailable command, provider, script runtime, service, or credential remains a runtime concern rather than proof that the YAML structure is invalid. See [Trigger rule](#field:prompt.node.trigger_rule), [Retry](#field:prompt.node.retry), and [Problems and validation](#guide:problems-and-validation).

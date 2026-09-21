@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { workflowCopy } from '$src/lib/branding/workflow-copy'
   import ModalShell from '$src/app/ModalShell.svelte'
   import type { NodeKindDescriptor, WorkflowProfile } from '$src/lib/contract/types'
   import { nodeKindAvailable, nodeKindStatus } from './node-kind-options'
@@ -17,7 +18,7 @@
   const results = $derived(
     descriptors
       .filter((descriptor) =>
-        `${descriptor.label}\n${descriptor.description}`.toLowerCase().includes(query.toLowerCase()),
+        `${descriptor.label}\n${workflowCopy(descriptor.description)}`.toLowerCase().includes(query.toLowerCase()),
       )
       .sort(
         (left, right) =>
@@ -115,7 +116,7 @@
           onclick={() => void choose(descriptor)}
         >
           <span class="title"><strong>{descriptor.label}</strong><small>{statusLabel(descriptor)}</small></span>
-          <span class="description">{descriptor.description}</span>
+          <span class="description">{workflowCopy(descriptor.description)}</span>
         </button>
       {/each}
       {#if results.length === 0}<p role="status">No contract node kinds match “{query}”.</p>{/if}

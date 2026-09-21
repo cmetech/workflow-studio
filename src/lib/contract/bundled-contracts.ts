@@ -30,7 +30,7 @@ export async function loadBundledConformanceCorpora(
         (candidate) =>
           candidate.profile === contract.profile && candidate.contract.contract_digest === contract.contract_digest,
       )
-      if (!resource) throw new Error(`Missing bundled Hermes conformance corpus for ${contract.profile}.`)
+      if (!resource) throw new Error(`Missing bundled workflow conformance corpus for ${contract.profile}.`)
       return loadConformanceCorpus(new TextEncoder().encode(resource.text), contract)
     }),
   )
@@ -38,6 +38,6 @@ export async function loadBundledConformanceCorpora(
 
 function readBundledResource(file: string): string {
   const matches = Object.entries(bundledSources).filter(([identifier]) => identifier.endsWith(`/contracts/${file}`))
-  if (matches.length !== 1) throw new Error(`Missing or ambiguous bundled Hermes resource: ${file}.`)
+  if (matches.length !== 1) throw new Error(`Missing or ambiguous bundled workflow resource: ${file}.`)
   return matches[0]![1]
 }

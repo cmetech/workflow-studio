@@ -29,4 +29,4 @@ Output references also work in contract-published text fields such as prompts. S
 
 Inside a loop group, reference visibility depends on scope. Body siblings use `$child.output`, outer inputs use `$outer.output` after the group directly depends on the outer node, and previous-iteration values use `$LOOP_PREV.child.output`. Read [Loop groups](#guide:loop-groups) before inserting scoped references.
 
-References, paths, expression syntax, and upstream ordering are authoring validation. Actual output values and condition results exist only during Hermes execution and are not simulated by Workflow Studio. See [When](#field:prompt.node.when) and [DAG and conditions](#contract:dag-and-conditions).
+References, paths, expression syntax, and upstream ordering are authoring validation. Actual output values and condition results exist only during loop24 execution and are not simulated by Workflow Studio. See [When](#field:prompt.node.when) and [DAG and conditions](#contract:dag-and-conditions).

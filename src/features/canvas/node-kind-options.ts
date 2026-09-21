@@ -1,3 +1,4 @@
+import { profileLabel } from '$src/lib/branding/workflow-copy'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
 import type { AuthoringContract, NodeKindDescriptor, WorkflowProfile } from '$src/lib/contract/types'
 import type { GraphScope } from '$src/lib/projection/types'
@@ -9,7 +10,7 @@ export function nodeKindAvailable(descriptor: NodeKindDescriptor, profile: Workf
 }
 
 export function nodeKindStatus(descriptor: NodeKindDescriptor, profile: WorkflowProfile): string {
-  if (!descriptor.applicability.profiles.includes(profile)) return `not available in ${profile}`
+  if (!descriptor.applicability.profiles.includes(profile)) return `not available in ${profileLabel(profile)}`
   return descriptor.status
 }
 

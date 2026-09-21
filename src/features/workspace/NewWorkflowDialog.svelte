@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import ModalShell from '$src/app/ModalShell.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import { requiredFirstNodeFields, type NewWorkflowInput } from './workspace-actions'
@@ -86,7 +87,7 @@
       Profile
       <select value={profile} onchange={(event) => chooseProfile(event.currentTarget.value as WorkflowProfile)}>
         {#each availableContracts as contract (contract.profile)}
-          <option value={contract.profile}>{contract.profile}</option>
+          <option value={contract.profile}>{profileLabel(contract.profile)}</option>
         {/each}
       </select>
     </label>

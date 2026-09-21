@@ -175,7 +175,7 @@ pub async fn contract_choose_hermes_executable(
     let path = selected.into_path().map_err(|_| {
         contract_error(
             "invalid_dialog_path",
-            "The selected Hermes path is unavailable.",
+            "The selected workflow CLI path is unavailable.",
         )
     })?;
     let canonical = grant_executable(&path, &grants)?;
@@ -557,7 +557,7 @@ fn run_granted_hermes_cli(
         .ok_or_else(|| {
             contract_error(
                 "dialog_permission_required",
-                "Select this exact Hermes executable before refreshing.",
+                "Select this exact workflow CLI executable before refreshing.",
             )
         })?;
     verify_granted(
@@ -673,7 +673,7 @@ fn run_hermes_command_with_spawn(
             Err(error) => {
                 return Err(contract_error(
                     "contract_cli_spawn_failed",
-                    format!("Could not start the selected Hermes executable: {error}"),
+                    format!("Could not start the selected workflow CLI executable: {error}"),
                 ));
             }
         }
@@ -712,7 +712,7 @@ fn run_hermes_command_with_spawn(
                 );
                 return Err(contract_error(
                     "contract_cli_timeout",
-                    "Hermes schema output exceeded the 10-second timeout.",
+                    "Workflow CLI schema output exceeded the 10-second timeout.",
                 ));
             }
             Err(error) => {
@@ -725,7 +725,7 @@ fn run_hermes_command_with_spawn(
                 );
                 return Err(contract_error(
                     "contract_cli_wait_failed",
-                    format!("Could not wait for Hermes: {error}"),
+                    format!("Could not wait for workflow CLI: {error}"),
                 ));
             }
         }
@@ -741,7 +741,7 @@ fn run_hermes_command_with_spawn(
         );
         contract_error(
             "contract_cli_timeout",
-            "Hermes schema output exceeded the 10-second timeout.",
+            "Workflow CLI schema output exceeded the 10-second timeout.",
         )
     })??;
     let remaining = timeout.saturating_sub(started.elapsed());
@@ -755,31 +755,31 @@ fn run_hermes_command_with_spawn(
         );
         contract_error(
             "contract_cli_timeout",
-            "Hermes schema output exceeded the 10-second timeout.",
+            "Workflow CLI schema output exceeded the 10-second timeout.",
         )
     })??;
     if !status.success() {
         return Err(contract_error(
             "contract_cli_nonzero_exit",
-            "The selected Hermes executable returned a non-zero exit status.",
+            "The selected workflow CLI executable returned a non-zero exit status.",
         ));
     }
     if stdout.len() > MAX_CONTRACT_BYTES {
         return Err(contract_error(
             "contract_cli_output_too_large",
-            "Hermes schema output exceeds the 512 KiB limit.",
+            "Workflow CLI schema output exceeds the 512 KiB limit.",
         ));
     }
     if stdout.is_empty() && !stderr.is_empty() {
         return Err(contract_error(
             "contract_cli_stderr_only",
-            "Hermes wrote diagnostics but no schema JSON.",
+            "The workflow CLI wrote diagnostics but no schema JSON.",
         ));
     }
     String::from_utf8(stdout.clone()).map_err(|_| {
         contract_error(
             "contract_cli_invalid_utf8",
-            "Hermes schema output is not valid UTF-8.",
+            "Workflow CLI schema output is not valid UTF-8.",
         )
     })?;
     Ok(stdout)
@@ -820,7 +820,7 @@ fn contain_windows_suspended_child(
         return Err(contract_error(
             "contract_cli_spawn_failed",
             format!(
-                "Could not create a Hermes process job: {}",
+                "Could not create a workflow CLI process job: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -830,7 +830,7 @@ fn contain_windows_suspended_child(
         return Err(contract_error(
             "contract_cli_spawn_failed",
             format!(
-                "Could not assign Hermes to a process job: {}",
+                "Could not assign workflow CLI to a process job: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -842,7 +842,7 @@ fn contain_windows_suspended_child(
         return Err(contract_error(
             "contract_cli_spawn_failed",
             format!(
-                "Could not resume contained Hermes: {}",
+                "Could not resume contained workflow CLI: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -858,7 +858,7 @@ fn primary_thread_for(process_id: u32) -> ContractResult<HANDLE> {
         return Err(contract_error(
             "contract_cli_spawn_failed",
             format!(
-                "Could not enumerate suspended Hermes threads: {}",
+                "Could not enumerate suspended workflow CLI threads: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -884,7 +884,7 @@ fn primary_thread_for(process_id: u32) -> ContractResult<HANDLE> {
     found.ok_or_else(|| {
         contract_error(
             "contract_cli_spawn_failed",
-            "Could not open the suspended Hermes primary thread.",
+            "Could not open the suspended workflow CLI primary thread.",
         )
     })
 }
@@ -898,7 +898,7 @@ fn read_stream_bounded(mut stream: impl Read) -> ContractResult<Vec<u8>> {
         .map_err(|error| {
             contract_error(
                 "contract_cli_read_failed",
-                format!("Could not read Hermes output: {error}"),
+                format!("Could not read workflow CLI output: {error}"),
             )
         })?;
     Ok(bytes)

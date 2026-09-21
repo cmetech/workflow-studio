@@ -1,3 +1,4 @@
+import { profileLabel } from '$src/lib/branding/workflow-copy'
 import { atom } from 'nanostores'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { validateContractFormCoverage } from '$src/lib/forms/widget-registry'
@@ -966,7 +967,7 @@ export class DocumentWorkspaceController {
           severity: 'error',
           blocking: true,
           message: profile
-            ? `Workflow analysis is unavailable because no exact active ${profile} authoring contract is available.`
+            ? `Workflow analysis is unavailable because no exact active ${profileLabel(profile)} authoring contract is available.`
             : 'Workflow analysis is unavailable because the companion does not select a supported authoring profile.',
           document: pair.companion ? 'companion' : 'definition',
         },

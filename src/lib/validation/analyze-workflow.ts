@@ -1,3 +1,4 @@
+import { workflowCopy } from '$src/lib/branding/workflow-copy'
 import { isAlias, isMap, isScalar, isSeq } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import { readScopedDagCapabilities } from '$src/lib/contract/scoped-dag-rule'
@@ -246,7 +247,7 @@ function publishedBlockingCompatibilityIssues(
           layer: 'compatibility',
           severity: 'error',
           blocking: true,
-          message: typedDescriptor.description,
+          message: workflowCopy(typedDescriptor.description),
           document: 'definition',
           path,
           ...(location ?? {}),
@@ -286,7 +287,7 @@ function reconcilePublishedCompatibility(
         ? {
             ...issue,
             code: wildcardCode,
-            message: contract.compatibility_codes[wildcardCode]?.description ?? issue.message,
+            message: workflowCopy(contract.compatibility_codes[wildcardCode]?.description ?? issue.message),
           }
         : issue,
     )

@@ -12,7 +12,7 @@
 
 <div class="overview">
   <p class="introduction">
-    Build and edit Hermes workflows locally. Start with a guide for the task you are doing, or search the complete
+    Build and edit loop24 workflows locally. Start with a guide for the task you are doing, or search the complete
     reference when you need a particular node or field.
   </p>
 

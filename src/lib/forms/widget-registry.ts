@@ -1,3 +1,4 @@
+import { workflowCopy } from '$src/lib/branding/workflow-copy'
 import type { AuthoringContract, ContractItemStatus, FieldDescriptor } from '$src/lib/contract/types'
 import ArrayField from '$src/features/inspector/widgets/ArrayField.svelte'
 import BooleanField from '$src/features/inspector/widgets/BooleanField.svelte'
@@ -360,7 +361,7 @@ function formFieldFromDescriptor(
   return {
     id: descriptor.id,
     label: descriptor.label,
-    description: descriptor.description,
+    description: workflowCopy(descriptor.description),
     fieldPath: descriptor.field_path,
     pathTemplate: descriptorPathTemplate(descriptor.field_path),
     document: 'definition',
@@ -407,7 +408,7 @@ function formFieldFromSchema(
       typeof resolvedSchema.title === 'string'
         ? resolvedSchema.title
         : humanize(fieldPath.split('.').at(-1) ?? fieldPath),
-    description: typeof resolvedSchema.description === 'string' ? resolvedSchema.description : '',
+    description: typeof resolvedSchema.description === 'string' ? workflowCopy(resolvedSchema.description) : '',
     fieldPath,
     pathTemplate,
     document,

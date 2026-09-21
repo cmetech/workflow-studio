@@ -72,7 +72,7 @@ describe('ExampleGallery', () => {
     })
 
     const minimalCard = screen.getByRole('article', { name: 'Minimal prompt' })
-    expect(within(minimalCard).getByText('hermes-legacy')).toBeVisible()
+    expect(within(minimalCard).getByText('Legacy')).toBeVisible()
     expect(within(minimalCard).getByText('starter')).toBeVisible()
     await fireEvent.click(screen.getByRole('button', { name: 'Preview Minimal prompt' }))
     expect(screen.getByRole('region', { name: 'Minimal prompt preview' })).toHaveTextContent('name: Minimal')

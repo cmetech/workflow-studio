@@ -1,11 +1,11 @@
 # Problems and validation
 
-Use this guide when a workflow cannot be saved or exported. Workflow Studio validates authoring structure locally, while Hermes remains responsible for runtime behavior.
+Use this guide when a workflow cannot be saved or exported. Workflow Studio validates authoring structure locally, while loop24 remains responsible for runtime behavior.
 
 ## Four validation layers
 
 1. **YAML syntax** checks parsing, scalar values, duplicate keys, and document shape. Invalid YAML is a save/export blocker.
-2. **Contract and schema** checks required fields, field types, supported node kinds, and profile rules from the active Hermes authoring contract. Missing required values and profile-disallowed fields block save/export.
+2. **Contract and schema** checks required fields, field types, supported node kinds, and profile rules from the active loop24 authoring contract. Missing required values and profile-disallowed fields block save/export.
 3. **Semantic DAG** checks node identity, dependency existence, acyclicity, conditions, and statically resolvable references. Duplicate IDs, missing dependencies, cycles, and invalid graph references block save/export.
 4. **Compatibility and operational context** reports deferred or profile compatibility findings and possible runtime concerns. Compatibility findings may be warnings or blockers according to the active contract; operational advisories never make an authoring claim about whether execution will succeed.
 

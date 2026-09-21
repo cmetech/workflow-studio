@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import type { WidgetProps } from '$src/lib/forms/types'
   import FieldDiagnostics from './FieldDiagnostics.svelte'
   let { field, value, present, disabled = false, issues = [], onCommit }: WidgetProps = $props()
@@ -28,7 +29,9 @@
     }}
   >
     {#if !field.required}<option value="__absent__">Inherited / absent</option>{/if}
-    {#each options as option, index (index)}<option value={String(index)}>{String(option)}</option>{/each}
+    {#each options as option, index (index)}<option value={String(index)}
+        >{field.fieldPath === 'sidecar.language_compatibility' ? profileLabel(String(option)) : String(option)}</option
+      >{/each}
   </select>
   <FieldDiagnostics {field} {issues} />
 </div>

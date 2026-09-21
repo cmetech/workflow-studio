@@ -181,7 +181,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     contractRunHermesCli: async () => {
       throw new NativeError(
         'native_command_unavailable',
-        'Hermes CLI refresh is available only in the native desktop app.',
+        'Workflow CLI refresh is available only in the native desktop app.',
       )
     },
     contractCacheLoad: async () => ({

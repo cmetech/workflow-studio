@@ -1,3 +1,4 @@
+import { workflowCopy, profileLabel } from '$src/lib/branding/workflow-copy'
 import type { AuthoringContract, CompatibilityDescriptor, NodeKindDescriptor } from '$src/lib/contract/types'
 import { collectContractFields } from '$src/lib/forms/widget-registry'
 import type { FormField } from '$src/lib/forms/types'
@@ -24,7 +25,7 @@ export function buildDocumentationIndex(contract: AuthoringContract, guides: rea
     })),
     ...guides.map((guide) => guideTopic(contract, guide)),
   ]
-  const relatedTopics = assignRelatedGuides(topics)
+  const relatedTopics = assignRelatedGuides(topics.map((topic) => ({ ...topic, title: workflowCopy(topic.title), description: workflowCopy(topic.description) })))
   const enrichedTopics = [...assignRepeatedFieldGroups(relatedTopics)].sort(compareTopics)
   const searchText = new Map(enrichedTopics.map((topic) => [topic.id, normalize(topicSearchText(topic))]))
   const tokenIndex = new Map<string, Set<string>>()
@@ -71,7 +72,7 @@ function nodeTopic(contract: AuthoringContract, node: NodeKindDescriptor): Docum
     body: [
       `Purpose: ${node.description}`, `Type: \`${typeof field?.schema.type === 'string' ? field.schema.type : 'contract-defined'}\``,
       `Required: ${field ? (field.required ? 'yes' : 'no') : 'not supplied'}`,
-      `Default: ${field?.hasDefault ? `\`${formatValue(field.defaultValue)}\`` : 'none'}`, `Profile: \`${contract.profile}\``, `Status: ${node.status}`,
+      `Default: ${field?.hasDefault ? `\`${formatValue(field.defaultValue)}\`` : 'none'}`, `Profile: \`${profileLabel(contract.profile)}\``, `Status: ${node.status}`,
       node.applicability.node_kinds?.length ? `Applicable node kinds: ${node.applicability.node_kinds.map((id) => `\`${id}\``).join(', ')}` : '',
       field?.unit ? `Unit: \`${field.unit}\`` : '', field?.compatibilityCode ? `Compatibility code: \`${field.compatibilityCode}\`` : '',
       field && Object.keys(field.constraints).length > 0 ? `Constraints: \`${JSON.stringify(field.constraints)}\`` : '', compatibility ? `Compatibility: ${compatibility.description}` : '',
@@ -93,7 +94,7 @@ function fieldTopic(contract: AuthoringContract, field: FormField): Documentatio
     id: `field:${field.id}`, kind: 'field', title: field.label, description: field.description,
     body: [
       `Purpose: ${field.description}`, `Type: \`${typeof field.schema.type === 'string' ? field.schema.type : 'contract-defined'}\``, `Required: ${field.required ? 'yes' : 'no'}`,
-      `Default: ${field.hasDefault ? `\`${formatValue(defaultValue)}\`` : 'none'}`, `Profile: \`${contract.profile}\``, `Status: ${field.status}`,
+      `Default: ${field.hasDefault ? `\`${formatValue(defaultValue)}\`` : 'none'}`, `Profile: \`${profileLabel(contract.profile)}\``, `Status: ${field.status}`,
       field.nodeKinds?.length ? `Applicable node kinds: ${field.nodeKinds.map((id) => `\`${id}\``).join(', ')}` : '', field.unit ? `Unit: \`${field.unit}\`` : '',
       field.compatibilityCode ? `Compatibility code: \`${field.compatibilityCode}\`` : '', Object.keys(field.constraints).length > 0 ? `Constraints: \`${JSON.stringify(field.constraints)}\`` : '',
       compatibility ? `Compatibility: ${compatibility.description}` : '', relatedTopics(contract, field).length > 0 ? `Related topics: ${relatedTopics(contract, field).join(', ')}` : '',
