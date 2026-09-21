@@ -38,8 +38,8 @@ The release Tauri configuration uses native Tauri v2 updater artifacts with `cre
 
 ## Recovery history
 
-Current latest: **v3.0.2**, published September 21, 2026. The entries below retain
-earlier release history; see the v3.0.2 evidence section for the current release.
+Current latest: **v3.0.3**, published September 21, 2026. The entries below retain
+earlier release history; see the v3.0.3 evidence section for the current release.
 
 v1.0.1 remains unpublished as a failed draft after its final metadata-normalization job used GitHub's release-by-tag endpoint, which returns 404 for drafts; its immutable tag and draft are retained as failure evidence. v1.0.2 remains unpublished as a failed draft with seven assets after its Windows build used a positional shell variable in the default PowerShell shell; its immutable tag, draft, and assets are retained as failure evidence. v1.0.3 is the published recovery release. v1.0.4 remains unpublished as a failed empty draft: immutable tag `v1.0.4` points to `b6d7648`, its release workflow run `33350871938` was cancelled before platform assets after push CI run `33350865772` failed the Quality and E2E gates on selection loss and a 300 ms persistence-echo long task. The fixes landed in `83e48ee` and `a0843dd`. v1.0.5 remains unpublished with no release or assets: its immutable annotated tag peels to `0ecb5bd46a49cebe4037825856411d8ead5db17f`, push CI run `33355845811` failed deterministic renderer E2E, and no v1.0.5 release workflow ran. v1.0.6 was the latest published content-aware workbench remediation, published on 2026-08-31. v1.0.7 is the verified unpublished documentation-and-shortcuts draft at `0534d785d6d96df00f9da732bdf3c59c80b1d747`. v1.0.8 was the untagged loop-group visual-authoring candidate and was superseded without a tag or release. The v2.0.0 annotated tag peels to `aa91baac4081f0ca585b10fb3fb65b966a7ec24c`; protected workflow run `34042847222` succeeded and produced its verified unpublished ten-asset draft. The v2.0.1 UI customization recovery candidate was superseded without a tag or release. v3.0.0 combined that recovery with loop-group visual authoring, Hermes scanner compatibility, resizable panels, and routed Arrange Graph behavior. Its annotated tag peels to `1cd6a8d323bb408bef394e5b20be5aed75bd6d12`; protected CI run `34242821519` and release workflow run `34245992410` succeeded before release `384861987` was published on 2026-09-08. v3.0.1 was the latest published release before v3.0.2. Its annotated tag peels to `7608947b4d17e49cd064fc978d330c76aab8c281`; protected CI run `34406142397` and release workflow run `34408692126` succeeded before release `385868225` was published on 2026-09-09.
 
@@ -67,6 +67,21 @@ before publication. Anonymous public installer, updater and checksum bytes were
 then verified. [Acceptance evidence](verification/version-3.0.2-release-acceptance.md)
 records exact hashes, accepted performance exceptions, CI retries and retained
 failed-run artifacts. No installed app was replaced during publication.
+
+## v3.0.3 published evidence
+
+The UI branding patch is published as latest at
+`https://github.com/cmetech/workflow-studio/releases/tag/v3.0.3` (release
+`393267558`, September 21, 2026, 22:03:27 UTC). Immutable application and tooling
+commit `33e7e07507f17164e0789cd9ce962d2386320a89` passed preparation CI
+`35644341332` and merged-base CI `35647573904`. Native run `35650318562` passed
+on attempt 2 after one unchanged Intel companion-file test retry. All three
+platforms passed 2,462 unit tests and their native/payload checks. The completed
+ten-asset draft, independent downloads, signatures, checksums and anonymous
+public URLs were verified before recording completion.
+[Acceptance evidence](verification/version-3.0.3-release-acceptance.md) retains
+the initial failure, investigation, exact asset hashes and follow-up limits.
+No installed app was replaced.
 
 ## Updater-key custody
 
