@@ -215,6 +215,7 @@ jobs:
       - name: Build renderer for bundle regression tests
         run: npm run build
       - name: Verify application, contract, and examples
+        shell: bash
         run: |
           npm run format:check
           npm run lint

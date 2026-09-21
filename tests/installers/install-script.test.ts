@@ -1267,6 +1267,35 @@ npm run examples:check`)
     })
   })
 
+  posixIt(posixTitle('fails fast with forwarded test options during release verification on every platform'), () => {
+    const step = namedStep('build', 'Verify application, contract, and examples')
+    expect(step.shell).toBe('bash')
+    const result = spawnSync(
+      posixShell(),
+      [
+        '--noprofile',
+        '--norc',
+        '-e',
+        '-o',
+        'pipefail',
+        '-c',
+        `
+npm() {
+  printf '%s\\n' "$*"
+  if [ "$2" = test:unit ]; then return 23; fi
+}
+${step.run}`,
+      ],
+      { encoding: 'utf8', timeout: 30_000, windowsHide: true },
+    )
+    expectNoSpawnError(result)
+    expect(result.status, result.stderr).toBe(23)
+    expect(result.stdout).toContain('run test:unit -- --testTimeout=20000 --maxWorkers=1')
+    expect(result.stdout).not.toContain('run test:rust')
+    expect(result.stdout).not.toContain('run contracts:check')
+    expect(result.stdout).not.toContain('run examples:check')
+  })
+
   it('finishes tagged application-wide checks before adding the nested tooling checkout', () => {
     for (const job of ['build', 'verify']) {
       const steps = jobSteps(job)
