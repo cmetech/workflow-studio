@@ -97,8 +97,21 @@ export async function dispatchKeybinding(
   options: KeybindingDispatchOptions,
 ): Promise<KeybindingDispatchResult> {
   if (event.defaultPrevented) return { status: 'unhandled' }
+  const target = options.target ?? event.target
+  // Native buttons own Enter/Space activation, including canvas toolbar menus.
+  // Canvas nodes use role="button" on divs and still receive canvas shortcuts.
+  if (
+    (event.key === 'Enter' || event.key === ' ') &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    target instanceof Element &&
+    target.closest('button')
+  )
+    return { status: 'unhandled' }
   const platform = options.platform ?? currentKeybindingPlatform()
-  const editable = isEditableTarget(options.target ?? event.target)
+  const editable = isEditableTarget(target)
   const binding = bindingForKeyboardEvent(event, platform)
   const nativeEditingBinding = new Set([
     'meta+z',

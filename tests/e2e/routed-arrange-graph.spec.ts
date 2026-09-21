@@ -20,6 +20,26 @@ import {
 
 const fixturePath = new URL('./fixtures/loop-group-showcase.yaml', import.meta.url)
 
+test('[Windows] keyboard Arrange wins over the selected-node Enter shortcut', async ({ page }) => {
+  await openSeededPair(page, { scenario: 'routed-showcase' })
+  await page.getByRole('treeitem', { name: /other.yaml, paired workflow/i }).click()
+  const node = page.locator('.svelte-flow__node').first()
+  await expect(page.locator('.svelte-flow__node')).toHaveCount(2)
+  await node.focus()
+  await page.keyboard.press('Enter')
+  await expect(node).toHaveClass(/selected/)
+  const before = await e2eSnapshot(page)
+  const more = page.getByRole('button', { name: 'More canvas actions' })
+  await more.focus()
+  await page.keyboard.press('Enter')
+  const arrange = page.getByRole('menuitem', { name: 'Arrange Graph', exact: true })
+  await arrange.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('Graph arranged: 2 nodes and 1 dependencies.', { exact: true })).toBeVisible()
+  await expect(arrange).toBeFocused()
+  expect((await e2eSnapshot(page)).definitionText).toBe(before.definitionText)
+})
+
 test('[RG1] [RG2] [RG3] [RG5] [RG11] [RG14] routes and restores the literal showcase root and both loop bodies', async ({
   page,
 }) => {
