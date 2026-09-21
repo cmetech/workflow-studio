@@ -20,13 +20,21 @@
 
 ## Approved sequence
 
-- [ ] Update `tests/project/release-version.test.ts` to require 3.0.2 across package/Cargo/Tauri identity, permitting only the root application version change against frozen dependency provenance. Change the footer expectation in `tests/e2e/workbench-containment.spec.ts` to 3.0.2. Run the focused metadata test and observe the old identity fail.
-- [ ] Synchronize `package.json`, root entries in `package-lock.json`, `src-tauri/Cargo.toml`, the workflow-studio entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Update installation/runbook documentation and create `docs/verification/version-3.0.2-release-acceptance.md` without claiming publication early. Retain version-independent historical installer fixtures.
-- [ ] Run focused metadata and installer verification, format/lint/type/contract/resource checks; commit and push only intended files. Run the full seven-job CI profile on this exact commit, including the complete unit/native suites and Windows functional shards. Resolve any failures before integration.
-- [ ] Inspect every linked worktree and record its disposition. Merge the approved PR into `base`, preserving commit history; verify the merged commit's CI before creating one annotated `v3.0.2` tag. Never retarget an existing tag.
-- [ ] Dispatch `.github/workflows/release.yml` from `base` for `v3.0.2`. Monitor all three native builds and the completed-draft verifier; retain failures without publishing if any gate fails.
-- [ ] Download every draft asset to a new temporary directory. Independently verify ten-asset inventory, nine checksum entries, updater metadata/signatures and the Windows extracted resource payload using repository verification tools.
-- [ ] Publish the verified draft as latest, verify anonymous public installer/updater/checksum URLs and the immutable PowerShell bootstrap. Record tag/run IDs/hashes and publication status, update the main checkout to `base`, and give the user the Windows command without executing it.
+- [x] Update `tests/project/release-version.test.ts` to require 3.0.2 across package/Cargo/Tauri identity, permitting only the root application version change against frozen dependency provenance. Change the footer expectation in `tests/e2e/workbench-containment.spec.ts` to 3.0.2. Run the focused metadata test and observe the old identity fail.
+- [x] Synchronize `package.json`, root entries in `package-lock.json`, `src-tauri/Cargo.toml`, the workflow-studio entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Update installation/runbook documentation and create `docs/verification/version-3.0.2-release-acceptance.md` without claiming publication early. Retain version-independent historical installer fixtures.
+- [x] Run focused metadata and installer verification, format/lint/type/contract/resource checks; commit and push only intended files. Run the full seven-job CI profile on this exact commit, including the complete unit/native suites and Windows functional shards. Resolve any failures before integration.
+- [x] Inspect every linked worktree and record its disposition. Merge the approved PR into `base`, preserving commit history; verify the merged commit's CI before creating one annotated `v3.0.2` tag. Never retarget an existing tag.
+- [x] Dispatch `.github/workflows/release.yml` from `base` for `v3.0.2`. Monitor all three native builds and the completed-draft verifier; retain failures without publishing if any gate fails.
+- [x] Download every draft asset to a new temporary directory. Independently verify ten-asset inventory, nine checksum entries, updater metadata/signatures and the Windows extracted resource payload using repository verification tools.
+- [x] Publish the verified draft as latest, verify anonymous public installer/updater/checksum URLs and the immutable PowerShell bootstrap. Record tag/run IDs/hashes and publication status, update the main checkout to `base`, and give the user the Windows command without executing it.
+
+Completed September 21, 2026, 15:51:15 UTC: release `392944606` published as
+latest `v3.0.2`. Successful native run `35611353267`; immutable application
+`af61f1e`, separately pinned recovery tooling `7413cd2`. Two release-only
+workflow prerequisites were repaired with RED/GREEN tests and full CI without
+moving the tag or changing application behavior. Exact hashes, recovery history,
+configured test retries and public-download verification are recorded in
+[release acceptance](../../verification/version-3.0.2-release-acceptance.md).
 
 ## Review focus
 
