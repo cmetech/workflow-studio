@@ -51,6 +51,19 @@ function readCiWorkflow(): GithubWorkflow {
 }
 
 describe('minimum toolchain contract', () => {
+  it('builds the release renderer before unit tests consume its emitted manifest on a clean runner', () => {
+    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as GithubWorkflow
+    const commands = (workflow.jobs?.build?.steps ?? []).flatMap((step) =>
+      (step.run ?? '').split('\n').map((command) => command.trim()),
+    )
+    const unitIndex = commands.findIndex((command) => command.startsWith('npm run test:unit'))
+    const buildIndex = commands.indexOf('npm run build')
+
+    expect(unitIndex).toBeGreaterThanOrEqual(0)
+    expect(buildIndex).toBeGreaterThanOrEqual(0)
+    expect(buildIndex).toBeLessThan(unitIndex)
+  })
+
   it('keeps the advertised Node floor synchronized with exact-minimum CI coverage', () => {
     const packageManifest = readPackageManifest()
     const readme = readFileSync('README.md', 'utf8')

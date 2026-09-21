@@ -212,6 +212,8 @@ jobs:
       - run: npm ci
       - name: Build release signature verifier
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --example verify_release_signature
+      - name: Build renderer for bundle regression tests
+        run: npm run build
       - name: Verify application, contract, and examples
         run: |
           npm run format:check
