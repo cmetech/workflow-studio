@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { arrangeWithElk, type ElkLike } from '$src/features/canvas/layout-graph'
-import { createEagerElkEngine, createLayoutWorkerProcessor, processLayoutWorkerRequest } from './layout-worker'
+import { createLayoutWorkerProcessor, processLayoutWorkerRequest } from './layout-worker'
+import { createLocalElkEndpoint } from './elk-engine-worker'
 import type { LayoutWorkerRequest } from './layout-worker-protocol'
 
 const request: LayoutWorkerRequest = {
@@ -37,50 +38,66 @@ function acceptedElkGraph() {
 }
 
 describe('layout worker', () => {
-  it('creates one nested engine eagerly and lets ELK claim it exactly once', () => {
-    const endpoint = { terminate: vi.fn() }
-    const createWorker = vi.fn(() => endpoint)
-    let workerFactory!: () => typeof endpoint
-    const elk = {}
-
-    expect(
-      createEagerElkEngine(createWorker, (factory) => {
-        workerFactory = factory
-        return elk
-      }),
-    ).toBe(elk)
-    expect(createWorker).toHaveBeenCalledOnce()
-    expect(workerFactory()).toBe(endpoint)
-    expect(workerFactory).toThrow('Nested ELK worker was already claimed.')
-    expect(endpoint.terminate).not.toHaveBeenCalled()
+  it('keeps algorithm replies internal and publishes only application envelopes', async () => {
+    const published: unknown[] = []
+    const replies: unknown[] = []
+    const scope = {
+      onmessage: ((event: MessageEvent) => scope.postMessage({ id: event.data.id, result: 'engine reply' })) as
+        ((event: MessageEvent) => unknown) | null,
+      postMessage: (data: unknown) => {
+        published.push(data)
+      },
+    }
+    const { endpoint, publish } = createLocalElkEndpoint(scope)
+    endpoint.onmessage = (event) => {
+      replies.push(event.data)
+    }
+    endpoint.postMessage({ id: 7 })
+    expect(replies).toEqual([])
+    await Promise.resolve()
+    expect(replies).toEqual([{ id: 7, result: 'engine reply' }])
+    expect(published).toEqual([])
+    expect(scope.onmessage).toBeNull()
+    publish({ type: 'layout-result', identity: request.identity })
+    expect(published).toEqual([{ type: 'layout-result', identity: request.identity }])
   })
 
-  it('terminates the eager nested worker when ELK construction fails', () => {
-    const endpoint = { terminate: vi.fn() }
-
-    expect(() =>
-      createEagerElkEngine(
-        () => endpoint,
-        () => {
-          throw new Error('constructor failed')
-        },
-      ),
-    ).toThrow('constructor failed')
-    expect(endpoint.terminate).toHaveBeenCalledOnce()
+  it('fails closed if the official algorithm did not install its dispatcher', () => {
+    const published: unknown[] = []
+    const scope = {
+      onmessage: null,
+      postMessage: (data: unknown) => {
+        published.push(data)
+      },
+    }
+    expect(() => createLocalElkEndpoint(scope)).toThrow('ELK algorithm dispatcher is unavailable.')
+    scope.postMessage('unchanged')
+    expect(published).toEqual(['unchanged'])
   })
 
-  it('owns a new nested worker for every outer engine construction', () => {
-    const endpoints = [{ terminate: vi.fn() }, { terminate: vi.fn() }]
-    const createWorker = vi.fn(() => endpoints.shift()!)
-    const factories: (() => { terminate(): void })[] = []
-
-    createEagerElkEngine(createWorker, (factory) => factories.push(factory))
-    const first = factories[0]!()
-    first.terminate()
-    createEagerElkEngine(createWorker, (factory) => factories.push(factory))
-
-    expect(factories[1]!()).not.toBe(first)
-    expect(createWorker).toHaveBeenCalledTimes(2)
+  it('drops queued dispatch and late engine replies after termination', async () => {
+    const dispatched: unknown[] = []
+    const replies: unknown[] = []
+    const escaped: unknown[] = []
+    const scope = {
+      onmessage: (event: MessageEvent) => {
+        dispatched.push(event.data)
+      },
+      postMessage: (data: unknown) => {
+        escaped.push(data)
+      },
+    }
+    const { endpoint } = createLocalElkEndpoint(scope)
+    endpoint.onmessage = (event) => {
+      replies.push(event.data)
+    }
+    endpoint.postMessage({ id: 7 })
+    endpoint.terminate()
+    scope.postMessage({ id: 7, result: 'late' })
+    await Promise.resolve()
+    expect(dispatched).toEqual([])
+    expect(replies).toEqual([])
+    expect(escaped).toEqual([])
   })
 
   it('caches only the last accepted full layout identity and exact graph snapshot', async () => {

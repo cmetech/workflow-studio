@@ -38,6 +38,10 @@ import { createDocumentWorkerCache, processDocumentWorkerRequest } from '$src/wo
 import type { DocumentWorkerRequest, DocumentWorkerResponse } from '$src/workers/document-worker-protocol'
 import App from './App.svelte'
 
+// Cold Windows transforms of deferred surfaces can exceed Testing Library's
+// default one-second wait; this is setup readiness, not a performance assertion.
+const deferredSurfaceWait = { timeout: 20_000 }
+
 const definitionText = `name: Profile migration
 description: Exercises the rendered Inspector transaction path
 nodes:
@@ -91,15 +95,17 @@ async function renderOpenWorkflow(profile: WorkflowProfile): Promise<{
   loadWorkspaceEntries('browser-workspace', 'Workspace', await bridge.workspaceScan())
 
   const rendered = render(App)
-  await fireEvent.click(await screen.findByRole('treeitem', { name: new RegExp(`migration-${profile}\\.yaml`, 'i') }))
+  await fireEvent.click(
+    await screen.findByRole('treeitem', { name: new RegExp(`migration-${profile}\\.yaml`, 'i') }, deferredSurfaceWait),
+  )
   await waitFor(() => {
     expect($documentSession.get().analysis?.structurallyValid).toBe(true)
     expect(($documentSession.get().analysis?.projection as { profile?: WorkflowProfile } | undefined)?.profile).toBe(
       profile,
     )
   })
-  await fireEvent.click(screen.getByRole('tab', { name: 'Advanced' }))
-  await screen.findByRole('combobox', { name: 'Language compatibility' })
+  await fireEvent.click(await screen.findByRole('tab', { name: 'Advanced' }, deferredSurfaceWait))
+  await screen.findByRole('combobox', { name: 'Language compatibility' }, deferredSurfaceWait)
   return { bridge, path, rendered }
 }
 

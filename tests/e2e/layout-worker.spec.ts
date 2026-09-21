@@ -9,6 +9,7 @@ import type { LayoutWorkerRequest, LayoutWorkerResult } from '../../src/workers/
 let output: string
 let server: Server
 let origin: string
+let forbidNestedWorkers = false
 const request: LayoutWorkerRequest = {
   type: 'layout',
   identity: {
@@ -50,7 +51,12 @@ test.beforeAll(async () => {
     }
     try {
       response.setHeader('Content-Type', 'text/javascript')
-      response.end(await readFile(join(output, relative)))
+      const source = await readFile(join(output, relative), 'utf8')
+      const restriction =
+        forbidNestedWorkers && relative.startsWith('assets/layout-worker-')
+          ? 'globalThis.Worker = class { constructor() { throw new Error("Nested workers are unavailable"); } };\n'
+          : ''
+      response.end(restriction + source)
     } catch {
       response.writeHead(404).end()
     }
@@ -59,6 +65,42 @@ test.beforeAll(async () => {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Missing worker fixture address')
   origin = `http://127.0.0.1:${address.port}`
+})
+
+test('[Windows] arranges with the real engine when nested workers are unavailable', async ({ page }) => {
+  forbidNestedWorkers = true
+  try {
+    await page.goto(origin)
+    const response = await page.evaluate(async (input) => {
+      const entry = (await import('/entry.js')) as { createLayoutWorker(): Worker }
+      const worker = entry.createLayoutWorker()
+      try {
+        return await new Promise<LayoutWorkerResult | { type: 'worker-start-failed'; message: string }>(
+          (done, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Layout worker response timed out')), 5000)
+            worker.onmessage = (event) => {
+              clearTimeout(timeout)
+              done(event.data)
+            }
+            worker.onerror = (event) => {
+              clearTimeout(timeout)
+              done({ type: 'worker-start-failed', message: event.message })
+            }
+            worker.postMessage(input)
+          },
+        )
+      } finally {
+        worker.terminate()
+      }
+    }, request)
+    expect(response.type).toBe('layout-result')
+    if (response.type !== 'layout-result') return
+    expect(response.identity).toEqual(request.identity)
+    expect(response.positions.b!.x).toBeGreaterThan(response.positions.a!.x)
+    expect(response.routes.ab?.points.length).toBeGreaterThanOrEqual(2)
+  } finally {
+    forbidNestedWorkers = false
+  }
 })
 
 test.afterAll(async () => {
@@ -108,12 +150,8 @@ test('[RG13] starts the production-bundled layout worker and returns validated r
   expect((await readdir(join(output, 'assets'))).some((file) => file.startsWith('layout-worker-'))).toBe(true)
 })
 
-test('[RG8] terminates the algorithm worker when its application worker is terminated', async ({
-  page,
-  browser,
-  browserName,
-}) => {
-  test.skip(browserName !== 'chromium', 'Chromium target inspection verifies descendant lifecycle.')
+test('[RG8] terminates the single algorithm-owning application worker', async ({ page, browser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Chromium target inspection verifies worker lifecycle.')
   const protocol = await browser.newBrowserCDPSession()
   try {
     await page.goto(origin)
@@ -139,17 +177,9 @@ test('[RG8] terminates the algorithm worker when its application worker is termi
       (await protocol.send('Target.getTargets')).targetInfos
         .filter((target) => target.type === 'worker' && target.url.startsWith(origin))
         .map((target) => target.url)
-    await expect
-      .poll(workerUrls)
-      .toEqual(
-        expect.arrayContaining([
-          expect.stringMatching(/\/layout-worker-[^/]+\.js$/),
-          expect.stringMatching(/\/elk-engine-worker-[^/]+\.js$/),
-        ]),
-      )
+    await expect.poll(workerUrls).toEqual([expect.stringMatching(/\/layout-worker-[^/]+\.js$/)])
     await page.evaluate(() => (window as unknown as { layoutWorker: Worker }).layoutWorker.terminate())
     await expect.poll(workerUrls).toEqual([])
-    expect((await readdir(join(output, 'assets'))).some((file) => file.startsWith('elk-engine-worker-'))).toBe(true)
   } finally {
     await protocol.detach()
   }

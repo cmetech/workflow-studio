@@ -52,7 +52,7 @@ export default defineConfig(({ mode }) => ({
   build: { manifest: true },
   worker: { plugins: () => [elkModuleProvenance()] },
   optimizeDeps: {
-    // Arrange Graph starts these nested workers lazily. Pre-bundle their runtime
+    // Arrange Graph starts its worker lazily. Pre-bundle its engine runtime
     // imports so a cold dev server does not reload the editor on first use.
     include: ['elkjs/lib/elk-api.js', 'elkjs/lib/elk-worker.min.js'],
   },

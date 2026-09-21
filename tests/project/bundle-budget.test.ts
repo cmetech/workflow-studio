@@ -9,6 +9,7 @@ function fixtureBundle(
     coldInInitial?: boolean
     oversized?: boolean
     orphanElkWorker?: boolean
+    nestedEngine?: boolean
     elkModuleInStartup?: boolean
   } = {},
 ) {
@@ -57,16 +58,28 @@ function fixtureBundle(
     join(assets, 'layout-worker.js'),
     options.orphanElkWorker
       ? 'export const layout = true;'
-      : 'const engine = new Worker(new URL("/assets/elk-engine-worker.js", import.meta.url), { type: "module" });',
+      : options.nestedEngine
+        ? 'const engine = new Worker(new URL("/assets/elk-engine-worker.js", import.meta.url), { type: "module" });'
+        : 'const algorithm = "org.eclipse.elk.alg.layered";',
   )
-  writeFileSync(join(assets, 'elk-engine-worker.js'), 'const algorithm = "org.eclipse.elk.alg.layered";')
+  if (options.orphanElkWorker || options.nestedEngine)
+    writeFileSync(join(assets, 'elk-engine-worker.js'), 'const algorithm = "org.eclipse.elk.alg.layered";')
   writeFileSync(
     join(elkProvenance, 'worker-chain.json'),
     JSON.stringify({
       version: 1,
       chunks: {
-        'assets/layout-worker.js': ['node_modules/elkjs/lib/elk-api.js'],
-        'assets/elk-engine-worker.js': ['node_modules/elkjs/lib/elk-worker.min.js'],
+        ...(options.orphanElkWorker || options.nestedEngine
+          ? {
+              'assets/layout-worker.js': ['node_modules/elkjs/lib/elk-api.js'],
+              'assets/elk-engine-worker.js': ['node_modules/elkjs/lib/elk-worker.min.js'],
+            }
+          : {
+              'assets/layout-worker.js': [
+                'node_modules/elkjs/lib/elk-api.js',
+                'node_modules/elkjs/lib/elk-worker.min.js',
+              ],
+            }),
         ...(options.elkModuleInStartup
           ? { 'assets/index.js': ['node_modules/elkjs/lib/unmarked-startup-copy.js'] }
           : {}),
@@ -117,11 +130,18 @@ describe('initial renderer bundle budget', () => {
     expect(result.violations).toContain('Initial renderer closure is 2100043 bytes; limit is 2000000 bytes.')
   })
 
-  it('rejects an ELK-looking asset that is not the sole descendant worker of the emitted layout worker', () => {
+  it('rejects an orphan algorithm asset outside the application worker', () => {
     const result = analyzeBundleBudget(fixtureBundle({ orphanElkWorker: true }))
 
     expect(result.violations).toContain(
-      'The emitted layout worker does not create the sole ELK algorithm worker asset.',
+      'The emitted layout worker must own the sole ELK algorithm asset without nested workers.',
+    )
+  })
+
+  it('rejects nested engine worker startup even when all assets are bundled locally', () => {
+    const result = analyzeBundleBudget(fixtureBundle({ nestedEngine: true }))
+    expect(result.violations).toContain(
+      'The emitted layout worker must own the sole ELK algorithm asset without nested workers.',
     )
   })
 
@@ -137,7 +157,7 @@ describe('initial renderer bundle budget', () => {
     const result = analyzeBundleBudget('dist/.vite/manifest.json')
 
     expect(result.violations).toEqual([])
-    expect(result.elkAlgorithmFiles).toEqual([expect.stringMatching(/^assets\/elk-engine-worker-.*\.js$/)])
+    expect(result.elkAlgorithmFiles).toEqual([expect.stringMatching(/^assets\/layout-worker-.*\.js$/)])
     expect(result.elkRuntimeModules).toEqual([
       'node_modules/elkjs/lib/elk-api.js',
       'node_modules/elkjs/lib/elk-worker.min.js',

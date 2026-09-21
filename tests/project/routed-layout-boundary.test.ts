@@ -128,7 +128,7 @@ describe('[RG13] production routed-layout asset boundary', () => {
     }
   })
 
-  it('keeps ELK exclusively in the lazy descendant worker, outside the initial renderer manifest closure', () => {
+  it('keeps ELK exclusively in the lazy layout worker without nesting, outside the initial renderer manifest closure', () => {
     const manifest = JSON.parse(readFileSync(join(output, '.vite/manifest.json'), 'utf8')) as Record<
       string,
       { file: string; isEntry?: boolean; imports?: string[] }
@@ -146,13 +146,14 @@ describe('[RG13] production routed-layout asset boundary', () => {
     expect(initial.size).toBeGreaterThan(0)
     for (const file of initial) expect(readFileSync(join(output, file), 'utf8')).not.toContain('org.eclipse.elk')
     const algorithms = [...assets].filter(([, source]) => source.includes('org.eclipse.elk.alg.layered'))
-    expect(algorithms.map(([name]) => name)).toEqual([expect.stringMatching(/^elk-engine-worker-.*\.js$/)])
+    expect(algorithms.map(([name]) => name)).toEqual([expect.stringMatching(/^layout-worker-.*\.js$/)])
     for (const [name, source] of assets) {
-      if (!/^(elk-engine-worker|layout-worker)-/.test(name)) expect(source, name).not.toContain('org.eclipse.elk')
+      if (!/^layout-worker-/.test(name)) expect(source, name).not.toContain('org.eclipse.elk')
     }
     const layoutWorker = [...assets].find(([name]) => /^layout-worker-.*\.js$/.test(name))!
     expect(layoutWorker).toBeDefined()
-    expect(layoutWorker[1]).toContain(algorithms[0]![0])
+    expect(layoutWorker[0]).toBe(algorithms[0]![0])
+    expect([...assets.keys()].some((name) => /^elk-engine-worker-/.test(name))).toBe(false)
     expect([...initial].some((file) => file.includes('layout-worker') || file.includes('elk-engine-worker'))).toBe(
       false,
     )

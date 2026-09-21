@@ -795,11 +795,10 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
     })
     const files = await readdir(join(output, 'assets'))
     const worker = files.find((file) => /^layout-worker-.*\.js$/.test(file))!
-    const algorithm = files.find((file) => /^elk-engine-worker-.*\.js$/.test(file))!
     expect(worker).toBeTruthy()
-    expect(algorithm).toBeTruthy()
-    for (const file of [worker, algorithm])
-      sources.set(`/assets/${file}`, await readFile(join(output, 'assets', file), 'utf8'))
+    const workerSource = await readFile(join(output, 'assets', worker), 'utf8')
+    expect(workerSource).toContain('org.eclipse.elk.alg.layered')
+    sources.set(`/assets/${worker}`, workerSource)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
     if (!address || typeof address === 'string') throw new Error('Missing local fixture address')
@@ -855,7 +854,7 @@ test('[RG13] arranges with the exact emitted production worker assets while exte
     expect(Object.values(result.routes).reduce((count, route) => count + route.points.length, 0)).toBeLessThanOrEqual(
       32_000,
     )
-    expect(served.sort()).toEqual([`/assets/${worker}`, `/assets/${algorithm}`].sort())
+    expect(served).toEqual([`/assets/${worker}`])
     expect(attempted).toEqual([])
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))

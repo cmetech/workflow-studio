@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import ELK from 'elkjs/lib/elk-api.js'
+import { createLocalElkEndpoint } from './elk-engine-worker'
 import { arrangeWithElk, validLayoutWorkerRequest, type ElkLike } from '$src/features/canvas/layout-graph'
 import { VISUAL_EDGE_CAPACITY, VISUAL_NODE_CAPACITY } from '$src/lib/projection/types'
 import {
@@ -110,25 +111,6 @@ function cacheableResult(result: LayoutWorkerSuccess): Omit<LayoutWorkerSuccess,
   })
 }
 
-/** Starts one nested engine at outer-worker startup and transfers ownership to one ELK instance. */
-export function createEagerElkEngine<WorkerType extends { terminate(): void }, ElkType>(
-  createWorker: () => WorkerType,
-  createElk: (workerFactory: () => WorkerType) => ElkType,
-): ElkType {
-  const worker = createWorker()
-  let claimed = false
-  try {
-    return createElk(() => {
-      if (claimed) throw new Error('Nested ELK worker was already claimed.')
-      claimed = true
-      return worker
-    })
-  } catch (error) {
-    worker.terminate()
-    throw error
-  }
-}
-
 /** Owns one bounded last-result cache for the lifetime of one warmed worker. */
 export function createLayoutWorkerProcessor(elk: ElkLike): (request: unknown) => Promise<LayoutWorkerResponse> {
   let cached: CachedLayoutResult | undefined
@@ -160,15 +142,12 @@ export function createLayoutWorkerProcessor(elk: ElkLike): (request: unknown) =>
 
 const workerScope = globalThis as unknown as DedicatedWorkerGlobalScope
 if (typeof WorkerGlobalScope !== 'undefined' && workerScope instanceof WorkerGlobalScope) {
-  // elk-api supports a real worker factory. The algorithm entry must run in its
-  // own scope because it owns onmessage; raw ELK messages never reach the renderer.
-  // Dedicated-worker termination also terminates its descendant workers.
-  const elk = createEagerElkEngine(
-    () => new Worker(new URL('./elk-engine-worker.ts', import.meta.url), { type: 'module' }),
-    (workerFactory) => new ELK({ algorithms: ['layered'], workerFactory }),
-  )
+  const { endpoint, publish } = createLocalElkEndpoint(workerScope)
+  // ELK uses only postMessage/onmessage/terminate from its worker endpoint.
+  // All algorithm work stays on this real, terminable dedicated worker.
+  const elk = new ELK({ algorithms: ['layered'], workerFactory: () => endpoint as unknown as Worker })
   const processRequest = createLayoutWorkerProcessor(elk)
   workerScope.addEventListener('message', (event: MessageEvent<unknown>) => {
-    void processRequest(event.data).then((response) => workerScope.postMessage(response))
+    void processRequest(event.data).then((response) => publish(response))
   })
 }

@@ -185,23 +185,22 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
     layoutWorkerFile && existsSync(join(outputRoot, layoutWorkerFile))
       ? workerTargets(readFileSync(join(outputRoot, layoutWorkerFile), 'utf8'))
       : []
-  const elkWorkerFile = layoutWorkerTargets.length === 1 ? layoutWorkerTargets[0] : undefined
   if (
     !graphCanvasEntry?.isDynamicEntry ||
     initialKeys.has('src/features/canvas/GraphCanvas.svelte') ||
     !layoutWorkerFile ||
-    !elkWorkerFile ||
+    layoutWorkerTargets.length !== 0 ||
     elkAlgorithmFiles.length !== 1 ||
-    elkAlgorithmFiles[0] !== elkWorkerFile
+    elkAlgorithmFiles[0] !== layoutWorkerFile
   ) {
-    violations.push('The emitted layout worker does not create the sole ELK algorithm worker asset.')
+    violations.push('The emitted layout worker must own the sole ELK algorithm asset without nested workers.')
   }
-  for (const file of [layoutWorkerFile, elkWorkerFile]) {
+  for (const file of [layoutWorkerFile]) {
     if (file && initialFiles.has(file)) violations.push(`Initial renderer closure contains worker asset ${file}.`)
   }
   const elkRuntimeModules = []
   const elkModuleFiles = new Map()
-  const allowedElkWorkerFiles = new Set([layoutWorkerFile, elkWorkerFile].filter((file) => file !== undefined))
+  const allowedElkWorkerFiles = new Set([layoutWorkerFile].filter((file) => file !== undefined))
   for (const [file, modules] of elkProvenance) {
     for (const module of modules) {
       elkRuntimeModules.push(module)
@@ -222,8 +221,8 @@ export function analyzeBundleBudget(manifestPath, limits = {}) {
     }
   }
   if (elkRuntimeModules.length === 0) violations.push('Build metadata contains no elkjs runtime module provenance.')
-  if (elkWorkerFile && !elkProvenance.has(elkWorkerFile)) {
-    violations.push('The descendant ELK worker has no elkjs module provenance.')
+  if (layoutWorkerFile && !elkProvenance.has(layoutWorkerFile)) {
+    violations.push('The layout worker has no elkjs module provenance.')
   }
 
   return {
