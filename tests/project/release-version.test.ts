@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
-const RELEASE_VERSION = '3.0.1'
+const RELEASE_VERSION = '3.0.2'
 // Includes the narrowly scoped devalue security patch; keep exact lockfile provenance.
 const STABILIZED_NPM_LOCK_COMMIT = '51ef64a'
 const STABILIZED_CARGO_LOCK_COMMIT = '5bc5a70'
@@ -67,7 +67,7 @@ describe('version three release metadata', () => {
     expect(releaseVerifierBlock?.[1]).toBe('600_000')
   })
 
-  it('keeps every package and native release version synchronized at 3.0.1', () => {
+  it('keeps every package and native release version synchronized at 3.0.2', () => {
     const packageManifest = json('package.json')
     const packageLock = json('package-lock.json')
     const lockPackages = packageLock.packages as Record<string, Record<string, unknown>>
@@ -79,23 +79,28 @@ describe('version three release metadata', () => {
     expect(packageLock.version).toBe(RELEASE_VERSION)
     expect(lockPackages['']?.version).toBe(RELEASE_VERSION)
     expect(tauriConfig.version).toBe(RELEASE_VERSION)
-    expect(cargoManifest).toMatch(/^version = "3\.0\.1"$/m)
-    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.1"/)
+    expect(cargoManifest).toMatch(/^version = "3\.0\.2"$/m)
+    expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.2"/)
   })
 
-  it('keeps the npm lockfile identical to the reviewed dependency-stabilization commit', () => {
+  it('preserves the reviewed npm lockfile except for the root release identity', () => {
     expect(readFileSync('package-lock.json', 'utf8')).toBe(
-      committedFile(STABILIZED_NPM_LOCK_COMMIT, 'package-lock.json'),
+      committedFile(STABILIZED_NPM_LOCK_COMMIT, 'package-lock.json')
+        .replace(/^  "version": "3\.0\.1",$/m, '  "version": "3.0.2",')
+        .replace(/^      "version": "3\.0\.1",$/m, '      "version": "3.0.2",'),
     )
   })
 
-  it('keeps the Cargo lockfile identical to the reviewed Windows path-stabilization commit', () => {
+  it('preserves the reviewed Cargo lockfile except for the application release identity', () => {
     expect(readFileSync('src-tauri/Cargo.lock', 'utf8')).toBe(
-      committedFile(STABILIZED_CARGO_LOCK_COMMIT, 'src-tauri/Cargo.lock'),
+      committedFile(STABILIZED_CARGO_LOCK_COMMIT, 'src-tauri/Cargo.lock').replace(
+        /name = "workflow-studio"\nversion = "3\.0\.1"/,
+        'name = "workflow-studio"\nversion = "3.0.2"',
+      ),
     )
   })
 
-  it('retains the immutable bootstrap while documenting v3.0.1 as the published release', () => {
+  it('retains the immutable bootstrap while documenting the v3.0.2 release', () => {
     const installing = readFileSync('docs/installing.md', 'utf8')
 
     expect(installing).toContain(
@@ -109,12 +114,12 @@ describe('version three release metadata', () => {
     )
     expect(installing).toContain('install the latest published release')
     expect(installing).toContain('immutable v1.0.5 bootstrap URLs')
-    expect(installing).toContain('v3.0.1 is the latest published release')
+    expect(installing).toContain('v3.0.2 Windows-primary stabilization release')
     expect(installing).toContain('v1.0.7 documentation-and-shortcuts draft')
     expect(installing).toContain('v1.0.8 loop-group visual-authoring candidate was superseded without a tag or release')
     expect(installing).toContain('v2.0.0 verified unpublished draft')
     expect(installing).toMatch(/v2\.0\.1[^\n]*superseded[^\n]*without a tag or release/i)
-    expect(installing).toContain('install published v3.0.1')
+    expect(installing).toContain('latest published release, not an unpublished draft')
     expect(installing).not.toContain('bootstrap v1.0.5 directly')
     expect(installing).toContain('Gatekeeper or SmartScreen warnings are expected')
     expect(installing).toContain('Linux is deferred and unsupported by the bootstrap')
@@ -268,7 +273,7 @@ describe('version three release metadata', () => {
     const releasing = readFileSync('docs/releasing.md', 'utf8')
     const preflightIndex = releasing.indexOf('## Local worktree preflight')
     const tagInstructionIndex = releasing.indexOf(
-      '4. Create an annotated `v3.0.1` tag on a commit contained in `origin/base`, then push that exact tag.',
+      '4. Create an annotated `v3.0.2` tag on a commit contained in `origin/base`, then push that exact tag.',
     )
 
     expect(preflightIndex).toBeGreaterThanOrEqual(0)
