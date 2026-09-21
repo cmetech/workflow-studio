@@ -1,3 +1,4 @@
+import { profileLabel } from '$src/lib/branding/workflow-copy'
 import { stringify } from 'yaml'
 import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
 import type { DocumentAnalysis, DocumentRevision, WorkflowPairText } from '$src/lib/documents/types'
@@ -650,7 +651,10 @@ function contractFor(dependencies: WorkspaceActionsDependencies, profile: Workfl
   }
   const candidates = dependencies.contracts.filter((contract) => contract.profile === profile)
   if (candidates.length === 1) return candidates[0]!
-  throw new WorkspaceActionError('contract_unavailable', `The active ${profile} authoring contract is unavailable.`)
+  throw new WorkspaceActionError(
+    'contract_unavailable',
+    `The active ${profileLabel(profile)} authoring contract is unavailable.`,
+  )
 }
 
 function graphParameters(contract: AuthoringContract) {

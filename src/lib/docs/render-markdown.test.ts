@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from './render-markdown'
 
 describe('renderMarkdown', () => {
+  it('brands prose while preserving code and link destinations', () => {
+    const html = renderMarkdown('Hermes runs workflows. [Hermes guide](https://example.test/hermes) uses `hermes-legacy`.\n\n```yaml\nlanguage_compatibility: hermes-legacy\n# Hermes source comment\n```')
+    expect(html).toContain('loop24 runs workflows.')
+    expect(html).toContain('loop24 guide')
+    expect(html).toContain('https://example.test/hermes')
+    expect(html).toContain('<code>hermes-legacy</code>')
+    expect(html).toContain('# Hermes source comment')
+    expect(renderMarkdown('Run "hermes workflow doctor" before relying on this field.')).toContain(
+      'Run the workflow compatibility check before relying on this field.',
+    )
+  })
   it('removes active markup and unsafe URLs while publishing only validated exact internal topic actions', () => {
     const html = renderMarkdown(`
 # Heading

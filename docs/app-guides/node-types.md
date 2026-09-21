@@ -1,10 +1,10 @@
 # Choose a node type
 
-Every workflow node has an `id` and exactly one node-kind field. Choose the kind for the work Hermes should perform, then use the selected node's contextual Docs for the fields supplied by the active contract and profile.
+Every workflow node has an `id` and exactly one node-kind field. Choose the kind for the work loop24 should perform, then use the selected node's contextual Docs for the fields supplied by the active contract and profile.
 
 ## Command
 
-Use a [Command](#node:command) to invoke a Hermes command. The `command` value names the command or command invocation; it is not an inline shell script. Command nodes can use the AI execution settings published by the active contract.
+Use a [Command](#node:command) to invoke a loop24 command. The `command` value names the command or command invocation; it is not an inline shell script. Command nodes can use the AI execution settings published by the active contract.
 
 ## Prompt
 
@@ -20,7 +20,7 @@ Use a [Script](#node:script) for script text with an explicit `runtime`. The bun
 
 ## Loop
 
-Use a [Loop](#node:loop) for bounded repeated work. In `hermes-legacy`, a loop requires a `prompt`; command loops are not part of that profile. In `archon-2026-07`, a loop requires exactly one of `prompt` or `command`. Both profiles also require `until` and `max_iterations`.
+Use a [Loop](#node:loop) for bounded repeated work. In the Legacy profile, a loop requires a `prompt`; command loops are not part of that profile. In `archon-2026-07`, a loop requires exactly one of `prompt` or `command`. Both profiles also require `until` and `max_iterations`.
 
 Archon also supplies the **Loop group** node kind when each iteration needs a child DAG with multiple steps. Loop groups are absent from the Legacy node inventory, so Legacy has no `node:loop_group` reference topic. Read [Loops and approvals](#guide:loops-and-approvals) for profile-specific loop shapes and [Loop groups](#guide:loop-groups) for Archon body scopes and references.
 
@@ -30,7 +30,7 @@ Use an [Approval](#node:approval) to place a runtime approval gate in the graph.
 
 ## Cancel
 
-Use [Cancel](#node:cancel) to describe an explicit runtime cancellation with a non-empty message. Dependencies, conditions, and trigger rules decide where it sits in the DAG; Hermes decides its execution outcome.
+Use [Cancel](#node:cancel) to describe an explicit runtime cancellation with a non-empty message. Dependencies, conditions, and trigger rules decide where it sits in the DAG; loop24 decides its execution outcome.
 
 ## Valid node examples
 
@@ -88,4 +88,4 @@ nodes:
 
 Common fields include `id`, `depends_on`, `when`, and `trigger_rule`. Other settings such as context, output shape, retries, tools, models, timeouts, and artifacts vary by node kind and profile. The Inspector and Reference views derive their availability, status, constraints, and defaults from the active contract. Read [DAG dependencies](#guide:dag-dependencies), [Conditions and outputs](#guide:conditions-and-outputs), and [Retry and triggers](#guide:retry-and-triggers) for those shared behaviors.
 
-Workflow Studio validates YAML syntax, contract shape, supported profile fields, DAG topology, and statically resolvable references. It saves and exports only structurally valid YAML. It does not execute nodes or confirm that commands, models, runtimes, tools, scripts, services, credentials, approval responders, or produced values exist. Those are Hermes runtime concerns.
+Workflow Studio validates YAML syntax, contract shape, supported profile fields, DAG topology, and statically resolvable references. It saves and exports only structurally valid YAML. It does not execute nodes or confirm that commands, models, runtimes, tools, scripts, services, credentials, approval responders, or produced values exist. Those are loop24 runtime concerns.

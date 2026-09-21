@@ -51,7 +51,7 @@ describe('ContractSettings', () => {
     expect(screen.getAllByText('Cached')).toHaveLength(2)
     expect(screen.getByText('Selected file: /chosen/archon.json')).toHaveClass('technical-value')
     expect(screen.getByText('Selected file: /chosen/archon.json').tagName).toBe('CODE')
-    expect(screen.getByText('Hermes CLI: /Applications/Hermes')).toHaveClass('technical-value')
+    expect(screen.getByText('Workflow CLI: /Applications/Hermes')).toHaveClass('technical-value')
     expect(screen.getByText('Reader 2')).toHaveClass('technical-value')
     expect(screen.getAllByText('Archon 2026-07')).toHaveLength(3)
     expect(screen.getByRole('button', { name: `Activate ${entries[1]!.digest}` })).toBeEnabled()
@@ -62,7 +62,7 @@ describe('ContractSettings', () => {
     await fireEvent.change(screen.getByRole('combobox', { name: 'CLI profile' }), {
       target: { value: 'hermes-legacy' },
     })
-    await fireEvent.click(screen.getByRole('button', { name: 'Refresh From Hermes CLI' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh From Workflow CLI' }))
     await fireEvent.click(screen.getByRole('button', { name: `Activate ${entries[1]!.digest}` }))
     await fireEvent.click(screen.getByRole('button', { name: `Remove ${entries[1]!.digest}` }))
 

@@ -111,7 +111,7 @@ async function renderOpenWorkflow(profile: WorkflowProfile): Promise<{
 
 async function chooseProfile(profile: WorkflowProfile): Promise<void> {
   const select = screen.getByRole('combobox', { name: 'Language compatibility' })
-  const option = within(select).getByRole('option', { name: profile })
+  const option = within(select).getByRole('option', { name: profile === 'hermes-legacy' ? 'Legacy' : profile })
   await fireEvent.change(select, { target: { value: option.getAttribute('value') } })
 }
 
@@ -221,7 +221,7 @@ describe.sequential('App Inspector profile migration', () => {
 
       expect(
         await screen.findByText(
-          'Cannot change Language compatibility to archon-2026-07 because no exact active contract is available. Activate the archon-2026-07 contract in Settings and try again.',
+          'Cannot select archon-2026-07: no exact active contract. Activate it in Settings and retry.',
         ),
       ).toHaveAttribute('role', 'alert')
       expect($documentSession.get().pair).toBe(before.pair)

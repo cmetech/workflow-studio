@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import { workflowCopy } from '$src/lib/branding/workflow-copy'
 
 const allowedTags = [
   'a', 'blockquote', 'br', 'code', 'em', 'h1', 'h2', 'h3', 'h4', 'hr', 'li', 'ol', 'p', 'pre', 'strong',
@@ -15,6 +16,14 @@ export function renderMarkdown(markdown: string): string {
   })
   const template = document.createElement('template')
   template.innerHTML = sanitized
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT)
+  while (walker.nextNode()) {
+    const node = walker.currentNode
+    if (!node.parentElement?.closest('code, pre')) {
+      const prose = (node.textContent ?? '').replace(/Run "hermes workflow doctor"/gi, 'Run the workflow compatibility check')
+      node.textContent = workflowCopy(prose)
+    }
+  }
   for (const link of template.content.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const rawHref = link.getAttribute('href') ?? ''
     if (rawHref.startsWith('#')) {

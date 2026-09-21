@@ -52,7 +52,7 @@ describe('ContractSettingsHost', () => {
     await fireEvent.change(screen.getByRole('combobox', { name: 'CLI profile' }), {
       target: { value: 'hermes-legacy' },
     })
-    await fireEvent.click(screen.getByRole('button', { name: 'Refresh From Hermes CLI' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh From Workflow CLI' }))
 
     await waitFor(() =>
       expect(native.contractRunHermesCli).toHaveBeenCalledWith({
@@ -60,6 +60,6 @@ describe('ContractSettingsHost', () => {
         profile: 'hermes-legacy',
       }),
     )
-    expect(await screen.findByText('Hermes CLI: /Applications/Hermes')).toBeInTheDocument()
+    expect(await screen.findByText('Workflow CLI: /Applications/Hermes')).toBeInTheDocument()
   })
 })

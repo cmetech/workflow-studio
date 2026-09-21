@@ -30,7 +30,7 @@ export function loadConformanceCorpus(bytes: Uint8Array, contract: AuthoringCont
   try {
     parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown
   } catch {
-    throw new Error('The Hermes conformance corpus must be valid UTF-8 JSON.')
+    throw new Error('The conformance corpus must be valid UTF-8 JSON.')
   }
   if (
     !isRecord(parsed) ||
@@ -38,7 +38,7 @@ export function loadConformanceCorpus(bytes: Uint8Array, contract: AuthoringCont
     parsed.profile !== contract.profile ||
     parsed.normalizer_version !== contract.normalizer_version
   )
-    throw new Error('The Hermes conformance corpus profile or normalizer does not match its paired contract.')
+    throw new Error('The conformance corpus profile or normalizer does not match its paired contract.')
   const identity = isRecord(parsed.contract) ? parsed.contract : null
   if (
     !identity ||
@@ -48,24 +48,23 @@ export function loadConformanceCorpus(bytes: Uint8Array, contract: AuthoringCont
     identity.normalizer !== 'plugins.workflow.language.normalize_workflow' ||
     identity.validator !== 'plugins.workflow.schema._compile_workflow_source_document'
   )
-    throw new Error('The Hermes conformance corpus contract identity does not match its paired contract.')
-  if (!Array.isArray(parsed.cases) || parsed.cases.length === 0)
-    throw new Error('The Hermes conformance corpus has no cases.')
+    throw new Error('The conformance corpus contract identity does not match its paired contract.')
+  if (!Array.isArray(parsed.cases) || parsed.cases.length === 0) throw new Error('The conformance corpus has no cases.')
   const cases = parsed.cases.map(parseCase)
   if (parsed.format_version === 2) {
     if (contract.contract_reader_version !== 3) throw new Error('Scanner corpus requires contract reader 3.')
     const payload = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== 'corpus_digest'))
     if (parsed.corpus_digest !== `sha256:${sha256Sync(canonicalizeJsonValue(payload))}`)
-      throw new Error('The Hermes conformance corpus digest does not match its canonical payload.')
+      throw new Error('The conformance corpus digest does not match its canonical payload.')
   } else if (contract.contract_reader_version === 3) throw new Error('Reader 3 requires corpus format 2.')
   if (
     cases.some(
       (fixture) => fixture.profile !== contract.profile || fixture.normalizerVersion !== contract.normalizer_version,
     )
   )
-    throw new Error('The Hermes conformance corpus case identity does not match its paired contract.')
+    throw new Error('The conformance corpus case identity does not match its paired contract.')
   if (new Set(cases.map((fixture) => fixture.id)).size !== cases.length)
-    throw new Error('The Hermes conformance corpus case IDs must be unique.')
+    throw new Error('The conformance corpus case IDs must be unique.')
   return Object.freeze({
     formatVersion: parsed.format_version,
     scannerCases: parseScannerCases(parsed, 'scanner_cases'),
@@ -91,7 +90,7 @@ function parseCase(value: unknown): ConformanceCase {
     !Array.isArray(value.diagnostics) ||
     !stringArray(value.features)
   )
-    throw new Error('The Hermes conformance corpus contains an invalid case.')
+    throw new Error('The conformance corpus contains an invalid case.')
   return Object.freeze({
     id: value.id,
     profile: value.profile,

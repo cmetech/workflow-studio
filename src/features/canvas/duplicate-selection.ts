@@ -1,3 +1,4 @@
+import { profileLabel } from '$src/lib/branding/workflow-copy'
 import type { AuthoringContract, SemanticRuleDescriptor, WorkflowProfile } from '$src/lib/contract/types'
 import { compileContractValidators } from '$src/lib/validation/schema-validator'
 import { patchWorkflowDocument } from '$src/lib/yaml/patch-document'
@@ -155,7 +156,7 @@ export async function pasteSelection(
   }
   const disallowed = firstDisallowedField(clipboard.nodes, context.contract, fields.nodesPath)
   if (disallowed) {
-    const message = `Field ${disallowed} is not allowed by the active ${context.contract.profile} profile.`
+    const message = `Field ${disallowed} is not allowed by the active ${profileLabel(context.contract.profile)} profile.`
     context.announce(message)
     return { status: 'rejected', code: 'profile_disallowed', message }
   }
@@ -190,7 +191,7 @@ export async function pasteSelection(
 
   const descriptorDisallowed = firstDescriptorDisallowedField(copiedNodes, context.contract, fields.nodesPath)
   if (descriptorDisallowed) {
-    const message = `Field ${descriptorDisallowed} is not allowed by the active ${context.contract.profile} profile.`
+    const message = `Field ${descriptorDisallowed} is not allowed by the active ${profileLabel(context.contract.profile)} profile.`
     context.announce(message)
     return { status: 'rejected', code: 'profile_disallowed', message }
   }
@@ -203,7 +204,7 @@ export async function pasteSelection(
     schemaValid = false
   }
   if (!schemaValid) {
-    const message = `The copied selection is not allowed by the active ${context.contract.profile} contract.`
+    const message = `The copied selection is not allowed by the active ${profileLabel(context.contract.profile)} contract.`
     context.announce(message)
     return { status: 'rejected', code: 'profile_disallowed', message }
   }

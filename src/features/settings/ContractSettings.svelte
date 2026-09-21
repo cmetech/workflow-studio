@@ -13,11 +13,11 @@
   let refreshProfile = $state<ContractCacheEntry['profile']>('archon-2026-07')
 
   function profileLabel(profile: ContractCacheEntry['profile']): string {
-    return profile === 'archon-2026-07' ? 'Archon 2026-07' : 'Hermes legacy'
+    return profile === 'archon-2026-07' ? 'Archon 2026-07' : 'Legacy'
   }
   function sourceLabel(entry: ContractCacheEntry): string {
     const prefix =
-      entry.provenance.kind === 'user' ? 'Selected file' : entry.provenance.kind === 'cli' ? 'Hermes CLI' : 'Bundled'
+      entry.provenance.kind === 'user' ? 'Selected file' : entry.provenance.kind === 'cli' ? 'Workflow CLI' : 'Bundled'
     return `${prefix}: ${entry.provenance.identifier}`
   }
 </script>
@@ -32,10 +32,10 @@
         >CLI profile
         <select aria-label="CLI profile" bind:value={refreshProfile}>
           <option value="archon-2026-07">Archon 2026-07</option>
-          <option value="hermes-legacy">Hermes legacy</option>
+          <option value="hermes-legacy">Legacy</option>
         </select>
       </label>
-      <button type="button" onclick={() => void onRefreshCli(refreshProfile)}>Refresh From Hermes CLI</button>
+      <button type="button" onclick={() => void onRefreshCli(refreshProfile)}>Refresh From Workflow CLI</button>
     </div>
   </header>
 

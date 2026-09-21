@@ -351,7 +351,7 @@ describe('buildDocumentationIndex', () => {
         expect(topic?.body).toContain('Type:')
         expect(topic?.body).toContain('Required:')
         expect(topic?.body).toContain('Default:')
-        expect(topic?.body).toContain(`Profile: \`${activeContract.profile}\``)
+        expect(topic?.body).toContain(`Profile: \`${activeContract.profile === 'hermes-legacy' ? 'Legacy' : activeContract.profile}\``)
       }
     }
   })
@@ -388,7 +388,7 @@ describe('buildDocumentationIndex', () => {
 
     for (const [path, guide] of Object.entries(guideSources)) {
       for (const match of guide.matchAll(
-        /```yaml profile=(archon-2026-07|hermes-legacy)(?: invalid-in=(archon-2026-07|hermes-legacy))?\n([\s\S]*?)```/g,
+        /```yaml profile=(archon-2026-07|hermes-legacy)(?: invalid-in=(archon-2026-07|hermes-legacy))?\r?\n([\s\S]*?)```/g,
       )) {
         const profile = exampleProfile(match[1])
         const invalidProfile = match[2] ? exampleProfile(match[2]) : undefined
@@ -505,7 +505,7 @@ describe('buildDocumentationIndex', () => {
   it('validates every bundled definition guide fence through the production contract and DAG analyzer', async () => {
     const contract = (await loadBundledAuthoringContracts()).find(({ profile }) => profile === 'archon-2026-07')!
     for (const [path, guide] of Object.entries(guideSources)) {
-      for (const [, definition] of guide.matchAll(/```yaml\n([\s\S]*?)```/g)) {
+      for (const [, definition] of guide.matchAll(/```yaml\r?\n([\s\S]*?)```/g)) {
         if (!definition?.includes('nodes:')) continue
         const analysis = await analyzeWorkflowPair(
           {
@@ -527,7 +527,7 @@ describe('buildDocumentationIndex', () => {
     expect(quickStartPath).toBeDefined()
     const quickStart = quickStartPath ? guideSources[quickStartPath] : undefined
     if (!quickStart) throw new Error('Quick Start guide resource is missing')
-    const fence = [...quickStart.matchAll(/```yaml\n([\s\S]*?)```/g)].find((match) => match[1]?.includes('nodes:'))
+    const fence = [...quickStart.matchAll(/```yaml\r?\n([\s\S]*?)```/g)].find((match) => match[1]?.includes('nodes:'))
     const definition = fence?.[1]
     expect(definition).toBeDefined()
     if (!definition) throw new Error('Quick Start definition fence is missing')

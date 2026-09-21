@@ -1,6 +1,6 @@
 # Quick Start
 
-Use this path to create, understand, and save a small Hermes workflow without leaving the local editor. Workflow Studio works offline and does not execute workflows.
+Use this path to create, understand, and save a small loop24 workflow without leaving the local editor. Workflow Studio works offline and does not execute workflows.
 
 ## 1. Open a local folder
 

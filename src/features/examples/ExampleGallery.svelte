@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import { tick } from 'svelte'
   import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import type { ExampleDescriptor } from '$src/lib/examples/types'
@@ -88,7 +89,7 @@
       <dl>
         <div>
           <dt>Profile</dt>
-          <dd>{selectedExample.profile}</dd>
+          <dd>{profileLabel(selectedExample.profile)}</dd>
         </div>
         <div>
           <dt>Difficulty</dt>
@@ -141,7 +142,7 @@
           <dl>
             <div>
               <dt>Profile</dt>
-              <dd>{example.profile}</dd>
+              <dd>{profileLabel(example.profile)}</dd>
             </div>
             <div>
               <dt>Difficulty</dt>

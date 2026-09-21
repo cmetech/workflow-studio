@@ -1,3 +1,4 @@
+import { workflowCopy } from '$src/lib/branding/workflow-copy'
 import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js'
 import { isMap, isSeq } from 'yaml'
 import type { AuthoringContract } from '$src/lib/contract/types'
@@ -144,7 +145,7 @@ function collectStatusIssues(
         layer: 'compatibility',
         severity: 'warning',
         blocking: false,
-        message: descriptor?.description ?? `This value is ${status} in the active contract.`,
+        message: workflowCopy(descriptor?.description ?? `This value is ${status} in the active contract.`),
         document,
         path: path || '/',
         ...(field ? { field } : {}),

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import { onDestroy, onMount, tick, type Component } from 'svelte'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import {
@@ -1577,14 +1578,14 @@
       }
       const proposedContract = activeContractForProfile(proposedProfile)
       if (!proposedContract || proposedContract.profile !== proposedProfile) {
-        workspaceError = `Cannot change Language compatibility to ${proposedProfile} because no exact active contract is available. Activate the ${proposedProfile} contract in Settings and try again.`
+        workspaceError = `Cannot select ${profileLabel(proposedProfile)}: no exact active contract. Activate it in Settings and retry.`
         return
       }
       if (
         proposedContract.contract_digest !== contract.contract_digest &&
         !(await documentWorkspace.activateContract(proposedContract))
       ) {
-        workspaceError = `Cannot change Language compatibility to ${proposedProfile} because its active contract could not be prepared. Reactivate the contract in Settings and try again.`
+        workspaceError = `The ${profileLabel(proposedProfile)} contract could not be prepared. Reactivate it in Settings and retry.`
         return
       }
       mutationContract = proposedContract

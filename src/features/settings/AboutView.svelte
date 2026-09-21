@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import type { HostInfo } from '$src/lib/native/types'
 
   interface ContractIdentity {
@@ -35,7 +36,7 @@
   <ul aria-label="Authoring contracts">
     {#each contracts as contract (contract.profile + contract.digest)}
       <li>
-        <strong><code class="technical-value">{contract.profile}</code></strong>
+        <strong><code class="technical-value">{profileLabel(contract.profile)}</code></strong>
         <span>Schema <code class="technical-value">{contract.schemaVersion}</code></span>
         <code class="digest technical-value">{contract.digest}</code>
       </li>

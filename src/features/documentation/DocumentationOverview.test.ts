@@ -7,7 +7,7 @@ describe('DocumentationOverview', () => {
     const onSelectTopic = vi.fn()
     render(DocumentationOverview, { onSelectTopic, onBrowseReference: vi.fn() })
 
-    expect(screen.getByText(/Build and edit Hermes workflows locally/i)).toBeVisible()
+    expect(screen.getByText(/Build and edit loop24 workflows locally/i)).toBeVisible()
     const startHere = screen.getByRole('region', { name: 'Start here' })
     expect(
       within(startHere)

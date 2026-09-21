@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { profileLabel } from '$src/lib/branding/workflow-copy'
   import ArrowLeft from 'lucide-svelte/icons/arrow-left'
   import { renderMarkdown } from '$src/lib/docs/render-markdown'
   import type { DocumentationIndex, DocumentationTopic } from '$src/lib/docs/types'
@@ -95,7 +96,7 @@
       {/if}
       <div>
         <dt>Profile status</dt>
-        <dd>{topic.status} · {topic.profile}</dd>
+        <dd>{topic.status} · {profileLabel(topic.profile)}</dd>
       </div>
       {#if topic.constraints && Object.keys(topic.constraints).length > 0}
         <div>

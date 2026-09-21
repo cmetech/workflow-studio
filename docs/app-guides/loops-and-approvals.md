@@ -15,7 +15,7 @@ nodes:
 
 An ordinary [Loop](#node:loop) repeats bounded work. Both bundled profiles require `until` and `max_iterations`, bounded from 1 through 100. When `interactive: true`, add a non-empty `gate_message`.
 
-In `hermes-legacy`, the loop also requires `prompt` and does not accept `command`. This is the Legacy form:
+In the Legacy profile, the loop also requires `prompt` and does not accept `command`. This is the Legacy form:
 
 ```yaml profile=hermes-legacy
 name: bounded-revision
@@ -80,4 +80,4 @@ nodes:
     depends_on: [review]
 ```
 
-Workflow Studio validates loop bounds, required fields, dependencies, output-reference visibility, and DAG topology. Hermes performs iterations, approvals, rejection handling, and cancellation during execution. Runtime tools, commands, services, credentials, and actual results remain outside the editor.
+Workflow Studio validates loop bounds, required fields, dependencies, output-reference visibility, and DAG topology. loop24 performs iterations, approvals, rejection handling, and cancellation during execution. Runtime tools, commands, services, credentials, and actual results remain outside the editor.

@@ -1549,7 +1549,7 @@ nodes:
 
     const profile = await screen.findByRole('combobox', { name: 'Profile' }, deferredSurfaceWait)
     expect(within(profile).queryByRole('option', { name: 'archon-2026-07' })).not.toBeInTheDocument()
-    expect(within(profile).getByRole('option', { name: 'hermes-legacy' })).toBeInTheDocument()
+    expect(within(profile).getByRole('option', { name: 'Legacy' })).toBeInTheDocument()
   })
 
   it('does not open Import with a lexical same-profile fallback when the App cache has no active selection', async () => {
