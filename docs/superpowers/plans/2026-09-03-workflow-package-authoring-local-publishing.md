@@ -151,7 +151,7 @@ git commit -m "feat: consume Hermes workflow package contract"
 - Consumes: `WorkflowPackageContract` and `WorkspaceFileEntry`.
 - Produces: `parsePackageManifest(text: string, path: string, contract: WorkflowPackageContract): PackageManifestResult`, `findPackageManifestPaths(files: readonly WorkspaceFileEntry[]): readonly string[]`, and `buildPackageCatalog(input: PackageCatalogInput): PackageCatalog`.
 
-- [ ] **Step 1: Write failing behavior and property tests**
+- [x] **Step 1: Write failing behavior and property tests**
 
 ```ts
 it('discovers two independent package roots and preserves non-package workflows', () => {
@@ -169,13 +169,13 @@ it.prop([fc.array(canonicalRelativePathArbitrary(), { maxLength: 40 })])(
 Cover malformed JSON, schema errors, duplicate IDs, nested roots, unsafe/safe symlinks, Unicode case-fold collisions, non-NFC paths, file/directory aliases, workflow membership outside the root, missing members, and unsupported contract versions. Execute applicable `pathVectors` and `validationVectors`, including expected diagnostic codes. Schema checks must be supplemented by agent-equivalent semantic validation; `toLowerCase()` is not full Unicode case folding.
 Define `fixtureInput`, `canonicalRelativePathArbitrary`, and `expectNoOverlappingAcceptedRoots` as local test helpers in `discovery.test.ts`; they construct only `WorkspaceFileEntry` metadata and manifest-text maps and never touch the real filesystem.
 
-- [ ] **Step 2: Run tests and verify discovery fails**
+- [x] **Step 2: Run tests and verify discovery fails**
 
 Run: `npm run test:unit -- src/lib/packages/manifest.test.ts src/lib/packages/discovery.test.ts`
 
 Expected: FAIL because package domain types and discovery do not exist.
 
-- [ ] **Step 3: Implement immutable manifest and catalog types**
+- [x] **Step 3: Implement immutable manifest and catalog types**
 
 ```ts
 export interface WorkflowPackageProjection {
@@ -195,17 +195,17 @@ export interface PackageCatalog {
 
 Use Ajv with the contract-provided manifest schema. Preserve unknown manifest values in the raw parsed document while exposing only contract-known projection fields.
 
-- [ ] **Step 4: Implement deterministic package discovery**
+- [x] **Step 4: Implement deterministic package discovery**
 
 Derive roots only from canonical `workflow-package.json` files, sort by code point, reject nested/overlapping roots, and associate scan entries without reading non-manifest file content. Keep ordinary workflow pairing unchanged.
 
-- [ ] **Step 5: Run focused tests and workspace regression tests**
+- [x] **Step 5: Run focused tests and workspace regression tests**
 
-Run: `npm run test:unit -- src/lib/packages/manifest.test.ts src/lib/packages/discovery.test.ts src/lib/workspace/pair-workflows.test.ts src/stores/workspace.test.ts`
+Run: `npm run test:unit -- src/lib/packages src/lib/workspace/pair-workflows.test.ts src/features/workspace/workspace-actions.test.ts src/features/workspace/workspace-action-coordinator.test.ts`
 
 Expected: all tests pass; non-package pairing behavior is unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/lib/packages src/lib/workspace/types.ts tests/fixtures/workflow-packages/multiple
@@ -215,6 +215,8 @@ git commit -m "feat: discover workflow package roots"
 ### Task 3: Resolve Package Resources and Classify Readiness
 
 **Entry gate:** Complete the reference-surface/resolver coverage matrix described in the reconciliation report. Pin existing authoring descriptors and any separately authorized missing upstream resolver export/vectors before implementing lookup behavior. The package contract alone cannot satisfy this gate. Define `ArtifactStaticAnalysis` interfaces and test fixtures here; integrate real analyzers from Tasks 6-7 before claiming full readiness.
+
+**Concrete prerequisite:** [Upstream resource-resolution contract amendment](2026-09-22-upstream-package-resource-contract-amendment.md). Its separate authorization is required before sibling source changes. In particular, compiler candidate generation in `dependency_manifest.py` must not be substituted with runtime-only `ResourceResolver` behavior.
 
 **Files:**
 - Create: `src/lib/packages/artifact-kind.ts`

@@ -272,6 +272,12 @@ describe('contract resource synchronization', () => {
 it('synchronizes the reader-3/corpus-2 pair exactly and rejects a forged outer corpus checksum', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'workflow-scanner-pair-'))
   const sourceRoot = join(process.cwd(), 'contracts')
+  const packageFiles = [
+    'workflow-package-v1.json',
+    'workflow-package-v1-vectors.json',
+    'workflow-package-provenance.json',
+  ]
+  for (const file of packageFiles) await writeFile(join(directory, file), await readFile(join(sourceRoot, file)))
   await syncContracts({
     source: {
       kind: 'files',
@@ -297,6 +303,8 @@ it('synchronizes the reader-3/corpus-2 pair exactly and rejects a forged outer c
     expect(await readFile(join(directory, file), 'utf8')).toBe(await readFile(join(sourceRoot, file), 'utf8'))
   expect(await validateContractResources(directory)).toEqual([])
   const payload = JSON.parse(await readFile(join(directory, 'archon-2026-07-v6.corpus.json'), 'utf8'))
+  for (const file of packageFiles)
+    expect(await readFile(join(directory, file))).toEqual(await readFile(join(sourceRoot, file)))
   payload.scanner_cases[0].expected.tokens[0].end++
   const { canonicalizeJsonValue } = await import('../src/lib/contract/canonical-json')
   const forged = canonicalizeJsonValue(payload)

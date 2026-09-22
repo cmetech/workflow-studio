@@ -17,6 +17,7 @@ Verification:
 - `npm run package-contracts:check`: pins, envelope, embedded schemas, and vector envelope passed offline.
 - `npm run resources:verify`: 45 bundled resources verified.
 - Targeted ESLint and `git diff --check` passed.
+- `npm run check`: 0 errors and 0 warnings.
 
 Implementation decisions:
 
@@ -25,3 +26,25 @@ Implementation decisions:
 - Packaging tests derive the resource count from the integrity manifest and explicitly verify the added artifacts instead of freezing another numeric inventory assertion.
 
 This is foundation work only: vector semantic consumers, package UI, native package preparation, marketplace install interoperability, and all five adversarial review rounds remain pending.
+
+## Task 2: manifests and package discovery
+
+Added pure, immutable package projections; contract-schema and semantic manifest validation; raw document/text retention on invalid input; duplicate JSON key rejection; deterministic discovery; root/member/path checks; and unchanged ordinary workflow pairing. This layer consumes scan metadata and manifest text, with no filesystem I/O or graph persistence.
+
+The manifest/discovery tests first failed at the missing modules. Final behavior tests cover all upstream manifest validation vectors and all path vectors, plus non-NFC names, invalid Unicode, full case folding, file/directory aliases, nested roots, duplicate IDs, symlinked ancestors, missing members, unknown values, code-point ordering, and workspace-root packages. Index/digest validation vectors and native boundary recipes remain assigned to their later consumers.
+
+Verification:
+
+- Package tests plus pairing and workspace-action/coordinator regressions: 79 passed across 6 files.
+- Strengthened duplicate-key tests using otherwise-valid manifests and workflow-contract synchronization coexistence tests: 26 passed across 2 files. Existing contract sync preserves both package artifacts and provenance byte-for-byte.
+- `npm run check`: 0 errors and 0 warnings; targeted ESLint and diff checks passed.
+- Vendored Unicode tables match SHA-256 of the pinned upstream source. Original implementation/table hashes and the small TypeScript adaptations are recorded in `src/lib/packages/unicode/provenance.json`.
+
+Implementation decisions:
+
+- Reuse the agent desktop's Unicode 14 normalization and case-folding algorithm/tables, exporting its NFC helper and adding bounds-established TypeScript assertions. Host JavaScript Unicode versions and lowercasing do not define package identity.
+- The existing `WorkspaceFileEntry` interface already supplies the needed metadata, so no redundant workspace type/state change was added.
+- The old plan references nonexistent `src/stores/workspace.test.ts`; verification instead runs the current workspace action/coordinator tests plus pairing tests.
+- Standalone workspace-root packages can be discovered. Publishing them into a repository index still needs a valid nonempty repository-relative package location under the approved preparation rules; discovery does not imply publish readiness.
+
+Task 3 remains gated on the separately authorized [upstream resource-resolution amendment](../superpowers/plans/2026-09-22-upstream-package-resource-contract-amendment.md). No sibling source was modified. No package editor or preparation UI has been claimed complete, and no adversarial review round has been marked done.
