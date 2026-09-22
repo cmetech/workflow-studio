@@ -160,6 +160,19 @@
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import PackageTree from '$src/features/packages/PackageTree.svelte'
   import PackageOverview from '$src/features/packages/PackageOverview.svelte'
+  import ResourceActionDialog, {
+    type ResourceDialogMode,
+    type ResourceDialogRequest,
+  } from '$src/features/inspector/ResourceActionDialog.svelte'
+  import {
+    planResourceCreation,
+    planResourceExtraction,
+    planResourceSelection,
+    type ResourceCreationPlan,
+    type ResourceActionContext,
+  } from '$src/lib/packages/resource-actions'
+  import { resolvePackageReferences } from '$src/lib/packages/package-references'
+  import { commitResourcePlan } from '$src/features/packages/resource-action-coordinator'
   import PackageInspector from '$src/features/packages/PackageInspector.svelte'
   import PackageManifestEditor from '$src/features/packages/PackageManifestEditor.svelte'
   import ArtifactEditor from '$src/features/artifacts/ArtifactEditor.svelte'
@@ -763,7 +776,16 @@
         },
       }
     },
-    watch: watchWorkspaceChanges,
+    watch: (handler) => {
+      const queued: Parameters<Parameters<typeof watchWorkspaceChanges>[0]>[0][] = []
+      drainResourceChanges = async () => {
+        for (const change of queued.splice(0)) await handler(change)
+      }
+      return watchWorkspaceChanges(async (change) => {
+        if (resourceCommitting) queued.push(change)
+        else await handler(change)
+      })
+    },
     recovery: recoveryStore,
     recoveryDrafts,
     layout: layoutStore,
@@ -1185,6 +1207,275 @@
     }
     return values
   })
+  const resourcePackage = $derived(
+    $packageCatalog.catalog.packages.find((pkg) =>
+      pkg.workflows.some(
+        (member) =>
+          (pkg.root ? `${pkg.root}/${member.definition}` : member.definition) ===
+          $documentSessionStore.pair?.definition.path,
+      ),
+    ),
+  )
+  const resourceFields = $derived.by<Readonly<Record<string, { inline?: boolean; artifactPath?: string }>>>(() => {
+    const pkg = resourcePackage,
+      pair = $documentSessionStore.pair,
+      analysis = $documentSessionStore.analysis,
+      authoring = inspectorContract,
+      node = inspectorNodes[0]
+    if (!pkg || !pair || !analysis || !authoring || !node || !packageResourceContract) return {}
+    const prefix = pkg.root ? pkg.root + '/' : ''
+    const refs = resolvePackageReferences({
+      contract: packageResourceContract,
+      packageRoot: pkg.root,
+      members: pkg.workflows,
+      files: new Map(
+        $workspace.files
+          .filter((file) => file.relativePath.startsWith(prefix))
+          .map((file) => [
+            file.relativePath.slice(prefix.length),
+            { kind: file.symlink === 'none' ? file.kind : 'symlink' },
+          ]),
+      ),
+      artifactTexts: new Map(),
+      workflows: [{ path: pair.definition.path.slice(prefix.length), authoring, analysis }],
+    })
+    const nodeId = inspectorGraph?.scope.kind === 'loop-group' ? `${inspectorGraph.scope.groupId}/${node.id}` : node.id
+    return Object.fromEntries(
+      inspectorFields.map((field) => {
+        const ref = refs.references.find(
+          (ref) =>
+            ref.nodeId === nodeId &&
+            (ref.fieldPath === field.fieldPath || field.fieldPath.endsWith('.' + ref.fieldPath)),
+        )
+        const inline =
+          refs.inlineScripts.some((script) => script.nodeId === nodeId) && field.fieldPath.endsWith('.script')
+        return [field.id, { inline, ...(ref?.artifactPath ? { artifactPath: prefix + ref.artifactPath } : {}) }]
+      }),
+    )
+  })
+  let resourceRequest = $state.raw<{
+    mode: ResourceDialogMode
+    field: FormField
+    opener: HTMLElement
+    context: ResourceActionContext
+    choices: readonly string[]
+    binding: string
+  } | null>(null)
+  let resourceReturn = $state.raw<{
+    workspaceId: string
+    workflowId: string
+    path: string
+    fieldId: string
+    actionLabel: string
+  } | null>(null)
+  async function returnFromResource(): Promise<void> {
+    const captured = resourceReturn
+    if (!captured) return
+    const current = () =>
+      workspace.get().id === captured.workspaceId && documentSessionStore.get().pair?.workflowId === captured.workflowId
+    await artifactController?.close()
+    if (!current()) return
+    artifactReady = false
+    resourceReturn = null
+    showActivity('explorer')
+    if (!(await focusInspectorIfCurrent(undefined, current)) || !current()) return
+    const field = document.querySelector<HTMLElement>(`[data-field-id="${CSS.escape(captured.fieldId)}"]`)
+    const actions = [
+      ...(field?.querySelectorAll<HTMLButtonElement>('[aria-label="Package resource actions"] button') ?? []),
+    ]
+    const target =
+      actions.find((button) => button.textContent?.trim() === captured.actionLabel && !button.disabled) ??
+      actions.find((button) => button.textContent?.trim() === 'Open' && !button.disabled)
+    target?.focus()
+  }
+  let resourcePlan: ResourceCreationPlan | null = null
+  let resourceCommitting = $state(false)
+  let drainResourceChanges: (() => Promise<void>) | null = null
+  const resourceDisabledReason = $derived(
+    resourceCommitting
+      ? 'A resource transaction is in progress.'
+      : $documentSessionStore.pair && isDocumentPairDirty($documentSessionStore.pair)
+        ? 'Save the workflow pair before creating or selecting a resource.'
+        : undefined,
+  )
+  async function resourceAction(
+    field: FormField,
+    action: ResourceDialogMode | 'open' | 'reveal',
+    opener: HTMLButtonElement,
+  ): Promise<void> {
+    const pkg = resourcePackage
+    if (!pkg) return
+    const existing = resourceFields[field.id]?.artifactPath
+    if (action === 'open' || action === 'reveal') {
+      if (!existing) return
+      const pair = documentSessionStore.get().pair,
+        workspaceId = workspace.get().id
+      if (pair && workspaceId)
+        resourceReturn = {
+          workspaceId,
+          workflowId: pair.workflowId,
+          path: existing,
+          fieldId: field.id,
+          actionLabel: opener.textContent?.trim() ?? 'Open',
+        }
+      showActivity('packages')
+      await packageController?.open({ packageId: pkg.id, kind: 'artifact', path: existing })
+      if (action === 'reveal') {
+        await tick()
+        document.querySelector<HTMLElement>('[aria-label="Packages"] [aria-selected="true"]')?.focus()
+      }
+      return
+    }
+    const session = documentSessionStore.get(),
+      authoring = inspectorContract,
+      node = inspectorNodes[0],
+      workspaceId = workspace.get().id
+    if (
+      !session.pair ||
+      !session.analysis ||
+      !authoring ||
+      !node ||
+      !workspaceId ||
+      !packageResourceContract ||
+      resourceDisabledReason
+    )
+      throw Error('A saved valid workflow in a package is required.')
+    const binding = inspectorBindingIdentity,
+      scopeKey = inspectorGraph?.scope.key ?? 'root'
+    const { capturePackageAnalysis } = await import('$src/features/packages/package-analysis')
+    const contract = await packageContract
+    const captured = await capturePackageAnalysis({
+      packageRoot: pkg.root,
+      native,
+      contract,
+      resourceContract: packageResourceContract,
+      authoring: contracts.filter(
+        (candidate) => activeContractForProfile(candidate.profile)?.contract_digest === candidate.contract_digest,
+      ),
+    })
+    if (
+      inspectorBindingIdentity !== binding ||
+      documentSessionStore.get().pair !== session.pair ||
+      workspace.get().id !== workspaceId ||
+      captured.snapshot.workspaceId !== workspaceId
+    )
+      throw Error('The workflow or workspace changed. Try the resource action again.')
+    const prefix = pkg.root ? pkg.root + '/' : ''
+    const hashes = new Map(captured.snapshot.files.map((file) => [prefix + file.relativePath, file.sha256]))
+    const context: ResourceActionContext = {
+      package: captured.package,
+      workflow: session.pair,
+      analysis: session.analysis,
+      authoring,
+      nodeId: node.id,
+      scopeKey,
+      fieldPath: field.fieldPath,
+      workspace: {
+        workspaceId,
+        contract,
+        resourceContract: packageResourceContract,
+        packages: $packageCatalog.catalog.packages.map((pkg) => ({ root: pkg.root, id: pkg.id })),
+        entries: captured.snapshot.entries.map((entry) => ({
+          ...entry,
+          ...(hashes.has(entry.relativePath) ? { sha256: hashes.get(entry.relativePath)! } : {}),
+          ...(captured.artifactTexts.has(entry.relativePath.slice(prefix.length))
+            ? { text: captured.artifactTexts.get(entry.relativePath.slice(prefix.length))! }
+            : {}),
+        })),
+      },
+    }
+    resourcePlan = null
+    resourceRequest = {
+      mode: action,
+      field,
+      opener,
+      context,
+      binding,
+      choices: captured.snapshot.files
+        .map((file) => prefix + file.relativePath)
+        .filter((path) => captured.artifactTexts.has(path.slice(prefix.length))),
+    }
+  }
+  async function previewResource(request: ResourceDialogRequest): Promise<{ artifactPath: string; reference: string }> {
+    const active = resourceRequest
+    if (
+      !active ||
+      inspectorBindingIdentity !== active.binding ||
+      documentSessionStore.get().pair !== active.context.workflow
+    )
+      throw Error('The workflow changed. Close this dialog and try again.')
+    resourcePlan = null
+    const plan =
+      active.mode === 'select'
+        ? await planResourceSelection({ ...active.context, artifactPath: request.artifactPath ?? '' })
+        : active.mode === 'extract'
+          ? await planResourceExtraction({
+              ...active.context,
+              basename: request.basename ?? '',
+              ...(request.suffix ? { suffix: request.suffix } : {}),
+            })
+          : await planResourceCreation({
+              ...active.context,
+              basename: request.basename ?? '',
+              initialText: request.initialText ?? '',
+              ...(request.suffix ? { suffix: request.suffix } : {}),
+            })
+    if (resourceRequest !== active || inspectorBindingIdentity !== active.binding)
+      throw Error('The selected node changed. Try again.')
+    resourcePlan = plan
+    return plan
+  }
+  async function commitResource(): Promise<void> {
+    const plan = resourcePlan,
+      request = resourceRequest
+    if (!plan || !request || resourceCommitting || inspectorBindingIdentity !== request.binding)
+      throw Error('Preview the resource action again.')
+    resourceCommitting = true
+    try {
+      await commitResourcePlan(plan, {
+        current: () => (inspectorBindingIdentity === request.binding ? documentSessionStore.get().pair : null),
+        workspaceId: () => workspace.get().id,
+        apply: (plan) => native.workspaceApplyTransaction(plan),
+        publish: (pair, transaction) => {
+          historyStore.set(recordTransaction(historyStore.get(), transaction))
+          documentWorkspace.changed(pair, 'form')
+        },
+      })
+      resourceReturn = {
+        workspaceId: plan.nativePlan.workspaceId,
+        workflowId: plan.nextPair.workflowId,
+        path: plan.artifactPath,
+        fieldId: request.field.id,
+        actionLabel: request.opener.textContent?.trim() ?? 'Open',
+      }
+      resourceRequest = null
+      resourcePlan = null
+      await refreshWorkspace()
+      await tick()
+      if (
+        workspace.get().id !== plan.nativePlan.workspaceId ||
+        documentSessionStore.get().pair?.workflowId !== plan.nextPair.workflowId
+      )
+        return
+      await packageController?.refresh({ id: plan.nativePlan.workspaceId, files: workspace.get().files })
+      if (
+        workspace.get().id !== plan.nativePlan.workspaceId ||
+        documentSessionStore.get().pair?.workflowId !== plan.nextPair.workflowId
+      )
+        return
+      showActivity('packages')
+      await packageController?.open({ packageId: plan.packageId, kind: 'artifact', path: plan.artifactPath })
+    } finally {
+      resourceCommitting = false
+      await drainResourceChanges?.()
+    }
+  }
+  function resourceHelp(topicId: string): void {
+    exampleDocumentationProfile = undefined
+    documentationNavigationSequence += 1
+    documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
+    routePageNavigation('documentation', undefined, true)
+  }
   const inspectorBindingIdentity = $derived(formBindingIdentity(inspectorNodes[0]?.id ?? 'workflow'))
   const inspectorDisabledReason = $derived(inspectorMutationDisabledReason())
   const activeDocumentDocumentationContract = $derived(
@@ -3213,6 +3504,9 @@
     >
       {#if packageSurface}
         <div class="editor-tabs">
+          {#if resourceReturn && resourceReturn.path === packageArtifact?.path && resourceReturn.workspaceId === $workspace.id && resourceReturn.workflowId === $documentSessionStore.pair?.workflowId}
+            <button onclick={() => runArtifactOperation(returnFromResource)}>Back to Workflow</button>
+          {/if}
           <button onclick={toggleDockedWorkspacePanel}>Toggle package panel</button><button onclick={openInspectorPanel}
             >Package inspector</button
           >
@@ -3733,6 +4027,13 @@
             documentationIndex: activeDocumentDocumentationIndex ?? undefined,
             documentationTopicId: inspectorDocumentationTopicId,
             onDocumentationTopic: (id: string) => (inspectorDocumentationTopicId = id),
+            resourceContract: packageResourceContract,
+            resourceNodeKind: inspectorNodes[0]?.kind,
+            resourceInPackage: Boolean(resourcePackage),
+            resourceDisabledReason,
+            resourceFields,
+            onResourceAction: resourceAction,
+            onResourceHelp: resourceHelp,
             onCommit: commitInspectorField,
             onTextTarget: rememberInspectorTextTarget,
             focusRequest: inspectorFocusRequest,
@@ -4356,6 +4657,22 @@
       onopenlog: (runId: string) => updateController.openLog(runId),
       onrelaunch: () => updateController.relaunch(),
       copyText: (text: string) => navigator.clipboard.writeText(text),
+    }}
+  />
+{/if}
+
+{#if resourceRequest}
+  <ResourceActionDialog
+    mode={resourceRequest.mode}
+    choices={resourceRequest.choices}
+    opener={resourceRequest.opener}
+    onPreview={previewResource}
+    onCommit={commitResource}
+    onCancel={() => {
+      if (!resourceCommitting) {
+        resourceRequest = null
+        resourcePlan = null
+      }
     }}
   />
 {/if}
