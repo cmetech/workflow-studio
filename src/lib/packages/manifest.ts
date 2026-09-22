@@ -7,13 +7,14 @@ import type { PackageFinding, PackageManifestResult, WorkflowPackageManifest } f
 const validators = new WeakMap<WorkflowPackageContract, ValidateFunction>()
 const pythonWhitespace =
   /^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$/u
-const clean = (value: string) => !pythonWhitespace.test(value) && !value.includes('\0')
+export const isCanonicalPackageText = (value: string) => !pythonWhitespace.test(value) && !value.includes('\0')
+const clean = isCanonicalPackageText
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 /** JSON.parse checks grammar; this structural token pass additionally rejects duplicate decoded object keys. */
-function parseUniqueJson(text: string): unknown {
+export function parseUniqueJson(text: string): unknown {
   const value = JSON.parse(text) as unknown
   const tokens = text.match(/"(?:\\[\s\S]|[^"\\])*"|[{}[\]:,]/g) ?? []
   const scopes: Array<Set<string> | null> = []

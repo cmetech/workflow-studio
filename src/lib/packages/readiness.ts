@@ -85,14 +85,14 @@ export function analyzePackageReadiness(input: PackageReadinessInput): PackageAn
   const payload = files.filter((f) => !input.contract.digest_rules.excluded_paths.includes(f.relativePath))
   if (input.scan.length > limits.max_traversal_entries)
     add('package_traversal_limit', '', 'Package scan exceeds its entry limit.')
-  if (payload.length > limits.max_files) add('package_file_limit', '', 'Package contains too many files.')
+  if (payload.length > limits.max_files) add('package_file_count_limit', '', 'Package contains too many files.')
   if (payload.reduce((total, f) => total + f.size, 0) > limits.max_total_bytes)
-    add('package_total_too_large', '', 'Package exceeds its total size limit.')
+    add('package_total_size_limit', '', 'Package exceeds its total size limit.')
   for (const file of files) {
     if (!Number.isSafeInteger(file.size) || file.size < 0)
       add('package_size_invalid', file.relativePath, 'File size metadata is invalid.')
     if (file.size > limits.max_file_bytes)
-      add('package_file_too_large', file.relativePath, 'File exceeds the package size limit.')
+      add('package_file_size_limit', file.relativePath, 'File exceeds the package size limit.')
   }
   const present = new Set(files.map((f) => f.relativePath))
   const execution = new Set<string>()

@@ -162,7 +162,7 @@ describe('package readiness', () => {
     const result = analyzePackageReadiness({ ...input, scan, integrity, manifestText: '{}' })
     for (const code of [
       'package_symlink_unsupported',
-      'package_file_too_large',
+      'package_file_size_limit',
       'package_manifest_invalid',
       'package_digest_mismatch',
       'index_conflict',
