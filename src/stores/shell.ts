@@ -2,11 +2,11 @@ import { atom } from 'nanostores'
 import type { ActivityId, EditorMode } from '$src/lib/commands/types'
 import type { DocumentKind } from '$src/lib/documents/types'
 
-export type ContextualActivityId = Extract<ActivityId, 'explorer' | 'nodes'>
+export type ContextualActivityId = Extract<ActivityId, 'explorer' | 'nodes' | 'packages'>
 export type PageActivityId = Exclude<ActivityId, ContextualActivityId>
 export type WorkbenchSurface = 'welcome' | 'authoring' | PageActivityId
 
-export const CONTEXTUAL_ACTIVITIES: readonly ContextualActivityId[] = ['explorer', 'nodes']
+export const CONTEXTUAL_ACTIVITIES: readonly ContextualActivityId[] = ['explorer', 'nodes', 'packages']
 export const PAGE_ACTIVITIES: readonly PageActivityId[] = ['examples', 'documentation', 'git', 'settings']
 
 export function isPageActivity(activity: ActivityId): activity is PageActivityId {

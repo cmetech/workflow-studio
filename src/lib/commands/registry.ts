@@ -481,6 +481,7 @@ const initialCommands: readonly AppCommand[] = [
   },
   activityCommand('explorer', 'Explorer', ['Mod+B']),
   activityCommand('nodes', 'Nodes'),
+  activityCommand('packages', 'Packages'),
   activityCommand('examples', 'Examples'),
   activityCommand('documentation', 'Documentation'),
   activityCommand('git', 'Git'),

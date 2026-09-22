@@ -38,6 +38,7 @@
     returnToWorkflow,
     showActivity,
     showEditorMode,
+    showYamlDocument,
     workspacePanelOpen,
     workspaceIntent,
     closeCommandPalette,
@@ -157,6 +158,28 @@
   } from '$src/stores/canvas'
   import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
+  import PackageTree from '$src/features/packages/PackageTree.svelte'
+  import PackageOverview from '$src/features/packages/PackageOverview.svelte'
+  import PackageInspector from '$src/features/packages/PackageInspector.svelte'
+  import PackageManifestEditor from '$src/features/packages/PackageManifestEditor.svelte'
+  import ArtifactEditor from '$src/features/artifacts/ArtifactEditor.svelte'
+  import {
+    ArtifactWorkspaceController,
+    type ArtifactWorkspaceState,
+  } from '$src/features/artifacts/artifact-workspace-controller'
+  import { createArtifactRecoveryStore } from '$src/lib/recovery/recovery-store'
+  import { $artifactSession as artifactSession } from '$src/stores/artifacts'
+  import { $packageCatalog as packageCatalog, resetPackages, type PackageSelection } from '$src/stores/packages'
+  import { PackageCatalogController } from '$src/features/packages/package-catalog-controller'
+  import {
+    loadBundledWorkflowPackageContract,
+    loadBundledResourceResolution,
+  } from '$src/lib/package-contract/bundled-package-contract'
+  import { classifyPackageArtifact, type PackageArtifactKind } from '$src/lib/packages/artifact-kind'
+  import type { ResourceResolutionContract } from '$src/lib/package-contract/resource-contract-loader'
+  import type { WorkflowPackageProjection } from '$src/lib/packages/types'
+  import type { ArtifactLanguage } from '$src/lib/artifacts/types'
+  import type { WorkspaceArtifactMetadata } from '$src/lib/native/types'
   import ActivityRail from './ActivityRail.svelte'
   import ActivityPage from './ActivityPage.svelte'
   import StatusBar from './StatusBar.svelte'
@@ -256,6 +279,192 @@
     return guideReadiness
   }
   const native = getNativeBridge()
+  let packageController: PackageCatalogController | null = null
+  let packageRefreshGeneration = 0
+  let artifactController: ArtifactWorkspaceController | null = null
+  let artifactState = $state.raw<ArtifactWorkspaceState>({ externalChange: null, recoveryOffers: [] })
+  let artifactComparison = $state.raw<{ mine: string; disk: string | null } | null>(null)
+  let unsubscribeArtifactState: (() => void) | undefined
+  let artifactSaving = false
+  let artifactReady = $state(false)
+  let artifactKind = $state<PackageArtifactKind>('text')
+  let artifactWorkspaceId: string | null = null
+  let manifestEditor = $state<ReturnType<typeof PackageManifestEditor> | null>(null)
+  let artifactMetadata = $state.raw<WorkspaceArtifactMetadata | null>(null)
+  let artifactOpeningGeneration = 0
+  const selectedPackage = $derived(
+    $packageCatalog.catalog.packages.find((pkg) => pkg.id === $packageCatalog.active?.packageId),
+  )
+  const packageSurface = $derived($activeActivity === 'packages' && $packageCatalog.active?.kind !== 'workflow')
+  const packageArtifact = $derived(
+    artifactReady &&
+      $artifactSession?.workspaceId === $workspace.id &&
+      $artifactSession.path === $packageCatalog.active?.path
+      ? $artifactSession
+      : null,
+  )
+  let packageResourceContract = $state.raw<ResourceResolutionContract | undefined>(undefined)
+  const packageContract = Promise.all([loadBundledWorkflowPackageContract(), loadBundledResourceResolution()]).then(
+    ([contract, resources]) => {
+      packageResourceContract = resources.contract
+      return contract
+    },
+  )
+  $effect(() => {
+    const id = $workspace.id
+    const files = $workspace.files
+    const generation = ++packageRefreshGeneration
+    if (!id) {
+      packageController?.dispose()
+      packageController = null
+      resetPackages()
+      return
+    }
+    void packageContract
+      .then((contract) => {
+        if (generation !== packageRefreshGeneration) return
+        packageController ??= new PackageCatalogController({
+          contract,
+          readManifest: async (path) => (await native.workspaceReadTextArtifact(path)).text,
+          openWorkflow: async (definitionPath, _companionPath, document) => {
+            const entry = $workspace.entries.find(
+              (entry) => entry.kind === 'workflow' && entry.definitionPath === definitionPath,
+            )
+            if (entry?.kind === 'workflow') {
+              await openEntry(entry)
+              showYamlDocument(document ?? 'definition')
+              if (document === 'companion') showEditorMode('yaml')
+            }
+          },
+          openArtifact: openPackageArtifact,
+        })
+        return packageController.refresh({ id, files })
+      })
+      .catch((error) => {
+        workspaceError = String(error)
+      })
+  })
+  async function openPackageArtifact(path: string, pkg?: WorkflowPackageProjection): Promise<void> {
+    const id = $workspace.id
+    if (!id) return
+    if (
+      artifactReady &&
+      artifactController &&
+      artifactWorkspaceId === id &&
+      artifactSession.get()?.workspaceId === id &&
+      artifactSession.get()?.path === path
+    )
+      return
+    artifactReady = false
+    const generation = ++artifactOpeningGeneration
+    if (artifactWorkspaceId !== id) {
+      await artifactController?.dispose()
+      if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
+      artifactController = new ArtifactWorkspaceController({
+        workspaceId: id,
+        native,
+        recovery: createArtifactRecoveryStore(native),
+      })
+      unsubscribeArtifactState?.()
+      unsubscribeArtifactState = artifactController.state.subscribe((state) => {
+        artifactState = state
+        if (!state.externalChange) artifactComparison = null
+      })
+      artifactWorkspaceId = id
+    }
+    artifactMetadata = null
+    const languages: Record<string, ArtifactLanguage> = {
+      py: 'python',
+      ts: 'typescript',
+      js: 'javascript',
+      md: 'markdown',
+      json: 'json',
+      yaml: 'yaml',
+      yml: 'yaml',
+      txt: 'text',
+    }
+    const language = languages[path.split('.').at(-1)?.toLowerCase() ?? '']
+    const resources = await loadBundledResourceResolution()
+    if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
+    artifactKind = classifyPackageArtifact({
+      path: pkg?.root ? path.slice(pkg.root.length + 1) : path,
+      members: pkg?.workflows ?? [],
+      contract: resources.contract,
+      textAvailable: true,
+    }).kind
+    try {
+      await artifactController!.open(path, language ?? 'text')
+      if (generation === artifactOpeningGeneration && id === $workspace.id) artifactReady = true
+    } catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'invalid_utf8') throw error
+      if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
+      await artifactController!.close()
+      const metadata = await native.workspaceReadArtifact(path)
+      if (generation === artifactOpeningGeneration && id === $workspace.id) {
+        artifactMetadata = metadata
+        artifactKind = 'binary'
+      }
+    }
+  }
+  function openPackageSelection(selection: PackageSelection): void {
+    void packageController?.open(selection).catch((error) => {
+      workspaceError = String(error)
+    })
+  }
+  function editPackageArtifact(text: string): void {
+    if (artifactKind !== 'generated') artifactController?.edit(text)
+  }
+  async function replacePackageBinary(): Promise<void> {
+    const captured = artifactMetadata
+    const workspaceId = workspace.get().id
+    const generation = artifactOpeningGeneration
+    if (!captured || captured.readOnly) return
+    const source = await native.chooseImportArtifact()
+    if (
+      !source ||
+      workspaceId !== workspace.get().id ||
+      generation !== artifactOpeningGeneration ||
+      artifactMetadata !== captured
+    )
+      return
+    const next = await native.workspaceReplaceArtifact({
+      relativePath: captured.relativePath,
+      sourceGrantToken: source.sourceGrantToken,
+      expectedCurrentHash: captured.sha256,
+    })
+    if (workspaceId === workspace.get().id && generation === artifactOpeningGeneration) artifactMetadata = next
+    await refreshWorkspace()
+  }
+  async function runArtifactOperation(operation: () => Promise<void>): Promise<void> {
+    try {
+      await operation()
+    } catch (error) {
+      workspaceError = String(error)
+    }
+  }
+  async function disposeArtifacts(): Promise<void> {
+    ++artifactOpeningGeneration
+    await artifactController?.dispose()
+    unsubscribeArtifactState?.()
+    unsubscribeArtifactState = undefined
+    artifactController = null
+    artifactReady = false
+    artifactWorkspaceId = null
+    artifactState = { externalChange: null, recoveryOffers: [] }
+    artifactMetadata = null
+  }
+  async function savePackageArtifact(): Promise<void> {
+    if (artifactKind === 'generated') return
+    artifactSaving = true
+    try {
+      await artifactController?.save()
+      await refreshWorkspace()
+    } catch (error) {
+      workspaceError = String(error)
+    } finally {
+      artifactSaving = false
+    }
+  }
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void
   let setupReady = $state(false)
@@ -464,6 +673,7 @@
       const layout = activeLayoutStore.get()
       if (layout) await documentWorkspace.persistLayoutChanges(layout)
       await recoveryDrafts.flush()
+      await artifactController?.flush()
     },
   })
   let editorModesHost = $state<ReturnType<typeof EditorModes> | null>(null)
@@ -570,7 +780,11 @@
             : undefined,
         )
       }),
-    onWorkspaceChanged: refreshWorkspace,
+    onWorkspaceChanged: async () => {
+      await refreshWorkspace()
+      if (!artifactSaving && artifactSession.get()?.workspaceId === workspace.get().id)
+        await artifactController?.externalChanged()
+    },
     activeContractForProfile,
   })
   const canvasAuthoring = createCanvasAuthoringCoordinator({
@@ -599,7 +813,10 @@
     },
     currentDocument: () => documentSessionStore.get().pair,
     flushRecovery: (pair) => documentWorkspace.flushRecovery(pair),
-    closeWorkspace: () => withCanvasLayoutBarrier(() => documentWorkspace.closeWorkspace()),
+    closeWorkspace: async () => {
+      await disposeArtifacts()
+      await withCanvasLayoutBarrier(() => documentWorkspace.closeWorkspace())
+    },
     closeDocument: (workflowId) => withCanvasLayoutBarrier(() => documentWorkspace.close(workflowId)),
     renameDocument: (workspaceId, from, to, companionMoved) =>
       withCanvasLayoutBarrier(() => documentWorkspace.renameActivePair(workspaceId, from, to, companionMoved)),
@@ -630,6 +847,7 @@
     onPersistenceError: surfaceCanvasPersistenceError,
   })
   const applicationDisposal = createApplicationDisposal(async () => {
+    await disposeArtifacts()
     setupController.dispose()
     updateController.dispose()
     await disposeApplicationResources(
@@ -2817,6 +3035,10 @@
   })
 
   onDestroy(() => {
+    packageRefreshGeneration++
+    artifactOpeningGeneration++
+    packageController?.dispose()
+    resetPackages()
     exportConfirmation?.resolve(false)
     applicationDisposal.unmount()
   })
@@ -2927,7 +3149,15 @@
         </div>
       {/if}
       <div class="left-panel-body" data-contextual-panel-body>
-        {#if $activeActivity === 'explorer' && $workspace.id !== null}
+        {#if $activeActivity === 'packages' && $workspace.id !== null}
+          <PackageTree
+            resourceContract={packageResourceContract}
+            catalog={$packageCatalog.catalog}
+            active={$packageCatalog.active}
+            onOpen={openPackageSelection}
+          />
+          {#if $packageCatalog.error}<p role="alert">{$packageCatalog.error}</p>{/if}
+        {:else if $activeActivity === 'explorer' && $workspace.id !== null}
           <DeferredSurface
             load={loadExplorer}
             label="workspace explorer"
@@ -2981,374 +3211,466 @@
       {...authoringHidden ? { inert: true } : {}}
       aria-hidden={authoringHidden ? 'true' : undefined}
     >
-      <div class="editor-tabs" role="group" aria-label="Editor mode">
-        {#if workbenchPresentation.panels === 'docked'}
-          <button
-            type="button"
-            class="docked-panel-toggle"
-            data-variant="ghost"
-            aria-label={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
-            title={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
-            aria-pressed={!dockedWorkspacePanelOpen}
-            onclick={toggleDockedWorkspacePanel}
+      {#if packageSurface}
+        <div class="editor-tabs">
+          <button onclick={toggleDockedWorkspacePanel}>Toggle package panel</button><button onclick={openInspectorPanel}
+            >Package inspector</button
           >
-            {#if dockedWorkspacePanelOpen}
-              <PanelLeftClose size={17} aria-hidden="true" />
-            {:else}
-              <PanelLeftOpen size={17} aria-hidden="true" />
+        </div>
+        {#if $packageCatalog.active?.kind === 'artifact'}
+          <div class="package-artifact-content">
+            {#each artifactState.recoveryOffers.filter((draft) => draft.path === packageArtifact?.path) as draft (draft.updatedAt)}
+              <p>Recovered edits are available for {draft.path}.</p>
+              <button
+                disabled={artifactKind === 'generated' || !artifactReady}
+                onclick={() =>
+                  runArtifactOperation(async () => {
+                    await artifactController?.recover(draft)
+                  })}>Restore artifact draft</button
+              >
+              <button
+                onclick={() =>
+                  runArtifactOperation(async () => {
+                    await artifactController?.discard(draft)
+                  })}>Discard artifact draft</button
+              >
+            {/each}
+            {#if packageArtifact && artifactState.externalChange?.path === packageArtifact.path}
+              <section aria-label="Artifact external change">
+                <p>The artifact changed on disk. Compare both versions before keeping your edits.</p>
+                <button
+                  onclick={() => {
+                    artifactComparison = artifactController?.compare() ?? null
+                  }}>Compare artifact versions</button
+                >
+                <button
+                  disabled={artifactState.externalChange.comparedRevision !== packageArtifact?.revision}
+                  onclick={() =>
+                    runArtifactOperation(async () => {
+                      await artifactController?.resolveExternalChange('keep-mine')
+                    })}>Keep Mine</button
+                >
+                <button
+                  onclick={() =>
+                    runArtifactOperation(async () => {
+                      await artifactController?.resolveExternalChange('reload-disk')
+                    })}>Reload Disk</button
+                >
+                {#if artifactComparison}<label
+                    >Your artifact text<textarea readonly value={artifactComparison.mine}></textarea></label
+                  ><label
+                    >Disk artifact text<textarea readonly value={artifactComparison.disk ?? 'File removed'}
+                    ></textarea></label
+                  >{/if}
+              </section>
             {/if}
-          </button>
-        {/if}
-        {#each editorModes as mode (mode)}
-          {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
-          {#if command}
+            {#if packageArtifact?.path.endsWith('/workflow-package.json') || packageArtifact?.path === 'workflow-package.json'}
+              <PackageManifestEditor
+                bind:this={manifestEditor}
+                document={packageArtifact}
+                onTextChange={editPackageArtifact}
+                onSave={savePackageArtifact}
+              />
+            {:else}
+              <ArtifactEditor
+                document={packageArtifact}
+                metadata={artifactMetadata}
+                generated={artifactKind === 'generated'}
+                command={artifactKind === 'command'}
+                onTextChange={editPackageArtifact}
+                onSave={savePackageArtifact}
+                onReplace={replacePackageBinary}
+                onReveal={async () => {
+                  if (artifactMetadata) await native.workspaceRevealArtifact(artifactMetadata.relativePath)
+                }}
+                onOpen={async () => {
+                  if (artifactMetadata) await native.workspaceOpenArtifact(artifactMetadata.relativePath)
+                }}
+              />
+            {/if}
+          </div>
+        {:else if selectedPackage}
+          <PackageOverview
+            package={selectedPackage}
+            onOpenWorkflow={(path) =>
+              openPackageSelection({
+                packageId: selectedPackage!.id,
+                kind: 'workflow',
+                path: selectedPackage!.root ? `${selectedPackage!.root}/${path}` : path,
+              })}
+          />
+        {:else}<p>Select a package to view its overview.</p>{/if}
+      {:else}
+        <div class="editor-tabs" role="group" aria-label="Editor mode">
+          {#if workbenchPresentation.panels === 'docked'}
             <button
               type="button"
+              class="docked-panel-toggle"
               data-variant="ghost"
-              aria-pressed={canvasSurfaceMode === mode}
-              class:active={canvasSurfaceMode === mode}
-              title={command.title}
-              disabled={!command.enabled}
-              onclick={() => void commandSurface.executeCommand(command.id, globalContext)}
+              aria-label={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
+              title={dockedWorkspacePanelOpen ? 'Collapse workspace panel' : 'Expand workspace panel'}
+              aria-pressed={!dockedWorkspacePanelOpen}
+              onclick={toggleDockedWorkspacePanel}
             >
-              {command.label}
+              {#if dockedWorkspacePanelOpen}
+                <PanelLeftClose size={17} aria-hidden="true" />
+              {:else}
+                <PanelLeftOpen size={17} aria-hidden="true" />
+              {/if}
             </button>
           {/if}
-        {/each}
-        {#if $activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
-          <div class="split-pane-tabs" role="group" aria-label="Split pane">
-            <button
-              type="button"
-              data-variant="ghost"
-              aria-pressed={compactSplitPane === 'canvas'}
-              class:active={compactSplitPane === 'canvas'}
-              onclick={() => (compactSplitPane = 'canvas')}>Canvas</button
-            >
-            <button
-              type="button"
-              data-variant="ghost"
-              aria-pressed={compactSplitPane === 'yaml'}
-              class:active={compactSplitPane === 'yaml'}
-              onclick={() => (compactSplitPane = 'yaml')}>YAML</button
-            >
-          </div>
-        {/if}
-        <span class="editor-tab-spacer" aria-hidden="true"></span>
-        {#if $documentSessionStore.pair}
-          <div class="document-save-control">
-            <span
-              class:dirty={documentDirty}
-              class="document-save-status"
-              role="status"
-              aria-label="Document save status"
-              aria-live="polite"
-              >{documentOperation === 'saving' ? 'Saving…' : documentDirty ? 'Unsaved changes' : 'Saved'}</span
-            >
-            {#if documentDirty}
+          {#each editorModes as mode (mode)}
+            {@const command = resolveCommand(commandSurface, `view.editor.${mode}`, globalContext)}
+            {#if command}
               <button
                 type="button"
-                class="document-revert-button"
                 data-variant="ghost"
-                aria-label="Revert to saved YAML"
-                title="Discard unsaved changes and reload the verified disk YAML"
-                disabled={!documentRevertAvailable || documentOperation !== 'idle' || revertRequest !== null}
-                onclick={(event) =>
-                  requestRevertToSaved(event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined)}
+                aria-pressed={canvasSurfaceMode === mode}
+                class:active={canvasSurfaceMode === mode}
+                title={command.title}
+                disabled={!command.enabled}
+                onclick={() => void commandSurface.executeCommand(command.id, globalContext)}
               >
-                <RotateCcw size={15} aria-hidden="true" />
-                <span>Revert</span>
+                {command.label}
               </button>
             {/if}
-            <button
-              type="button"
-              class="document-save-button"
-              data-variant={documentDirty ? 'primary' : 'secondary'}
-              aria-label="Save workflow"
-              title={documentReadOnly ? 'This workflow is read-only.' : 'Save workflow — Mod+S'}
-              disabled={!documentSaveAvailable || documentOperation !== 'idle' || revertRequest !== null}
-              onclick={() => void saveCurrentDocument()}
-            >
-              <Save size={15} aria-hidden="true" />
-              <span>Save</span>
-            </button>
-          </div>
-        {/if}
-        {#if workbenchPresentation.panels === 'docked'}
-          <button
-            type="button"
-            class="docked-panel-toggle right"
-            data-variant="ghost"
-            aria-label={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
-            title={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
-            aria-pressed={!dockedInspectorPanelOpen}
-            onclick={toggleDockedInspectorPanel}
-          >
-            {#if dockedInspectorPanelOpen}
-              <PanelRightClose size={17} aria-hidden="true" />
-            {:else}
-              <PanelRightOpen size={17} aria-hidden="true" />
-            {/if}
-          </button>
-        {/if}
-      </div>
-      <section
-        class="editor-region"
-        class:scoped-canvas={canvasGraph?.scope.kind === 'loop-group'}
-        aria-label="Workflow editor"
-      >
-        {#if $workspace.id !== null}
-          {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
-            <DeferredSurface
-              load={loadGraphScopeHeader}
-              label="scope navigation"
-              componentProps={{
-                workflowName: canvasProjection?.name ?? canvasGraph.scope.workflow.name,
-                groupId: canvasGraph.scope.groupId,
-                onBack: leaveLoopGroup,
-                onEditGroupSettings: (invoker: HTMLButtonElement) =>
-                  editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
-              }}
-            />
-          {/if}
-          <div
-            class="editor-surfaces"
-            class:split={canvasSurfaceMode === 'split'}
-            class:split-tabs={canvasSurfaceMode === 'split' && workbenchPresentation.split === 'tabs'}
-            class:yaml-only={canvasSurfaceMode === 'yaml'}
-            class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
-            data-split-pane={compactSplitPane}
-          >
-            {#if canvasCapacity?.advisory}
-              <p class="canvas-capacity-advisory" role="status">
-                {canvasGraph?.scope.kind === 'loop-group'
-                  ? 'This loop body is preserved and remains editable in YAML-only mode because the visual canvas supports at most 250 nodes and 500 edges.'
-                  : canvasCapacity.advisory}
-              </p>
-            {/if}
-            {#if visualEditorRequested && canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false && !scopeSurfaceTransitioning}
-              <div class="canvas-pane">
-                <DeferredSurface
-                  load={loadGraphCanvas}
-                  label="visual editor"
-                  onInstance={(instance) => (graphCanvas = instance as ReturnType<typeof GraphCanvas> | null)}
-                  componentProps={{
-                    commandSurface,
-                    projection: canvasGraph,
-                    layout: $activeScopeLayoutStore!,
-                    restoreRequest: $canvasScopeRestorationStore,
-                    workflowIdentity: canvasInstanceIdentity(
-                      $documentSessionStore.pair?.workflowId ?? '',
-                      $activeScopeKeyStore,
-                    ),
-                    pairGeneration: $documentSessionStore.pair?.generation ?? 0,
-                    onArrangeBusyChange: captureArrangeBusy,
-                    transitionLocked: canvasTransitionLocked,
-                    surfaceActive:
-                      !authoringHidden &&
-                      !(
-                        $activeEditorMode === 'split' &&
-                        workbenchPresentation.split === 'tabs' &&
-                        compactSplitPane === 'yaml'
-                      ),
-                    issues: $documentSessionStore.analysis?.issues ?? [],
-                    stale: canvasStale && !canvasRepairableDraft,
-                    staleSource: canvasStaleSource,
-                    repairMode: canvasRepairMode,
-                    blankDraft: canvasBlankDraft,
-                    inspectorControls: inspectorPanelId,
-                    inspectorExpanded: !inspectorPanelHidden,
-                    readOnly:
-                      (canvasReadOnly && !canvasRepairableDraft && !canvasRepairMode) ||
-                      $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                        ?.readOnly === true,
-                    onLayoutChange: captureCanvasLayout,
-                    onPersistLayout: persistCanvasScope,
-                    onPersistenceError: surfaceCanvasPersistenceError,
-                    onConnect: (source: string, target: string) => canvasAuthoring.connect(source, target),
-                    onDisconnect: (source: string, target: string) => canvasAuthoring.disconnect(source, target),
-                    onRequestAdd: requestCanvasAdd,
-                    onRequestDelete: requestCanvasDelete,
-                    onOpenInspector: focusInspector,
-                    onToggleInspector: (expanded: boolean, invoker: HTMLElement) =>
-                      expanded || workbenchPresentation.panels === 'docked'
-                        ? focusInspector(invoker)
-                        : closeInspectorDrawer(invoker),
-                    onDropNodeKind: dropPaletteNode,
-                    groupSummaries: loopGroupSummaries,
-                    onOpenLoopGroup: (groupId: string) => openLoopGroup(groupId),
-                  }}
-                />
-                {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
-                  <DeferredSurface
-                    load={loadLoopGroupEmptyState}
-                    label="empty loop body"
-                    componentProps={{
-                      groupId: canvasGraph.scope.groupId,
-                      onAddNode: () => {
-                        if (graphCanvas) graphCanvas.requestAdd()
-                        else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
-                      },
-                      onEditGroupSettings: (invoker: HTMLElement) =>
-                        editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
-                    }}
-                  />
-                {/if}
-              </div>
-            {/if}
-            {#if yamlEditorRequested && $documentSessionStore.pair && $documentSessionStore.revision}
-              <div class="yaml-pane">
-                {#key $documentSessionStore.pair.workflowId}
-                  <DeferredSurface
-                    load={loadEditorModes}
-                    label="YAML editor"
-                    onInstance={captureEditorModesHost}
-                    componentProps={{
-                      pair: $documentSessionStore.pair,
-                      revision: $documentSessionStore.revision,
-                      analysis: $documentSessionStore.analysis,
-                      projection: canvasProjection,
-                      mode: canvasSurfaceMode,
-                      syncOrigins: {
-                        definition:
-                          $documentSyncOriginsStore.definition?.revision ===
-                          $documentSessionStore.pair.definition.revision
-                            ? $documentSyncOriginsStore.definition.origin
-                            : 'unknown',
-                        companion:
-                          $documentSessionStore.pair.companion &&
-                          $documentSyncOriginsStore.companion?.revision ===
-                            $documentSessionStore.pair.companion.revision
-                            ? $documentSyncOriginsStore.companion.origin
-                            : 'unknown',
-                      },
-                      readOnly:
-                        $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
-                          ?.readOnly === true,
-                      onTextChange: editYamlDocument,
-                    }}
-                  />
-                {/key}
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </section>
-      {#if $documentSessionStore.pair}
-        {#snippet problemsContent()}
-          <DeferredSurface
-            load={loadProblemsPanel}
-            label="Validation problems"
-            componentProps={{
-              hosted: true,
-              issues: $documentSessionStore.analysis?.issues ?? [],
-              workflowName: canvasProjection?.name,
-              selectionOwner: problemsSelectionOwner,
-              paths: {
-                definition: $documentSessionStore.pair?.definition.path ?? null,
-                companion: $documentSessionStore.pair?.companion?.path ?? null,
-              },
-              onDocumentation: (id: string, opener: HTMLButtonElement) => {
-                exampleDocumentationProfile = undefined
-                documentationNavigationSequence += 1
-                const topicId = activeDocumentDocumentationIndex?.byId.has(id)
-                  ? id
-                  : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
-                    ? `contract:${id}`
-                    : id
-                documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
-                routePageNavigation('documentation', opener, true)
-              },
-            }}
-          />
-        {/snippet}
-        {#snippet referencesContent()}
-          {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
-            <DeferredSurface
-              load={loadLoopGroupScopeBar}
-              label="loop references"
-              componentProps={{
-                groupId: canvasGraph.scope.groupId,
-                suggestions: loopGroupReferenceSuggestions,
-                status: referenceStatus,
-                ...(referenceInsertionTargetLabel ? { insertionTargetLabel: referenceInsertionTargetLabel } : {}),
-                onCopy: copyLoopGroupReference,
-                canInsert: canInsertLoopGroupReference,
-                onInsert: insertLoopGroupReference,
-                onAddDependency: addOuterGroupDependency,
-              }}
-            />
-          {/if}
-        {/snippet}
-        <DeferredSurface
-          load={loadAuxiliaryPanel}
-          label="Validation panel"
-          componentProps={{
-            problems: problemsContent,
-            references: canvasGraph?.scope.kind === 'loop-group' ? referencesContent : undefined,
-            issueCount: $documentSessionStore.analysis?.issues.length ?? 0,
-            blockingCount: auxiliaryBlockingCount,
-            activeTab: auxiliaryTab,
-            height: problemsHeight,
-            minimumHeight: 96,
-            maximumHeight: problemsHeightMaximum,
-            onHeightPreview: previewProblemsHeight,
-            onHeightCommit: commitProblemsHeight,
-            onTabChange: (auxiliaryTab: AuxiliaryTab) =>
-              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab })),
-            problemsScroll: $activeScopeLayoutStore?.problemsScroll ?? 0,
-            referencesScroll: $activeScopeLayoutStore?.referencesScroll ?? 0,
-            onProblemsScroll: (problemsScroll: number) =>
-              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll })),
-            onReferencesScroll: (referencesScroll: number) =>
-              updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, referencesScroll })),
-          }}
-        />
-        {#if $documentWorkspaceState.analysisError}
-          <div class="document-outcome">
-            <ApplicationNotice kind="error" message={$documentWorkspaceState.analysisError} />
-          </div>
-        {/if}
-        {#if $documentWorkspaceState.missingChange}
-          <div class="document-outcome" role="alert">
-            <p>
-              {$documentWorkspaceState.missingChange.dirty ? 'Unsaved workflow' : 'Workflow'} file missing after external
-              {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
-            </p>
-            <div class="missing-actions">
+          {/each}
+          {#if $activeEditorMode === 'split' && workbenchPresentation.split === 'tabs'}
+            <div class="split-pane-tabs" role="group" aria-label="Split pane">
               <button
                 type="button"
-                data-variant="primary"
-                onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}>Keep Mine / Recreate</button
+                data-variant="ghost"
+                aria-pressed={compactSplitPane === 'canvas'}
+                class:active={compactSplitPane === 'canvas'}
+                onclick={() => (compactSplitPane = 'canvas')}>Canvas</button
               >
               <button
                 type="button"
-                data-variant="secondary"
-                onclick={() => runWorkspaceOperation(withCanvasLayoutBarrier(() => documentWorkspace.closeMissing()))}
-                >Close and Recover Later</button
+                data-variant="ghost"
+                aria-pressed={compactSplitPane === 'yaml'}
+                class:active={compactSplitPane === 'yaml'}
+                onclick={() => (compactSplitPane = 'yaml')}>YAML</button
               >
             </div>
-          </div>
-        {/if}
-        {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
-          <div class="document-outcome">
-            <ApplicationNotice
-              kind="error"
-              message={`Save blocked: ${$documentWorkspaceState.saveOutcome.reason}. ${$documentWorkspaceState.saveOutcome.issues.map(({ message }) => message).join(' ')}`}
+          {/if}
+          <span class="editor-tab-spacer" aria-hidden="true"></span>
+          {#if $documentSessionStore.pair}
+            <div class="document-save-control">
+              <span
+                class:dirty={documentDirty}
+                class="document-save-status"
+                role="status"
+                aria-label="Document save status"
+                aria-live="polite"
+                >{documentOperation === 'saving' ? 'Saving…' : documentDirty ? 'Unsaved changes' : 'Saved'}</span
+              >
+              {#if documentDirty}
+                <button
+                  type="button"
+                  class="document-revert-button"
+                  data-variant="ghost"
+                  aria-label="Revert to saved YAML"
+                  title="Discard unsaved changes and reload the verified disk YAML"
+                  disabled={!documentRevertAvailable || documentOperation !== 'idle' || revertRequest !== null}
+                  onclick={(event) =>
+                    requestRevertToSaved(event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined)}
+                >
+                  <RotateCcw size={15} aria-hidden="true" />
+                  <span>Revert</span>
+                </button>
+              {/if}
+              <button
+                type="button"
+                class="document-save-button"
+                data-variant={documentDirty ? 'primary' : 'secondary'}
+                aria-label="Save workflow"
+                title={documentReadOnly ? 'This workflow is read-only.' : 'Save workflow — Mod+S'}
+                disabled={!documentSaveAvailable || documentOperation !== 'idle' || revertRequest !== null}
+                onclick={() => void saveCurrentDocument()}
+              >
+                <Save size={15} aria-hidden="true" />
+                <span>Save</span>
+              </button>
+            </div>
+          {/if}
+          {#if workbenchPresentation.panels === 'docked'}
+            <button
+              type="button"
+              class="docked-panel-toggle right"
+              data-variant="ghost"
+              aria-label={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
+              title={dockedInspectorPanelOpen ? 'Collapse inspector panel' : 'Expand inspector panel'}
+              aria-pressed={!dockedInspectorPanelOpen}
+              onclick={toggleDockedInspectorPanel}
+            >
+              {#if dockedInspectorPanelOpen}
+                <PanelRightClose size={17} aria-hidden="true" />
+              {:else}
+                <PanelRightOpen size={17} aria-hidden="true" />
+              {/if}
+            </button>
+          {/if}
+        </div>
+        <section
+          class="editor-region"
+          class:scoped-canvas={canvasGraph?.scope.kind === 'loop-group'}
+          aria-label="Workflow editor"
+        >
+          {#if $workspace.id !== null}
+            {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
+              <DeferredSurface
+                load={loadGraphScopeHeader}
+                label="scope navigation"
+                componentProps={{
+                  workflowName: canvasProjection?.name ?? canvasGraph.scope.workflow.name,
+                  groupId: canvasGraph.scope.groupId,
+                  onBack: leaveLoopGroup,
+                  onEditGroupSettings: (invoker: HTMLButtonElement) =>
+                    editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
+                }}
+              />
+            {/if}
+            <div
+              class="editor-surfaces"
+              class:split={canvasSurfaceMode === 'split'}
+              class:split-tabs={canvasSurfaceMode === 'split' && workbenchPresentation.split === 'tabs'}
+              class:yaml-only={canvasSurfaceMode === 'yaml'}
+              class:no-canvas={!canvasProjection || !$activeLayoutStore || canvasCapacity?.visual === false}
+              data-split-pane={compactSplitPane}
+            >
+              {#if canvasCapacity?.advisory}
+                <p class="canvas-capacity-advisory" role="status">
+                  {canvasGraph?.scope.kind === 'loop-group'
+                    ? 'This loop body is preserved and remains editable in YAML-only mode because the visual canvas supports at most 250 nodes and 500 edges.'
+                    : canvasCapacity.advisory}
+                </p>
+              {/if}
+              {#if visualEditorRequested && canvasGraph && $activeLayoutStore && canvasCapacity?.visual !== false && !scopeSurfaceTransitioning}
+                <div class="canvas-pane">
+                  <DeferredSurface
+                    load={loadGraphCanvas}
+                    label="visual editor"
+                    onInstance={(instance) => (graphCanvas = instance as ReturnType<typeof GraphCanvas> | null)}
+                    componentProps={{
+                      commandSurface,
+                      projection: canvasGraph,
+                      layout: $activeScopeLayoutStore!,
+                      restoreRequest: $canvasScopeRestorationStore,
+                      workflowIdentity: canvasInstanceIdentity(
+                        $documentSessionStore.pair?.workflowId ?? '',
+                        $activeScopeKeyStore,
+                      ),
+                      pairGeneration: $documentSessionStore.pair?.generation ?? 0,
+                      onArrangeBusyChange: captureArrangeBusy,
+                      transitionLocked: canvasTransitionLocked,
+                      surfaceActive:
+                        !authoringHidden &&
+                        !(
+                          $activeEditorMode === 'split' &&
+                          workbenchPresentation.split === 'tabs' &&
+                          compactSplitPane === 'yaml'
+                        ),
+                      issues: $documentSessionStore.analysis?.issues ?? [],
+                      stale: canvasStale && !canvasRepairableDraft,
+                      staleSource: canvasStaleSource,
+                      repairMode: canvasRepairMode,
+                      blankDraft: canvasBlankDraft,
+                      inspectorControls: inspectorPanelId,
+                      inspectorExpanded: !inspectorPanelHidden,
+                      readOnly:
+                        (canvasReadOnly && !canvasRepairableDraft && !canvasRepairMode) ||
+                        $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                          ?.readOnly === true,
+                      onLayoutChange: captureCanvasLayout,
+                      onPersistLayout: persistCanvasScope,
+                      onPersistenceError: surfaceCanvasPersistenceError,
+                      onConnect: (source: string, target: string) => canvasAuthoring.connect(source, target),
+                      onDisconnect: (source: string, target: string) => canvasAuthoring.disconnect(source, target),
+                      onRequestAdd: requestCanvasAdd,
+                      onRequestDelete: requestCanvasDelete,
+                      onOpenInspector: focusInspector,
+                      onToggleInspector: (expanded: boolean, invoker: HTMLElement) =>
+                        expanded || workbenchPresentation.panels === 'docked'
+                          ? focusInspector(invoker)
+                          : closeInspectorDrawer(invoker),
+                      onDropNodeKind: dropPaletteNode,
+                      groupSummaries: loopGroupSummaries,
+                      onOpenLoopGroup: (groupId: string) => openLoopGroup(groupId),
+                    }}
+                  />
+                  {#if canvasGraph.scope.kind === 'loop-group' && canvasGraph.scope.groupId && canvasGraph.nodes.length === 0}
+                    <DeferredSurface
+                      load={loadLoopGroupEmptyState}
+                      label="empty loop body"
+                      componentProps={{
+                        groupId: canvasGraph.scope.groupId,
+                        onAddNode: () => {
+                          if (graphCanvas) graphCanvas.requestAdd()
+                          else requestCanvasAdd({ viewportCenter: { x: 0, y: 0 } })
+                        },
+                        onEditGroupSettings: (invoker: HTMLElement) =>
+                          editLoopGroupSettings(canvasGraph!.scope.groupId!, invoker),
+                      }}
+                    />
+                  {/if}
+                </div>
+              {/if}
+              {#if yamlEditorRequested && $documentSessionStore.pair && $documentSessionStore.revision}
+                <div class="yaml-pane">
+                  {#key $documentSessionStore.pair.workflowId}
+                    <DeferredSurface
+                      load={loadEditorModes}
+                      label="YAML editor"
+                      onInstance={captureEditorModesHost}
+                      componentProps={{
+                        pair: $documentSessionStore.pair,
+                        revision: $documentSessionStore.revision,
+                        analysis: $documentSessionStore.analysis,
+                        projection: canvasProjection,
+                        mode: canvasSurfaceMode,
+                        syncOrigins: {
+                          definition:
+                            $documentSyncOriginsStore.definition?.revision ===
+                            $documentSessionStore.pair.definition.revision
+                              ? $documentSyncOriginsStore.definition.origin
+                              : 'unknown',
+                          companion:
+                            $documentSessionStore.pair.companion &&
+                            $documentSyncOriginsStore.companion?.revision ===
+                              $documentSessionStore.pair.companion.revision
+                              ? $documentSyncOriginsStore.companion.origin
+                              : 'unknown',
+                        },
+                        readOnly:
+                          $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId)
+                            ?.readOnly === true,
+                        onTextChange: editYamlDocument,
+                      }}
+                    />
+                  {/key}
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </section>
+        {#if $documentSessionStore.pair}
+          {#snippet problemsContent()}
+            <DeferredSurface
+              load={loadProblemsPanel}
+              label="Validation problems"
+              componentProps={{
+                hosted: true,
+                issues: $documentSessionStore.analysis?.issues ?? [],
+                workflowName: canvasProjection?.name,
+                selectionOwner: problemsSelectionOwner,
+                paths: {
+                  definition: $documentSessionStore.pair?.definition.path ?? null,
+                  companion: $documentSessionStore.pair?.companion?.path ?? null,
+                },
+                onDocumentation: (id: string, opener: HTMLButtonElement) => {
+                  exampleDocumentationProfile = undefined
+                  documentationNavigationSequence += 1
+                  const topicId = activeDocumentDocumentationIndex?.byId.has(id)
+                    ? id
+                    : activeDocumentDocumentationIndex?.byId.has(`contract:${id}`)
+                      ? `contract:${id}`
+                      : id
+                  documentationNavigationRequest = { id: documentationNavigationSequence, topicId }
+                  routePageNavigation('documentation', opener, true)
+                },
+              }}
             />
-          </div>
-        {:else if $documentWorkspaceState.saveOutcome?.status === 'partial'}
-          <div class="document-outcome">
-            <ApplicationNotice
-              kind="error"
-              message={`Save partially completed. ${[
-                $documentWorkspaceState.saveOutcome.results.definition,
-                $documentWorkspaceState.saveOutcome.results.companion,
-              ]
-                .filter((result) => result?.status === 'failed')
-                .map((result) => `${result?.path}: ${result?.message ?? result?.errorCode ?? 'failed'}`)
-                .join(' ')}`}
-            />
-          </div>
+          {/snippet}
+          {#snippet referencesContent()}
+            {#if canvasGraph?.scope.kind === 'loop-group' && canvasGraph.scope.groupId}
+              <DeferredSurface
+                load={loadLoopGroupScopeBar}
+                label="loop references"
+                componentProps={{
+                  groupId: canvasGraph.scope.groupId,
+                  suggestions: loopGroupReferenceSuggestions,
+                  status: referenceStatus,
+                  ...(referenceInsertionTargetLabel ? { insertionTargetLabel: referenceInsertionTargetLabel } : {}),
+                  onCopy: copyLoopGroupReference,
+                  canInsert: canInsertLoopGroupReference,
+                  onInsert: insertLoopGroupReference,
+                  onAddDependency: addOuterGroupDependency,
+                }}
+              />
+            {/if}
+          {/snippet}
+          <DeferredSurface
+            load={loadAuxiliaryPanel}
+            label="Validation panel"
+            componentProps={{
+              problems: problemsContent,
+              references: canvasGraph?.scope.kind === 'loop-group' ? referencesContent : undefined,
+              issueCount: $documentSessionStore.analysis?.issues.length ?? 0,
+              blockingCount: auxiliaryBlockingCount,
+              activeTab: auxiliaryTab,
+              height: problemsHeight,
+              minimumHeight: 96,
+              maximumHeight: problemsHeightMaximum,
+              onHeightPreview: previewProblemsHeight,
+              onHeightCommit: commitProblemsHeight,
+              onTabChange: (auxiliaryTab: AuxiliaryTab) =>
+                updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, auxiliaryTab })),
+              problemsScroll: $activeScopeLayoutStore?.problemsScroll ?? 0,
+              referencesScroll: $activeScopeLayoutStore?.referencesScroll ?? 0,
+              onProblemsScroll: (problemsScroll: number) =>
+                updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, problemsScroll })),
+              onReferencesScroll: (referencesScroll: number) =>
+                updateScopeLayout($activeScopeKeyStore, (scope) => ({ ...scope, referencesScroll })),
+            }}
+          />
+          {#if $documentWorkspaceState.analysisError}
+            <div class="document-outcome">
+              <ApplicationNotice kind="error" message={$documentWorkspaceState.analysisError} />
+            </div>
+          {/if}
+          {#if $documentWorkspaceState.missingChange}
+            <div class="document-outcome" role="alert">
+              <p>
+                {$documentWorkspaceState.missingChange.dirty ? 'Unsaved workflow' : 'Workflow'} file missing after external
+                {$documentWorkspaceState.missingChange.kind}: {$documentWorkspaceState.missingChange.paths.join(', ')}.
+              </p>
+              <div class="missing-actions">
+                <button
+                  type="button"
+                  data-variant="primary"
+                  onclick={() => runWorkspaceOperation(documentWorkspace.recreateMissing())}
+                  >Keep Mine / Recreate</button
+                >
+                <button
+                  type="button"
+                  data-variant="secondary"
+                  onclick={() => runWorkspaceOperation(withCanvasLayoutBarrier(() => documentWorkspace.closeMissing()))}
+                  >Close and Recover Later</button
+                >
+              </div>
+            </div>
+          {/if}
+          {#if $documentWorkspaceState.saveOutcome?.status === 'blocked'}
+            <div class="document-outcome">
+              <ApplicationNotice
+                kind="error"
+                message={`Save blocked: ${$documentWorkspaceState.saveOutcome.reason}. ${$documentWorkspaceState.saveOutcome.issues.map(({ message }) => message).join(' ')}`}
+              />
+            </div>
+          {:else if $documentWorkspaceState.saveOutcome?.status === 'partial'}
+            <div class="document-outcome">
+              <ApplicationNotice
+                kind="error"
+                message={`Save partially completed. ${[
+                  $documentWorkspaceState.saveOutcome.results.definition,
+                  $documentWorkspaceState.saveOutcome.results.companion,
+                ]
+                  .filter((result) => result?.status === 'failed')
+                  .map((result) => `${result?.path}: ${result?.message ?? result?.errorCode ?? 'failed'}`)
+                  .join(' ')}`}
+              />
+            </div>
+          {/if}
         {/if}
       {/if}
     </section>
@@ -3372,7 +3694,23 @@
           onclick={() => void closeInspectorDrawer()}><X size={16} aria-hidden="true" /></button
         >
       {/if}
-      {#if $workspace.id !== null}
+      {#if packageSurface && selectedPackage}
+        {#if packageArtifact && packageArtifact.path === selectedPackage.manifestPath}
+          <PackageInspector
+            text={packageArtifact.text}
+            readOnly={packageArtifact.readOnly}
+            onTextChange={editPackageArtifact}
+            onAdvanced={() => manifestEditor?.showSource()}
+          />
+        {:else}<button
+            onclick={() =>
+              openPackageSelection({
+                packageId: selectedPackage!.id,
+                kind: 'artifact',
+                path: selectedPackage!.manifestPath,
+              })}>Edit publishing metadata</button
+          >{/if}
+      {:else if $workspace.id !== null}
         <DeferredSurface
           load={loadInspector}
           label="inspector"
@@ -4350,6 +4688,11 @@
 
   .editor-column[data-has-problems='true'] {
     grid-template-rows: 2.625rem minmax(0, 1fr) var(--problems-height);
+  }
+
+  .package-artifact-content {
+    min-height: 0;
+    overflow: auto;
   }
 
   .editor-tabs {

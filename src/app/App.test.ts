@@ -46,6 +46,9 @@ import type { LayoutWorkerResult } from '$src/workers/layout-worker-protocol'
 import { historyStore } from '$src/stores/history'
 import { analyzeWorkflowPair } from '$src/lib/validation/analyze-workflow'
 import App from './App.svelte'
+import { createArtifactDocument, editArtifactDocument } from '$src/lib/artifacts/artifact-session'
+import { createArtifactRecoveryDraft } from '$src/lib/recovery/recovery-store'
+import packageManifest from '../../tests/fixtures/workflow-packages/multiple/packages/diagnostics/workflow-package.json?raw'
 
 function rootGraph(
   name: string,
@@ -314,6 +317,126 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it('opens supporting UTF-8 files without requiring a known extension', async () => {
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'workflow-package.json': packageManifest,
+        'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        'settings.cfg': 'enabled=true',
+      },
+    })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /settings.cfg/ }, deferredSurfaceWait))
+    expect(await screen.findByRole('textbox', { name: 'settings.cfg' })).toBeVisible()
+  }, 20000)
+
+  it('replaces a binary package resource only through its selected native source grant', async () => {
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'workflow-package.json': packageManifest,
+        'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+      },
+      initialArtifacts: { 'image.bin': new Uint8Array([255, 0]) },
+      chooseArtifactSource: async () => new Uint8Array([255, 1, 2]),
+    })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /image.bin/ }, deferredSurfaceWait))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
+    await waitFor(async () => expect((await backing.workspaceReadArtifact('image.bin')).size).toBe(3))
+  }, 20000)
+
+  it('offers artifact draft recovery and compares an external manifest change before keeping edits', async () => {
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'workflow-package.json': packageManifest,
+        'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+      },
+    })
+    const disk = await backing.workspaceReadTextArtifact('workflow-package.json')
+    const draft = createArtifactRecoveryDraft(
+      editArtifactDocument(
+        createArtifactDocument('browser-workspace', 'workflow-package.json', 'json', disk.text, disk.sha256, false),
+        JSON.stringify({ ...JSON.parse(packageManifest), displayName: 'Recovered package' }),
+      ),
+      new Date().toISOString(),
+    )
+    await backing.recoveryWrite({ key: draft.artifactId, content: JSON.stringify(draft) })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /workflow-package.json/ }, deferredSurfaceWait))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Restore artifact draft' }))
+    const editor = within(await screen.findByRole('region', { name: 'Package manifest editor' }))
+    expect(editor.getByLabelText('Display name')).toHaveValue('Recovered package')
+    await backing.workspaceWriteTextArtifact({
+      relativePath: 'workflow-package.json',
+      text: JSON.stringify({ ...JSON.parse(packageManifest), description: 'External change' }),
+      expectedCurrentHash: disk.sha256,
+    })
+    await fireEvent.click(editor.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('button', { name: 'Keep Mine' })).toBeDisabled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Compare artifact versions' }))
+    expect((screen.getByLabelText('Disk artifact text') as HTMLTextAreaElement).value).toContain('External change')
+    await fireEvent.click(screen.getByRole('button', { name: 'Keep Mine' }))
+    await waitFor(async () =>
+      expect((await backing.workspaceReadTextArtifact('workflow-package.json')).text).toContain('Recovered package'),
+    )
+  }, 20000)
+
+  it('opens package metadata and preserves unsaved source in recovery when closing', async () => {
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'workflow-package.json': packageManifest,
+        'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+      },
+    })
+    const recoveryWrite = vi.spyOn(backing, 'recoveryWrite')
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    const rendered = render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /workflow-package.json/ }, deferredSurfaceWait))
+    await fireEvent.input(
+      within(
+        await screen.findByRole('region', { name: 'Package manifest editor' }, deferredSurfaceWait),
+      ).getByLabelText('Display name'),
+      {
+        target: { value: 'Changed package' },
+      },
+    )
+    await fireEvent.click(screen.getByRole('treeitem', { name: /workflow-package.json/ }))
+    expect(
+      within(screen.getByRole('region', { name: 'Package manifest editor' })).getByLabelText('Display name'),
+    ).toHaveValue('Changed package')
+    rendered.unmount()
+    await waitFor(() =>
+      expect(recoveryWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('Changed package') }),
+      ),
+    )
+  }, 20000)
+
+  it('opens the Packages catalog in the contextual workbench', async () => {
+    const backing = createBrowserBridge({ initialFiles: {} })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', [])
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    expect(await screen.findByRole('tree', { name: 'Packages' })).toBeVisible()
+    expect(screen.getByText('Select a package to view its overview.')).toBeVisible()
+  })
   it.each([false, true])(
     'defaults a loop tab once with blockers=%s and restores its explicit choice',
     async (blocking) => {
@@ -1160,7 +1283,8 @@ nodes:
     expect(screen.queryByRole('heading', { name: 'Start here' })).not.toBeInTheDocument()
   })
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    await import('$src/features/canvas/project-canvas')
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn((query: string) => new TestMediaQueryList(query)),
