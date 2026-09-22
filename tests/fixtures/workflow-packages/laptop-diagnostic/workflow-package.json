@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "laptop-diagnostic",
+  "version": "1.0.0",
+  "displayName": "Laptop diagnostic",
+  "description": "Synthetic laptop support package.",
+  "license": "MIT",
+  "publisher": "loop24-examples",
+  "tags": [
+    "example"
+  ],
+  "workflows": [
+    {
+      "definition": "workflows/laptop-diagnostic.yaml",
+      "companion": "workflows/laptop-diagnostic.hermes.yaml"
+    }
+  ],
+  "externalRequirements": {
+    "runtimes": [
+      "uv"
+    ],
+    "tools": [],
+    "providers": [],
+    "services": [],
+    "secrets": []
+  }
+}

@@ -6,6 +6,9 @@ export interface PackageFinding {
   readonly path: string
   readonly message: string
   readonly severity: 'blocking' | 'advisory'
+  readonly causeCode?: string
+  readonly line?: number
+  readonly column?: number
 }
 export interface PackageWorkflowMember {
   readonly definition: string
