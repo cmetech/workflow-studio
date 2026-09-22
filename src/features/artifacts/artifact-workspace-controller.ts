@@ -32,6 +32,7 @@ export interface ArtifactWorkspaceControllerDependencies {
 
 export class ArtifactWorkspaceController {
   readonly state = atom<ArtifactWorkspaceState>({ externalChange: null, recoveryOffers: [] })
+  private publishedDocument: ArtifactDocument | null = null
   private generation = 0
   private timer: ReturnType<typeof setTimeout> | undefined
   private pending: ArtifactDocument | null = null
@@ -63,7 +64,7 @@ export class ArtifactWorkspaceController {
       disk?.sha256 ?? null,
       disk?.readOnly ?? false,
     )
-    $artifactSession.set(document)
+    this.publish(document)
     this.state.set({
       externalChange: null,
       recoveryOffers: offers.filter(
@@ -77,7 +78,7 @@ export class ArtifactWorkspaceController {
     const current = this.current()
     const next = editArtifactDocument(current, text)
     if (next === current) return
-    $artifactSession.set(next)
+    this.publish(next)
     const state = this.state.get()
     if (state.externalChange)
       this.state.set({ ...state, externalChange: { ...state.externalChange, comparedRevision: null } })
@@ -105,12 +106,13 @@ export class ArtifactWorkspaceController {
         if (
           generation !== this.generation ||
           !current ||
+          current !== this.publishedDocument ||
           current.artifactId !== captured.artifactId ||
           result.relativePath !== captured.path
         )
           return
         const next = confirmArtifactSaved(current, captured, result.sha256)
-        $artifactSession.set(next)
+        this.publish(next)
         this.state.set({ ...this.state.get(), externalChange: null })
         this.changed(next)
       })
@@ -149,6 +151,7 @@ export class ArtifactWorkspaceController {
       generation !== this.generation ||
       externalGeneration !== this.externalGeneration ||
       !current ||
+      current !== this.publishedDocument ||
       current.artifactId !== captured.artifactId ||
       this.disposed ||
       this.closing
@@ -157,7 +160,7 @@ export class ArtifactWorkspaceController {
     if (disk && disk.sha256 === current.diskHash) return
     if (disk && !current.dirty) {
       const next = { ...reloadArtifactDocument(current, disk.text, disk.sha256), readOnly: disk.readOnly }
-      $artifactSession.set(next)
+      this.publish(next)
       this.state.set({ ...this.state.get(), externalChange: null })
       this.changed(next)
     } else {
@@ -208,7 +211,7 @@ export class ArtifactWorkspaceController {
       return
     }
     const next = { ...reloadArtifactDocument(current, disk.text, disk.sha256), readOnly: disk.readOnly }
-    $artifactSession.set(next)
+    this.publish(next)
     this.state.set({ externalChange: null, recoveryOffers: [] })
     this.changed(next)
     await this.flush()
@@ -230,7 +233,7 @@ export class ArtifactWorkspaceController {
       revision: Math.max(current.revision, draft.revision) + 1,
       dirty: true,
     }
-    $artifactSession.set(next)
+    this.publish(next)
     this.state.set({ externalChange: null, recoveryOffers: [] })
     this.changed(next)
     await this.flush()
@@ -270,7 +273,8 @@ export class ArtifactWorkspaceController {
       if (this.saving) await this.saving.catch(() => undefined)
       ++this.generation
       await this.flush()
-      $artifactSession.set(null)
+      if ($artifactSession.get() === this.publishedDocument) $artifactSession.set(null)
+      this.publishedDocument = null
       this.state.set({ externalChange: null, recoveryOffers: [] })
     } finally {
       this.closing = false
@@ -319,9 +323,15 @@ export class ArtifactWorkspaceController {
     }
   }
 
+  private publish(document: ArtifactDocument): void {
+    this.publishedDocument = document
+    $artifactSession.set(document)
+  }
+
   private current(): ArtifactDocument {
     const document = $artifactSession.get()
-    if (!document || document.workspaceId !== this.dependencies.workspaceId) throw new Error('No artifact is open')
+    if (!document || document !== this.publishedDocument || document.workspaceId !== this.dependencies.workspaceId)
+      throw new Error('No artifact is open')
     return document
   }
 

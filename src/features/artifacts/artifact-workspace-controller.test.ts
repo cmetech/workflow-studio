@@ -290,3 +290,26 @@ it('opens recovery for an artifact that remains absent after restart', async () 
   expect($artifactSession.get()).toMatchObject({ text: 'lost disk draft', diskHash: null, dirty: true })
   await s.controller.close()
 })
+
+it.each(['a.py', 'new.py'])('does not clear another controller session while closing %s', async (path) => {
+  const old = setup()
+  await old.controller.open('a.py', 'python')
+  old.controller.edit('old unsaved')
+  let release!: () => void
+  const write = old.recoveryNative.recoveryWrite.getMockImplementation()!
+  old.recoveryNative.recoveryWrite.mockImplementationOnce(async (request) => {
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await write(request)
+  })
+  const closing = old.controller.close()
+  await vi.waitFor(() => expect(old.recoveryNative.recoveryWrite).toHaveBeenCalledOnce())
+  const fresh = setup()
+  await fresh.controller.open(path, 'python')
+  const opened = $artifactSession.get()
+  release()
+  await closing
+  expect($artifactSession.get()).toBe(opened)
+  await fresh.controller.close()
+})
