@@ -1,7 +1,10 @@
+import { artifactRecoveryKey, type ArtifactDocument, type ArtifactLanguage } from '$src/lib/artifacts/types'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import {
   RECOVERY_SCHEMA_VERSION,
   type RecoveryBlob,
+  type RecoveryRecord,
+  type ArtifactRecoveryDraft,
   type RecoveryDocumentDraft,
   type RecoveryDraft,
   type RecoveryWriteRequest,
@@ -54,6 +57,7 @@ export function createRecoveryStore(native: RecoveryNativePort): RecoveryStore {
       return prune(native).then((records) =>
         latestRecords(records)
           .map(({ draft }) => draft)
+          .filter((draft): draft is RecoveryDraft => draft.schemaVersion === 1)
           .sort(
             (left, right) =>
               right.updatedAt.localeCompare(left.updatedAt) || left.workflowId.localeCompare(right.workflowId),
@@ -135,7 +139,7 @@ export class RecoveryDraftController {
 
 interface ParsedRecoveryRecord {
   readonly blob: RecoveryBlob
-  readonly draft: RecoveryDraft
+  readonly draft: RecoveryRecord
 }
 
 interface RecoveryInventory {
@@ -149,8 +153,8 @@ async function readInventory(native: RecoveryNativePort): Promise<RecoveryInvent
   const records: ParsedRecoveryRecord[] = []
   const invalid: RecoveryBlob[] = []
   for (const blob of blobs) {
-    const draft = parseRecoveryDraft(blob.content)
-    if (draft && draft.workflowId === blob.key) records.push({ blob, draft })
+    const draft = parseRecoveryRecord(blob.content)
+    if (draft && recordKey(draft) === blob.key) records.push({ blob, draft })
     else invalid.push(blob)
   }
   return { blobs, records, invalid }
@@ -189,13 +193,13 @@ async function prune(native: RecoveryNativePort): Promise<ParsedRecoveryRecord[]
 function latestRecords(records: readonly ParsedRecoveryRecord[]): ParsedRecoveryRecord[] {
   const latest = new Map<string, ParsedRecoveryRecord>()
   for (const record of records) {
-    const current = latest.get(record.draft.workflowId)
+    const current = latest.get(recordKey(record.draft))
     if (
       !current ||
       record.draft.updatedAt > current.draft.updatedAt ||
       (record.draft.updatedAt === current.draft.updatedAt && record.blob.id > current.blob.id)
     ) {
-      latest.set(record.draft.workflowId, record)
+      latest.set(recordKey(record.draft), record)
     }
   }
   return [...latest.values()]
@@ -276,4 +280,98 @@ function isDirty(pair: WorkflowPairText): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+export interface ArtifactRecoveryStore {
+  save(draft: ArtifactRecoveryDraft): Promise<void>
+  list(): Promise<readonly ArtifactRecoveryDraft[]>
+  discard(artifactId: string): Promise<void>
+}
+
+export function createArtifactRecoveryDraft(document: ArtifactDocument, updatedAt: string): ArtifactRecoveryDraft {
+  return {
+    schemaVersion: 2,
+    recordType: 'artifact',
+    artifactId: document.artifactId,
+    workspaceId: document.workspaceId,
+    path: document.path,
+    language: document.language,
+    text: document.text,
+    revision: document.revision,
+    savedRevision: document.savedRevision,
+    diskHash: document.diskHash,
+    updatedAt,
+  }
+}
+
+export function createArtifactRecoveryStore(native: RecoveryNativePort): ArtifactRecoveryStore {
+  return {
+    async save(draft) {
+      await native.recoveryWrite({ key: draft.artifactId, content: JSON.stringify(draft) })
+      await prune(native)
+    },
+    async list() {
+      return (await prune(native))
+        .map(({ draft }) => draft)
+        .filter((draft): draft is ArtifactRecoveryDraft => draft.schemaVersion === 2)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.artifactId.localeCompare(b.artifactId))
+    },
+    async discard(artifactId) {
+      const inventory = await readInventory(native)
+      await Promise.all(
+        inventory.blobs.filter((blob) => blob.key === artifactId).map((blob) => native.recoveryDelete(blob.id)),
+      )
+    },
+  }
+}
+
+function recordKey(draft: RecoveryRecord): string {
+  return draft.schemaVersion === 1 ? draft.workflowId : draft.artifactId
+}
+
+function parseRecoveryRecord(content: string): RecoveryRecord | null {
+  const workflow = parseRecoveryDraft(content)
+  if (workflow) return workflow
+  try {
+    const value: unknown = JSON.parse(content)
+    if (
+      !isRecord(value) ||
+      value.schemaVersion !== 2 ||
+      value.recordType !== 'artifact' ||
+      typeof value.workspaceId !== 'string' ||
+      !value.workspaceId ||
+      typeof value.artifactId !== 'string' ||
+      typeof value.updatedAt !== 'string' ||
+      !Number.isFinite(Date.parse(value.updatedAt))
+    )
+      return null
+    const document = parseDocumentDraft(value)
+    const languages: readonly string[] = ['python', 'typescript', 'javascript', 'markdown', 'json', 'yaml', 'text']
+    if (
+      !document ||
+      typeof value.language !== 'string' ||
+      !languages.includes(value.language) ||
+      document.revision < 0 ||
+      document.savedRevision < 0 ||
+      document.savedRevision > document.revision ||
+      !document.path ||
+      document.path.includes('\\') ||
+      document.path.includes('\0') ||
+      document.path.startsWith('/') ||
+      document.path.split('/').some((part) => part === '..' || part === '.' || part === '') ||
+      value.artifactId !== artifactRecoveryKey(value.workspaceId, document.path)
+    )
+      return null
+    return {
+      ...document,
+      schemaVersion: 2,
+      recordType: 'artifact',
+      workspaceId: value.workspaceId,
+      artifactId: value.artifactId,
+      language: value.language as ArtifactLanguage,
+      updatedAt: value.updatedAt,
+    }
+  } catch {
+    return null
+  }
 }

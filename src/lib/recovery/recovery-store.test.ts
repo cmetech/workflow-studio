@@ -303,3 +303,28 @@ describe('recovery store', () => {
     expect(port.recoveryDelete).toHaveBeenCalledTimes(55)
   })
 })
+
+it('retains and bounds artifact records together with workflow drafts without identity collisions', async () => {
+  const { createArtifactRecoveryStore, createArtifactRecoveryDraft } = await import('./recovery-store')
+  const { createArtifactDocument, editArtifactDocument } = await import('$src/lib/artifacts/artifact-session')
+  const port = memoryPort()
+  const workflowStore = createRecoveryStore(port)
+  const artifacts = createArtifactRecoveryStore(port)
+  await workflowStore.save(createRecoveryDraft(pair(), new Date(0).toISOString()))
+  for (let i = 0; i < 51; i++) {
+    const document = editArtifactDocument(
+      createArtifactDocument(`workspace-${i}`, 'scripts/a.py', 'python', '', 'disk'),
+      'def broken(:\n',
+    )
+    await artifacts.save(createArtifactRecoveryDraft(document, new Date((i + 1) * 1000).toISOString()))
+  }
+  expect(await workflowStore.list()).toEqual([])
+  expect(await artifacts.list()).toHaveLength(50)
+  expect((await artifacts.list()).some((draft) => draft.workspaceId === 'workspace-0')).toBe(false)
+  const first = (await artifacts.list())[0]!
+  await artifacts.discard(first.artifactId)
+  expect(await artifacts.list()).toHaveLength(49)
+  port.records.set('forged', { key: first.artifactId, content: JSON.stringify({ ...first, workspaceId: 'other' }) })
+  await artifacts.list()
+  expect(port.records.has('forged')).toBe(false)
+})
