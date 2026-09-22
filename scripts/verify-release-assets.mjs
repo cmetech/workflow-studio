@@ -34,6 +34,8 @@ const PACKAGED_RESOURCE_PATHS = Object.freeze([
   'contracts/manifest.json',
   'contracts/resource-root',
   'contracts/workflow-package-provenance.json',
+  'contracts/workflow-package-resource-resolution-v1-vectors.json',
+  'contracts/workflow-package-resource-resolution-v1.json',
   'contracts/workflow-package-v1-vectors.json',
   'contracts/workflow-package-v1.json',
   'docs/licenses/ELK-EPL-2.0.txt',

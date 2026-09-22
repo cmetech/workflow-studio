@@ -75,7 +75,7 @@ export function freezePackageValue<T>(value: T): T {
   return value
 }
 
-async function verifiedJson(
+export async function verifiedPackageJson(
   bytes: Uint8Array,
   source: PackageContractSource,
   maxBytes: number,
@@ -98,7 +98,7 @@ export async function loadWorkflowPackageContract(
   bytes: Uint8Array,
   source: PackageContractSource,
 ): Promise<PackageContractLoadResult> {
-  const parsed = await verifiedJson(bytes, source, 1024 * 1024)
+  const parsed = await verifiedPackageJson(bytes, source, 1024 * 1024)
   if (!parsed.ok) return parsed
   const value = parsed.value
   if (record(value) && typeof value.contract_version === 'number' && value.contract_version !== 1) {
@@ -181,7 +181,7 @@ export async function loadWorkflowPackageVectors(
   bytes: Uint8Array,
   source: PackageContractSource,
 ): Promise<PackageVectorsLoadResult> {
-  const parsed = await verifiedJson(bytes, source, 8 * 1024 * 1024)
+  const parsed = await verifiedPackageJson(bytes, source, 8 * 1024 * 1024)
   if (!parsed.ok) return parsed
   const value = parsed.value
   if (record(value) && typeof value.contractVersion === 'number' && value.contractVersion !== 1) {

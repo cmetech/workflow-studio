@@ -324,7 +324,7 @@ git commit -m "feat: resolve workflow package resources"
 
 **Interfaces:**
 - Consumes: the active workspace capability root and canonical relative paths.
-- Produces: `workspaceReadArtifact`, `workspaceImportArtifact`, `workspaceReplaceArtifact`, `workspaceRevealArtifact`, and `workspaceOpenArtifact` on `NativeBridge`.
+- Produces: `workspaceReadArtifact`, `workspaceImportArtifact`, `workspaceReplaceArtifact`, `workspaceRevealArtifact`, and `workspaceOpenArtifact` on `NativeBridge`, plus explicit UTF-8 artifact read/write commands for Task 5. Existing YAML-only commands retain their extension and validation boundaries.
 
 - [ ] **Step 1: Write failing TypeScript and Rust containment tests**
 
@@ -368,12 +368,14 @@ export interface WorkspaceArtifactMetadata {
 
 export interface WorkspaceReplaceArtifactRequest {
   readonly relativePath: string
-  readonly sourcePath: string
+  readonly sourceGrantToken: string
   readonly expectedCurrentHash: string | null
 }
 ```
 
 Resolve and recheck source/destination containment immediately before access. Stream binary hashing/copying with the contract maximum, write through a same-directory temporary file, flush, and atomically replace. Reject all package symlinks. Use the Tauri opener API for reveal/open; never interpolate a shell command.
+
+The import chooser issues an opaque native grant bound to the selected source identity and active workspace generation. An arbitrary renderer-supplied absolute path is not authorization to read a source. Reject stale, reused, or mismatched grants. External opening must not dispatch executable/script file associations: allow verified passive resource types and offer reveal for unsupported types, consistent with the specification's no-execution invariant.
 
 - [ ] **Step 4: Wire browser and Tauri adapters**
 
@@ -411,7 +413,7 @@ git commit -m "feat: add scoped package artifact operations"
 - Create: `src/stores/artifacts.test.ts`
 
 **Interfaces:**
-- Consumes: existing recovery native storage plus text `workspaceRead`/`workspaceWrite` revision checks.
+- Consumes: existing recovery native storage plus Task 4's explicit UTF-8 artifact read/write commands and revision checks. `workspaceRead`/`workspaceWrite` remain YAML-only; do not weaken them to support scripts.
 - Produces: `ArtifactDocument`, `ArtifactRecoveryDraft`, `$artifactSession`, and `ArtifactWorkspaceController.open/edit/save/recover/discard/close`.
 
 - [ ] **Step 1: Write failing recovery and concurrency tests**

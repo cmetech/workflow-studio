@@ -9,9 +9,24 @@ import {
   loadWorkflowPackageContract,
   loadWorkflowPackageVectors,
 } from '../src/lib/package-contract/package-contract-loader'
+import {
+  loadResourceResolutionContract,
+  loadResourceResolutionVectors,
+} from '../src/lib/package-contract/resource-contract-loader'
 
 const run = promisify(execFile)
-const files = ['workflow-package-v1.json', 'workflow-package-v1-vectors.json'] as const
+const files = [
+  'workflow-package-v1.json',
+  'workflow-package-v1-vectors.json',
+  'workflow-package-resource-resolution-v1.json',
+  'workflow-package-resource-resolution-v1-vectors.json',
+] as const
+const loaders = {
+  'workflow-package-v1.json': loadWorkflowPackageContract,
+  'workflow-package-v1-vectors.json': loadWorkflowPackageVectors,
+  'workflow-package-resource-resolution-v1.json': loadResourceResolutionContract,
+  'workflow-package-resource-resolution-v1-vectors.json': loadResourceResolutionVectors,
+} as const
 type ArtifactName = (typeof files)[number]
 interface Provenance {
   readonly commit: string
@@ -35,7 +50,7 @@ function validateProvenance(provenance: Provenance): void {
   }
 }
 async function verify(name: ArtifactName, bytes: Uint8Array, provenance: Provenance): Promise<void> {
-  const loader = name === files[0] ? loadWorkflowPackageContract : loadWorkflowPackageVectors
+  const loader = loaders[name]
   const result = await loader(bytes, { sha256: provenance.files[name] })
   if (!result.ok) throw new TypeError(`${name}: ${result.code}: ${result.message}`)
 }
@@ -68,7 +83,8 @@ export async function checkPackageContracts(
 export async function syncPackageContracts(options: SyncOptions): Promise<{ readonly files: readonly ArtifactName[] }> {
   const provenance = options.provenance ?? pinned
   validateProvenance(provenance)
-  const candidates = await Promise.all(
+  // Drain every Git child even on failure; callers may immediately remove their fixture/output roots.
+  const settled = await Promise.allSettled(
     files.map(async (name) => {
       const path = `${provenance.directory}/${name}`
       const tree = await run('git', ['-C', options.sourceRoot, 'ls-tree', provenance.commit, '--', path], {
@@ -85,6 +101,10 @@ export async function syncPackageContracts(options: SyncOptions): Promise<{ read
       return { name, bytes: result.stdout }
     }),
   )
+  const candidates = settled.map((result) => {
+    if (result.status === 'rejected') throw result.reason
+    return result.value
+  })
   for (const { name } of candidates) await rejectLinkedPath(join(options.destinationRoot, name))
   await mkdir(options.destinationRoot, { recursive: true })
   for (const { name, bytes } of candidates) {
@@ -111,7 +131,7 @@ async function main(args: readonly string[]): Promise<void> {
     throw new TypeError('Use --check, or --source-root <local agent repository>. No network access is performed.')
   }
   await syncPackageContracts({ sourceRoot: resolve(args[1]), destinationRoot: resolve('contracts') })
-  console.log('Synchronized both pinned package contract artifacts.')
+  console.log('Synchronized pinned package and resource-resolution contract artifacts.')
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error: unknown) => {

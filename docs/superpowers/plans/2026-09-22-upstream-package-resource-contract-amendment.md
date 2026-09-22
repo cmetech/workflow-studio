@@ -1,6 +1,6 @@
-# Proposed upstream package resource-resolution contract amendment
+# Upstream package resource-resolution contract amendment
 
-**Status:** Authorized by the user on 2026-09-22 for implementation in a separate upstream worktree. Runtime behavior must remain unchanged; merge, push, and release are outside this amendment.
+**Status:** Authorized by the user on 2026-09-22; implemented upstream at `3f921ae05c78f1a9488706fa7e452534a18ca39e` and independently reviewed with a PASS verdict. Studio pins the exported artifacts; the Task 3 interpreter/parity work remains separate. Merge, push, and release are outside this amendment.
 
 **Goal:** Let offline Studio consumers resolve package resources using agent-owned descriptors and parity vectors, rather than copying Python field lists or guessing lookup behavior.
 
@@ -36,6 +36,10 @@ The export must identify applicable profile/compiler mode and preserve these dis
 This amendment does not add Bash as a script runtime, change workflow execution semantics, install dependencies, add remote Git operations to Studio, implement a new marketplace, grant trust, or publish a release. Any newly discovered need to change runtime behavior is a separate design decision, not an implicit part of exporting the current contract.
 
 ## Acceptance evidence
+
+The upstream report is `docs/reviews/2026-09-22-package-resource-resolution-contract-review.md` in the agent repository. It independently reproduced committed bytes and checked 72 candidate combinations plus compiler/runtime/sealed/MCP/admission counterexamples. Symlink creation was unavailable on this Windows host and is explicitly unverified here. Broader upstream regression failures are recorded separately from the focused export checks; no full-suite success is claimed.
+
+Studio's [coverage matrix](../../analysis/2026-09-22-package-resource-resolution-coverage.md) records the remaining consumer obligations. Artifact verification and offline inclusion do not by themselves complete the semantic parity gate below.
 
 - Every supported authored resource surface has an authoritative descriptor and executable parity fixture; unsupported surfaces fail closed.
 - Published JSON is reproducible from the pinned upstream revision and can be bundled offline.

@@ -276,6 +276,8 @@ it('synchronizes the reader-3/corpus-2 pair exactly and rejects a forged outer c
     'workflow-package-v1.json',
     'workflow-package-v1-vectors.json',
     'workflow-package-provenance.json',
+    'workflow-package-resource-resolution-v1.json',
+    'workflow-package-resource-resolution-v1-vectors.json',
   ]
   for (const file of packageFiles) await writeFile(join(directory, file), await readFile(join(sourceRoot, file)))
   await syncContracts({

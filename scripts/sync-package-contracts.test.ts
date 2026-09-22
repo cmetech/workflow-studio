@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { syncPackageContracts, checkPackageContracts } from './sync-package-contracts'
 
 const roots: string[] = []
-const files = ['workflow-package-v1.json', 'workflow-package-v1-vectors.json'] as const
+const files = [
+  'workflow-package-v1.json',
+  'workflow-package-v1-vectors.json',
+  'workflow-package-resource-resolution-v1.json',
+  'workflow-package-resource-resolution-v1-vectors.json',
+] as const
 async function repository() {
   const root = await mkdtemp(join(tmpdir(), 'studio-package-contract-'))
   roots.push(root)

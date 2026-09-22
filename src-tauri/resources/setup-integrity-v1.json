@@ -23,7 +23,7 @@
     },
     {
       "path": "contracts/README.md",
-      "sha256": "06f4301ff9a7e0522c12909e4baed57a4efdb042a59373c461264a5393130905",
+      "sha256": "8524cc5b2106dfc19379d3186a07e15bfab17f2bb000c94a7e2d9b85db074335",
       "maxBytes": 2097152
     },
     {
@@ -58,7 +58,17 @@
     },
     {
       "path": "contracts/workflow-package-provenance.json",
-      "sha256": "add1046705700c47a94da42caaf8117fdcc7cecbc947e11cfe53b24d3e035a8a",
+      "sha256": "646dc7898f2eab6f1a8decca070350cc0b8a736584b0599fd118c5471b2e92b7",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/workflow-package-resource-resolution-v1-vectors.json",
+      "sha256": "fef1698ff1cb946d90ec433ddca3de5eed3d92b26792def94dcee2da641057e9",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "contracts/workflow-package-resource-resolution-v1.json",
+      "sha256": "edf34f7fd0e06d5d8f5b2f6b90d3686a50c73253d796372f5df424748e364e68",
       "maxBytes": 2097152
     },
     {

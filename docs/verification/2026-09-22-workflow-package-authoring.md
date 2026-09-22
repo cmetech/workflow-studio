@@ -48,3 +48,22 @@ Implementation decisions:
 - Standalone workspace-root packages can be discovered. Publishing them into a repository index still needs a valid nonempty repository-relative package location under the approved preparation rules; discovery does not imply publish readiness.
 
 Task 3 remains gated on the separately authorized [upstream resource-resolution amendment](../superpowers/plans/2026-09-22-upstream-package-resource-contract-amendment.md). No sibling source was modified. No package editor or preparation UI has been claimed complete, and no adversarial review round has been marked done.
+
+## Task 3 prerequisite: upstream resource-resolution export
+
+The user subsequently authorized the bounded upstream amendment. Its reviewed implementation is pinned at agent commit `3f921ae05c78f1a9488706fa7e452534a18ca39e`; the original package format/vector bytes remain unchanged. Both new artifacts are synchronized from Git objects and included in the 47-file offline resource set. Studio retains compiler, live-runtime, and sealed descriptors separately and preserves explicit coverage limitations.
+
+The upstream independent prerequisite review passed after deterministic byte reproduction, 72 candidate-expression comparisons, and additional pure compiler/resource counterexamples. That review is separate from the five mandatory complete-feature adversarial rounds, which remain pending. Windows could not create the symlink fixture; neither that case nor cross-platform/full-suite success is claimed.
+
+Studio test-first evidence:
+
+- Reader tests initially failed at the missing module; bundled loading failed at the missing bundled API.
+- Sync and release-resource tests failed because the new files were not synchronized/packaged, then passed after integration.
+- Expanded verification exposed CRLF in Studio-owned provisional provenance and a sync failure path that could return before other Git reads finished. Provenance now uses LF; sync drains all reads with `Promise.allSettled` before reporting a failure or writing destinations.
+- The combined loader, sync, offline packaging, and authoring-sync coexistence gate passed: 58 tests across 5 files, run with `--maxWorkers=1 --testTimeout=30000`. Earlier concurrent runs hit the five-second filesystem-test timeout; assertions and production limits were unchanged.
+- Added explicit admission/filesystem vector-family rejection tests after the final upstream export: both failed when the families were omitted, then passed. Final reader gate: 19 tests across 2 files. Pin verification, all 47 resource checks, targeted ESLint, and diff checks passed.
+- Final `npm run check`: 0 errors and 0 warnings; targeted formatting passed.
+
+Upstream regression receipt (documentation commit `981ba2dd9be77c2f5b7ea62f9fb2681187fd70c0`) records 350 passing tests and 14 failures reproduced on the unchanged baseline. The marketplace package file timed out at 300 seconds; one separately selected package smoke also failed identically on baseline/candidate because descriptor-safe traversal is unavailable. The interrupted broader attempt remains explicitly untriaged. These limitations do not justify a full-suite or cross-platform compatibility claim.
+
+The [surface matrix](../analysis/2026-09-22-package-resource-resolution-coverage.md) defines Task 3's remaining interpreter and shared-vector obligations. No resource graph, full readiness analyzer, package editor, or preparation UI is claimed complete by this prerequisite.

@@ -1,0 +1,428 @@
+{
+  "admission": {
+    "host_python_identity_required_when": {
+      "host_sensitive_mcp_candidates": true,
+      "normalizer_versions": [
+        5,
+        6
+      ]
+    },
+    "host_sensitive_mcp_candidates": "candidate-may-equal-host-executable-not-a-guaranteed-package-relative-path",
+    "origins_required": true
+  },
+  "applicability": {
+    "compiler-source": {
+      "normalizer_versions": [
+        4,
+        5,
+        6
+      ],
+      "profile": "archon-2026-07"
+    },
+    "runtime-live": {
+      "candidate_rules": "runtime",
+      "mcp_roots": [
+        "package"
+      ],
+      "roots": [
+        "package",
+        "optional-global"
+      ]
+    },
+    "runtime-sealed": {
+      "bound_command_and_script": "direct-authenticated-path",
+      "bound_packages_prefix": "packages/",
+      "candidate_rules": "runtime",
+      "roots": [
+        "authenticated-package"
+      ]
+    },
+    "trust-source": {
+      "binding": "digest-only-no-include-origin-expansion",
+      "candidate_rules": "compiler-source",
+      "missing_script_code": "missing_script"
+    }
+  },
+  "candidate_rules": {
+    "compiler-source": {
+      "command": [
+        {
+          "directory": "commands",
+          "operation": "identity",
+          "suffix": ""
+        },
+        {
+          "directory": "commands",
+          "operation": "replace-suffix",
+          "suffix": ".md"
+        }
+      ],
+      "mcp": [
+        {
+          "directory": "",
+          "operation": "identity",
+          "suffix": ""
+        },
+        {
+          "directory": "mcp",
+          "operation": "identity",
+          "suffix": ""
+        },
+        {
+          "directory": "mcp",
+          "operation": "replace-suffix",
+          "suffix": ".yaml"
+        }
+      ],
+      "script": {
+        "bun": [
+          {
+            "directory": "scripts",
+            "operation": "identity",
+            "suffix": ""
+          },
+          {
+            "directory": "scripts",
+            "operation": "replace-suffix",
+            "suffix": ".ts"
+          },
+          {
+            "directory": "scripts",
+            "operation": "replace-suffix",
+            "suffix": ".js"
+          }
+        ],
+        "uv": [
+          {
+            "directory": "scripts",
+            "operation": "identity",
+            "suffix": ""
+          },
+          {
+            "directory": "scripts",
+            "operation": "replace-suffix",
+            "suffix": ".py"
+          }
+        ]
+      }
+    },
+    "runtime": {
+      "command": [
+        {
+          "directory": "commands",
+          "operation": "append-unless-ends-with",
+          "suffix": ".md"
+        }
+      ],
+      "mcp": [
+        {
+          "directory": "",
+          "operation": "identity",
+          "suffix": ""
+        },
+        {
+          "directory": "mcp",
+          "operation": "identity",
+          "suffix": ""
+        },
+        {
+          "directory": "mcp",
+          "operation": "replace-suffix",
+          "suffix": ".yaml"
+        }
+      ],
+      "script": {
+        "directory": "scripts",
+        "explicit_suffix": "identity-only",
+        "operation": "append-suffix",
+        "without_suffix": {
+          "bun": [
+            "",
+            ".ts",
+            ".js"
+          ],
+          "uv": [
+            "",
+            ".py"
+          ]
+        }
+      }
+    }
+  },
+  "contract_id": "workflow-package-resource-resolution",
+  "contract_version": 1,
+  "coverage": {
+    "full_portability": false,
+    "not_inferred": [
+      "script-imports",
+      "command-shell-dependencies",
+      "missing-mcp-string-intent",
+      "provider-credential-or-runtime-availability"
+    ],
+    "portable_subset": "validated-workflows-with-explicit-source-origins-and-portable-relative-paths",
+    "unrecognized_mode_profile_version_or_operation": "fail-closed",
+    "unsupported_without_context": [
+      "include-catalog-selection-and-source-root",
+      "normalizer-5-plus-host-python-identity",
+      "live-global-resource-root",
+      "filesystem-symlink-cache-and-case-identity"
+    ]
+  },
+  "diagnostics": {
+    "compiler_missing": {
+      "command": "missing_command",
+      "mcp": "missing_mcp",
+      "script": "missing_named_script"
+    },
+    "compiler_unsafe": "include_resource_invalid",
+    "invalid_command": "invalid_command_resource",
+    "invalid_mcp_yaml": "invalid_mcp",
+    "unsupported_context": "resource_resolution_context_required",
+    "unsupported_contract": "unsupported_resource_contract",
+    "unsupported_profile_or_version": "unsupported_resource_profile"
+  },
+  "mcp_local_closure": {
+    "absent": "external-or-unresolved-not-a-packaged-file",
+    "base": "owning-source-package-root",
+    "candidates": [
+      "whole-string",
+      "substring-after-first-equals-if-starts-with-dash"
+    ],
+    "ignore_empty": true,
+    "ignore_prefixes": [
+      "$",
+      "-"
+    ],
+    "normalizer_5_plus_exclusion": "host-python-executable",
+    "recursion": "selected-mcp-document-only-no-import-discovery",
+    "selection": "cached-or-exists-or-symlink",
+    "traversal": "mapping-values-and-sequence-items-depth-first"
+  },
+  "mcp_surface": {
+    "authored_value": "string",
+    "field": "mcp",
+    "lookup_kind": "mcp",
+    "normalized_value": "string-or-tuple-of-strings",
+    "skip_node_types": [
+      "loop_group"
+    ],
+    "source": "effective-scoped-node-options"
+  },
+  "ownership": {
+    "command_script_mcp": "packaged-required",
+    "definition_and_sidecar": "authenticated-source-files",
+    "mcp_local_candidate_absent": "external-or-unresolved",
+    "mcp_local_candidate_present": "packaged-required-after-safety-check",
+    "tools_providers_credentials_services_trust": "external-advisories-never-package-lookup"
+  },
+  "runtime_validation": {
+    "bun_suffixes": [
+      ".ts",
+      ".js"
+    ],
+    "command_name_pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    "runtimes": [
+      "uv",
+      "bun"
+    ],
+    "script_and_mcp_normalization": "backslash-to-slash",
+    "script_and_mcp_reject": [
+      "empty",
+      "absolute",
+      "parent-component",
+      "leading-tilde"
+    ],
+    "suffix_comparison": "lowercase",
+    "uv_suffixes": [
+      ".py"
+    ]
+  },
+  "scope": {
+    "body": "nodes[].loop_group.nodes[]",
+    "body_depth_limit": 1,
+    "body_effective_options": [
+      "definition.options",
+      "group.options",
+      "node.options"
+    ],
+    "body_normalizer_versions": [
+      6
+    ],
+    "include": "catalog-selected-source-origin-retained-after-expansion",
+    "option_merge": "shallow-last-wins",
+    "owner": "node.origin.package_key-to-source.root",
+    "root": "nodes[]",
+    "root_effective_options": "normalized-node.options",
+    "source_package_root": "explicit-package-root-or-loader-inferred-root-never-definition-directory-assumption"
+  },
+  "selection": {
+    "compiler-source": {
+      "accept": "first-cached-or-exists-or-symlink",
+      "containment": "owning-source-package-root",
+      "unsafe": "reject-no-fallback",
+      "validation": "after-selection"
+    },
+    "runtime-live": {
+      "accept": "first-contained-regular-file-not-direct-symlink-and-sealed-if-required",
+      "command_and_mcp_containment": "root",
+      "script_containment": "root/scripts",
+      "unsafe": "skip"
+    },
+    "runtime-sealed": {
+      "accept": "first-key-in-authenticated-bytes",
+      "filesystem": "not-consulted"
+    }
+  },
+  "surfaces": [
+    {
+      "authenticated_body_source": "named_script_bodies",
+      "authored_value": "reference-template-if-inline-otherwise-literal-resource-name",
+      "caller_policy": "root-text-references",
+      "field_path": "nodes[].script",
+      "lookup_kind": "script",
+      "node_types": [
+        "script"
+      ],
+      "previous_outputs": false,
+      "relative_path": "script",
+      "resource_kind": "named_script",
+      "scanner_mode": "text",
+      "scope": "root",
+      "template_source": "inline-or-authenticated-script-body",
+      "value_discriminator": "script-inline-v1"
+    },
+    {
+      "authenticated_body_source": "named_script_bodies",
+      "authored_value": "reference-template-if-inline-otherwise-literal-resource-name",
+      "caller_policy": "body-text-references",
+      "field_path": "nodes[].loop_group.nodes[].script",
+      "lookup_kind": "script",
+      "node_types": [
+        "script"
+      ],
+      "previous_outputs": true,
+      "relative_path": "script",
+      "resource_kind": "named_script",
+      "scanner_mode": "text",
+      "scope": "body",
+      "template_source": "inline-or-authenticated-script-body",
+      "value_discriminator": "script-inline-v1"
+    },
+    {
+      "authenticated_body_source": "command_bodies",
+      "authored_value": "literal-resource-name",
+      "caller_policy": "root-text-references",
+      "field_path": "nodes[].loop.command",
+      "lookup_kind": "command",
+      "node_types": [
+        "loop"
+      ],
+      "phase4_only": true,
+      "previous_outputs": false,
+      "relative_path": "loop.command",
+      "resource_kind": "loop_command",
+      "scanner_mode": "text",
+      "scope": "root",
+      "template_source": "authenticated-command-body"
+    },
+    {
+      "authenticated_body_source": "command_bodies",
+      "authored_value": "literal-resource-name",
+      "caller_policy": "body-text-references",
+      "field_path": "nodes[].loop_group.nodes[].loop.command",
+      "lookup_kind": "command",
+      "node_types": [
+        "loop"
+      ],
+      "phase4_only": true,
+      "previous_outputs": true,
+      "relative_path": "loop.command",
+      "resource_kind": "loop_command",
+      "scanner_mode": "text",
+      "scope": "body",
+      "template_source": "authenticated-command-body"
+    },
+    {
+      "authenticated_body_source": "command_bodies",
+      "authored_value": "literal-resource-name",
+      "caller_policy": "root-text-references",
+      "field_path": "nodes[].command",
+      "lookup_kind": "command",
+      "node_types": [
+        "command"
+      ],
+      "previous_outputs": false,
+      "relative_path": "command",
+      "resource_kind": "command",
+      "scanner_mode": "text",
+      "scope": "root",
+      "template_source": "authenticated-command-body"
+    },
+    {
+      "authenticated_body_source": "command_bodies",
+      "authored_value": "literal-resource-name",
+      "caller_policy": "body-text-references",
+      "field_path": "nodes[].loop_group.nodes[].command",
+      "lookup_kind": "command",
+      "node_types": [
+        "command"
+      ],
+      "previous_outputs": true,
+      "relative_path": "command",
+      "resource_kind": "command",
+      "scanner_mode": "text",
+      "scope": "body",
+      "template_source": "authenticated-command-body"
+    }
+  ],
+  "value_discriminators_v1": {
+    "script-inline-v1": {
+      "characters": ";(){}&|<>$`\"'",
+      "codepoint_ranges": [
+        [
+          9,
+          13
+        ],
+        [
+          28,
+          32
+        ],
+        [
+          133,
+          133
+        ],
+        [
+          160,
+          160
+        ],
+        [
+          5760,
+          5760
+        ],
+        [
+          8192,
+          8202
+        ],
+        [
+          8232,
+          8233
+        ],
+        [
+          8239,
+          8239
+        ],
+        [
+          8287,
+          8287
+        ],
+        [
+          12288,
+          12288
+        ]
+      ],
+      "match": "reference-template",
+      "operation": "contains-listed-codepoint",
+      "otherwise": "literal-resource-name"
+    }
+  }
+}

@@ -17,7 +17,12 @@ it('ships verified package contracts and provenance in the offline resource set'
     ) as {
       files: Record<string, string>
     }
-    for (const name of ['workflow-package-v1.json', 'workflow-package-v1-vectors.json']) {
+    for (const name of [
+      'workflow-package-v1.json',
+      'workflow-package-v1-vectors.json',
+      'workflow-package-resource-resolution-v1.json',
+      'workflow-package-resource-resolution-v1-vectors.json',
+    ]) {
       expect(readFileSync(join(fixture.root, 'contracts', name))).toEqual(readFileSync(join('contracts', name)))
       expect(provenance.files[name]).toMatch(/^[a-f0-9]{64}$/)
     }
