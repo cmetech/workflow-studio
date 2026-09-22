@@ -87,3 +87,7 @@ The independent native implementation is present in the worktree but has not bee
 Worker-reported evidence: 28 native TypeScript tests passed; 63 Rust workspace tests passed using Rust 1.88.0; owned-file lint and whitespace checks passed. The parent combined 127-test gate above includes the native TypeScript tests. Windows symlink cases returned early because privileges were unavailable; the passing Rust count does not establish symlink containment coverage. Actual OS reveal/open remains a manual acceptance check.
 
 External opening accepts only bounded, verified PNG data re-encoded into a temporary snapshot; all other artifact types use Reveal. Unicode normalization is pinned to Unicode 14.0.0. Native changes and generated ACL metadata remain isolated from this contract-pin commit for subsequent parent review and integration.
+
+## Task 4 parent integration
+
+The parent inspected the artifact capability/grant flow, passive-image opening, and shared atomic-write refactor, then reran `cargo test --manifest-path src-tauri/Cargo.toml workspace::`: 63 passed, no failures. `npm run check` reported zero errors and warnings; targeted ESLint for package and native modules passed. The earlier combined 127-test gate covers the unchanged native TypeScript files. The implementation is accepted as the Task 4 foundation; OS interaction and privileged symlink acceptance remain Task 16 requirements, not inferred from the passing test count. Generated opener ACL descriptions do not grant renderer opener permissions, and automatic JavaScript link opening is disabled.

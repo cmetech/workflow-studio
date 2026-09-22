@@ -29,6 +29,7 @@ mod logging_spec;
 pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
+        .manage(workspace::artifacts::ArtifactGrantState::default())
         .manage(git::GitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(contracts::ContractGrantState::default())
@@ -39,12 +40,25 @@ pub fn run() {
         .manage(updater::UpdateState::default())
         .plugin(logging::plugin())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::health::host_health,
             workspace::workspace_set_root,
             workspace::workspace_scan,
+            workspace::artifacts::dialog_choose_import_artifact,
+            workspace::artifacts::workspace_read_artifact,
+            workspace::artifacts::workspace_read_text_artifact,
+            workspace::artifacts::workspace_write_text_artifact,
+            workspace::artifacts::workspace_import_artifact,
+            workspace::artifacts::workspace_replace_artifact,
+            workspace::artifacts::workspace_reveal_artifact,
+            workspace::artifacts::workspace_open_artifact,
             workspace::workspace_read,
             workspace::workspace_write,
             workspace::workspace_rename_pair,

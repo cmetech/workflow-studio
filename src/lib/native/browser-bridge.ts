@@ -1,3 +1,4 @@
+import { browserArtifacts, type BrowserArtifactOptions } from './browser-artifacts'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { ContractCacheStoredEntry } from '../contract/contract-cache'
 import {
@@ -20,7 +21,7 @@ interface BrowserFile {
   modifiedAt: string
 }
 
-export interface BrowserBridgeOptions {
+export interface BrowserBridgeOptions extends BrowserArtifactOptions {
   readonly initialFiles?: Readonly<Record<string, string>>
   readonly selectedRoot?: string
 }
@@ -56,7 +57,17 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     await Promise.all([...handlers].map((handler) => handler(event)))
   }
 
+  const artifacts = browserArtifacts(
+    options,
+    (path) => files.get(path)?.text,
+    (path, text) => {
+      if (text === undefined) files.delete(path)
+      else files.set(path, { text, modifiedAt: FIXED_MODIFIED_AT })
+    },
+    (path, existed) => emit({ paths: [path], kind: existed ? 'modify' : 'create' }),
+  )
   return {
+    ...artifacts.bridge,
     hostHealth: async () => ({
       appVersion: 'browser',
       os: 'browser',
@@ -195,10 +206,39 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     chooseImportDefinition: async () => null,
     chooseExportDirectory: async () => null,
     workspaceSetRoot: async (rootPath) => {
+      artifacts.clearGrants()
       selectedRoot = rootPath
       return { workspaceId: 'browser-workspace', rootPath: selectedRoot, repository: null }
     },
-    workspaceScan: async () => scanFixture(files),
+    workspaceScan: async () => {
+      const entries = new Map(scanFixture(files).map((entry) => [entry.relativePath, entry]))
+      for (const [path, value] of artifacts.bytes) {
+        if (files.has(path)) continue
+        entries.set(path, {
+          relativePath: path,
+          kind: 'file',
+          size: value.length,
+          modifiedAt: FIXED_MODIFIED_AT,
+          symlink: 'none',
+          readOnly: false,
+        })
+        const parts = path.split('/')
+        for (let index = 1; index < parts.length; index += 1) {
+          const directory = parts.slice(0, index).join('/')
+          entries.set(directory, {
+            relativePath: directory,
+            kind: 'directory',
+            size: 0,
+            modifiedAt: FIXED_MODIFIED_AT,
+            symlink: 'none',
+            readOnly: false,
+          })
+        }
+      }
+      return [...entries.values()].sort((a, b) =>
+        a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0,
+      )
+    },
     workspaceRead: async (relativePath) => readFixture(files, relativePath),
     workspaceWrite: async ({ relativePath, text, expectedCurrentHash }) => {
       validateRelativeYaml(relativePath)

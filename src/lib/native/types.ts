@@ -70,6 +70,39 @@ export interface WorkspaceWriteResult {
   readonly modifiedAt: string
 }
 
+export interface WorkspaceArtifactMetadata {
+  readonly relativePath: string
+  readonly mediaType: string
+  readonly size: number
+  readonly sha256: string
+  readonly modifiedAt: string
+  readonly readOnly: boolean
+}
+
+export interface ArtifactSourceSelection {
+  readonly sourceGrantToken: string
+}
+
+export interface WorkspaceImportArtifactRequest {
+  readonly relativePath: string
+  readonly sourceGrantToken: string
+}
+
+export interface WorkspaceReplaceArtifactRequest extends WorkspaceImportArtifactRequest {
+  readonly expectedCurrentHash: string | null
+}
+
+export interface ArtifactNativeBridge {
+  chooseImportArtifact(): Promise<ArtifactSourceSelection | null>
+  workspaceReadArtifact(relativePath: string): Promise<WorkspaceArtifactMetadata>
+  workspaceReadTextArtifact(relativePath: string): Promise<WorkspaceReadResult>
+  workspaceWriteTextArtifact(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
+  workspaceImportArtifact(request: WorkspaceImportArtifactRequest): Promise<WorkspaceArtifactMetadata>
+  workspaceReplaceArtifact(request: WorkspaceReplaceArtifactRequest): Promise<WorkspaceArtifactMetadata>
+  workspaceRevealArtifact(relativePath: string): Promise<void>
+  workspaceOpenArtifact(relativePath: string): Promise<void>
+}
+
 export interface WorkspaceRenameRequest {
   readonly sourceDefinition: string
   readonly destinationDefinition: string
@@ -277,6 +310,7 @@ export interface ContractNativeBridge extends NativeBridge {
 
 export interface WorkspaceNativeBridge
   extends
+    ArtifactNativeBridge,
     LayoutNativeBridge,
     ContractNativeBridge,
     GitNativeBridge,

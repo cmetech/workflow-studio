@@ -237,9 +237,10 @@ fn entry_from_metadata(
     }
 }
 
-struct BoundPath {
-    parent: Dir,
-    name: OsString,
+pub(super) struct BoundPath {
+    pub(super) parent: Dir,
+    pub(super) name: OsString,
+    pub(super) reject_symlinks: bool,
 }
 
 struct StagedFile<'a> {
@@ -284,6 +285,7 @@ impl<'a> StagedFile<'a> {
 
     fn bound_path(&self) -> WorkspaceResult<BoundPath> {
         Ok(BoundPath {
+            reject_symlinks: true,
             parent: self
                 .parent
                 .try_clone()
@@ -326,7 +328,11 @@ fn bind_path(scope: &WorkspaceScope, relative: &str) -> WorkspaceResult<BoundPat
             )
         })?
         .to_os_string();
-    Ok(BoundPath { parent, name })
+    Ok(BoundPath {
+        parent,
+        name,
+        reject_symlinks: false,
+    })
 }
 
 pub fn read(
@@ -579,13 +585,6 @@ where
     Permission: FnMut(&str, bool),
     RestorePermissions: FnMut(&File, Permissions) -> WorkspaceResult<()>,
 {
-    let WriteHooks {
-        pre_hash: pre_hash_hook,
-        post_hash: post_hash_hook,
-        post_quarantine: post_quarantine_hook,
-        permission: mut permission_hook,
-        restore_permissions: mut restore_permissions_hook,
-    } = hooks;
     require_yaml(relative)?;
     if text.len() as u64 > MAX_YAML_BYTES {
         return Err(WorkspaceError::new(
@@ -593,35 +592,130 @@ where
             "The YAML file exceeds the supported size limit.",
         ));
     }
+    write_stream_impl(
+        scope,
+        relative,
+        &mut text.as_bytes(),
+        expected_current_hash,
+        MAX_YAML_BYTES,
+        false,
+        None,
+        || Ok(()),
+        hooks,
+    )
+}
 
-    let bound = bind_path(scope, relative)?;
+pub(super) fn write_artifact_stream(
+    scope: &WorkspaceScope,
+    relative: &str,
+    source: &mut impl Read,
+    expected: Option<&str>,
+    source_hash: Option<&str>,
+) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_artifact_stream_verified(scope, relative, source, expected, source_hash, || Ok(()))
+}
+
+pub(super) fn write_artifact_stream_verified(
+    scope: &WorkspaceScope,
+    relative: &str,
+    source: &mut impl Read,
+    expected: Option<&str>,
+    source_hash: Option<&str>,
+    verify_source: impl FnOnce() -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceWriteResult> {
+    write_stream_impl(
+        scope,
+        relative,
+        source,
+        expected,
+        super::artifacts::max_bytes(),
+        true,
+        source_hash,
+        verify_source,
+        WriteHooks::none(),
+    )
+}
+
+fn write_stream_impl<PreHash, PostHash, PostQuarantine, Permission, RestorePermissions>(
+    scope: &WorkspaceScope,
+    relative: &str,
+    source: &mut impl Read,
+    expected_current_hash: Option<&str>,
+    max_bytes: u64,
+    artifact: bool,
+    source_hash: Option<&str>,
+    verify_source: impl FnOnce() -> WorkspaceResult<()>,
+    hooks: WriteHooks<PreHash, PostHash, PostQuarantine, Permission, RestorePermissions>,
+) -> WorkspaceResult<WorkspaceWriteResult>
+where
+    PreHash: FnOnce(),
+    PostHash: FnOnce(),
+    PostQuarantine: FnOnce(),
+    Permission: FnMut(&str, bool),
+    RestorePermissions: FnMut(&File, Permissions) -> WorkspaceResult<()>,
+{
+    let WriteHooks {
+        pre_hash: pre_hash_hook,
+        post_hash: post_hash_hook,
+        post_quarantine: post_quarantine_hook,
+        permission: mut permission_hook,
+        restore_permissions: mut restore_permissions_hook,
+    } = hooks;
+    let bound = if artifact {
+        super::artifacts::bind(scope, relative)?
+    } else {
+        bind_path(scope, relative)?
+    };
     let mut temporary = StagedFile::new(&bound.parent)?;
+    let (written_size, written_hash) = stream_bounded(source, temporary.file_mut(), max_bytes)?;
+    if source_hash.is_some_and(|expected| expected != written_hash) {
+        return Err(WorkspaceError::new(
+            "artifact_source_grant_invalid",
+            "The selected source changed during copying.",
+        ));
+    }
     temporary
         .file_mut()
-        .write_all(text.as_bytes())
-        .and_then(|_| temporary.file_mut().flush())
+        .flush()
         .and_then(|_| temporary.file_mut().sync_all())
         .map_err(|error| io_error("workspace_write_failed", error))?;
+    verify_source()?;
     pre_hash_hook();
     scope.verify()?;
+    if artifact {
+        super::artifacts::verify_binding(scope, relative, &bound)?;
+    }
     let staged = temporary.bound_path()?;
     let staged_identity = named_identity(&staged, "workspace_write_failed")
         .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
 
     if let Some(expected) = expected_current_hash {
-        let mut current = bound
-            .parent
-            .open(&bound.name)
-            .map_err(|_| revision_conflict())?;
+        let mut current = if artifact {
+            super::artifacts::open(&bound).map_err(|error| {
+                if error.code == "path_not_found" {
+                    revision_conflict()
+                } else {
+                    error
+                }
+            })?
+        } else {
+            bound
+                .parent
+                .open(&bound.name)
+                .map_err(|_| revision_conflict())?
+        };
         let metadata = current.metadata().map_err(|_| revision_conflict())?;
         let original_identity =
             file_identity(&current).map_err(|error| io_error("workspace_write_failed", error))?;
-        if !metadata.is_file() || hash_open_file(&mut current, MAX_YAML_BYTES)? != expected {
+        if !metadata.is_file() || hash_open_file(&mut current, max_bytes)? != expected {
             return Err(revision_conflict());
         }
         post_hash_hook();
         scope.verify()?;
-        if !named_hash_matches(&bound, &original_identity, expected) {
+        if artifact {
+            super::artifacts::verify_binding(scope, relative, &bound)?;
+        }
+        if !named_hash_matches(&bound, &original_identity, expected, max_bytes) {
             return Err(revision_conflict());
         }
         let prior_permissions = metadata.permissions();
@@ -640,7 +734,7 @@ where
                 ));
             }
         }
-        if !named_hash_matches(&quarantine, &original_identity, expected) {
+        if !named_hash_matches(&quarantine, &original_identity, expected, max_bytes) {
             let rollback =
                 move_noclobber_with_expected(&quarantine, &bound, &original_identity, || {}, || {});
             #[cfg(windows)]
@@ -654,6 +748,7 @@ where
             ));
         }
         post_quarantine_hook();
+        // The bound parent capability is retained throughout commit and rollback.
         permission_hook("beforeCommit", bound_read_only(&staged)?);
         let commit = move_noclobber_with_expected(&staged, &bound, &staged_identity, || {}, || {});
         if !matches!(commit, MoveNoClobberOutcome::Moved) {
@@ -725,8 +820,8 @@ where
         .map_err(|error| capability_error("workspace_write_failed", error))?;
     Ok(WorkspaceWriteResult {
         relative_path: relative.to_string(),
-        sha256: hash_bytes(text.as_bytes()),
-        size: text.len() as u64,
+        sha256: written_hash,
+        size: written_size,
         modified_at: modified_timestamp(&metadata),
     })
 }
@@ -792,15 +887,20 @@ fn write_permission_recovery_error(
     }
 }
 
-fn named_hash_matches(path: &BoundPath, identity: &Handle, expected_hash: &str) -> bool {
-    let Ok(mut file) = path.parent.open(&path.name) else {
+fn named_hash_matches(
+    path: &BoundPath,
+    identity: &Handle,
+    expected_hash: &str,
+    max_bytes: u64,
+) -> bool {
+    let Ok(mut file) = open_bound_identity(path) else {
         return false;
     };
     let Ok(current_identity) = file_identity(&file) else {
         return false;
     };
     current_identity == *identity
-        && hash_open_file(&mut file, MAX_YAML_BYTES)
+        && hash_open_file(&mut file, max_bytes)
             .map(|hash| hash == expected_hash)
             .unwrap_or(false)
 }
@@ -808,6 +908,7 @@ fn named_hash_matches(path: &BoundPath, identity: &Handle, expected_hash: &str) 
 fn unique_sibling(path: &BoundPath, purpose: &str) -> WorkspaceResult<BoundPath> {
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     Ok(BoundPath {
+        reject_symlinks: path.reject_symlinks,
         parent: path
             .parent
             .try_clone()
@@ -856,20 +957,40 @@ fn write_commit_recovery_error(
     }
 }
 
-fn hash_open_file(file: &mut File, max_bytes: u64) -> WorkspaceResult<String> {
+pub(super) fn stream_bounded(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    max_bytes: u64,
+) -> WorkspaceResult<(u64, String)> {
+    let mut hash = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let count = source
+            .read(&mut buffer)
+            .map_err(|error| io_error("workspace_read_failed", error))?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > max_bytes {
+            return Err(WorkspaceError::new(
+                "file_too_large",
+                "The file exceeds its supported size limit.",
+            ));
+        }
+        hash.update(&buffer[..count]);
+        destination
+            .write_all(&buffer[..count])
+            .map_err(|error| io_error("workspace_write_failed", error))?;
+    }
+    Ok((total, format!("{:x}", hash.finalize())))
+}
+
+pub(super) fn hash_open_file(file: &mut File, max_bytes: u64) -> WorkspaceResult<String> {
     file.seek(SeekFrom::Start(0))
         .map_err(|error| io_error("workspace_read_failed", error))?;
-    let mut bytes = Vec::new();
-    file.take(max_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_error("workspace_read_failed", error))?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(WorkspaceError::new(
-            "file_too_large",
-            "The YAML file exceeds the supported size limit.",
-        ));
-    }
-    Ok(hash_bytes(&bytes))
+    stream_bounded(file, &mut std::io::sink(), max_bytes).map(|(_, hash)| hash)
 }
 
 fn revision_conflict() -> WorkspaceError {
@@ -1356,9 +1477,9 @@ fn trash_bound_path(
     ensure_bound_file(source)?;
     let original_identity = named_identity(source, "path_not_found")
         .map_err(|issue| WorkspaceError::new(issue.code, issue.message))?;
-    if expected_current_hash
-        .is_some_and(|expected| !named_hash_matches(source, &original_identity, expected))
-    {
+    if expected_current_hash.is_some_and(|expected| {
+        !named_hash_matches(source, &original_identity, expected, MAX_YAML_BYTES)
+    }) {
         return Err(revision_conflict());
     }
     let root = scope.directory()?;
@@ -1372,6 +1493,7 @@ fn trash_bound_path(
         std::process::id()
     ));
     let quarantine = BoundPath {
+        reject_symlinks: source.reject_symlinks,
         parent: root
             .try_clone()
             .map_err(|error| capability_error("workspace_trash_failed", error))?,
@@ -1454,9 +1576,9 @@ fn trash_bound_path(
             error,
         ));
     }
-    if expected_current_hash
-        .is_some_and(|expected| !named_hash_matches(&quarantine, &original_identity, expected))
-    {
+    if expected_current_hash.is_some_and(|expected| {
+        !named_hash_matches(&quarantine, &original_identity, expected, MAX_YAML_BYTES)
+    }) {
         return Err(trash_rollback_error(
             &quarantine,
             source,
@@ -1744,8 +1866,18 @@ fn rollback_link_after_unlink_failure(
     }
 }
 
+fn open_bound_identity(path: &BoundPath) -> std::io::Result<File> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if path.reject_symlinks {
+        options.follow(FollowSymlinks::No);
+    }
+    path.parent.open_with(&path.name, &options)
+}
+
 fn named_identity(path: &BoundPath, missing_code: &'static str) -> Result<Handle, MoveIssue> {
-    let file = path.parent.open(&path.name).map_err(|error| {
+    let file = open_bound_identity(path).map_err(|error| {
         MoveIssue::new(
             if error.kind() == std::io::ErrorKind::NotFound {
                 missing_code
@@ -1976,7 +2108,7 @@ fn require_yaml(relative: &str) -> WorkspaceResult<()> {
     Ok(())
 }
 
-fn modified_timestamp(metadata: &Metadata) -> String {
+pub(super) fn modified_timestamp(metadata: &Metadata) -> String {
     metadata
         .modified()
         .ok()

@@ -27,6 +27,8 @@ import {
   type WorkspaceNativeBridge,
   type WorkspaceChangedEvent,
   type WorkspaceReadResult,
+  type WorkspaceArtifactMetadata,
+  type ArtifactSourceSelection,
   type WorkspaceRenameResult,
   type WorkspaceRootInfo,
   type WorkspaceTrashResult,
@@ -141,6 +143,19 @@ export const tauriBridge: WorkspaceNativeBridge = {
   chooseExportDirectory: () => invokeTyped<string | null>('dialog_choose_export_directory'),
   workspaceSetRoot: (rootPath) => invokeTyped<WorkspaceRootInfo>('workspace_set_root', { rootPath }),
   workspaceScan: () => invokeTyped<readonly WorkspaceFileEntry[]>('workspace_scan'),
+  chooseImportArtifact: () => invokeTyped<ArtifactSourceSelection | null>('dialog_choose_import_artifact'),
+  workspaceReadArtifact: (relativePath) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_read_artifact', { relativePath }),
+  workspaceReadTextArtifact: (relativePath) =>
+    invokeTyped<WorkspaceReadResult>('workspace_read_text_artifact', { relativePath }),
+  workspaceWriteTextArtifact: (request) =>
+    invokeTyped<WorkspaceWriteResult>('workspace_write_text_artifact', { ...request }),
+  workspaceImportArtifact: (request) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_import_artifact', { ...request }),
+  workspaceReplaceArtifact: (request) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_replace_artifact', { ...request }),
+  workspaceRevealArtifact: (relativePath) => invokeTyped<void>('workspace_reveal_artifact', { relativePath }),
+  workspaceOpenArtifact: (relativePath) => invokeTyped<void>('workspace_open_artifact', { relativePath }),
   workspaceRead: (relativePath) => invokeTyped<WorkspaceReadResult>('workspace_read', { relativePath }),
   workspaceWrite: (request) => invokeTyped<WorkspaceWriteResult>('workspace_write', { ...request }),
   workspaceRenamePair: (request) => invokeTyped<WorkspaceRenameResult>('workspace_rename_pair', { ...request }),

@@ -4,6 +4,372 @@ use tempfile::tempdir;
 
 use super::{files, paths, WorkspaceScope};
 
+#[test]
+fn artifact_executes_pinned_single_path_vectors() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/workflow-package-v1-vectors.json"
+    ))
+    .unwrap();
+    for vector in vectors["pathVectors"].as_array().unwrap() {
+        if vector["input"]["kind"] != "regular" {
+            continue;
+        }
+        let Some(path) = vector["input"]["path"].as_str() else {
+            continue;
+        };
+        let accepted = vector["expected"]["accepted"].as_bool().unwrap();
+        let root = tempdir().unwrap();
+        if accepted {
+            fs::create_dir_all(root.path().join(path).parent().unwrap()).unwrap();
+        }
+        let result = super::artifacts::write_text(&scope(root.path()), path, "fixture", None);
+        assert_eq!(result.is_ok(), accepted, "{}: {result:?}", vector["name"]);
+    }
+}
+
+#[test]
+fn artifact_text_drafts_and_revision_checks_preserve_yaml_boundary() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let saved = super::artifacts::write_text(&scope, "script.py", "def broken(:", None).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "script.py")
+            .unwrap()
+            .text,
+        "def broken(:"
+    );
+    assert!(files::read(&scope, "script.py", files::MAX_YAML_BYTES).is_err());
+    fs::write(root.path().join("script.py"), "external").unwrap();
+    assert_eq!(
+        super::artifacts::write_text(&scope, "script.py", "draft", Some(&saved.sha256))
+            .unwrap_err()
+            .code,
+        "workspace_revision_conflict"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("script.py")).unwrap(),
+        "external"
+    );
+    fs::remove_file(root.path().join("script.py")).unwrap();
+    assert_eq!(
+        super::artifacts::write_text(&scope, "script.py", "draft", Some(&saved.sha256))
+            .unwrap_err()
+            .code,
+        "workspace_revision_conflict"
+    );
+    assert!(!root.path().join("script.py").exists());
+}
+
+#[test]
+fn artifact_read_rejects_unsafe_paths_binary_text_and_oversize() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for path in [
+        "../secret",
+        ".git/config",
+        "a/.GIT/config",
+        "a//b",
+        "a/./b",
+        "C:/secret",
+    ] {
+        assert_eq!(
+            super::artifacts::read(&scope, path).unwrap_err().code,
+            "workspace_path_invalid"
+        );
+    }
+    fs::write(root.path().join("binary"), [255]).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "binary")
+            .unwrap_err()
+            .code,
+        "invalid_utf8"
+    );
+    let file = fs::File::create(root.path().join("large")).unwrap();
+    file.set_len(super::artifacts::max_bytes() + 1).unwrap();
+    assert_eq!(
+        super::artifacts::read(&scope, "large").unwrap_err().code,
+        "file_too_large"
+    );
+}
+
+#[test]
+fn artifact_grants_are_single_use_identity_and_generation_bound() {
+    let root = tempdir().unwrap();
+    let source = tempdir().unwrap();
+    let scope = scope(root.path());
+    let path = source.path().join("source.bin");
+    fs::write(&path, [0, 1, 255]).unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    let token = super::artifacts::grant_source(&path, 1, &grants)
+        .unwrap()
+        .source_grant_token;
+    let imported =
+        super::artifacts::import(&scope, 1, &grants, "resource.bin", &token, None).unwrap();
+    assert_eq!(imported.size, 3);
+    assert_eq!(
+        fs::read(root.path().join("resource.bin")).unwrap(),
+        [0, 1, 255]
+    );
+    assert_eq!(
+        super::artifacts::import(
+            &scope,
+            1,
+            &grants,
+            "resource.bin",
+            &token,
+            Some(&imported.sha256)
+        )
+        .unwrap_err()
+        .code,
+        "artifact_source_grant_invalid"
+    );
+    let token = super::artifacts::grant_source(&path, 1, &grants)
+        .unwrap()
+        .source_grant_token;
+    assert_eq!(
+        super::artifacts::import(&scope, 2, &grants, "other.bin", &token, None)
+            .unwrap_err()
+            .code,
+        "artifact_source_grant_invalid"
+    );
+    let token = super::artifacts::grant_source(&path, 2, &grants)
+        .unwrap()
+        .source_grant_token;
+    fs::write(&path, "changed").unwrap();
+    assert_eq!(
+        super::artifacts::import(&scope, 2, &grants, "other.bin", &token, None)
+            .unwrap_err()
+            .code,
+        "artifact_source_grant_invalid"
+    );
+    assert!(!root.path().join("other.bin").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_rejects_internal_and_external_symlinks() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source"), "secret").unwrap();
+    symlink("source", root.path().join("link")).unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "link").unwrap_err().code,
+        "workspace_symlink_unsupported"
+    );
+    assert_eq!(
+        super::artifacts::write_text(&scope, "link", "new", None)
+            .unwrap_err()
+            .code,
+        "workspace_symlink_unsupported"
+    );
+}
+
+#[test]
+fn artifact_external_open_rejects_scripts_and_disguised_content() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("script.py"), "print(1)").unwrap();
+    fs::write(root.path().join("fake.png"), "print(1)").unwrap();
+    let scope = scope(root.path());
+    for path in ["script.py", "fake.png"] {
+        assert_eq!(
+            super::artifacts::passive_png(&scope, path)
+                .unwrap_err()
+                .code,
+            "artifact_open_unsupported"
+        );
+    }
+}
+
+#[test]
+fn artifact_verified_png_is_reencoded_without_trailing_content() {
+    let root = tempdir().unwrap();
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[0, 0, 0, 255]).unwrap();
+        writer.finish().unwrap();
+    }
+    let clean = bytes.clone();
+    bytes.extend_from_slice(b"print('never open package bytes directly')");
+    fs::write(root.path().join("image.png"), bytes).unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "image.png")
+            .unwrap()
+            .media_type,
+        "image/png"
+    );
+    assert_eq!(
+        super::artifacts::passive_png(&scope, "image.png").unwrap(),
+        clean
+    );
+}
+
+#[test]
+fn artifact_stream_copy_failure_preserves_original_and_cleans_staging() {
+    struct BrokenSource;
+    impl std::io::Read for BrokenSource {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected copy failure"))
+        }
+    }
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("resource.bin"), "original").unwrap();
+    let scope = scope(root.path());
+    let hash = super::artifacts::read(&scope, "resource.bin")
+        .unwrap()
+        .sha256;
+    assert!(files::write_artifact_stream(
+        &scope,
+        "resource.bin",
+        &mut BrokenSource,
+        Some(&hash),
+        None
+    )
+    .is_err());
+    assert_eq!(
+        fs::read_to_string(root.path().join("resource.bin")).unwrap(),
+        "original"
+    );
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn artifact_source_verification_failure_after_copy_never_commits() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let result = files::write_artifact_stream_verified(
+        &scope,
+        "resource.bin",
+        &mut &b"copied"[..],
+        None,
+        None,
+        || {
+            Err(super::WorkspaceError::new(
+                "artifact_source_grant_invalid",
+                "Selected source identity changed during copying.",
+            ))
+        },
+    );
+    assert_eq!(result.unwrap_err().code, "artifact_source_grant_invalid");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn artifact_normalization_uses_pinned_unicode14_tables() {
+    assert_eq!(unicode_normalization::UNICODE_VERSION, (14, 0, 0));
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::write_text(&scope, "cafe\u{301}.py", "draft", None)
+            .unwrap_err()
+            .code,
+        "workspace_path_invalid"
+    );
+    super::artifacts::write_text(&scope, "caf\u{e9}.py", "draft", None).unwrap();
+}
+
+#[test]
+fn artifact_source_grant_rejects_git_metadata() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join(".git")).unwrap();
+    let path = root.path().join(".git/config");
+    fs::write(&path, "private repository metadata").unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    assert_eq!(
+        super::artifacts::grant_source(&path, 1, &grants)
+            .unwrap_err()
+            .code,
+        "workspace_path_invalid"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_windows_aliases_report_platform_restriction() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for path in ["data:report", "report.", "report "] {
+        assert_eq!(
+            super::artifacts::write_text(&scope, path, "draft", None)
+                .unwrap_err()
+                .code,
+            "workspace_path_unsupported_platform"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_posix_names_preserve_colons_and_trailing_dots() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    super::artifacts::write_text(&scope, "data:report.", "draft", None).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "data:report.")
+            .unwrap()
+            .text,
+        "draft"
+    );
+}
+
+#[test]
+fn artifact_stream_rechecks_destination_after_staging() {
+    struct ChangingSource {
+        path: std::path::PathBuf,
+        done: bool,
+    }
+    impl std::io::Read for ChangingSource {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.done {
+                return Ok(0);
+            }
+            fs::write(&self.path, "external")?;
+            output[0] = 42;
+            self.done = true;
+            Ok(1)
+        }
+    }
+    let root = tempdir().unwrap();
+    let path = root.path().join("resource.bin");
+    fs::write(&path, "original").unwrap();
+    let scope = scope(root.path());
+    let hash = super::artifacts::read(&scope, "resource.bin")
+        .unwrap()
+        .sha256;
+    assert!(files::write_artifact_stream(
+        &scope,
+        "resource.bin",
+        &mut ChangingSource {
+            path: path.clone(),
+            done: false
+        },
+        Some(&hash),
+        None
+    )
+    .is_err());
+    assert_eq!(fs::read_to_string(path).unwrap(), "external");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn artifact_rejects_symlinks_when_platform_supports_them() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source"), "original").unwrap();
+    create_file_symlink(&root.path().join("source"), &root.path().join("link"));
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "link").unwrap_err().code,
+        "workspace_symlink_unsupported"
+    );
+}
+
 fn scope(path: &std::path::Path) -> WorkspaceScope {
     WorkspaceScope::new(path).unwrap()
 }
