@@ -3,12 +3,13 @@ import type { AuthoringContract } from '../contract/types'
 import type { WorkflowPackageContract } from '../package-contract/types'
 import type { ResourceResolutionContract } from '../package-contract/resource-contract-loader'
 import type { WorkspacePackageSnapshot, WorkspaceReadResult } from '../native/types'
-import { capturePackageAnalysis } from '../../features/packages/package-analysis'
+import { capturePackageAnalysis, type PackageAnalysisRunner } from '../../features/packages/package-analysis'
 import { verifyPackageDigests } from '../packages/digest'
 import { packagePathError, packagePathIdentity } from '../packages/paths'
 import type { PackageExampleDescriptor } from './types'
 
 export interface PackageExampleContracts {
+  analyze?: PackageAnalysisRunner
   contract: WorkflowPackageContract
   resourceContract: ResourceResolutionContract
   authoring: readonly AuthoringContract[]

@@ -101,10 +101,11 @@ export function analyzePackageReadiness(input: PackageReadinessInput): PackageAn
       if (!present.has(path)) add('package_member_missing', path, 'Declared workflow member is missing.')
   }
   for (const workflow of input.resources.workflows) {
+    const member = input.package.workflows.find((candidate) => candidate.definition === workflow.path)
     for (const issue of workflow.analysis.issues)
       findings.push({
         code: issue.code,
-        path: issue.document === 'companion' ? (workflow.analysis.companionPath ?? workflow.path) : workflow.path,
+        path: issue.document === 'companion' ? (member?.companion ?? workflow.path) : workflow.path,
         message: issue.message,
         severity: issue.blocking ? 'blocking' : 'advisory',
         ...(issue.line !== undefined ? { line: issue.line } : {}),

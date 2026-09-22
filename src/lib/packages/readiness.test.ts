@@ -95,6 +95,54 @@ async function fixture(
   }
 }
 describe('package readiness', () => {
+  it('keeps companion diagnostic paths package-relative for nested package navigation', async () => {
+    const input = await fixture()
+    const analysis = await analyzeWorkflowPair(
+      {
+        type: 'analyze',
+        requestId: 'nested-companion',
+        workflowId: 'packages/nested/main.yaml',
+        pairGeneration: 1,
+        definition: {
+          path: 'packages/nested/main.yaml',
+          text: input.resources.artifactTexts.get('main.yaml')!,
+          revision: 1,
+        },
+        companion: {
+          path: 'packages/nested/main.hermes.yaml',
+          text: 'language_compatibility: archon-2026-07\ntags: 42\n',
+          revision: 1,
+        },
+        profile: authoring.profile,
+        contractDigest: authoring.contract_digest,
+        reason: 'open',
+      },
+      authoring,
+    )
+    expect(analysis.issues.some((issue) => issue.document === 'companion' && issue.blocking)).toBe(true)
+    const result = analyzePackageReadiness({
+      ...input,
+      package: {
+        ...input.package,
+        root: 'packages/nested',
+        manifestPath: 'packages/nested/workflow-package.json',
+        artifacts: input.package.artifacts.map((artifact) => ({
+          ...artifact,
+          workspacePath: 'packages/nested/' + artifact.path,
+        })),
+      },
+      resources: {
+        ...input.resources,
+        packageRoot: 'packages/nested',
+        workflows: [{ path: 'main.yaml', authoring, analysis }],
+      },
+    })
+    for (const issue of analysis.issues.filter((item) => item.document === 'companion' && item.blocking)) {
+      expect(result.blockers).toContainEqual(
+        expect.objectContaining({ code: issue.code, path: 'main.hermes.yaml', line: issue.line, column: issue.column }),
+      )
+    }
+  })
   it('requires current inline script analysis and rejects an explicit runtime mismatch', async () => {
     const input = await fixture({}, 'print(1)')
     expect(analyzePackageReadiness(input).blockers).toContainEqual(

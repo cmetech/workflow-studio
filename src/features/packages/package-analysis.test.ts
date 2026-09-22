@@ -142,3 +142,33 @@ it('rejects source text changed after the native hash snapshot', async () => {
   source.texts.set(path, { ...source.texts.get(path)!, text: 'changed after capture' })
   await expect(capturePackageAnalysis(source)).rejects.toThrow('package_analysis_stale')
 })
+
+it('worker messages survive structured cloning with identical findings and reference data', async () => {
+  const { processPackageAnalysisRequest } = await import('./package-analysis-worker')
+  const source = await fixture()
+  const captured = await capturePackageAnalysis({
+    ...source,
+    index: { committedIndexText: null, workingIndexText: null, workingIndexHash: null },
+  })
+  const input = {
+    snapshot: source.snapshot,
+    texts: new Map([...source.texts].map(([path, file]) => [path.slice(source.packageRoot.length + 1), file.text])),
+    contract: source.contract,
+    resourceContract: source.resourceContract,
+    authoring: source.authoring,
+    index: { committedIndexText: null, workingIndexText: null, workingIndexHash: null },
+  }
+  const response = structuredClone(
+    await processPackageAnalysisRequest(
+      structuredClone({ requestId: 'roundtrip', sourceSnapshotToken: 'snapshot', input }),
+    ),
+  )
+  expect(response).not.toHaveProperty('error')
+  if (!('result' in response)) throw new Error('Missing analysis')
+  expect(response.result.package).toEqual(captured.package)
+  expect(response.result.analysis.findings).toEqual(captured.analysis.findings)
+  expect(response.result.analysis.references.references).toEqual(captured.analysis.references.references)
+  expect(response.result.analysis.references).not.toHaveProperty('forNode')
+  const invalid = await processPackageAnalysisRequest({ requestId: 'invalid', sourceSnapshotToken: 'stale', input })
+  expect(invalid).toMatchObject({ error: 'package_analysis_worker_identity' })
+})

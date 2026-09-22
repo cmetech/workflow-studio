@@ -1,3 +1,4 @@
+import { analyzeCapturedPackage } from '../src/features/packages/package-analysis-pure'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 import { loadBundledResourceSet } from '../src/lib/contract/bundled-resource-manifest'
@@ -22,7 +23,12 @@ export async function loadPackageExampleContracts(directory = resolve('contracts
   const authoring = await loadBundledResourceSet(await readFile(join(directory, 'manifest.json'), 'utf8'), (file) =>
     readFile(join(directory, file), 'utf8'),
   )
-  return { contract: contract.contract, resourceContract: resources.contract, authoring: authoring.contracts }
+  return {
+    analyze: analyzeCapturedPackage,
+    contract: contract.contract,
+    resourceContract: resources.contract,
+    authoring: authoring.contracts,
+  }
 }
 export async function readPackageExampleFiles(root: string): Promise<PackageExampleDescriptor['files']> {
   const files: { path: string; text: string }[] = []
