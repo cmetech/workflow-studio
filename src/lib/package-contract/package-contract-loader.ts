@@ -68,9 +68,15 @@ function failure(code: PackageContractFailure['code'], message: string): Package
   return { ok: false, code, message }
 }
 export function freezePackageValue<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    for (const child of Object.values(value)) freezePackageValue(child)
-    Object.freeze(value)
+  const pending: unknown[] = [value]
+  const seen = new WeakSet<object>()
+  while (pending.length) {
+    const item = pending.pop()
+    if (item !== null && typeof item === 'object' && !seen.has(item)) {
+      seen.add(item)
+      for (const child of Object.values(item)) pending.push(child)
+      Object.freeze(item)
+    }
   }
   return value
 }

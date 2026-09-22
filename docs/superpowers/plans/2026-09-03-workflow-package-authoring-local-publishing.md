@@ -560,6 +560,8 @@ git commit -m "feat: edit package scripts and resources"
 
 ### Task 7: Add Command Markdown Frontmatter and Preview
 
+Implementation reconciliation (2026-09-22): the pinned upstream contracts do not export a command-frontmatter schema. Validate YAML syntax and mapping structure, preserve unknown metadata, and only apply the optional schema parameter when an authoritative schema is supplied. Do not introduce a Studio-owned inventory of command keys. The schema references below describe that conditional capability, not an available bundled schema.
+
 **Files:**
 - Create: `src/lib/packages/command-markdown.ts`
 - Create: `src/lib/packages/command-markdown.test.ts`
