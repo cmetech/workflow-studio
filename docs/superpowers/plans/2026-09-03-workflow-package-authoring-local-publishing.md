@@ -4,24 +4,27 @@
 
 **Goal:** Let Workflow Studio create, edit, validate, prepare, and locally version complete multi-workflow Hermes packages without executing package content or accessing Git remotes.
 
-**Architecture:** A Hermes-owned, versioned portable-package contract drives package discovery, resource resolution, limits, digest generation, and marketplace-index output. Focused TypeScript modules project package state and provide static authoring diagnostics; narrow Rust commands own scoped binary I/O, atomic generated-file replacement, and exact-path Git commits. The existing workflow YAML document path remains authoritative and is composed with separate artifact sessions rather than replaced.
+**Architecture:** A Hermes-owned, versioned portable-package contract drives package discovery, limits, digest generation, and marketplace-index output. Resource resolution additionally requires verified authoring-contract coverage and shared resolver fixtures; the package contract does not export those rules. Focused TypeScript modules project package state and provide static authoring diagnostics; narrow Rust commands own scoped binary I/O, atomic generated-file replacement, and exact-path Git commits. The existing workflow YAML document path remains authoritative and is composed with separate artifact sessions rather than replaced.
 
 **Tech Stack:** Svelte 5, TypeScript 6, Nanostores, CodeMirror 6, Ajv Draft 2020-12, `yaml`, `marked`, DOMPurify, Tauri 2/Rust, Git CLI, Vitest, Svelte Testing Library, fast-check, Playwright
 
 **Spec:** `docs/superpowers/specs/2026-09-03-workflow-package-authoring-and-local-publishing-design.md`
 
+**Reconciled 2026-09-22:** See [2026-09-22 marketplace contract reconciliation](../../analysis/2026-09-22-workflow-package-marketplace-contract-reconciliation.md) for immutable artifact pins, exact format rules, evidence, and remaining gates. No implementation task is completed by this reconciliation.
+
 ## Global Constraints
 
 - Execute this plan on an implementation branch created from `base`; create the isolated worktree at execution time with `superpowers:using-git-worktrees`.
 - Do not change the sibling `hermes-agent` repository under this plan.
-- Hard prerequisite: a separately approved Hermes plan must first publish `plugins/workflow/contracts/workflow-package-v1.json` and `plugins/workflow/contracts/workflow-package-v1-vectors.json` from an immutable Hermes commit. If either artifact is absent, stop before Task 1 and request the separate upstream work; never fabricate a Studio-owned substitute.
+- Package-format prerequisite is available at agent commit `748b6c5711bc055449cc245dc4e9800cc6bb0412`: `plugins/workflow/contracts/workflow-package-v1.json` and `workflow-package-v1-vectors.json`. Use the committed-byte SHA-256 pins in the reconciliation report.
+- Resource-resolution prerequisite remains separate: before Task 3, demonstrate existing authoring-export coverage and obtain separately authorized upstream exports/vectors for missing resolver behavior. Never fabricate a Studio-owned substitute. Tasks 10-13 cannot complete resource-dependent behavior before this gate passes.
 - YAML remains the sole authority for workflow graph and node behavior. Package manifests identify membership and publishing metadata only.
 - A workspace may contain multiple non-overlapping packages, and each package may contain multiple definition/companion pairs.
 - Workflow Studio never executes workflows, command resources, scripts, shell content, MCP servers, compilers, linters, language servers, dependency installers, or package installers.
 - Invalid command and script drafts may be saved and recovered. Existing workflow YAML save/export structural gates remain unchanged.
 - Package preparation fails closed on package-integrity defects and treats destination runtime availability as advisory.
 - All distributable paths must remain inside one package root. Reject absolute paths, traversal, nested package roots, overlapping roots, NUL bytes, backslashes in canonical manifest paths, and every symlink.
-- File-count, per-file, total-size, resource-resolution, digest, and index rules come only from the bundled Hermes package contract.
+- File/count limits come from `resource_rules`; digest and index rules come from the bundled package contract. Resource resolution comes from the separately verified authoring/resolver contract boundary.
 - Generated `digests.json` and `.well-known/hermes-workflows/index.json` are inspectable and read-only in the normal editor.
 - Git remains local-only: no remote, authentication, fetch, pull, push, tag, branch mutation, merge, rebase, reset, cherry-pick, or history rewrite.
 - Package commits include exact selected package paths plus the generated index path and preserve all unrelated repository state.
@@ -29,6 +32,7 @@
 - Parsing, validation, hashing, Git, and file I/O never run during pointer-move frames.
 - Preserve keyboard operation, accessible naming/focus restoration, reduced motion, and the 250-node/500-edge canvas performance contract.
 - Every task follows red-green-refactor TDD and ends with a focused commit after its listed verification passes.
+- Five sequential adversarial code-review rounds are mandatory after implementation, with fresh reviewer contexts, immutable candidates, evidence-based reconciliation, and verified remediation between rounds. Follow Task 17 and the linked review protocol; a generic single-review skill default does not replace this user-required gate.
 
 ---
 
@@ -37,6 +41,7 @@
 **Files:**
 - Create: `contracts/workflow-package-v1.json`
 - Create: `contracts/workflow-package-v1-vectors.json`
+- Create: `contracts/workflow-package-provenance.json` (Studio-owned commit and exact-byte artifact SHA-256 pins)
 - Create: `src/lib/package-contract/types.ts`
 - Create: `src/lib/package-contract/package-contract-loader.ts`
 - Create: `src/lib/package-contract/package-contract-loader.test.ts`
@@ -50,20 +55,19 @@
 - Modify: `src-tauri/resources/setup-integrity-v1.json`
 
 **Interfaces:**
-- Consumes: byte-identical contract artifacts from `../hermes-agent/plugins/workflow/contracts/workflow-package-v1.json` and `../hermes-agent/plugins/workflow/contracts/workflow-package-v1-vectors.json` at the separately approved Hermes commit.
+- Consumes: byte-identical contract artifacts from `../hermes-agent/plugins/workflow/contracts/workflow-package-v1.json` and `../hermes-agent/plugins/workflow/contracts/workflow-package-v1-vectors.json` at the immutable agent commit pinned above.
 - Produces: `loadWorkflowPackageContract(bytes: Uint8Array, source: PackageContractSource): Promise<PackageContractLoadResult>` and `loadBundledWorkflowPackageContract(): Promise<WorkflowPackageContract>`.
 
 - [ ] **Step 1: Write failing loader and sync tests**
 
 ```ts
-it('loads the bundled Hermes package contract and rejects a changed digest', async () => {
+it('loads the pinned contract and rejects bytes that differ from provenance', async () => {
   const contract = await loadBundledWorkflowPackageContract()
-  expect(contract.schema_version).toBe(1)
-  expect(contract.contract_digest).toMatch(/^sha256:[a-f0-9]{64}$/)
-  const changed = new TextEncoder().encode(
-    JSON.stringify({ ...contract, contract_digest: `sha256:${'0'.repeat(64)}` }),
-  )
-  await expect(loadWorkflowPackageContract(changed, source)).resolves.toMatchObject({ ok: false })
+  expect(contract.contract_version).toBe(1)
+  const changed = new Uint8Array([...originalContractBytes, 0x20])
+  await expect(loadWorkflowPackageContract(changed, pinnedSource)).resolves.toMatchObject({
+    ok: false, code: 'digest_mismatch',
+  })
 })
 
 it('copies only the two approved Hermes artifacts byte-for-byte', async () => {
@@ -83,26 +87,27 @@ Expected: FAIL because the loader, sync function, and bundled artifacts do not e
 
 ```ts
 export interface WorkflowPackageContract {
-  readonly schema_version: 1
-  readonly contract_reader_version: 1
-  readonly contract_digest: `sha256:${string}`
+  readonly contract_version: 1
   readonly package_manifest_schema: Readonly<Record<string, unknown>>
   readonly marketplace_index_schema: Readonly<Record<string, unknown>>
-  readonly resource_rules: readonly PackageResourceRule[]
-  readonly limits: PackageLimits
-  readonly digest: PackageDigestContract
+  readonly digests_schema: Readonly<Record<string, unknown>>
+  readonly path_rules: PackagePathRules
+  readonly resource_rules: PackageLimits
+  readonly digest_rules: PackageDigestContract
+  readonly compatibility_rules: PackageCompatibilityRules
+  readonly diagnostic_codes: Readonly<Record<string, string>>
 }
 
 export type PackageContractLoadResult =
   | { readonly ok: true; readonly contract: WorkflowPackageContract }
-  | { readonly ok: false; readonly code: 'unsupported_reader' | 'invalid_schema' | 'digest_mismatch'; readonly message: string }
+  | { readonly ok: false; readonly code: 'unsupported_contract' | 'invalid_schema' | 'digest_mismatch'; readonly message: string }
 ```
 
-Validate both embedded JSON Schemas with Ajv, calculate the canonical envelope digest with the existing canonical JSON helper, reject unknown reader versions, and freeze the accepted value.
+Validate all three embedded JSON Schemas with Ajv and validate the envelope against the pinned field shapes. Verify SHA-256 of original bytes against external provenance, reject unsupported contract versions, and freeze the accepted value. Do not canonicalize JSON before checking its pin or invent an embedded digest/reader-version field. Define `PackageLimits` with all six upstream limit fields. Test unknown versions with matching fixture provenance so the version check is exercised independently of checksum rejection.
 
 - [ ] **Step 4: Add deterministic sync and bundled loading**
 
-Implement `syncPackageContracts({ sourceRoot, destinationRoot })` to require the exact two filenames, reject symlinks, copy their bytes, and verify the copied contract against the vectors. Add scripts:
+Implement `syncPackageContracts({ sourceRoot, destinationRoot })` to require the exact two filenames, reject symlinks, verify both SHA-256 values against the committed provenance pins, copy their bytes, and validate the contract/vector envelope versions. Resolve the selected immutable Git revision rather than trusting arbitrary working-tree edits. Define `originalContractBytes` and `pinnedSource` from the committed fixtures and external provenance. Add scripts:
 
 ```json
 {
@@ -121,7 +126,7 @@ Run: `npm run package-contracts:check`
 
 Run: `npm run resources:verify`
 
-Expected: all commands exit 0 and the loader passes every Hermes vector.
+Expected: all commands exit 0; the loader verifies envelope/version/provenance and validates the vector envelope. Semantic vector execution belongs to Tasks 2, 4, and 11, not the loader.
 
 - [ ] **Step 6: Commit**
 
@@ -161,7 +166,7 @@ it.prop([fc.array(canonicalRelativePathArbitrary(), { maxLength: 40 })])(
 )
 ```
 
-Cover malformed JSON, schema errors, duplicate IDs, nested roots, unsafe/safe symlinks, case-distinct paths, workflow membership outside the root, missing members, and unsupported contract versions.
+Cover malformed JSON, schema errors, duplicate IDs, nested roots, unsafe/safe symlinks, Unicode case-fold collisions, non-NFC paths, file/directory aliases, workflow membership outside the root, missing members, and unsupported contract versions. Execute applicable `pathVectors` and `validationVectors`, including expected diagnostic codes. Schema checks must be supplemented by agent-equivalent semantic validation; `toLowerCase()` is not full Unicode case folding.
 Define `fixtureInput`, `canonicalRelativePathArbitrary`, and `expectNoOverlappingAcceptedRoots` as local test helpers in `discovery.test.ts`; they construct only `WorkspaceFileEntry` metadata and manifest-text maps and never touch the real filesystem.
 
 - [ ] **Step 2: Run tests and verify discovery fails**
@@ -209,6 +214,8 @@ git commit -m "feat: discover workflow package roots"
 
 ### Task 3: Resolve Package Resources and Classify Readiness
 
+**Entry gate:** Complete the reference-surface/resolver coverage matrix described in the reconciliation report. Pin existing authoring descriptors and any separately authorized missing upstream resolver export/vectors before implementing lookup behavior. The package contract alone cannot satisfy this gate. Define `ArtifactStaticAnalysis` interfaces and test fixtures here; integrate real analyzers from Tasks 6-7 before claiming full readiness.
+
 **Files:**
 - Create: `src/lib/packages/artifact-kind.ts`
 - Create: `src/lib/packages/artifact-kind.test.ts`
@@ -225,7 +232,7 @@ git commit -m "feat: discover workflow package roots"
 - Create: `tests/fixtures/workflow-packages/laptop-diagnostic/workflow-package.json`
 
 **Interfaces:**
-- Consumes: `WorkflowPackageProjection`, current workflow `DocumentAnalysis` values, package scan entries, `ArtifactStaticAnalysis` values supplied by artifact analyzers, and `WorkflowPackageContract.resource_rules`.
+- Consumes: `WorkflowPackageProjection`, current workflow `DocumentAnalysis` values, package scan entries, `ArtifactStaticAnalysis` values supplied by artifact analyzers, and verified authoring/resolver descriptors and vectors. `WorkflowPackageContract.resource_rules` supplies limits only.
 - Produces: `resolvePackageReferences(input: PackageReferenceInput): PackageReferenceGraph` and `analyzePackageReadiness(input: PackageReadinessInput): PackageAnalysis`.
 
 - [ ] **Step 1: Write failing rule-driven resolution tests**
@@ -278,7 +285,7 @@ export interface ArtifactStaticAnalysis {
 }
 ```
 
-Iterate only the contract's resource rules. Do not add hard-coded command/script field lists.
+Iterate only verified authoring/resolver descriptors. Do not add hard-coded command/script field lists. Test package-root lookup for workflows in subdirectories, ordered extension fallbacks, transitive resources, and missing packaged files even when an external requirement is declared. Use the exported inline/resource discriminator without trimming script source.
 
 - [ ] **Step 4: Implement deterministic blocking/advisory classification**
 
@@ -469,6 +476,8 @@ git commit -m "feat: recover package text artifact drafts"
 ```
 
 ### Task 6: Add the Static Script and Structured-Text Editor
+
+**Scope clarification:** Python, TypeScript, and JavaScript artifact editing follows existing `uv`/`bun` semantics. Bash remains its separate inline node; a supporting `.sh` text file does not establish external shell-script execution support. A richer inline Bash editor needs a subsequent scope decision.
 
 **Files:**
 - Modify: `package.json`
@@ -899,8 +908,12 @@ git commit -m "feat: link workflow nodes to package resources"
 - [ ] **Step 1: Write failing Hermes-vector and atomicity tests**
 
 ```ts
-it.each(hermesVectors.cases)('matches Hermes package vector $id', async ({ input, expected }) => {
-  expect(await composePackageDigest(input, contract.digest)).toEqual(expected)
+it.each(hermesVectors.digestVectors)('matches package digest vector $name', async (vector) => {
+  const files = await hashVectorFiles(vector.files)
+  expect(files.map(({ relativePath }) => relativePath)).toEqual(vector.expectedSortedPaths)
+  expect(await composePackageDigest(files, contract.digest_rules)).toEqual(
+    vector.expectedPackageDigest,
+  )
 })
 
 it('sorts marketplace entries and emits no timestamp or commit SHA', () => {
@@ -909,6 +922,8 @@ it('sorts marketplace entries and emits no timestamp or commit SHA', () => {
   expect(text).not.toMatch(/generatedAt|commit|timestamp/i)
 })
 ```
+
+Define `hashVectorFiles` to decode declared UTF-8/base64 bytes, check each expected file size/SHA-256, exclude only root-relative `digests.json`, and order paths by Unicode code point. Execute all `boundaryVectors` recipes through the appropriate parser/native scanner, including generated file sets, filesystem entries, index bytes, and expected diagnostic codes. Do not skip recipe-backed cases.
 
 Rust failure-injection tests cover hash-time changes, size overflow, symlinks, a changed index revision, failure between generated replacements, rollback failure reporting, and post-replacement verification.
 
@@ -933,14 +948,14 @@ export interface PackageFileHash {
 export function composePackageDigest(
   files: readonly PackageFileHash[],
   contract: PackageDigestContract,
-): PackageDigestResult
+): string
 ```
 
-Rust streams each file once under contract limits and returns hashes plus identities. TypeScript sorts and composes strictly according to the Hermes contract. Reject any vector mismatch.
+Rust streams each file once under contract limits and returns hashes plus identities. TypeScript sorts and composes strictly according to `digest_rules`: decoded domain bytes, Unicode code-point path order, U64BE UTF-8 path lengths and file sizes, and raw SHA-256 bytes. Include Git-ignored/unreferenced supporting files and nested `digests.json`; reject prohibited repository metadata rather than silently skipping it. Reject any vector mismatch.
 
 - [ ] **Step 4: Implement deterministic generated output and atomic replacement**
 
-Generate `digests.json` for the selected package and the complete repository index in memory. Pass both texts, expected existing hashes, and the captured source identities to one native command. Stage, flush, replace, rehash, and roll back on failure.
+Generate `digests.json` for the selected package and the complete repository index in memory. Match all repeated manifest/index metadata exactly. Preserve unselected entries against the committed repository snapshot; stop on conflicts rather than indexing unrelated dirty package bytes excluded from this commit. Test simultaneous dirty selected/unselected packages and shared-index conflicts. Validate generated output with schemas and semantic checks. Pass both texts, expected existing hashes, and the captured source identities to one native command. Stage, flush, replace, rehash, and roll back on failure.
 
 - [ ] **Step 5: Run contract vectors, native tests, and repeatability check**
 
@@ -1170,7 +1185,7 @@ it('never describes Studio as executing, trusting, pushing, or remotely publishi
 })
 ```
 
-Also validate Markdown links, headings used by contextual navigation, command/script examples against contract resource rules, and the phrases **Saved**, **Prepared locally**, and **Available from repository**.
+Also validate Markdown links, headings used by contextual navigation, command/script examples against verified authoring/resolver descriptors, and the phrases **Saved**, **Prepared locally**, and **Available from repository**.
 
 - [ ] **Step 2: Run tests and verify package documentation is absent**
 
@@ -1333,7 +1348,7 @@ Measure package refresh and readiness outside pointer frames while a 250-node/50
 
 - [ ] **Step 5: Update security and acceptance documentation**
 
-Document untrusted package display, no execution, path/symlink policy, generated-file atomicity, local-only Git, private credential exclusion, digest independence, and the remaining co-worker-installer dependency. Record exact automated/manual evidence without claiming the co-worker marketplace exists.
+Document untrusted package display, no execution, path/symlink policy, generated-file atomicity, local-only Git, private credential exclusion, digest independence, and actual marketplace compatibility. Run a Studio-produced package through the pinned agent validators and compile/review/install flow on a supported backend, then update it and verify trust invalidation. Verify destination descriptor-safe traversal support explicitly; Windows Studio support does not prove native Windows backend support. Record exact automated/manual evidence and any remaining integration gaps.
 
 - [ ] **Step 6: Run the full release-quality gate**
 
@@ -1368,9 +1383,29 @@ git add src/e2e tests/e2e tests/project docs/security.md docs/verification/versi
 git commit -m "test: verify workflow package authoring"
 ```
 
+### Task 17: Complete Five Adversarial Code-Review Rounds
+
+**Protocol:** [Five-round adversarial review prompt](../../reviews/2026-09-22-workflow-package-authoring-adversarial-review-prompt.md), adapted from the agent marketplace and workflow-language review prompts.
+
+**Files:**
+- Create per round `01` through `05`: `docs/reviews/workflow-package-authoring/round-NN-prompt.md`
+- Create per round: `docs/reviews/workflow-package-authoring/round-NN-review.md`
+- Create per round: `docs/reviews/workflow-package-authoring/round-NN-reconciliation.md`
+- Modify implementation/tests only for accepted findings, preserving task scope and upstream restrictions.
+
+**Entry gate:** Tasks 1-16 implemented, resource-resolution prerequisite satisfied, initial verification recorded, and clean immutable candidate committed. None of these rounds is satisfied by a plan review, an implementer self-review, or this protocol's creation.
+
+- [ ] **Round 1: Contract fidelity and package compatibility.** Review exact format/provenance, all vectors, semantic parity, path/digest rules, and resource-contract coverage. Freeze findings, reconcile evidence, fix blocking findings with failing/passing regression tests, and pin the next candidate.
+- [ ] **Round 2: Native filesystem safety and transactions.** Review containment, races, budgets, revision checks, atomicity, rollback, and recovery. Reconcile and verify remediation before proceeding.
+- [ ] **Round 3: Authoring correctness and recovery.** Review script/resource behavior, YAML preservation, package isolation, drafts, external changes, and editor/native boundaries. Reconcile and verify remediation before proceeding.
+- [ ] **Round 4: Local Git and marketplace handoff.** Review selected-path commits, shared-index consistency, dirty unrelated packages, versions, publishing claims, and actual agent compatibility/trust boundaries. Reconcile and verify remediation before proceeding.
+- [ ] **Round 5: Full candidate and product/release readiness.** Review the entire resulting feature and unchanged callers, including remediation regressions, offline packaging, accessibility, performance, and branding. Fix blocking findings and obtain targeted independent verification on any subsequently changed candidate.
+- [ ] **Final verification:** Run the full Task 16 gate on the corrected candidate. Record all five reports, exact commit/tree identities, finding dispositions, fix/test evidence, and justified Minor deferrals. No unresolved Critical/Important finding or unverified required acceptance check may pass the completion gate.
+- [ ] **Commit evidence:** Commit review/reconciliation artifacts and verified fixes using exact paths; preserve report identity separately from any later evidence-only commit. No merge, push, or release is implied by a review verdict.
+
 ## Implementation Completion Gate
 
-Before requesting final review:
+Before branch integration or claiming implementation complete:
 
 - [ ] Confirm every task commit is contained in the implementation branch and no unrelated user file is committed.
 - [ ] Confirm the two bundled package-contract files are byte-identical to the approved Hermes commit and record that commit in the verification document.
@@ -1378,4 +1413,5 @@ Before requesting final review:
 - [ ] Confirm manual keyboard, screen-reader labeling, reduced-motion, binary-open, external-change, rollback, and 250-node/500-edge checks are recorded.
 - [ ] Confirm the UI uses **Prepared locally**, never **Published**, after local version creation.
 - [ ] Confirm documentation and examples ship in the native package integrity manifest.
+- [ ] Confirm all five Task 17 adversarial rounds have immutable evidence and reconciled findings, all blocking fixes are independently verified as required, and the final corrected candidate passes the complete Task 16 gate.
 - [ ] Confirm the worktree returns to `base` only after the approved branch integration/release workflow.
