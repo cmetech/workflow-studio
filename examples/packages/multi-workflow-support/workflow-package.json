@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "multi-workflow-support",
+  "version": "1.0.0",
+  "displayName": "Shared support workflows",
+  "description": "Synthetic offline example. Studio does not execute its content.",
+  "license": "MIT",
+  "publisher": "loop24-examples",
+  "tags": [
+    "example"
+  ],
+  "workflows": [
+    {
+      "definition": "workflows/diagnose.yaml",
+      "companion": "workflows/diagnose.hermes.yaml"
+    },
+    {
+      "definition": "workflows/collect-bundle.yaml",
+      "companion": "workflows/collect-bundle.hermes.yaml"
+    }
+  ],
+  "externalRequirements": {
+    "runtimes": [
+      "uv"
+    ],
+    "tools": [],
+    "providers": [],
+    "services": [],
+    "secrets": []
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "command-resources",
+  "version": "1.0.0",
+  "displayName": "Reusable command resources",
+  "description": "Synthetic offline example. Studio does not execute its content.",
+  "license": "MIT",
+  "publisher": "loop24-examples",
+  "tags": [
+    "example"
+  ],
+  "workflows": [
+    {
+      "definition": "workflows/command-demo.yaml",
+      "companion": "workflows/command-demo.hermes.yaml"
+    }
+  ],
+  "externalRequirements": {
+    "runtimes": [],
+    "tools": [],
+    "providers": [],
+    "services": [],
+    "secrets": []
+  }
+}

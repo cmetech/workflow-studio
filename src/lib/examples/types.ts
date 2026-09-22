@@ -130,3 +130,11 @@ function isSafeRelativeDirectory(path: string): boolean {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
+
+export interface PackageExampleDescriptor {
+  readonly id: string
+  readonly title: string
+  readonly summary: string
+  readonly files: readonly { readonly path: string; readonly text: string }[]
+  readonly readOnly: true
+}

@@ -1,0 +1,42 @@
+{
+  "contractVersion": 1,
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "commands/interpret-report.md",
+      "size": 114,
+      "sha256": "d0214be91c1f7c4fde04fabf8bea48421a637541c05e0b1c9a62e96e6402625c"
+    },
+    {
+      "path": "fixtures/laptop-snapshot.json",
+      "size": 60,
+      "sha256": "7280acaf83d9e1574944db2d22f5bc758868803a65624a5e83d3f8b03cfd930d"
+    },
+    {
+      "path": "scripts/analyze-snapshot.py",
+      "size": 170,
+      "sha256": "26ca694f9b5d4dc657a0efee28580b192cef427d8715c58d54cb9e74ed682461"
+    },
+    {
+      "path": "scripts/render-report.py",
+      "size": 87,
+      "sha256": "c02253c53c6ade87af2e3e27a0071716fee51a809b4758e2ceb25961109b6ed0"
+    },
+    {
+      "path": "workflow-package.json",
+      "size": 549,
+      "sha256": "834b2d1f0915cf4a2cca9f0c3a2d66a5999c74412ac1358fac7d49405726e3af"
+    },
+    {
+      "path": "workflows/laptop-diagnostic.hermes.yaml",
+      "size": 39,
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522"
+    },
+    {
+      "path": "workflows/laptop-diagnostic.yaml",
+      "size": 411,
+      "sha256": "ace05443c5126df18a1253a5966babe8fd78bf8e455427188d7778c7af8eda31"
+    }
+  ],
+  "packageDigest": "1693f24bc6fc1a731469ad1711f148ca4f481a5e7099ce89e8ee9acfed96ff5d"
+}

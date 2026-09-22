@@ -1,0 +1,16 @@
+name: laptop-diagnostic
+description: Analyze a synthetic laptop snapshot.
+nodes:
+  - id: analyze-cpu
+    runtime: uv
+    script: analyze-snapshot
+  - id: analyze-memory
+    runtime: uv
+    script: analyze-snapshot
+  - id: render-report
+    depends_on: [analyze-cpu, analyze-memory]
+    runtime: uv
+    script: render-report
+  - id: interpret-report
+    depends_on: [render-report]
+    command: interpret-report

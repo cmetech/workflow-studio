@@ -1,0 +1,37 @@
+{
+  "contractVersion": 1,
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "scripts/shared-support.py",
+      "size": 97,
+      "sha256": "1077ad41a7537ac7fb875ed3b41c30be098141a004cb8f7622d10dffb8a487b2"
+    },
+    {
+      "path": "workflow-package.json",
+      "size": 697,
+      "sha256": "c132dcdbd20d74f5615f3570b84bebc5a253f79a561cbc8dbac6cedfca1bf21f"
+    },
+    {
+      "path": "workflows/collect-bundle.hermes.yaml",
+      "size": 39,
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522"
+    },
+    {
+      "path": "workflows/collect-bundle.yaml",
+      "size": 142,
+      "sha256": "026df7664e3c7db6e153e21e00ae0ff2ee728b55af6cc94b2a9eecc5a1776200"
+    },
+    {
+      "path": "workflows/diagnose.hermes.yaml",
+      "size": 39,
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522"
+    },
+    {
+      "path": "workflows/diagnose.yaml",
+      "size": 136,
+      "sha256": "fea8e867e80009a944df0b332f4452cf488f82561ff6e99d32641361181f50d7"
+    }
+  ],
+  "packageDigest": "b5972a39005597299746c538060c357edd61e8d9e21ab6f457773f0cf01dc813"
+}

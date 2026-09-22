@@ -207,6 +207,131 @@
       "maxBytes": 2097152
     },
     {
+      "path": "examples/packages/catalog.yaml",
+      "sha256": "640ec5796bc3cdb65ad25279d229f3b34253aca87fc439be9b797b6741688b25",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/command-resources/commands/summarize.md",
+      "sha256": "77a23d3f40ebbc6a9e71e2acf8df8ac60a2e744069b4f171b6fa4197d077ac81",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/command-resources/digests.json",
+      "sha256": "109580819d574b70c539bf91bde4983250998e5b0673cc8a96e66a8df92ce825",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/command-resources/workflow-package.json",
+      "sha256": "34a342edfd078877cfe396de860d7442ba10b9a10d61cb71e7de0db04d81b261",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/command-resources/workflows/command-demo.hermes.yaml",
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/command-resources/workflows/command-demo.yaml",
+      "sha256": "e4b77379609d39ccdcbb8a52d9503b223648e0d6889e1dc368cbe86a61b314c3",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/external-requirements/digests.json",
+      "sha256": "5ff8a081e9a202d6e250824bfd36622692f9ca824b3ec269963465cbf6fbb6a7",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/external-requirements/workflow-package.json",
+      "sha256": "ff6c4fa5d5311d36bba8db00192350ffebe861b9cb7cd4e46fe7c9fb3c50128a",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/external-requirements/workflows/external-tool.hermes.yaml",
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/external-requirements/workflows/external-tool.yaml",
+      "sha256": "3919b2978d9418eff1f7614ae4cd733b9135d943f75cdc707f1a07f9027102a1",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/commands/interpret-report.md",
+      "sha256": "d0214be91c1f7c4fde04fabf8bea48421a637541c05e0b1c9a62e96e6402625c",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/digests.json",
+      "sha256": "2345c639f305c8da4221aa1f90aae590193131ec33d8f95ecab1eb6634854ef6",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/fixtures/laptop-snapshot.json",
+      "sha256": "7280acaf83d9e1574944db2d22f5bc758868803a65624a5e83d3f8b03cfd930d",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/scripts/analyze-snapshot.py",
+      "sha256": "26ca694f9b5d4dc657a0efee28580b192cef427d8715c58d54cb9e74ed682461",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/scripts/render-report.py",
+      "sha256": "c02253c53c6ade87af2e3e27a0071716fee51a809b4758e2ceb25961109b6ed0",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/workflow-package.json",
+      "sha256": "834b2d1f0915cf4a2cca9f0c3a2d66a5999c74412ac1358fac7d49405726e3af",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/workflows/laptop-diagnostic.hermes.yaml",
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/laptop-diagnostic/workflows/laptop-diagnostic.yaml",
+      "sha256": "ace05443c5126df18a1253a5966babe8fd78bf8e455427188d7778c7af8eda31",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/digests.json",
+      "sha256": "71869f6d2f129468e10bea1f0f71193ca20d83043dc747d5e28cd491ef679211",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/scripts/shared-support.py",
+      "sha256": "1077ad41a7537ac7fb875ed3b41c30be098141a004cb8f7622d10dffb8a487b2",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/workflow-package.json",
+      "sha256": "c132dcdbd20d74f5615f3570b84bebc5a253f79a561cbc8dbac6cedfca1bf21f",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/workflows/collect-bundle.hermes.yaml",
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/workflows/collect-bundle.yaml",
+      "sha256": "026df7664e3c7db6e153e21e00ae0ff2ee728b55af6cc94b2a9eecc5a1776200",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/workflows/diagnose.hermes.yaml",
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522",
+      "maxBytes": 2097152
+    },
+    {
+      "path": "examples/packages/multi-workflow-support/workflows/diagnose.yaml",
+      "sha256": "fea8e867e80009a944df0b332f4452cf488f82561ff6e99d32641361181f50d7",
+      "maxBytes": 2097152
+    },
+    {
       "path": "examples/parallel-fan-in/workflow.hermes.yaml",
       "sha256": "9cbe7e78f4181c42300c3cbba02bbc5dc0834c44b17b719733365bd5184ca5e0",
       "maxBytes": 2097152

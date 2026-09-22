@@ -142,3 +142,29 @@ describe('ExampleGallery', () => {
     expect(onRetry).toHaveBeenCalledOnce()
   })
 })
+
+it('distinguishes packages and delegates a complete editable package copy', async () => {
+  const copy = vi.fn()
+  const pkg = {
+    id: 'laptop',
+    title: 'Laptop support package',
+    summary: 'Synthetic package.',
+    readOnly: true as const,
+    files: [{ path: 'scripts/analyze.py', text: 'print(1)' }],
+  }
+  render(ExampleGallery, {
+    catalogState: { phase: 'ready', examples: [example] },
+    topicLabels: {},
+    onCreateEditableCopy: vi.fn(),
+    onOpenDocumentation: vi.fn(),
+    packageExamples: [pkg],
+    onCreatePackageCopy: copy,
+  })
+  expect(screen.getByText('Workflow')).toBeVisible()
+  const card = within(screen.getByRole('article', { name: 'Laptop support package' }))
+  expect(card.getByText('Package')).toBeVisible()
+  await fireEvent.click(card.getByRole('button', { name: 'Preview Laptop support package' }))
+  expect(screen.getByText('scripts/analyze.py')).toBeVisible()
+  await fireEvent.click(screen.getByRole('button', { name: 'Create Editable Copy: Laptop support package' }))
+  expect(copy).toHaveBeenCalledWith(pkg)
+})

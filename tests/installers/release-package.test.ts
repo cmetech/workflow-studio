@@ -382,3 +382,22 @@ describe('Windows packaged executable verification', () => {
     expect(readFileSync('index.html', 'utf8')).toContain('<link rel="icon" href="/favicon.ico" type="image/x-icon" />')
   })
 })
+
+it('includes complete package examples in the protected offline resource tree', async () => {
+  const fixture = materializeResourceRoot()
+  try {
+    for (const path of [
+      'examples/packages/catalog.yaml',
+      'examples/packages/laptop-diagnostic/digests.json',
+      'examples/packages/laptop-diagnostic/scripts/analyze-snapshot.py',
+      'examples/packages/laptop-diagnostic/commands/interpret-report.md',
+    ]) {
+      expect(readFileSync(join(fixture.root, path))).toEqual(readFileSync(path))
+    }
+    await expect(verifier()(fixture.root, fixture.manifestPath)).resolves.toEqual({
+      verifiedFiles: RESOURCE_FILE_COUNT,
+    })
+  } finally {
+    rmSync(fixture.cleanupRoot, { recursive: true, force: true })
+  }
+})

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "external-requirements",
+  "version": "1.0.0",
+  "displayName": "Destination requirements",
+  "description": "Synthetic offline example. Studio does not execute its content.",
+  "license": "MIT",
+  "publisher": "loop24-examples",
+  "tags": [
+    "example"
+  ],
+  "workflows": [
+    {
+      "definition": "workflows/external-tool.yaml",
+      "companion": "workflows/external-tool.hermes.yaml"
+    }
+  ],
+  "externalRequirements": {
+    "runtimes": [],
+    "tools": [
+      "read_file"
+    ],
+    "providers": [
+      "example-provider"
+    ],
+    "services": [
+      "example-support-service"
+    ],
+    "secrets": [
+      "SUPPORT_TOKEN"
+    ]
+  }
+}
