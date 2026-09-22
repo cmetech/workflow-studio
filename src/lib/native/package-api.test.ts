@@ -82,7 +82,14 @@ it('writes generated outputs together and consumes the snapshot', async () => {
 
 it('uses exact command payloads', async () => {
   invoke.mockResolvedValue(undefined)
-  const plan = { workspaceId: 'w', expectedEntries: [], writes: [], moves: [], trashes: [] }
+  const plan = {
+    workspaceId: 'w',
+    packageSnapshotToken: 'capture',
+    expectedEntries: [],
+    writes: [],
+    moves: [],
+    trashes: [],
+  }
   await tauriBridge.workspaceApplyTransaction(plan)
   expect(invoke).toHaveBeenLastCalledWith('workspace_apply_transaction', { plan })
   await tauriBridge.workspaceHashPackage('p')
@@ -209,4 +216,91 @@ it('captures workspace-root packages with relative entries while refusing root p
   expect(
     (await bridge.workspaceHashPackage('')).files.find((file) => file.relativePath === 'nested/a.md')?.sha256,
   ).not.toBe(snapshot.files[0]?.sha256)
+})
+
+it('guards complete package membership for text transactions and consumes stale captures', async () => {
+  const bridge = createBrowserBridge({ initialFiles: { 'p/README.md': 'original' } })
+  const snapshot = await bridge.workspaceHashPackage('p')
+  await bridge.workspaceWriteTextArtifact({
+    relativePath: 'p/foreign.md',
+    text: 'concurrent',
+    expectedCurrentHash: null,
+  })
+  const plan = {
+    workspaceId: snapshot.workspaceId,
+    packageSnapshotToken: snapshot.sourceSnapshotToken,
+    expectedEntries: [{ relativePath: 'p/new.md', expectedCurrentHash: null }],
+    writes: [{ relativePath: 'p/new.md', text: 'new', expectedCurrentHash: null }],
+    moves: [],
+    trashes: [],
+  }
+  await expect(bridge.workspaceApplyTransaction(plan)).rejects.toMatchObject({ code: 'package_source_changed' })
+  await expect(bridge.workspaceReadArtifact('p/new.md')).rejects.toMatchObject({ code: 'path_not_found' })
+  await expect(bridge.workspaceApplyTransaction(plan)).rejects.toMatchObject({ code: 'package_snapshot_invalid' })
+})
+
+it('bounds projected package totals while permitting exact binary replacement and nested import', async () => {
+  const MiB = 1024 * 1024
+  const initialArtifacts = Object.fromEntries(
+    Array.from({ length: 8 }, (_, index) => [`p/${index}.bin`, new Uint8Array(MiB)]),
+  )
+  const bridge = createBrowserBridge({ initialArtifacts, chooseArtifactSource: async () => new Uint8Array([255]) })
+  const snapshot = await bridge.workspaceHashPackage('p')
+  const source = (await bridge.chooseImportArtifact())!
+  await expect(
+    bridge.workspaceImportArtifact({
+      relativePath: 'p/new/deep.bin',
+      ...source,
+      packageSnapshotToken: snapshot.sourceSnapshotToken,
+    }),
+  ).rejects.toMatchObject({ code: 'package_total_size_limit' })
+  await expect(bridge.workspaceReadArtifact('p/new/deep.bin')).rejects.toMatchObject({ code: 'path_not_found' })
+  const replacement = await bridge.workspaceHashPackage('p')
+  const existing = await bridge.workspaceReadArtifact('p/0.bin')
+  await bridge.workspaceReplaceArtifact({
+    relativePath: 'p/0.bin',
+    ...(await bridge.chooseImportArtifact())!,
+    expectedCurrentHash: existing.sha256,
+    packageSnapshotToken: replacement.sourceSnapshotToken,
+  })
+  const next = await bridge.workspaceHashPackage('p')
+  await bridge.workspaceImportArtifact({
+    relativePath: 'p/new/deep.bin',
+    ...(await bridge.chooseImportArtifact())!,
+    packageSnapshotToken: next.sourceSnapshotToken,
+  })
+  expect((await bridge.workspaceReadArtifact('p/new/deep.bin')).size).toBe(1)
+})
+
+it('permits guarded standalone adoption but forbids package-token mutations outside its root', async () => {
+  const bridge = createBrowserBridge({
+    initialFiles: { 'p/README.md': 'original', 'standalone.yaml': 'source', 'index.json': '{}' },
+  })
+  const source = await bridge.workspaceReadArtifact('standalone.yaml')
+  const index = await bridge.workspaceReadArtifact('index.json')
+  const snapshot = await bridge.workspaceHashPackage('p')
+  await bridge.workspaceApplyTransaction({
+    workspaceId: snapshot.workspaceId,
+    packageSnapshotToken: snapshot.sourceSnapshotToken,
+    expectedEntries: [
+      { relativePath: 'standalone.yaml', expectedCurrentHash: source.sha256 },
+      { relativePath: 'p/workflows/new.yaml', expectedCurrentHash: null },
+      { relativePath: 'index.json', expectedCurrentHash: index.sha256 },
+    ],
+    writes: [],
+    moves: [{ sourcePath: 'standalone.yaml', destinationPath: 'p/workflows/new.yaml' }],
+    trashes: [],
+  })
+  expect((await bridge.workspaceReadTextArtifact('p/workflows/new.yaml')).text).toBe('source')
+  const fresh = await bridge.workspaceHashPackage('p')
+  await expect(
+    bridge.workspaceApplyTransaction({
+      workspaceId: fresh.workspaceId,
+      packageSnapshotToken: fresh.sourceSnapshotToken,
+      expectedEntries: [{ relativePath: 'outside.md', expectedCurrentHash: null }],
+      writes: [{ relativePath: 'outside.md', text: 'forbidden', expectedCurrentHash: null }],
+      moves: [],
+      trashes: [],
+    }),
+  ).rejects.toMatchObject({ code: 'package_mutation_outside_root' })
 })

@@ -1,10 +1,10 @@
-pub(crate) mod transaction;
-pub(crate) mod package_hash;
-pub(crate) mod generated_write;
 pub(crate) mod artifacts;
 pub(crate) mod dialogs;
 mod files;
+pub(crate) mod generated_write;
+pub(crate) mod package_hash;
 mod paths;
+pub(crate) mod transaction;
 mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -396,3 +396,6 @@ mod repository_result_tests {
             .starts_with(r"\\?\"));
     }
 }
+
+#[cfg(test)]
+mod package_mutation_tests;

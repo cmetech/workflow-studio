@@ -90,6 +90,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     },
     (paths) => emit({ paths, kind: 'modify' }),
   )
+  artifacts.setPackageGuard(packages.prepareArtifactWrite)
   return {
     ...artifacts.bridge,
     ...packages.bridge,

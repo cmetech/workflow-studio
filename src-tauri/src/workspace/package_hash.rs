@@ -228,7 +228,7 @@ fn dir_identity(dir: &Dir) -> WorkspaceResult<EntryIdentity> {
 }
 
 pub fn capture(scope: &WorkspaceScope, package_root: &str) -> WorkspaceResult<Capture> {
-    capture_impl(scope, package_root, || {})
+    capture_impl(scope, package_root, &[], 0, || {})
 }
 #[cfg(test)]
 pub fn capture_with_hook(
@@ -236,13 +236,25 @@ pub fn capture_with_hook(
     package_root: &str,
     hook: impl FnOnce(),
 ) -> WorkspaceResult<Capture> {
-    capture_impl(scope, package_root, hook)
+    capture_impl(scope, package_root, &[], 0, hook)
 }
 fn capture_impl(
     scope: &WorkspaceScope,
     package_root: &str,
+    ignored: &[String],
+    traversal_allowance: u64,
     hook: impl FnOnce(),
 ) -> WorkspaceResult<Capture> {
+    let ignored: std::collections::HashSet<&str> = ignored
+        .iter()
+        .filter_map(|path| {
+            if package_root.is_empty() {
+                Some(path.as_str())
+            } else {
+                path.strip_prefix(&format!("{package_root}/"))
+            }
+        })
+        .collect();
     let root = directory(scope, package_root)?;
     let mut captured = Capture {
         files: Vec::new(),
@@ -272,13 +284,15 @@ fn capture_impl(
         &mut aliases,
         &mut total,
         &mut count,
+        &ignored,
+        traversal_allowance,
     )?;
     captured
         .files
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     // Re-enumerate metadata without rereading bytes to detect membership/identity races during capture.
     hook();
-    verify_metadata(scope, &captured)?;
+    verify_metadata(scope, &captured, &ignored, traversal_allowance)?;
     Ok(captured)
 }
 fn scan(
@@ -290,6 +304,8 @@ fn scan(
     aliases: &mut HashMap<String, String>,
     total: &mut u64,
     count: &mut u64,
+    ignored: &std::collections::HashSet<&str>,
+    traversal_allowance: u64,
 ) -> WorkspaceResult<()> {
     for entry in dir.entries().map_err(io)? {
         let entry = entry.map_err(io)?;
@@ -302,8 +318,11 @@ fn scan(
         } else {
             format!("{prefix}/{name}")
         };
+        if ignored.contains(path.as_str()) {
+            continue;
+        }
         check_path(&path)?;
-        if captured.entries.len() as u64 > limit("max_traversal_entries") {
+        if captured.entries.len() as u64 > limit("max_traversal_entries") + traversal_allowance {
             return Err(error("package_traversal_limit"));
         }
         if aliases.insert(canonical(&path), path.clone()).is_some() {
@@ -326,7 +345,18 @@ fn scan(
                     read_only: false,
                 },
             );
-            scan(scope, &child, root, &path, captured, aliases, total, count)?;
+            scan(
+                scope,
+                &child,
+                root,
+                &path,
+                captured,
+                aliases,
+                total,
+                count,
+                ignored,
+                traversal_allowance,
+            )?;
         } else if metadata.is_file() {
             if path != "digests.json" {
                 *count += 1;
@@ -398,13 +428,18 @@ fn scan(
     }
     Ok(())
 }
-fn verify_metadata(scope: &WorkspaceScope, captured: &Capture) -> WorkspaceResult<()> {
+fn verify_metadata(
+    scope: &WorkspaceScope,
+    captured: &Capture,
+    ignored: &std::collections::HashSet<&str>,
+    traversal_allowance: u64,
+) -> WorkspaceResult<()> {
     let root = directory(scope, &captured.package_root)?;
     if dir_identity(&root)? != captured.entries[""].identity {
         return Err(error("package_source_changed"));
     }
     let mut found = BTreeMap::new();
-    metadata_walk(&root, "", &mut found, &std::collections::HashSet::new())?;
+    metadata_walk_budget(&root, "", &mut found, ignored, traversal_allowance)?;
     if found.len() + 1 != captured.entries.len() {
         return Err(error("package_source_changed"));
     }
@@ -428,6 +463,15 @@ fn metadata_walk(
     found: &mut BTreeMap<String, (bool, EntryIdentity, u64, String)>,
     ignored: &std::collections::HashSet<&str>,
 ) -> WorkspaceResult<()> {
+    metadata_walk_budget(dir, prefix, found, ignored, 0)
+}
+fn metadata_walk_budget(
+    dir: &Dir,
+    prefix: &str,
+    found: &mut BTreeMap<String, (bool, EntryIdentity, u64, String)>,
+    ignored: &std::collections::HashSet<&str>,
+    traversal_allowance: u64,
+) -> WorkspaceResult<()> {
     for entry in dir.entries().map_err(io)? {
         let entry = entry.map_err(io)?;
         let name = entry
@@ -443,7 +487,7 @@ fn metadata_walk(
             continue;
         }
         check_path(&path)?;
-        if found.len() as u64 >= limit("max_traversal_entries") {
+        if found.len() as u64 >= limit("max_traversal_entries") + traversal_allowance {
             return Err(error("package_traversal_limit"));
         }
         let metadata = dir.symlink_metadata(&name).map_err(io)?;
@@ -454,7 +498,7 @@ fn metadata_walk(
                 path.clone(),
                 (true, dir_identity(&child)?, 0, String::new()),
             );
-            metadata_walk(&child, &path, found, ignored)?;
+            metadata_walk_budget(&child, &path, found, ignored, traversal_allowance)?;
         } else {
             let bound = files::BoundPath {
                 parent: dir.try_clone().map_err(io)?,
@@ -619,4 +663,190 @@ pub(super) fn workspace_entries(captured: &Capture) -> Vec<files::WorkspaceFileE
             read_only: entry.read_only,
         })
         .collect()
+}
+
+/// A native-only projection: schema and manifest semantics remain in TypeScript.
+pub(super) struct MutationProjection<'a> {
+    captured: &'a Capture,
+    entries: BTreeMap<String, (bool, Option<String>, u64)>,
+    changed: std::collections::HashSet<String>,
+    new_directories: std::collections::HashSet<String>,
+}
+impl<'a> MutationProjection<'a> {
+    pub(super) fn new(
+        scope: &WorkspaceScope,
+        captured: &'a Capture,
+        plan: &super::transaction::PackageMutationPlan,
+        binary: Option<(&str, &str, u64)>,
+    ) -> WorkspaceResult<Self> {
+        verify(scope, captured)?;
+        let mut result = Self {
+            captured,
+            entries: captured
+                .entries
+                .iter()
+                .map(|(path, entry)| (path.clone(), (entry.kind, entry.hash.clone(), entry.size)))
+                .collect(),
+            changed: Default::default(),
+            new_directories: Default::default(),
+        };
+        for write in &plan.writes {
+            let (hash, size) = binary
+                .filter(|(path, _, _)| *path == write.relative_path)
+                .map(|(_, hash, size)| (hash.to_owned(), size))
+                .unwrap_or_else(|| {
+                    (
+                        files::hash_bytes(write.text.as_bytes()),
+                        write.text.len() as u64,
+                    )
+                });
+            result.insert(&write.relative_path, hash, size)?;
+        }
+        for movement in &plan.moves {
+            let expected = plan
+                .expected_entries
+                .iter()
+                .find(|entry| entry.relative_path == movement.source_path)
+                .and_then(|entry| entry.expected_current_hash.as_ref())
+                .ok_or_else(|| error("workspace_transaction_invalid"))?;
+            let source = artifacts::read(scope, &movement.source_path)?;
+            if &source.sha256 != expected {
+                return Err(error("workspace_revision_conflict"));
+            }
+            if let Ok(path) = result.relative(&movement.source_path) {
+                result.entries.remove(&path);
+                result.changed.insert(path);
+            }
+            result.insert(&movement.destination_path, source.sha256, source.size)?;
+        }
+        for trash in &plan.trashes {
+            let path = result.relative(&trash.relative_path)?;
+            result.entries.remove(&path);
+            result.changed.insert(path);
+        }
+        result.validate()?;
+        Ok(result)
+    }
+    fn relative(&self, path: &str) -> WorkspaceResult<String> {
+        artifacts::validate(path)?;
+        if self.captured.package_root.is_empty() {
+            return Ok(path.into());
+        }
+        path.strip_prefix(&format!("{}/", self.captured.package_root))
+            .map(str::to_owned)
+            .ok_or_else(|| error("package_mutation_outside_root"))
+    }
+    fn insert(&mut self, path: &str, hash: String, size: u64) -> WorkspaceResult<()> {
+        let path = self.relative(path)?;
+        check_path(&path)?;
+        let parts: Vec<_> = path.split('/').collect();
+        for end in 1..parts.len() {
+            let parent = parts[..end].join("/");
+            match self.entries.get(&parent) {
+                Some((false, _, _)) => return Err(error("package_path_collision")),
+                Some(_) => (),
+                None => {
+                    self.entries.insert(parent.clone(), (true, None, 0));
+                    self.new_directories.insert(parent);
+                }
+            }
+        }
+        if self.entries.get(&path).is_some_and(|entry| entry.0) {
+            return Err(error("package_path_collision"));
+        }
+        self.entries.insert(path.clone(), (false, Some(hash), size));
+        self.changed.insert(path);
+        Ok(())
+    }
+    fn validate(&self) -> WorkspaceResult<()> {
+        let mut aliases = std::collections::HashSet::new();
+        let mut count = 0;
+        let mut total = 0;
+        if self.entries.len().saturating_sub(1) as u64 > limit("max_traversal_entries") {
+            return Err(error("package_traversal_limit"));
+        }
+        for (path, (directory, _, size)) in &self.entries {
+            if path.is_empty() {
+                continue;
+            }
+            check_path(path)?;
+            if !aliases.insert(canonical(path)) {
+                return Err(error("package_path_collision"));
+            }
+            if !directory {
+                if *size > limit("max_file_bytes") {
+                    return Err(error("package_file_size_limit"));
+                }
+                if path != "digests.json" {
+                    count += 1;
+                    total += size;
+                }
+            }
+        }
+        if count > limit("max_files") {
+            return Err(error("package_file_count_limit"));
+        }
+        if total > limit("max_total_bytes") {
+            return Err(error("package_total_size_limit"));
+        }
+        Ok(())
+    }
+    pub(super) fn verify(
+        &self,
+        scope: &WorkspaceScope,
+        ignored: &[String],
+        after: bool,
+    ) -> WorkspaceResult<()> {
+        // Only native-recorded new directories can expand the temporary inventory.
+        // Their children remain fully enumerated, and the final tree keeps the strict contract limit.
+        let allowance = if after {
+            0
+        } else {
+            self.new_directories.len() as u64
+        };
+        let actual = capture_impl(
+            scope,
+            &self.captured.package_root,
+            ignored,
+            allowance,
+            || {},
+        )?;
+        let expected_len = if after {
+            self.entries.len()
+        } else {
+            self.captured.entries.len() + self.new_directories.len()
+        };
+        if actual.entries.len() != expected_len {
+            return Err(error("package_source_changed"));
+        }
+        for (path, entry) in &actual.entries {
+            if after && self.changed.contains(path) {
+                let Some((kind, hash, size)) = self.entries.get(path) else {
+                    return Err(error("package_source_changed"));
+                };
+                if entry.kind != *kind || &entry.hash != hash || entry.size != *size {
+                    return Err(error("package_source_changed"));
+                }
+            } else if self.new_directories.contains(path) {
+                if !entry.kind {
+                    return Err(error("package_source_changed"));
+                }
+            } else {
+                let Some(prior) = self.captured.entries.get(path) else {
+                    return Err(error("package_source_changed"));
+                };
+                if entry.kind != prior.kind
+                    || entry.identity != prior.identity
+                    || entry.hash != prior.hash
+                    || entry.size != prior.size
+                {
+                    return Err(error("package_source_changed"));
+                }
+                if after && !self.entries.contains_key(path) {
+                    return Err(error("package_source_changed"));
+                }
+            }
+        }
+        Ok(())
+    }
 }

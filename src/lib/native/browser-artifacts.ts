@@ -18,6 +18,7 @@ export function browserArtifacts(
 ) {
   const bytes = new Map(Object.entries(options.initialArtifacts ?? {}).map(([path, value]) => [path, value.slice()]))
   const grants = new Map<string, Uint8Array>()
+  let packageGuard: ((token: string, path: string, bytes: Uint8Array) => () => void) | undefined
   let generation = 0
   const maximum = contract.resource_rules.max_file_bytes
   function check(path: string) {
@@ -49,7 +50,7 @@ export function browserArtifacts(
       mediaType: png(path, value) ? 'image/png' : 'application/octet-stream',
     }
   }
-  async function write(path: string, value: Uint8Array, expected: string | null) {
+  async function write(path: string, value: Uint8Array, expected: string | null, guard?: () => void) {
     check(path)
     bounded(value)
     const priorText = readText(path)
@@ -64,6 +65,7 @@ export function browserArtifacts(
       priorGeneration !== generation
     )
       throw new NativeError('workspace_revision_conflict', 'The artifact changed before saving.')
+    guard?.()
     bytes.set(path, value.slice())
     try {
       saveText(path, new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(value))
@@ -73,11 +75,14 @@ export function browserArtifacts(
     await changed(path, existed)
     return metadata(path)
   }
-  async function replace(path: string, token: string, expected: string | null) {
+  async function replace(path: string, token: string, expected: string | null, packageToken?: string) {
     const source = grants.get(token)
     grants.delete(token)
     if (!source) throw new NativeError('artifact_source_grant_invalid', 'Choose the source again.')
-    return write(path, source, expected)
+    if (packageToken && !packageGuard)
+      throw new NativeError('package_snapshot_invalid', 'Package capture is unavailable.')
+    const guard = packageToken ? packageGuard!(packageToken, path, source) : undefined
+    return write(path, source, expected, guard)
   }
   const bridge: ArtifactNativeBridge = {
     chooseImportArtifact: async () => {
@@ -102,9 +107,10 @@ export function browserArtifacts(
     },
     workspaceWriteTextArtifact: ({ relativePath, text, expectedCurrentHash }) =>
       write(relativePath, new TextEncoder().encode(text), expectedCurrentHash),
-    workspaceImportArtifact: ({ relativePath, sourceGrantToken }) => replace(relativePath, sourceGrantToken, null),
-    workspaceReplaceArtifact: ({ relativePath, sourceGrantToken, expectedCurrentHash }) =>
-      replace(relativePath, sourceGrantToken, expectedCurrentHash),
+    workspaceImportArtifact: ({ relativePath, sourceGrantToken, packageSnapshotToken }) =>
+      replace(relativePath, sourceGrantToken, null, packageSnapshotToken),
+    workspaceReplaceArtifact: ({ relativePath, sourceGrantToken, expectedCurrentHash, packageSnapshotToken }) =>
+      replace(relativePath, sourceGrantToken, expectedCurrentHash, packageSnapshotToken),
     workspaceRevealArtifact: async (path) => {
       await metadata(path)
       options.onRevealArtifact?.(path)
@@ -117,6 +123,9 @@ export function browserArtifacts(
   }
   return {
     bridge,
+    setPackageGuard: (guard: (token: string, path: string, bytes: Uint8Array) => () => void) => {
+      packageGuard = guard
+    },
     clearGrants: () => {
       generation += 1
       grants.clear()

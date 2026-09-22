@@ -379,6 +379,17 @@ pub fn import(
     token: &str,
     expected: Option<&str>,
 ) -> WorkspaceResult<WorkspaceArtifactMetadata> {
+    import_captured(scope, generation, grants, relative, token, expected, None)
+}
+pub(super) fn import_captured(
+    scope: &WorkspaceScope,
+    generation: u64,
+    grants: &ArtifactGrantState,
+    relative: &str,
+    token: &str,
+    expected: Option<&str>,
+    captured: Option<&super::package_hash::Capture>,
+) -> WorkspaceResult<WorkspaceArtifactMetadata> {
     let mut grant = grants
         .sources
         .lock()
@@ -396,6 +407,44 @@ pub fn import(
         return Err(grant_error());
     }
     grant.file.seek(SeekFrom::Start(0)).map_err(io)?;
+    if let Some(captured) = captured {
+        use super::transaction::{ExpectedWorkspaceEntry, PackageMutationPlan, WriteRequest};
+        let plan = PackageMutationPlan {
+            package_snapshot_token: None,
+            workspace_id: super::transaction::workspace_id(scope)?,
+            expected_entries: vec![ExpectedWorkspaceEntry {
+                relative_path: relative.into(),
+                expected_current_hash: expected.map(str::to_owned),
+            }],
+            writes: vec![WriteRequest {
+                relative_path: relative.into(),
+                text: String::new(),
+                expected_current_hash: expected.map(str::to_owned),
+            }],
+            moves: vec![],
+            trashes: vec![],
+        };
+        let size = grant.file.metadata().map_err(io)?.len();
+        super::transaction::apply_captured_stream(
+            scope,
+            &plan,
+            captured,
+            &grant.hash,
+            size,
+            &mut grant.file,
+            || {
+                let rebound = bind(&grant.scope, &grant.name).map_err(|_| grant_error())?;
+                let mut current = open(&rebound).map_err(|_| grant_error())?;
+                if identity(&current)? != grant.identity
+                    || files::hash_open_file(&mut current, max_bytes())? != grant.hash
+                {
+                    return Err(grant_error());
+                }
+                Ok(())
+            },
+        )?;
+        return read(scope, relative);
+    }
     files::write_artifact_stream_verified(
         scope,
         relative,
@@ -510,30 +559,59 @@ pub fn workspace_write_text_artifact(
 pub fn workspace_import_artifact(
     relative_path: String,
     source_grant_token: String,
+    package_snapshot_token: Option<String>,
     state: State<'_, WorkspaceState>,
     grants: State<'_, ArtifactGrantState>,
+    snapshots: State<'_, super::package_hash::PackageSnapshotState>,
 ) -> WorkspaceResult<WorkspaceArtifactMetadata> {
-    workspace_replace_artifact(relative_path, source_grant_token, None, state, grants)
+    workspace_replace_artifact(
+        relative_path,
+        source_grant_token,
+        None,
+        package_snapshot_token,
+        state,
+        grants,
+        snapshots,
+    )
 }
 #[tauri::command]
 pub fn workspace_replace_artifact(
     relative_path: String,
     source_grant_token: String,
     expected_current_hash: Option<String>,
+    package_snapshot_token: Option<String>,
     state: State<'_, WorkspaceState>,
     grants: State<'_, ArtifactGrantState>,
+    snapshots: State<'_, super::package_hash::PackageSnapshotState>,
 ) -> WorkspaceResult<WorkspaceArtifactMetadata> {
     let active = state.active.lock().map_err(|_| super::state_error())?;
     let active = active
         .as_ref()
         .ok_or_else(|| issue("workspace_not_selected", "Select a workspace first."))?;
-    import(
+    let captured = package_snapshot_token
+        .as_deref()
+        .map(|token| {
+            super::package_hash::take_for_git(&snapshots, &active.scope, active.generation, token)
+        })
+        .transpose()?;
+    if captured.is_none() {
+        return import(
+            &active.scope,
+            active.generation,
+            &grants,
+            &relative_path,
+            &source_grant_token,
+            expected_current_hash.as_deref(),
+        );
+    }
+    import_captured(
         &active.scope,
         active.generation,
         &grants,
         &relative_path,
         &source_grant_token,
         expected_current_hash.as_deref(),
+        captured.as_ref(),
     )
 }
 #[tauri::command]

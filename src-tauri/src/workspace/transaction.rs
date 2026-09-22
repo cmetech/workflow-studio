@@ -33,6 +33,7 @@ pub struct MoveRequest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageMutationPlan {
+    pub package_snapshot_token: Option<String>,
     pub workspace_id: String,
     pub expected_entries: Vec<ExpectedWorkspaceEntry>,
     pub writes: Vec<WriteRequest>,
@@ -371,6 +372,9 @@ pub fn apply(
     scope: &WorkspaceScope,
     plan: &PackageMutationPlan,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
+    if plan.package_snapshot_token.is_some() {
+        return Err(error("package_snapshot_invalid"));
+    }
     apply_verified(scope, plan, |_| Ok(()), |_| Ok(()), |_| Ok(()))
 }
 #[cfg(test)]
@@ -389,7 +393,15 @@ pub(super) fn apply_verified(
     verify_after: impl FnOnce(&[String]) -> WorkspaceResult<()>,
     hook: impl FnMut(usize) -> WorkspaceResult<()>,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
-    apply_verified_staging(scope, plan, verify_before, verify_after, hook, |_| Ok(()))
+    apply_verified_staging(
+        scope,
+        plan,
+        verify_before,
+        verify_after,
+        hook,
+        |_| Ok(()),
+        |write, path| stage_text(scope, write, path),
+    )
 }
 
 #[cfg(test)]
@@ -398,7 +410,15 @@ pub fn apply_with_staging_hook(
     plan: &PackageMutationPlan,
     stage: impl FnMut(usize) -> WorkspaceResult<()>,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
-    apply_verified_staging(scope, plan, |_| Ok(()), |_| Ok(()), |_| Ok(()), stage)
+    apply_verified_staging(
+        scope,
+        plan,
+        |_| Ok(()),
+        |_| Ok(()),
+        |_| Ok(()),
+        stage,
+        |write, path| stage_text(scope, write, path),
+    )
 }
 
 fn apply_verified_staging(
@@ -408,10 +428,12 @@ fn apply_verified_staging(
     verify_after: impl FnOnce(&[String]) -> WorkspaceResult<()>,
     mut hook: impl FnMut(usize) -> WorkspaceResult<()>,
     mut stage: impl FnMut(usize) -> WorkspaceResult<()>,
+    mut stage_write: impl FnMut(&WriteRequest, &str) -> WorkspaceResult<String>,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
     let expected = validate_plan(scope, plan)?;
     let mut created = Vec::new();
     let mut staged: Vec<Staged> = Vec::new();
+    let mut write_hashes = Vec::new();
     let mut backups: Vec<Backup> = Vec::new();
     let mut installed: Vec<Installed> = Vec::new();
     let mut step = 0;
@@ -431,7 +453,7 @@ fn apply_verified_staging(
         for (position, write) in plan.writes.iter().enumerate() {
             stage(position)?;
             let relative = sibling(&write.relative_path, "stage")?;
-            artifacts::write_text(scope, &relative, &write.text, None)?;
+            write_hashes.push(stage_write(write, &relative)?);
             let bound = artifacts::bind(scope, &relative)?;
             let identity = files::transaction_identity(&bound)?;
             staged.push(Staged {
@@ -450,8 +472,13 @@ fn apply_verified_staging(
             }
         }
         // Native-owned temporary entries are not members of the final package tree.
-        let mut temporary_paths: HashSet<_> =
-            staged.iter().map(|file| file.relative.clone()).collect();
+        // Exempt only native-owned entries from the sibling traversal budget.
+        // Created directories are still descended into and identity-checked below.
+        let mut temporary_paths: HashSet<_> = staged
+            .iter()
+            .map(|file| file.relative.clone())
+            .chain(created.iter().map(|directory| directory.relative.clone()))
+            .collect();
         // Recheck every expected identity/hash after staging and before any original changes.
         for (path, prior) in &expected {
             if prior.is_none() && is_created_directory(scope, path, &created)? {
@@ -463,6 +490,9 @@ fn apply_verified_staging(
             {
                 return Err(error("workspace_revision_conflict"));
             }
+        }
+        for directory in &created {
+            is_created_directory(scope, &directory.relative, &created)?;
         }
         verify_before(
             &staged
@@ -545,10 +575,8 @@ fn apply_verified_staging(
             hook(step)?;
             step += 1;
         }
-        for write in &plan.writes {
-            if artifacts::read(scope, &write.relative_path)?.sha256
-                != files::hash_bytes(write.text.as_bytes())
-            {
+        for (write, expected_hash) in plan.writes.iter().zip(&write_hashes) {
+            if artifacts::read(scope, &write.relative_path)?.sha256 != *expected_hash {
                 return Err(error("workspace_revision_conflict"));
             }
         }
@@ -559,25 +587,38 @@ fn apply_verified_staging(
             }
         }
         temporary_paths.extend(backups.iter().map(|file| file.saved.clone()));
-        for (path, prior) in &expected {
-            let touched = plan.writes.iter().any(|write| &write.relative_path == path)
-                || plan.moves.iter().any(|movement| {
-                    &movement.source_path == path || &movement.destination_path == path
-                })
-                || plan
-                    .trashes
-                    .iter()
-                    .any(|trash| &trash.relative_path == path);
-            if !touched {
-                if prior.is_none() && is_created_directory(scope, path, &created)? {
-                    continue;
+        let verify_read_only_expectations = || -> WorkspaceResult<()> {
+            for (path, prior) in &expected {
+                let touched = plan.writes.iter().any(|write| &write.relative_path == path)
+                    || plan.moves.iter().any(|movement| {
+                        &movement.source_path == path || &movement.destination_path == path
+                    })
+                    || plan
+                        .trashes
+                        .iter()
+                        .any(|trash| &trash.relative_path == path);
+                if !touched {
+                    if prior.is_none() && is_created_directory(scope, path, &created)? {
+                        continue;
+                    }
+                    let current = inspect_excluding(scope, path, &temporary_paths)?;
+                    if current.as_ref().map(|value| (&value.identity, &value.hash))
+                        != prior.as_ref().map(|value| (&value.identity, &value.hash))
+                    {
+                        return Err(error("workspace_revision_conflict"));
+                    }
                 }
-                let current = inspect_excluding(scope, path, &temporary_paths)?;
-                if current.as_ref().map(|value| (&value.identity, &value.hash))
-                    != prior.as_ref().map(|value| (&value.identity, &value.hash))
-                {
-                    return Err(error("workspace_revision_conflict"));
-                }
+            }
+            Ok(())
+        };
+        verify_read_only_expectations()?;
+        for directory in &created {
+            is_created_directory(scope, &directory.relative, &created)?;
+        }
+        for file in &installed {
+            artifacts::verify_binding(scope, &file.relative, &file.bound)?;
+            if files::transaction_identity(&file.bound)? != file.identity {
+                return Err(error("workspace_revision_conflict"));
             }
         }
         verify_after(
@@ -587,6 +628,18 @@ fn apply_verified_staging(
                 .chain(backups.iter().map(|file| file.saved.clone()))
                 .collect::<Vec<_>>(),
         )?;
+        verify_read_only_expectations()?;
+        // The final full-tree check performs I/O; keep its publication identity
+        // bound even if another process swaps same-byte files during that scan.
+        for directory in &created {
+            is_created_directory(scope, &directory.relative, &created)?;
+        }
+        for file in &installed {
+            artifacts::verify_binding(scope, &file.relative, &file.bound)?;
+            if files::transaction_identity(&file.bound)? != file.identity {
+                return Err(error("workspace_revision_conflict"));
+            }
+        }
         Ok(())
     })();
     if let Err(cause) = operation {
@@ -703,6 +756,93 @@ fn apply_verified_staging(
 pub fn workspace_apply_transaction(
     plan: PackageMutationPlan,
     state: State<'_, WorkspaceState>,
+    snapshots: State<'_, super::package_hash::PackageSnapshotState>,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
-    super::with_scope(&state, |scope| apply(scope, &plan))
+    let active = state.active.lock().map_err(|_| super::state_error())?;
+    let active = active
+        .as_ref()
+        .ok_or_else(|| error("workspace_not_selected"))?;
+    if let Some(token) = &plan.package_snapshot_token {
+        let captured =
+            super::package_hash::take_for_git(&snapshots, &active.scope, active.generation, token)?;
+        apply_captured(&active.scope, &plan, &captured, |_| Ok(()))
+    } else {
+        apply(&active.scope, &plan)
+    }
+}
+
+#[cfg(test)]
+pub(super) fn apply_captured_with_hook(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    captured: &super::package_hash::Capture,
+    hook: impl FnMut(usize) -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    apply_captured(scope, plan, captured, hook)
+}
+
+fn apply_captured(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    captured: &super::package_hash::Capture,
+    hook: impl FnMut(usize) -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    let projection = super::package_hash::MutationProjection::new(scope, captured, plan, None)?;
+    apply_verified(
+        scope,
+        plan,
+        |ignored| projection.verify(scope, ignored, false),
+        |ignored| projection.verify(scope, ignored, true),
+        hook,
+    )
+}
+
+fn stage_text(scope: &WorkspaceScope, write: &WriteRequest, path: &str) -> WorkspaceResult<String> {
+    artifacts::write_text(scope, path, &write.text, None)?;
+    Ok(files::hash_bytes(write.text.as_bytes()))
+}
+
+pub(super) fn apply_captured_stream(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    captured: &super::package_hash::Capture,
+    hash: &str,
+    size: u64,
+    reader: &mut impl std::io::Read,
+    verify_source: impl Fn() -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    if plan.writes.len() != 1 || !plan.moves.is_empty() || !plan.trashes.is_empty() {
+        return Err(error("workspace_transaction_invalid"));
+    }
+    let projection = super::package_hash::MutationProjection::new(
+        scope,
+        captured,
+        plan,
+        Some((&plan.writes[0].relative_path, hash, size)),
+    )?;
+    apply_verified_staging(
+        scope,
+        plan,
+        |ignored| {
+            verify_source()?;
+            projection.verify(scope, ignored, false)
+        },
+        |ignored| {
+            verify_source()?;
+            projection.verify(scope, ignored, true)
+        },
+        |_| Ok(()),
+        |_| Ok(()),
+        |_, temporary| {
+            files::write_artifact_stream_verified(
+                scope,
+                temporary,
+                reader,
+                None,
+                Some(hash),
+                &verify_source,
+            )?;
+            Ok(hash.into())
+        },
+    )
 }

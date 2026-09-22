@@ -56,6 +56,15 @@ export function browserPackages(
   const captures = new Map<string, { generation: number; root: string; files: Map<string, Uint8Array> }>()
   async function apply(plan: PackageMutationPlan, guard?: () => void): Promise<WorkspaceTransactionResult> {
     const activeGeneration = generation
+    const captured = plan.packageSnapshotToken ? consume(plan.packageSnapshotToken) : undefined
+    if (captured) {
+      for (const path of [
+        ...plan.writes.map((value) => value.relativePath),
+        ...plan.moves.map((value) => value.destinationPath),
+        ...plan.trashes.map((value) => value.relativePath),
+      ])
+        inside(captured.root, path)
+    }
     if (plan.workspaceId !== 'browser-workspace') fail('workspace_root_changed')
     if (
       plan.expectedEntries.length > limits.max_traversal_entries ||
@@ -103,7 +112,9 @@ export function browserPackages(
     }
     if (total > limits.max_total_bytes) fail('package_total_size_limit')
     pathsSafe([...next.keys()])
+    if (captured) packageFiles(captured.root, next, true)
     if (activeGeneration !== generation || !equal(original, readAll())) fail('workspace_revision_conflict')
+    if (captured) verifyCapture(captured)
     guard?.()
     writeAll(next)
     await changed([...touched])
@@ -120,14 +131,13 @@ export function browserPackages(
       ],
     }
   }
-  function packageFiles(root: string) {
+  function packageFiles(root: string, all = readAll(), allowEmpty = false) {
     if (root !== '') validate(root)
     const prefix = root === '' ? '' : root + '/'
-    const all = readAll()
     const files = new Map(
       [...all].filter(([path]) => path.startsWith(prefix)).map(([path, bytes]) => [path.slice(prefix.length), bytes]),
     )
-    if (!files.size) fail('path_not_found')
+    if (!files.size && !allowEmpty) fail('path_not_found')
     pathsSafe([...files.keys()])
     const entries = new Set<string>()
     let total = 0
@@ -143,6 +153,30 @@ export function browserPackages(
     if (files.size - Number(files.has('digests.json')) > limits.max_files) fail('package_file_count_limit')
     if (total > limits.max_total_bytes) fail('package_total_size_limit')
     return files
+  }
+  function inside(root: string, path: string) {
+    validate(path)
+    if (root !== '' && !path.startsWith(root + '/')) fail('package_mutation_outside_root')
+  }
+  function verifyCapture(captured: { generation: number; root: string; files: Map<string, Uint8Array> }) {
+    if (captured.generation !== generation || !equal(captured.files, packageFiles(captured.root)))
+      fail('package_source_changed')
+  }
+  function consume(token: string) {
+    const captured = captures.get(token)
+    captures.delete(token)
+    if (!captured || captured.generation !== generation) fail('package_snapshot_invalid')
+    verifyCapture(captured)
+    return captured
+  }
+  function prepareArtifactWrite(token: string, path: string, bytes: Uint8Array) {
+    const captured = consume(token)
+    inside(captured.root, path)
+    const next = readAll()
+    next.set(path, bytes)
+    pathsSafe([...next.keys()])
+    packageFiles(captured.root, next)
+    return () => verifyCapture(captured)
   }
   const bridge: PackageNativeBridge = {
     workspaceApplyTransaction: apply,
@@ -223,6 +257,7 @@ export function browserPackages(
   }
   return {
     bridge,
+    prepareArtifactWrite,
     reset: () => {
       generation += 1
       captures.clear()

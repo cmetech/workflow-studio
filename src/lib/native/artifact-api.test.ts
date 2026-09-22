@@ -159,3 +159,13 @@ describe('scoped artifacts', () => {
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
   })
 })
+
+it('passes optional package snapshot authority verbatim for binary import and replacement', async () => {
+  invoke.mockResolvedValue({})
+  const request = { relativePath: 'p/nested/data.bin', sourceGrantToken: 'source', packageSnapshotToken: 'capture' }
+  await tauriBridge.workspaceImportArtifact(request)
+  expect(invoke).toHaveBeenLastCalledWith('workspace_import_artifact', request)
+  const replacement = { ...request, expectedCurrentHash: 'existing' }
+  await tauriBridge.workspaceReplaceArtifact(replacement)
+  expect(invoke).toHaveBeenLastCalledWith('workspace_replace_artifact', replacement)
+})

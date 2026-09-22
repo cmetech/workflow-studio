@@ -82,6 +82,7 @@ fn replace_impl(
     package_hash::verify_generated_capacity(captured)?;
     package_hash::verify(scope, captured)?;
     let plan = PackageMutationPlan {
+        package_snapshot_token: None,
         workspace_id: transaction::workspace_id(scope)?,
         expected_entries: writes
             .iter()
