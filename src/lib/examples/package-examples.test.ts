@@ -8,6 +8,7 @@ import {
   loadBundledWorkflowPackageContract,
 } from '$src/lib/package-contract/bundled-package-contract'
 import { createPackageExampleCopy, loadPackageExampleCatalog } from './package-examples'
+import { createBrowserBridge } from '$src/lib/native/browser-bridge'
 
 async function setup() {
   const native = {
@@ -58,6 +59,15 @@ it('copies a complete validated package through one atomic transaction before op
     example.files.map((file) => `${result.root}/${file.path}`),
   )
   expect(plan.writes.every((write) => write.expectedCurrentHash === null)).toBe(true)
+  expect(deps.open).toHaveBeenCalledWith(result)
+})
+it('copies every destination through the real revision-checked bridge', async () => {
+  const deps = await setup()
+  const native = createBrowserBridge({ initialFiles: {} })
+  const example = (await loadPackageExampleCatalog())[0]!
+  const result = await createPackageExampleCopy(example, { ...deps, workspaceId: 'browser-workspace', native })
+  for (const file of example.files)
+    expect((await native.workspaceReadTextArtifact(result.root + '/' + file.path)).text).toBe(file.text)
   expect(deps.open).toHaveBeenCalledWith(result)
 })
 it('leaves opening and success reporting untouched when the atomic copy fails', async () => {

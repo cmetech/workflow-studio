@@ -111,7 +111,10 @@ export async function createPackageExampleCopy(
   }))
   const result = await deps.native.workspaceApplyTransaction({
     workspaceId: deps.workspaceId,
-    expectedEntries: [{ relativePath: root, expectedCurrentHash: null }],
+    expectedEntries: [
+      { relativePath: root, expectedCurrentHash: null },
+      ...writes.map(({ relativePath }) => ({ relativePath, expectedCurrentHash: null })),
+    ],
     writes,
     moves: [],
     trashes: [],
