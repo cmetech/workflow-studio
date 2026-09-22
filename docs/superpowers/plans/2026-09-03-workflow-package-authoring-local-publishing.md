@@ -58,7 +58,7 @@
 - Consumes: byte-identical contract artifacts from `../hermes-agent/plugins/workflow/contracts/workflow-package-v1.json` and `../hermes-agent/plugins/workflow/contracts/workflow-package-v1-vectors.json` at the immutable agent commit pinned above.
 - Produces: `loadWorkflowPackageContract(bytes: Uint8Array, source: PackageContractSource): Promise<PackageContractLoadResult>` and `loadBundledWorkflowPackageContract(): Promise<WorkflowPackageContract>`.
 
-- [ ] **Step 1: Write failing loader and sync tests**
+- [x] **Step 1: Write failing loader and sync tests**
 
 ```ts
 it('loads the pinned contract and rejects bytes that differ from provenance', async () => {
@@ -77,13 +77,13 @@ it('copies only the two approved Hermes artifacts byte-for-byte', async () => {
 })
 ```
 
-- [ ] **Step 2: Run the tests and verify the missing contract boundary fails**
+- [x] **Step 2: Run the tests and verify the missing contract boundary fails**
 
 Run: `npm run test:unit -- src/lib/package-contract/package-contract-loader.test.ts scripts/sync-package-contracts.test.ts`
 
 Expected: FAIL because the loader, sync function, and bundled artifacts do not exist.
 
-- [ ] **Step 3: Add the package-contract envelope types and fail-closed loader**
+- [x] **Step 3: Add the package-contract envelope types and fail-closed loader**
 
 ```ts
 export interface WorkflowPackageContract {
@@ -105,7 +105,7 @@ export type PackageContractLoadResult =
 
 Validate all three embedded JSON Schemas with Ajv and validate the envelope against the pinned field shapes. Verify SHA-256 of original bytes against external provenance, reject unsupported contract versions, and freeze the accepted value. Do not canonicalize JSON before checking its pin or invent an embedded digest/reader-version field. Define `PackageLimits` with all six upstream limit fields. Test unknown versions with matching fixture provenance so the version check is exercised independently of checksum rejection.
 
-- [ ] **Step 4: Add deterministic sync and bundled loading**
+- [x] **Step 4: Add deterministic sync and bundled loading**
 
 Implement `syncPackageContracts({ sourceRoot, destinationRoot })` to require the exact two filenames, reject symlinks, verify both SHA-256 values against the committed provenance pins, copy their bytes, and validate the contract/vector envelope versions. Resolve the selected immutable Git revision rather than trusting arbitrary working-tree edits. Define `originalContractBytes` and `pinnedSource` from the committed fixtures and external provenance. Add scripts:
 
@@ -118,7 +118,7 @@ Implement `syncPackageContracts({ sourceRoot, destinationRoot })` to require the
 
 Copy the approved upstream artifacts byte-for-byte. Extend the release-resource allowlist and integrity manifest for both files; do not edit their JSON content in Studio.
 
-- [ ] **Step 5: Run focused and packaged-resource verification**
+- [x] **Step 5: Run focused and packaged-resource verification**
 
 Run: `npm run test:unit -- src/lib/package-contract/package-contract-loader.test.ts scripts/sync-package-contracts.test.ts tests/installers/release-package.test.ts`
 
@@ -128,7 +128,7 @@ Run: `npm run resources:verify`
 
 Expected: all commands exit 0; the loader verifies envelope/version/provenance and validates the vector envelope. Semantic vector execution belongs to Tasks 2, 4, and 11, not the loader.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add contracts src/lib/package-contract scripts/sync-package-contracts.ts scripts/sync-package-contracts.test.ts package.json package-lock.json scripts/verify-release-assets.mjs tests/installers/release-package.test.ts src-tauri/resources/setup-integrity-v1.json

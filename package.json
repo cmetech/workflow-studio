@@ -13,6 +13,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json --noEmit",
     "contracts:sync": "tsx scripts/sync-contracts.ts",
     "contracts:check": "tsx scripts/validate-contracts.ts",
+    "package-contracts:sync": "tsx scripts/sync-package-contracts.ts",
+    "package-contracts:check": "tsx scripts/sync-package-contracts.ts --check",
     "examples:check": "tsx scripts/validate-examples.ts",
     "resources:verify": "node scripts/verify-release-assets.mjs --source-resource-root . --integrity-manifest src-tauri/resources/setup-integrity-v1.json",
     "resources:sync-integrity": "node scripts/verify-release-assets.mjs --source-resource-root . --integrity-manifest src-tauri/resources/setup-integrity-v1.json --write-integrity-manifest",
