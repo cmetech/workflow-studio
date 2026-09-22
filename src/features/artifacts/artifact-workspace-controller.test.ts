@@ -313,3 +313,23 @@ it.each(['a.py', 'new.py'])('does not clear another controller session while clo
   expect($artifactSession.get()).toBe(opened)
   await fresh.controller.close()
 })
+
+it('allows a new controller open to finish after the prior owner closes', async () => {
+  const old = setup()
+  await old.controller.open('old.py', 'python')
+  const fresh = setup()
+  let release!: (value: Awaited<ReturnType<typeof fresh.native.workspaceReadTextArtifact>>) => void
+  fresh.native.workspaceReadTextArtifact.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve
+      }),
+  )
+  const opening = fresh.controller.open('fresh.py', 'python')
+  await vi.waitFor(() => expect(fresh.native.workspaceReadTextArtifact).toHaveBeenCalledOnce())
+  await old.controller.close()
+  release({ relativePath: 'fresh.py', text: 'fresh', sha256: 'fresh', size: 5, modifiedAt: '', readOnly: false })
+  await opening
+  expect($artifactSession.get()).toMatchObject({ path: 'fresh.py', text: 'fresh' })
+  await fresh.controller.close()
+})

@@ -49,13 +49,26 @@ export class ArtifactWorkspaceController {
     this.assertAvailable()
     const generation = ++this.generation
     const previous = $artifactSession.get()
+    const previousOwned = previous === this.publishedDocument
     if (this.saving) await this.saving
     await this.flush()
     const disk = await this.readDisk(path)
     const offers = await this.dependencies.recovery.list()
-    if (generation !== this.generation || this.disposed || this.closing || $artifactSession.get() !== previous) return
+    if (
+      generation !== this.generation ||
+      this.disposed ||
+      this.closing ||
+      ($artifactSession.get() !== previous && ($artifactSession.get() !== null || previousOwned))
+    )
+      return
     await this.flush()
-    if (generation !== this.generation || this.disposed || this.closing || $artifactSession.get() !== previous) return
+    if (
+      generation !== this.generation ||
+      this.disposed ||
+      this.closing ||
+      ($artifactSession.get() !== previous && ($artifactSession.get() !== null || previousOwned))
+    )
+      return
     const document = createArtifactDocument(
       this.dependencies.workspaceId,
       path,
