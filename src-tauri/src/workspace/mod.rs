@@ -1,3 +1,6 @@
+pub(crate) mod transaction;
+pub(crate) mod package_hash;
+pub(crate) mod generated_write;
 pub(crate) mod artifacts;
 pub(crate) mod dialogs;
 mod files;

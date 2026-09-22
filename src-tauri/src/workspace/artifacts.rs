@@ -79,7 +79,7 @@ fn grant_error() -> WorkspaceError {
     )
 }
 
-fn validate(relative: &str) -> WorkspaceResult<()> {
+pub(super) fn validate(relative: &str) -> WorkspaceResult<()> {
     if relative.nfc().collect::<String>() != relative
         || relative.contains(['\\', '\0'])
         || relative.split('/').any(|part| {
@@ -116,7 +116,7 @@ fn validate(relative: &str) -> WorkspaceResult<()> {
         })
 }
 
-fn reject_link(metadata: &Metadata) -> WorkspaceResult<()> {
+pub(super) fn reject_link(metadata: &Metadata) -> WorkspaceResult<()> {
     if metadata.file_type().is_symlink() {
         return Err(link_error());
     }

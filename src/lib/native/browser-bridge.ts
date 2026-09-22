@@ -1,3 +1,4 @@
+import { browserPackages } from './browser-packages'
 import { browserArtifacts, type BrowserArtifactOptions } from './browser-artifacts'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { ContractCacheStoredEntry } from '../contract/contract-cache'
@@ -66,8 +67,32 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     },
     (path, existed) => emit({ paths: [path], kind: existed ? 'modify' : 'create' }),
   )
+  const packages = browserPackages(
+    () => {
+      const all = new Map([...artifacts.bytes].map(([path, bytes]) => [path, bytes.slice()]))
+      for (const [path, file] of files) all.set(path, new TextEncoder().encode(file.text))
+      return all
+    },
+    (values) => {
+      files.clear()
+      artifacts.bytes.clear()
+      for (const [path, bytes] of values) {
+        artifacts.bytes.set(path, bytes.slice())
+        try {
+          files.set(path, {
+            text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+            modifiedAt: FIXED_MODIFIED_AT,
+          })
+        } catch {
+          /* binary remains in artifact storage */
+        }
+      }
+    },
+    (paths) => emit({ paths, kind: 'modify' }),
+  )
   return {
     ...artifacts.bridge,
+    ...packages.bridge,
     hostHealth: async () => ({
       appVersion: 'browser',
       os: 'browser',
@@ -207,6 +232,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     chooseExportDirectory: async () => null,
     workspaceSetRoot: async (rootPath) => {
       artifacts.clearGrants()
+      packages.reset()
       selectedRoot = rootPath
       return { workspaceId: 'browser-workspace', rootPath: selectedRoot, repository: null }
     },

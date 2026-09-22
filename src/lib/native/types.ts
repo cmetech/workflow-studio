@@ -92,6 +92,54 @@ export interface WorkspaceReplaceArtifactRequest extends WorkspaceImportArtifact
   readonly expectedCurrentHash: string | null
 }
 
+export interface ExpectedWorkspaceEntry {
+  readonly relativePath: string
+  readonly expectedCurrentHash: string | null
+}
+export interface WorkspaceMoveRequest {
+  readonly sourcePath: string
+  readonly destinationPath: string
+}
+export interface PackageMutationPlan {
+  readonly workspaceId: string
+  readonly expectedEntries: readonly ExpectedWorkspaceEntry[]
+  readonly writes: readonly WorkspaceWriteRequest[]
+  readonly moves: readonly WorkspaceMoveRequest[]
+  readonly trashes: readonly WorkspaceTrashRequest[]
+}
+export interface WorkspaceTransactionResult {
+  readonly status: 'committed'
+  readonly results: readonly PathOperationResult[]
+}
+export interface WorkspaceFileIdentity {
+  readonly sha256: string
+  readonly size: number
+  readonly modifiedAt: string
+}
+export interface PackageFileHash {
+  readonly relativePath: string
+  readonly size: number
+  readonly sha256: string
+  readonly identity: WorkspaceFileIdentity
+}
+export interface WorkspacePackageSnapshot {
+  readonly packageRoot: string
+  readonly workspaceId: string
+  readonly sourceSnapshotToken: string
+  readonly generatedDigestHash: string | null
+  readonly entries: readonly WorkspaceFileEntry[]
+  readonly files: readonly PackageFileHash[]
+}
+export interface WorkspaceReplaceGeneratedRequest {
+  readonly sourceSnapshotToken: string
+  readonly writes: readonly WorkspaceWriteRequest[]
+}
+export interface PackageNativeBridge {
+  workspaceApplyTransaction(plan: PackageMutationPlan): Promise<WorkspaceTransactionResult>
+  workspaceHashPackage(packageRoot: string): Promise<WorkspacePackageSnapshot>
+  workspaceReplaceGeneratedFiles(request: WorkspaceReplaceGeneratedRequest): Promise<WorkspaceTransactionResult>
+}
+
 export interface ArtifactNativeBridge {
   chooseImportArtifact(): Promise<ArtifactSourceSelection | null>
   workspaceReadArtifact(relativePath: string): Promise<WorkspaceArtifactMetadata>
@@ -311,6 +359,7 @@ export interface ContractNativeBridge extends NativeBridge {
 export interface WorkspaceNativeBridge
   extends
     ArtifactNativeBridge,
+    PackageNativeBridge,
     LayoutNativeBridge,
     ContractNativeBridge,
     GitNativeBridge,

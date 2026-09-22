@@ -1499,64 +1499,65 @@ fn trash_bound_path(
             .map_err(|error| capability_error("workspace_trash_failed", error))?,
         name: quarantine_name.clone(),
     };
-    match move_noclobber_with_expected(source, &quarantine, &original_identity, || {}, || {}) {
-        MoveNoClobberOutcome::Moved => {}
-        outcome => {
-            let (status, message) = move_failure_details(&outcome);
-            return Err(WorkspaceError::new(
-                if status == "partial" {
-                    "workspace_trash_partial"
-                } else {
-                    "workspace_trash_failed"
-                },
-                message,
-            ));
-        }
-    }
-
-    let candidate_path = scope.root.join(&quarantine_name);
-    handoff_hook(&candidate_path);
-    let ambient_path =
-        match scope_verification_hook("beforeHandoff").and_then(|_| scope.root_path()) {
-            Ok(root_path) => root_path.join(&quarantine_name),
-            Err(error) => {
-                return Err(trash_rollback_error(
-                    &quarantine,
-                    source,
-                    &original_identity,
-                    error,
-                ))
+    let outcome = (|| -> WorkspaceResult<()> {
+        match move_noclobber_with_expected(source, &quarantine, &original_identity, || {}, || {}) {
+            MoveNoClobberOutcome::Moved => {}
+            outcome => {
+                let (status, message) = move_failure_details(&outcome);
+                return Err(WorkspaceError::new(
+                    if status == "partial" {
+                        "workspace_trash_partial"
+                    } else {
+                        "workspace_trash_failed"
+                    },
+                    message,
+                ));
             }
-        };
-    if !named_identity_matches(&quarantine, &original_identity) {
-        return Err(trash_rollback_error(
-            &quarantine,
-            source,
-            &original_identity,
-            WorkspaceError::new(
-                "workspace_trash_partial",
-                "The quarantine name changed before OS Trash handoff and was not handed off.",
-            ),
-        ));
-    }
-    let ambient_identity = match Handle::from_path(&ambient_path) {
-        Ok(identity) => identity,
-        Err(error) => {
+        }
+
+        let candidate_path = scope.root.join(&quarantine_name);
+        handoff_hook(&candidate_path);
+        let ambient_path =
+            match scope_verification_hook("beforeHandoff").and_then(|_| scope.root_path()) {
+                Ok(root_path) => root_path.join(&quarantine_name),
+                Err(error) => {
+                    return Err(trash_rollback_error(
+                        &quarantine,
+                        source,
+                        &original_identity,
+                        error,
+                    ))
+                }
+            };
+        if !named_identity_matches(&quarantine, &original_identity) {
             return Err(trash_rollback_error(
                 &quarantine,
                 source,
                 &original_identity,
                 WorkspaceError::new(
-                    "workspace_trash_failed",
-                    format!(
-                        "The quarantined file could not be bound for OS Trash handoff: {error}"
-                    ),
+                    "workspace_trash_partial",
+                    "The quarantine name changed before OS Trash handoff and was not handed off.",
                 ),
-            ))
+            ));
         }
-    };
-    if ambient_identity != original_identity {
-        return Err(trash_rollback_error(
+        let ambient_identity = match Handle::from_path(&ambient_path) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Err(trash_rollback_error(
+                    &quarantine,
+                    source,
+                    &original_identity,
+                    WorkspaceError::new(
+                        "workspace_trash_failed",
+                        format!(
+                            "The quarantined file could not be bound for OS Trash handoff: {error}"
+                        ),
+                    ),
+                ))
+            }
+        };
+        if ambient_identity != original_identity {
+            return Err(trash_rollback_error(
             &quarantine,
             source,
             &original_identity,
@@ -1565,56 +1566,56 @@ fn trash_bound_path(
                 "The ambient quarantine path did not identify the verified original and was not handed off.",
             ),
         ));
-    }
-    if let Err(error) =
-        scope_verification_hook("beforeDelete").and_then(|_| scope.verify().map(|_| ()))
-    {
-        return Err(trash_rollback_error(
-            &quarantine,
-            source,
-            &original_identity,
-            error,
-        ));
-    }
-    if expected_current_hash.is_some_and(|expected| {
-        !named_hash_matches(&quarantine, &original_identity, expected, MAX_YAML_BYTES)
-    }) {
-        return Err(trash_rollback_error(
-            &quarantine,
-            source,
-            &original_identity,
-            revision_conflict(),
-        ));
-    }
-    let delete_result = delete(&ambient_path);
-    post_delete_hook();
-    if let Err(error) =
-        scope_verification_hook("afterDelete").and_then(|_| scope.verify().map(|_| ()))
-    {
-        return Err(trash_rollback_error(
-            &quarantine,
-            source,
-            &original_identity,
-            error,
-        ));
-    }
-    if let Err(message) = delete_result {
-        let rollback =
-            move_noclobber_with_expected(&quarantine, source, &original_identity, || {}, || {});
-        return match rollback {
-            MoveNoClobberOutcome::Moved => {
-                Err(WorkspaceError::new("workspace_trash_failed", message))
-            }
-            outcome => {
-                let (_, rollback_message) = move_failure_details(&outcome);
-                Err(WorkspaceError::new(
-                    "workspace_trash_partial",
-                    format!("{message}; rollback failed: {rollback_message}"),
-                ))
-            }
-        };
-    }
-    match named_identity(&quarantine, "path_not_found") {
+        }
+        if let Err(error) =
+            scope_verification_hook("beforeDelete").and_then(|_| scope.verify().map(|_| ()))
+        {
+            return Err(trash_rollback_error(
+                &quarantine,
+                source,
+                &original_identity,
+                error,
+            ));
+        }
+        if expected_current_hash.is_some_and(|expected| {
+            !named_hash_matches(&quarantine, &original_identity, expected, MAX_YAML_BYTES)
+        }) {
+            return Err(trash_rollback_error(
+                &quarantine,
+                source,
+                &original_identity,
+                revision_conflict(),
+            ));
+        }
+        let delete_result = delete(&ambient_path);
+        post_delete_hook();
+        if let Err(error) =
+            scope_verification_hook("afterDelete").and_then(|_| scope.verify().map(|_| ()))
+        {
+            return Err(trash_rollback_error(
+                &quarantine,
+                source,
+                &original_identity,
+                error,
+            ));
+        }
+        if let Err(message) = delete_result {
+            let rollback =
+                move_noclobber_with_expected(&quarantine, source, &original_identity, || {}, || {});
+            return match rollback {
+                MoveNoClobberOutcome::Moved => {
+                    Err(WorkspaceError::new("workspace_trash_failed", message))
+                }
+                outcome => {
+                    let (_, rollback_message) = move_failure_details(&outcome);
+                    Err(WorkspaceError::new(
+                        "workspace_trash_partial",
+                        format!("{message}; rollback failed: {rollback_message}"),
+                    ))
+                }
+            };
+        }
+        match named_identity(&quarantine, "path_not_found") {
         Err(issue) if issue.code == "path_not_found" => Ok(()),
         Ok(identity) if identity == original_identity => {
             let rollback =
@@ -1644,6 +1645,26 @@ fn trash_bound_path(
         )),
         Err(issue) => Err(WorkspaceError::new(issue.code, issue.message)),
     }
+    })();
+    outcome.map_err(|mut error| {
+        if error.code == "workspace_trash_partial" {
+            let location = quarantine_name.to_string_lossy();
+            let detail = if named_identity_matches(&quarantine, &original_identity) {
+                "The verified file remains at workspace-relative recovery path"
+            } else {
+                "The secondary workspace-relative quarantine path to inspect is"
+            };
+            error.message = format!("{}; {detail}: {location}", error.message);
+            error.path_results.push(path_result(
+                relative,
+                Some(&location),
+                "partial",
+                Some(error.code),
+                Some(error.message.clone()),
+            ));
+        }
+        error
+    })
 }
 
 #[cfg(test)]
@@ -2190,4 +2211,58 @@ fn capability_error(code: &'static str, error: std::io::Error) -> WorkspaceError
 
 fn io_error(code: &'static str, error: std::io::Error) -> WorkspaceError {
     WorkspaceError::new(code, format!("The workspace operation failed: {error}"))
+}
+
+// Narrow transaction access to the same verified move/rollback primitives used by workflow saves.
+pub(super) fn transaction_identity(path: &BoundPath) -> WorkspaceResult<Handle> {
+    named_identity(path, "path_not_found")
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))
+}
+pub(super) fn transaction_move(
+    source: &BoundPath,
+    destination: &BoundPath,
+    identity: &Handle,
+) -> WorkspaceResult<()> {
+    let outcome = move_noclobber_with_expected(source, destination, identity, || {}, || {});
+    if matches!(outcome, MoveNoClobberOutcome::Moved) {
+        Ok(())
+    } else {
+        Err(write_move_error(
+            "Package transaction move failed",
+            &outcome,
+        ))
+    }
+}
+pub(super) fn transaction_remove(path: &BoundPath, identity: &Handle) -> WorkspaceResult<()> {
+    remove_verified_name(path, identity)
+        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))
+}
+pub(super) fn transaction_trash(
+    scope: &WorkspaceScope,
+    path: &BoundPath,
+    relative: &str,
+    hash: &str,
+) -> WorkspaceResult<()> {
+    trash_bound_path(
+        scope,
+        path,
+        relative,
+        Some(hash),
+        &mut |_| {},
+        &mut || {},
+        &mut |_| scope.verify().map(|_| ()),
+        &mut |path| trash::delete(path).map_err(|error| error.to_string()),
+    )
+}
+
+pub(super) fn transaction_matches(path: &BoundPath, identity: &Handle, hash: &str) -> bool {
+    named_hash_matches(path, identity, hash, super::artifacts::max_bytes())
+}
+
+pub(super) fn transaction_permissions(
+    path: &BoundPath,
+    identity: &Handle,
+    permissions: Permissions,
+) -> WorkspaceResult<()> {
+    restore_committed_permissions(path, identity, permissions, restore_file_permissions)
 }

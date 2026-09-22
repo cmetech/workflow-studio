@@ -29,6 +29,8 @@ import {
   type WorkspaceReadResult,
   type WorkspaceArtifactMetadata,
   type ArtifactSourceSelection,
+  type WorkspaceTransactionResult,
+  type WorkspacePackageSnapshot,
   type WorkspaceRenameResult,
   type WorkspaceRootInfo,
   type WorkspaceTrashResult,
@@ -143,6 +145,11 @@ export const tauriBridge: WorkspaceNativeBridge = {
   chooseExportDirectory: () => invokeTyped<string | null>('dialog_choose_export_directory'),
   workspaceSetRoot: (rootPath) => invokeTyped<WorkspaceRootInfo>('workspace_set_root', { rootPath }),
   workspaceScan: () => invokeTyped<readonly WorkspaceFileEntry[]>('workspace_scan'),
+  workspaceApplyTransaction: (plan) => invokeTyped<WorkspaceTransactionResult>('workspace_apply_transaction', { plan }),
+  workspaceHashPackage: (packageRoot) =>
+    invokeTyped<WorkspacePackageSnapshot>('workspace_hash_package', { packageRoot }),
+  workspaceReplaceGeneratedFiles: (request) =>
+    invokeTyped<WorkspaceTransactionResult>('workspace_replace_generated_files', { request }),
   chooseImportArtifact: () => invokeTyped<ArtifactSourceSelection | null>('dialog_choose_import_artifact'),
   workspaceReadArtifact: (relativePath) =>
     invokeTyped<WorkspaceArtifactMetadata>('workspace_read_artifact', { relativePath }),

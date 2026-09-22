@@ -29,6 +29,7 @@ mod logging_spec;
 pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
+        .manage(workspace::package_hash::PackageSnapshotState::default())
         .manage(workspace::artifacts::ArtifactGrantState::default())
         .manage(git::GitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
@@ -51,6 +52,9 @@ pub fn run() {
             commands::health::host_health,
             workspace::workspace_set_root,
             workspace::workspace_scan,
+            workspace::transaction::workspace_apply_transaction,
+            workspace::package_hash::workspace_hash_package,
+            workspace::generated_write::workspace_replace_generated_files,
             workspace::artifacts::dialog_choose_import_artifact,
             workspace::artifacts::workspace_read_artifact,
             workspace::artifacts::workspace_read_text_artifact,
