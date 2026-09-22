@@ -5,6 +5,7 @@ export type DocumentationMode = 'overview' | 'guides' | 'reference'
 export type DocumentationSearchMode = Exclude<DocumentationMode, 'overview'> | 'all'
 export type DocumentationSearchScope = 'active-mode' | 'all'
 export type GuideGroupId =
+  | 'workflow-packages'
   | 'getting-started'
   | 'build-graph'
   | 'configure-behavior'

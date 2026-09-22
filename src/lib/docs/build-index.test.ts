@@ -225,6 +225,7 @@ describe('buildDocumentationIndex', () => {
         ['guide:problems-and-validation', 'guide:git-versions', 'guide:troubleshooting'],
       ],
       ['use-application', ['guide:keyboard-shortcuts']],
+      ['workflow-packages', ["guide:workflow-packages","guide:package-folder-structure","guide:creating-a-package","guide:multiple-workflows-per-package","guide:command-resources","guide:script-resources","guide:mcp-and-supporting-resources","guide:packaged-and-external-requirements","guide:package-readiness","guide:package-versions-digests-trust","guide:preparing-packages","guide:updating-packages","guide:publishing-packages-with-git","guide:coworker-package-installation","guide:package-troubleshooting"]],
     ])
   })
 

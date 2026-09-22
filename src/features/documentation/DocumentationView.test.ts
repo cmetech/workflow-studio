@@ -130,6 +130,22 @@ afterEach(() => {
 })
 
 describe('DocumentationView', () => {
+  it('opens and focuses an exact contextual guide heading and consumes the complete target', async () => {
+    const topic = {
+      ...guide('script-resources', 'Script resources', 'workflow-packages'),
+      body: '## Runtime resolution\n\nOffline rules.',
+    }
+    const consumed = vi.fn()
+    render(DocumentationView, {
+      index: makeIndex([topic]),
+      topicId: 'guide:script-resources#runtime-resolution',
+      navigationRequestId: 77,
+      onTopicConsumed: consumed,
+    })
+    const heading = await screen.findByRole('heading', { name: 'Runtime resolution' })
+    await waitFor(() => expect(heading).toHaveFocus())
+    expect(consumed).toHaveBeenCalledWith('guide:script-resources#runtime-resolution', 77)
+  })
   it('opens on the task-led Overview without instantiating the exhaustive reference list', () => {
     render(DocumentationView, { index })
 

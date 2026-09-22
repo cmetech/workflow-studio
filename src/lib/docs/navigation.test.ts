@@ -40,6 +40,7 @@ describe('documentation navigation metadata', () => {
       'configure-behavior',
       'review-recover',
       'use-application',
+      'workflow-packages',
     ])
     expect(GUIDE_PRESENTATION['conditions-and-outputs']).toEqual(
       expect.objectContaining({ group: 'build-graph', useWhen: expect.stringMatching(/output|condition/i) }),
@@ -70,6 +71,7 @@ describe('documentation navigation metadata', () => {
       ['retry-and-triggers', 'companion-policies', 'profiles-and-compatibility'],
       ['problems-and-validation', 'git-versions', 'troubleshooting'],
       ['keyboard-shortcuts'],
+      ["workflow-packages","package-folder-structure","creating-a-package","multiple-workflows-per-package","command-resources","script-resources","mcp-and-supporting-resources","packaged-and-external-requirements","package-readiness","package-versions-digests-trust","preparing-packages","updating-packages","publishing-packages-with-git","coworker-package-installation","package-troubleshooting"],
     ])
   })
 

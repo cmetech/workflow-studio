@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import DocumentationOverview from './DocumentationOverview.svelte'
 
 describe('DocumentationOverview', () => {
+  it('opens the offline workflow package preparation guide', async () => {
+    const onSelectTopic = vi.fn()
+    render(DocumentationOverview, { onSelectTopic, onBrowseReference: vi.fn() })
+    await fireEvent.click(screen.getByRole('button', { name: /Prepare a workflow package/i }))
+    expect(onSelectTopic).toHaveBeenCalledWith('guide:preparing-packages', expect.any(HTMLElement))
+  })
   it('starts with the approved reading path and task-led destinations instead of exhaustive reference topics', async () => {
     const onSelectTopic = vi.fn()
     render(DocumentationOverview, { onSelectTopic, onBrowseReference: vi.fn() })

@@ -11,7 +11,7 @@
     index: DocumentationIndex
     commandSurface?: CommandSurface
     onBack: () => void
-    onSelectTopic: (topic: DocumentationTopic, opener: HTMLElement) => void
+    onSelectTopic: (topic: DocumentationTopic, opener: HTMLElement, anchor?: string) => void
     onOpenExternal?: ((url: string) => void) | undefined
   }
 
@@ -29,9 +29,11 @@
     const followLink = (event: MouseEvent): void => {
       const internal =
         event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-topic-id]') : null
-      const selected = internal?.dataset.topicId ? index.byId.get(internal.dataset.topicId) : undefined
+      const [selectedId, anchor] = internal?.dataset.topicId?.split('#') ?? []
+      const selected = selectedId ? index.byId.get(selectedId) : undefined
       if (selected && internal) {
-        onSelectTopic(selected, internal)
+        if (anchor) onSelectTopic(selected, internal, anchor)
+        else onSelectTopic(selected, internal)
         return
       }
       const external =
