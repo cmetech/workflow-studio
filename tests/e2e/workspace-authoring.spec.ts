@@ -803,7 +803,7 @@ nodes:
   await expectAuthoritativeYaml(page, afterDelete)
 
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  const createExampleCopy = page.getByRole('button', { name: /^Create Editable Copy:/ }).first()
+  const createExampleCopy = page.getByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true })
   await expect(createExampleCopy).toBeVisible({ timeout: 20_000 })
   await createExampleCopy.focus()
   await createExampleCopy.press('Enter')
@@ -1031,10 +1031,7 @@ test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and r
   await page.getByRole('button', { name: 'Save workflow' }).click()
   await expect(page.getByRole('status', { name: 'Document save status' })).toHaveText('Saved')
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  await page
-    .getByRole('button', { name: /^Create Editable Copy:/ })
-    .first()
-    .click()
+  await page.getByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true }).click()
   await page.getByRole('button', { name: 'Back to Workflow' }).click()
   await page.getByRole('button', { name: 'Explorer', exact: true }).click()
   await page.getByRole('treeitem', { name: /release-demo.yaml, paired workflow/i }).click()

@@ -78,10 +78,7 @@ test('renders semantic and established technical surfaces with bundled Geist Mon
   await page.getByRole('button', { name: 'Close keyboard shortcuts' }).click()
 
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  await page
-    .getByRole('button', { name: /^Preview / })
-    .first()
-    .click()
+  await page.getByRole('button', { name: 'Preview Minimal prompt', exact: true }).click()
   families.examplePreview = await fontFamily(
     page
       .getByRole('region', { name: /preview$/ })

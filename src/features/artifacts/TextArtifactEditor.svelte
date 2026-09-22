@@ -1,5 +1,13 @@
+<script module lang="ts">
+  export interface ArtifactFocusRequest {
+    readonly id: string | number
+    readonly line: number
+    readonly column: number
+  }
+</script>
+
 <script lang="ts">
-  import { onMount, onDestroy, untrack } from 'svelte'
+  import { onMount, onDestroy, untrack, tick } from 'svelte'
   import { basicSetup } from 'codemirror'
   import { Compartment, EditorState, Transaction, Annotation } from '@codemirror/state'
   import { EditorView, keymap } from '@codemirror/view'
@@ -15,15 +23,27 @@
     text: string
     dirty?: boolean
     readOnly?: boolean
+    focusRequest?: ArtifactFocusRequest | null
     onTextChange: (text: string) => void
     onSave: () => void | Promise<void>
   }
-  let { path, language, text, dirty = false, readOnly = false, onTextChange, onSave }: Props = $props()
+  let {
+    path,
+    language,
+    text,
+    dirty = false,
+    readOnly = false,
+    focusRequest = null,
+    onTextChange,
+    onSave,
+  }: Props = $props()
   let host: HTMLDivElement
   let view = $state.raw<EditorView | null>(null)
   let localText = $state(untrack(() => text))
   let saving = $state(false)
   let error = $state('')
+  let disposed = false
+  let lastFocus: { id: string | number; path: string } | null = null
   const languageSlot = new Compartment(),
     accessSlot = new Compartment(),
     labelSlot = new Compartment()
@@ -103,6 +123,31 @@
     }
   })
   $effect(() => {
+    const request = focusRequest,
+      target = view,
+      targetPath = path
+    if (!request || !target || (lastFocus?.id === request.id && lastFocus.path === targetPath)) return
+    lastFocus = { id: request.id, path: targetPath }
+    void tick().then(() => {
+      if (disposed || view !== target || path !== targetPath || focusRequest?.id !== request.id) return
+      const lineNumber = Math.max(
+        1,
+        Math.min(target.state.doc.lines, Number.isFinite(request.line) ? Math.floor(request.line) : 1),
+      )
+      const line = target.state.doc.line(lineNumber)
+      const column = Math.max(
+        1,
+        Math.min(line.length + 1, Number.isFinite(request.column) ? Math.floor(request.column) : 1),
+      )
+      target.dispatch({
+        selection: { anchor: line.from + column - 1 },
+        scrollIntoView: true,
+        annotations: Transaction.addToHistory.of(false),
+      })
+      target.focus()
+    })
+  })
+  $effect(() => {
     if (view)
       view.dispatch(
         setDiagnostics(
@@ -111,7 +156,10 @@
         ),
       )
   })
-  onDestroy(() => view?.destroy())
+  onDestroy(() => {
+    disposed = true
+    view?.destroy()
+  })
 </script>
 
 <section aria-label="Artifact text editor">

@@ -44,7 +44,12 @@ it('groups resources from the canonical contract and keeps keyboard navigation t
     artifacts: paths.map((path) => ({ path, workspacePath: `p/${path}`, kind: 'file', size: 1, readOnly: false })),
   }
   const open = vi.fn()
-  render(PackageTree, { catalog: { packages: [pkg], findings: [] }, resourceContract, onOpen: open })
+  render(PackageTree, {
+    catalog: { packages: [pkg], findings: [] },
+    resourceContract,
+    onOpen: open,
+    readiness: { root: 'p', ready: true },
+  })
   expect(
     within(screen.getByRole('group', { name: 'Commands' })).getByRole('treeitem', { name: 'custom/review.md' }),
   ).toBeVisible()
@@ -59,6 +64,7 @@ it('groups resources from the canonical contract and keeps keyboard navigation t
     within(screen.getByRole('group', { name: 'Package metadata' })).getByRole('treeitem', { name: 'digests.json' }),
   ).toBeVisible()
   const root = screen.getByRole('treeitem', { name: /diagnostics package/ })
+  expect(root).toHaveTextContent('Static checks complete')
   root.focus()
   await fireEvent.keyDown(root, { key: 'ArrowDown' })
   expect(screen.getByRole('treeitem', { name: 'main.yaml' })).toHaveFocus()

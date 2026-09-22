@@ -84,6 +84,12 @@ describe('release security boundaries', () => {
     const publicKey = ((config.plugins as Record<string, unknown>).updater as Record<string, unknown>).pubkey as string
 
     expect(enumVariants(gitRunner, 'ReadOperation')).toEqual([
+      'FilterNames',
+      'FilterPaths',
+      'FilterAttributes',
+      'PackageDiff',
+      'PackageTree',
+      'PackageHistory',
       'Version',
       'RepositoryContext',
       'Branch',
@@ -107,6 +113,9 @@ describe('release security boundaries', () => {
       'RawBlob',
     ])
     expect(enumVariants(gitRunner, 'MutationOperation')).toEqual([
+      'HashRaw',
+      'CacheEntry',
+      'RemoveEntry',
       'Init',
       'SetLocalConfig',
       'ReadTree',
@@ -121,6 +130,15 @@ describe('release security boundaries', () => {
       'fn maps_every_closed_git_operation_to_exact_argv()',
     )
     const approvedMappings = [
+      'ReadOperation::FilterNames => strings(&[',
+      'ReadOperation::FilterPaths => strings(&[',
+      'ReadOperation::FilterAttributes { paths } => {',
+      'ReadOperation::PackageDiff { base, tree, names } => {',
+      'ReadOperation::PackageTree { tree, path } => {',
+      'ReadOperation::PackageHistory { base, path } => strings(&[',
+      'MutationOperation::HashRaw { path } => {',
+      'MutationOperation::CacheEntry { path, mode, oid } => {',
+      'MutationOperation::RemoveEntry { path } => {',
       'ReadOperation::Version => strings(&["--version"])',
       'ReadOperation::RepositoryContext => strings(&[',
       'ReadOperation::Status => {',
@@ -230,6 +248,7 @@ describe('release security boundaries', () => {
     expect(html).toContain('data-external-url="https://docs.example.test/"')
   })
 
+  // This builds the complete offline distribution; its timeout is not an interaction-latency budget.
   it('does not ship E2E fixture controls in a production renderer build', () => {
     const output = mkdtempSync(join(tmpdir(), 'workflow-studio-production-'))
     try {
@@ -245,10 +264,12 @@ describe('release security boundaries', () => {
         .map((path) => readFileSync(path, 'utf8'))
         .join('\n')
       expect(javascript).not.toContain('__WORKFLOW_STUDIO_E2E__')
+      expect(javascript).not.toContain('__WORKFLOW_STUDIO_PACKAGE_E2E__')
+      expect(javascript).not.toContain('__WORKFLOW_STUDIO_PACKAGE_PERFORMANCE__')
       expect(javascript).not.toContain('Resource digest mismatch in deterministic fixture.')
       expect(javascript).not.toContain('/e2e/workspace')
     } finally {
       rmSync(output, { recursive: true, force: true })
     }
-  }, 20_000)
+  }, 60_000)
 })

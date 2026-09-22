@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ArtifactDocument } from '$src/lib/artifacts/types'
   import type { WorkspaceArtifactMetadata } from '$src/lib/native/types'
-  import TextArtifactEditor from './TextArtifactEditor.svelte'
+  import TextArtifactEditor, { type ArtifactFocusRequest } from './TextArtifactEditor.svelte'
   import BinaryArtifactView from './BinaryArtifactView.svelte'
   import CommandEditor from './CommandEditor.svelte'
   import type { PackageReference } from '$src/lib/packages/package-references'
@@ -10,6 +10,7 @@
     metadata?: WorkspaceArtifactMetadata | null
     generated?: boolean
     command?: boolean
+    focusRequest?: ArtifactFocusRequest | null
     references?: readonly PackageReference[]
     onTextChange: (text: string) => void
     onSave: () => void | Promise<void>
@@ -22,6 +23,7 @@
     metadata = null,
     generated = false,
     command = false,
+    focusRequest = null,
     references = [],
     onTextChange,
     onSave,
@@ -41,6 +43,7 @@
         dirty={document.dirty}
         readOnly={generated || document.readOnly}
         {references}
+        {focusRequest}
         {onTextChange}
         {onSave}
       />
@@ -51,6 +54,7 @@
         text={document.text}
         dirty={document.dirty}
         readOnly={generated || document.readOnly}
+        {focusRequest}
         {onTextChange}
         {onSave}
       />

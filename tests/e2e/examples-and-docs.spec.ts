@@ -1,16 +1,20 @@
 import { expect, test } from '@playwright/test'
 import { e2eSnapshot, openSeededPair } from './support'
 
-test('creates an editable copy from every bundled example and opens contextual offline documentation', async ({
+test('creates an editable copy from every bundled workflow example and opens contextual offline documentation', async ({
   page,
 }) => {
+  test.setTimeout(30_000)
   await openSeededPair(page)
   const initialDefinitionCount = ((await e2eSnapshot(page)).workspacePaths as string[]).filter(
     (path) => path.endsWith('.yaml') && !path.endsWith('.hermes.yaml'),
   ).length
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
 
-  const copyButtons = page.getByRole('button', { name: /^Create Editable Copy:/ })
+  const copyButtons = page
+    .getByRole('article')
+    .filter({ has: page.getByText('Workflow', { exact: true }) })
+    .getByRole('button', { name: /^Create Editable Copy:/ })
   await expect.poll(() => copyButtons.count()).toBeGreaterThanOrEqual(10)
   const total = await copyButtons.count()
   for (let index = total - 1; index >= 0; index -= 1) await copyButtons.nth(index).click()

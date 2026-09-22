@@ -4,9 +4,10 @@ import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
 
 const RELEASE_VERSION = '3.0.3'
-// Includes the narrowly scoped devalue security patch; keep exact lockfile provenance.
-const STABILIZED_NPM_LOCK_COMMIT = '51ef64a'
-const STABILIZED_CARGO_LOCK_COMMIT = '5bc5a70'
+// Includes the reviewed artifact-editor/native-artifact additions and retained devalue security patch.
+// Immutable whole-file baselines continue to reject unrelated dependency drift.
+const STABILIZED_NPM_LOCK_COMMIT = '5daa1702fe0f65c5ff71273be005cc97ef57fec0'
+const STABILIZED_CARGO_LOCK_COMMIT = '1aa3420000fda855d0ca0a28f18fb30898a57ddc'
 const CI_UNIT_COMMAND = 'npm run test:unit -- --testTimeout=20000 --hookTimeout=600000 --maxWorkers=1'
 const CI_NATIVE_COMMAND = 'npx --no-install tauri build --debug --config src-tauri/tauri.ci.conf.json'
 
@@ -83,20 +84,15 @@ describe('version three release metadata', () => {
     expect(cargoLock).toMatch(/\[\[package\]\]\nname = "workflow-studio"\nversion = "3\.0\.3"/)
   })
 
-  it('preserves the reviewed npm lockfile except for the root release identity', () => {
+  it('preserves the reviewed package-authoring npm lockfile exactly', () => {
     expect(readFileSync('package-lock.json', 'utf8')).toBe(
-      committedFile(STABILIZED_NPM_LOCK_COMMIT, 'package-lock.json')
-        .replace(/^  "version": "3\.0\.1",$/m, '  "version": "3.0.3",')
-        .replace(/^      "version": "3\.0\.1",$/m, '      "version": "3.0.3",'),
+      committedFile(STABILIZED_NPM_LOCK_COMMIT, 'package-lock.json'),
     )
   })
 
-  it('preserves the reviewed Cargo lockfile except for the application release identity', () => {
+  it('preserves the reviewed package-authoring Cargo lockfile exactly', () => {
     expect(readFileSync('src-tauri/Cargo.lock', 'utf8')).toBe(
-      committedFile(STABILIZED_CARGO_LOCK_COMMIT, 'src-tauri/Cargo.lock').replace(
-        /name = "workflow-studio"\nversion = "3\.0\.1"/,
-        'name = "workflow-studio"\nversion = "3.0.3"',
-      ),
+      committedFile(STABILIZED_CARGO_LOCK_COMMIT, 'src-tauri/Cargo.lock'),
     )
   })
 

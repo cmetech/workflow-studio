@@ -2,7 +2,7 @@
   import { tick } from 'svelte'
   import { analyzeCommandMarkdown } from '$src/lib/packages/command-markdown'
   import type { PackageReference } from '$src/lib/packages/package-references'
-  import TextArtifactEditor from './TextArtifactEditor.svelte'
+  import TextArtifactEditor, { type ArtifactFocusRequest } from './TextArtifactEditor.svelte'
   import CommandPreview from './CommandPreview.svelte'
   interface Props {
     path: string
@@ -11,13 +11,30 @@
     readOnly?: boolean
     schema?: object
     references?: readonly PackageReference[]
+    focusRequest?: ArtifactFocusRequest | null
     onTextChange: (text: string) => void
     onSave: () => void | Promise<void>
   }
-  let { path, text, dirty = false, readOnly = false, schema, references = [], onTextChange, onSave }: Props = $props()
+  let {
+    path,
+    text,
+    dirty = false,
+    readOnly = false,
+    schema,
+    references = [],
+    focusRequest = null,
+    onTextChange,
+    onSave,
+  }: Props = $props()
   const id = $props.id()
   const tabs = ['Edit', 'Preview', 'References'] as const
   let selected = $state(0)
+  let lastFocus: { id: string | number; path: string } | null = null
+  $effect(() => {
+    if (!focusRequest || (lastFocus?.id === focusRequest.id && lastFocus.path === path)) return
+    lastFocus = { id: focusRequest.id, path }
+    selected = 0
+  })
   let buttons = $state<HTMLButtonElement[]>([])
   const analysis = $derived(analyzeCommandMarkdown(path, text, schema))
   async function key(event: KeyboardEvent, index: number) {
@@ -51,7 +68,7 @@
     {/each}
   </div>
   <div role="tabpanel" id={`${id}-panel-0`} aria-labelledby={`${id}-tab-0`} hidden={selected !== 0}>
-    <TextArtifactEditor {path} {text} {dirty} {readOnly} language="markdown" {onTextChange} {onSave} />
+    <TextArtifactEditor {path} {text} {dirty} {readOnly} {focusRequest} language="markdown" {onTextChange} {onSave} />
     {#if analysis.findings.length}
       <ul aria-label="Command problems">
         {#each analysis.findings as finding, index (index)}<li>Line {finding.line ?? 1}: {finding.message}</li>{/each}

@@ -127,3 +127,34 @@ it('opens a rejected manifest for source repair without advertising a valid pack
   expect($packageCatalog.get().active?.path).toBe('workflow-package.json')
   expect($packageCatalog.get().catalog.packages).toEqual([])
 })
+it('opens only the canonical shared index outside a selected package', async () => {
+  const openArtifact = vi.fn()
+  const controller = new PackageCatalogController({
+    contract: await loadBundledWorkflowPackageContract(),
+    readManifest: async () => '',
+    openArtifact,
+  })
+  $packageCatalog.set({
+    phase: 'ready',
+    workspaceId: 'a',
+    active: null,
+    error: null,
+    catalog: {
+      packages: [
+        {
+          id: 'test',
+          root: 'p',
+          manifestPath: 'p/workflow-package.json',
+          manifest: {} as never,
+          workflows: [],
+          artifacts: [],
+        },
+      ],
+      findings: [],
+    },
+  })
+  await controller.open({ packageId: 'test', kind: 'artifact', path: 'outside.txt' })
+  expect(openArtifact).not.toHaveBeenCalled()
+  await controller.open({ packageId: 'test', kind: 'artifact', path: '.well-known/hermes-workflows/index.json' })
+  expect(openArtifact).toHaveBeenCalledWith('.well-known/hermes-workflows/index.json', undefined)
+})

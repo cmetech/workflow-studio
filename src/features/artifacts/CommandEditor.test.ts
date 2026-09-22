@@ -2,6 +2,19 @@ import { fireEvent, render, screen } from '@testing-library/svelte'
 import { tick } from 'svelte'
 import { expect, it, vi } from 'vitest'
 import CommandEditor from './CommandEditor.svelte'
+import { EditorView } from '@codemirror/view'
+
+it('reveals Edit and focuses the source when a finding is opened from Preview', async () => {
+  const props = { path: 'command.md', text: '# Title\nBody', onTextChange: vi.fn(), onSave: vi.fn() }
+  const { container, rerender } = render(CommandEditor, props)
+  await fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
+  await rerender({ ...props, focusRequest: { id: 1, line: 2, column: 2 } })
+  await tick()
+  expect(screen.getByRole('tab', { name: 'Edit' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('textbox', { name: props.path })).toHaveFocus()
+  expect(EditorView.findFromDOM(container.querySelector('.cm-content')!)!.state.selection.main.anchor).toBe(9)
+  expect(props.onTextChange).not.toHaveBeenCalled()
+})
 
 it('supports keyboard edit/preview/reference tabs without rewriting the command', async () => {
   const text = '---\ndescription: Example\n---\n# Body\n'

@@ -485,6 +485,62 @@ fn package_git_operations_use_literal_raw_object_and_no_execution_arguments() {
     };
     super::assert_read_argv(
         root,
+        ReadOperation::FilterNames,
+        &[
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|process)$",
+        ],
+    );
+    super::assert_read_argv(
+        root,
+        ReadOperation::FilterPaths,
+        &[
+            "ls-files",
+            "--stage",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    );
+    super::assert_read_argv(
+        root,
+        ReadOperation::FilterAttributes {
+            paths: &[":(glob)*.py", "sample/file with spaces.py"],
+        },
+        &[
+            "check-attr",
+            "-z",
+            "filter",
+            "--",
+            ":(glob)*.py",
+            "sample/file with spaces.py",
+        ],
+    );
+    super::assert_read_argv(
+        root,
+        ReadOperation::PackageDiff {
+            base: "abc",
+            tree: "def",
+            names: true,
+        },
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "abc",
+            "def",
+            "--",
+        ],
+    );
+    super::assert_read_argv(
+        root,
         ReadOperation::PackageTree {
             tree: "abc",
             path: "sample",

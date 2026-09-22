@@ -49,6 +49,7 @@ import App from './App.svelte'
 import { createArtifactDocument, editArtifactDocument } from '$src/lib/artifacts/artifact-session'
 import { createArtifactRecoveryDraft } from '$src/lib/recovery/recovery-store'
 import packageManifest from '../../tests/fixtures/workflow-packages/multiple/packages/diagnostics/workflow-package.json?raw'
+import { $packageReadiness } from '$src/stores/package-preparation'
 
 function rootGraph(
   name: string,
@@ -317,6 +318,165 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it('creates a package and adds an artifact through the application', async () => {
+    const backing = createBrowserBridge()
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'New Package' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New Package' }, deferredSurfaceWait)
+    for (const [label, value] of Object.entries({
+      'Package ID': 'new-support',
+      'Display name': 'New support',
+      Description: 'Support workflow',
+      License: 'MIT',
+      Publisher: 'example',
+      'Tags (comma separated)': 'support',
+      'Destination folder': 'packages/new-support',
+    }))
+      await fireEvent.input(within(dialog).getByLabelText(label), { target: { value } })
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Create Package' }))
+    expect(await screen.findByRole('heading', { name: 'New support' }, deferredSurfaceWait)).toBeVisible()
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Artifact' }))
+    const artifact = await screen.findByRole('dialog', { name: 'Add Artifact' }, deferredSurfaceWait)
+    await fireEvent.input(
+      await within(artifact).findByLabelText('Package-relative filename', {}, deferredSurfaceWait),
+      {
+        target: { value: 'notes/help.txt' },
+      },
+    )
+    await fireEvent.input(within(artifact).getByLabelText('Initial text'), { target: { value: 'Package notes' } })
+    await fireEvent.click(within(artifact).getByRole('button', { name: 'Create text artifact' }))
+    await waitFor(
+      async () =>
+        expect((await backing.workspaceReadTextArtifact('packages/new-support/notes/help.txt')).text).toBe(
+          'Package notes',
+        ),
+      deferredSurfaceWait,
+    )
+  }, 30000)
+
+  it('copies every file from a bundled package example through the application', async () => {
+    const backing = createBrowserBridge()
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Examples' }))
+    await fireEvent.click(
+      await screen.findByRole('button', { name: 'Create Editable Copy: Laptop diagnostic' }, deferredSurfaceWait),
+    )
+    const overview = await screen.findByRole(
+      'region',
+      { name: 'Package overview' },
+      {
+        ...deferredSurfaceWait,
+        onTimeout: () =>
+          new Error(
+            'Package copy failed: ' +
+              screen
+                .queryAllByRole('alert')
+                .map((node) => node.textContent)
+                .join('; '),
+          ),
+      },
+    )
+    expect(within(overview).getByRole('heading', { name: 'Laptop diagnostic' })).toBeVisible()
+    const { loadPackageExampleCatalog } = await import('$src/lib/examples/load-examples')
+    const example = (await loadPackageExampleCatalog()).find((item) => item.id === 'laptop-diagnostic')!
+    const files = (await backing.workspaceScan()).filter(
+      (file) => file.relativePath.startsWith('packages/laptop-diagnostic/') && file.kind === 'file',
+    )
+    expect(files.map((file) => file.relativePath.substring('packages/laptop-diagnostic/'.length)).sort()).toEqual(
+      example.files.map((file) => file.path).sort(),
+    )
+    for (const file of example.files.filter((file) => !['workflow-package.json', 'digests.json'].includes(file.path)))
+      expect((await backing.workspaceReadTextArtifact('packages/laptop-diagnostic/' + file.path)).text).toBe(file.text)
+  }, 30000)
+
+  it('validates and prepares a package only after the exact final local preview', async () => {
+    const root = 'packages/diagnostics'
+    const backing = createBrowserBridge({
+      initialFiles: {
+        [root + '/workflow-package.json']: JSON.stringify({
+          ...JSON.parse(packageManifest),
+          workflows: [{ definition: 'main.yaml', companion: 'main.hermes.yaml' }],
+        }),
+        [root + '/main.yaml']: 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        [root + '/main.hermes.yaml']: 'language_compatibility: archon-2026-07\n',
+      },
+    })
+    const indexPath = '.well-known/hermes-workflows/index.json'
+    backing.gitReadPackageContext = vi.fn(async () => {
+      let index = null
+      try {
+        index = await backing.workspaceReadTextArtifact(indexPath)
+      } catch {
+        /* Unborn index. */
+      }
+      return {
+        workspaceId: 'browser-workspace',
+        packageRoot: root,
+        repository: { root: '/browser/workspace', branch: 'main', detachedHead: null },
+        base: { kind: 'unborn' as const, reference: 'refs/heads/main' },
+        contextToken: 'context',
+        committedManifestText: null,
+        baselineManifestText: null,
+        committedFiles: [],
+        committedIndexText: null,
+        workingIndexText: index?.text ?? null,
+        workingIndexHash: index?.sha256 ?? null,
+      }
+    })
+    backing.gitPreviewPackageVersion = vi.fn(async (request) => ({
+      authorizationToken: 'final-preview',
+      packageRoot: root,
+      base: { kind: 'unborn' as const, reference: 'refs/heads/main' },
+      version: request.version,
+      message: request.message,
+      changedPaths: [root + '/workflow-package.json', root + '/main.yaml', root + '/digests.json', indexPath],
+      diff: '+ exact package preview',
+    }))
+    const commit = vi.fn(async () => ({
+      outcome: 'committed' as const,
+      oid: 'package-commit',
+      status: null,
+      warnings: [],
+    }))
+    backing.gitCommitPackageVersion = commit
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: /diagnostics package/ }, deferredSurfaceWait))
+    const validate = screen.getByRole('button', { name: 'Validate Package' })
+    expect(validate).toBeEnabled()
+    await fireEvent.click(validate)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Prepare Package' })).toBeEnabled(), {
+      ...deferredSurfaceWait,
+      onTimeout: () =>
+        new Error(
+          `Preparation readiness: ${JSON.stringify($packageReadiness.get()?.analysis.blockers)}; overview: ${document.querySelector('[aria-label="Package overview"]')?.textContent}; alerts: ${screen
+            .queryAllByRole('alert')
+            .map((node) => node.textContent)
+            .join('; ')}`,
+        ),
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Prepare Package' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Review version and commit' }, deferredSurfaceWait))
+    await fireEvent.input(screen.getByLabelText('Version'), { target: { value: '1.2.4' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Prepare preview' }))
+    expect(await screen.findByText('+ exact package preview', {}, deferredSurfaceWait)).toBeVisible()
+    expect(commit).not.toHaveBeenCalled()
+    await fireEvent.click(screen.getByRole('button', { name: 'Commit local version' }))
+    expect(await screen.findByRole('heading', { name: 'Prepared locally' }, deferredSurfaceWait)).toBeVisible()
+    expect(commit).toHaveBeenCalledExactlyOnceWith('final-preview')
+    expect(screen.getByRole('status', { name: 'Package preparation status' })).toHaveTextContent('diagnostics 1.2.4')
+  }, 30000)
+
   it('opens supporting UTF-8 files without requiring a known extension', async () => {
     const backing = createBrowserBridge({
       initialFiles: {
@@ -334,6 +494,28 @@ describe('App', () => {
     expect(await screen.findByRole('textbox', { name: 'settings.cfg' })).toBeVisible()
   }, 20000)
 
+  it('opens the shared marketplace index as read-only generated content', async () => {
+    const path = '.well-known/hermes-workflows/index.json'
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'pkg/workflow-package.json': packageManifest,
+        'pkg/main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        [path]: '{"schemaVersion":1,"packages":[]}',
+      },
+    })
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(await screen.findByRole('treeitem', { name: 'Marketplace index' }, deferredSurfaceWait))
+    expect(await screen.findByRole('textbox', { name: path }, deferredSurfaceWait)).toHaveAttribute(
+      'contenteditable',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  }, 30000)
+
   it('replaces a binary package resource only through its selected native source grant', async () => {
     const backing = createBrowserBridge({
       initialFiles: {
@@ -343,6 +525,7 @@ describe('App', () => {
       initialArtifacts: { 'image.bin': new Uint8Array([255, 0]) },
       chooseArtifactSource: async () => new Uint8Array([255, 1, 2]),
     })
+    const replace = vi.spyOn(backing, 'workspaceReplaceArtifact')
     setNativeBridgeForTest(backing)
     loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
     render(App)
@@ -351,6 +534,7 @@ describe('App', () => {
     await fireEvent.click(await screen.findByRole('treeitem', { name: /image.bin/ }, deferredSurfaceWait))
     await fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
     await waitFor(async () => expect((await backing.workspaceReadArtifact('image.bin')).size).toBe(3))
+    expect(replace).toHaveBeenCalledWith(expect.objectContaining({ packageSnapshotToken: expect.any(String) }))
   }, 20000)
 
   it('offers artifact draft recovery and compares an external manifest change before keeping edits', async () => {
@@ -1766,7 +1950,9 @@ nodes:
       render(App)
       await waitForSetupReady()
 
-      await fireEvent.click((await screen.findAllByRole('button', { name: /^Create Editable Copy:/ }))[0]!)
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true }),
+      )
       await waitFor(() => expect(creationWriteStarted).toBe(true))
       await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
       const releaseEntry = await screen.findByRole('treeitem', { name: /release-demo\.yaml/i }, deferredSurfaceWait)

@@ -13,7 +13,7 @@ it('names sources and disables unverified imports', async () => {
     selectedId: 'example',
     onSelect,
   })
-  expect(screen.getByRole('option', { name: 'Missing resources � Resolve resource origins first.' })).toBeDisabled()
+  expect(screen.getByRole('option', { name: 'Missing resources - Resolve resource origins first.' })).toBeDisabled()
   await fireEvent.change(screen.getByLabelText('First workflow'), { target: { value: 'example' } })
   expect(onSelect).toHaveBeenCalledWith('example')
 })

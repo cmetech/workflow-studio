@@ -1,9 +1,13 @@
 <script lang="ts">
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
   import type { PackageAnalysis } from '$src/lib/packages/readiness'
+  import { packagePathError } from '$src/lib/packages/paths'
+  import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-path'
   let {
     package: pkg,
     analysis,
+    hasMarketplaceIndex = false,
+    onOpenArtifact,
     onOpenWorkflow,
     onValidate,
     onAddWorkflow,
@@ -12,12 +16,23 @@
   }: {
     package: WorkflowPackageProjection
     analysis?: PackageAnalysis
+    hasMarketplaceIndex?: boolean
+    onOpenArtifact?: (path: string, line?: number, column?: number) => void
     onOpenWorkflow?: (path: string) => void
     onValidate?: () => void
     onAddWorkflow?: () => void
     onAddArtifact?: () => void
     onPrepare?: () => void
   } = $props()
+  const artifactPaths = $derived(
+    new Set(pkg.artifacts.filter((artifact) => artifact.kind === 'file').map((artifact) => artifact.workspacePath)),
+  )
+  function canOpenFinding(path: string): boolean {
+    if (packagePathError(path)) return false
+    if (path === MARKETPLACE_INDEX_PATH) return hasMarketplaceIndex
+    const workspacePath = pkg.root ? `${pkg.root}/${path}` : path
+    return !packagePathError(workspacePath) && artifactPaths.has(workspacePath)
+  }
 </script>
 
 <section aria-label="Package overview">
@@ -61,7 +76,14 @@
       </li>{/each}
   </ul>
   <h2>Readiness findings</h2>
-  {#each analysis?.blockers ?? [] as finding, index (index)}<p>{finding.path}: {finding.message}</p>{/each}
+  {#each analysis?.blockers ?? [] as finding, index (index)}
+    <p>{finding.path}: {finding.message}</p>
+    {#if onOpenArtifact && canOpenFinding(finding.path)}
+      <button type="button" onclick={() => onOpenArtifact?.(finding.path, finding.line, finding.column)}
+        >Open {finding.path}{finding.line ? `:${finding.line}` : ''}{finding.column ? `:${finding.column}` : ''}</button
+      >
+    {/if}
+  {/each}
   <h2>Destination-dependent advisories</h2>
   <p>Dependencies, credentials, services, trust, and execution success are not verified by LOOP24 Studio.</p>
   {#each analysis?.advisories ?? [] as finding, index (index)}<p>{finding.message}</p>{/each}

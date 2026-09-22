@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { gitState } from '$src/stores/git'
+  import { $preparedPackage as preparedPackage } from '$src/stores/package-preparation'
+  import { workspace } from '$src/stores/workspace'
   import { updateState } from '$src/stores/updates'
   import { formatBytes } from '$src/lib/updates/format'
   import { COLOR_THEMES } from '$src/lib/branding/appearance'
@@ -67,6 +69,11 @@
 </script>
 
 <footer class="status-bar" aria-label="Application status" style:background-color="var(--color-surface-elevated)">
+  {#if $preparedPackage?.workspaceId === $workspace.id && $preparedPackage}
+    <span role="status" aria-label="Package preparation status"
+      >Prepared locally: {$preparedPackage.packageId} {$preparedPackage.version}</span
+    >
+  {/if}
   <span class="primary-status" role="status" aria-label="Application status updates" aria-live="polite">{gitLabel}</span
   >
   <details class="secondary-status" aria-label="More application status" bind:open={secondaryOpen}>

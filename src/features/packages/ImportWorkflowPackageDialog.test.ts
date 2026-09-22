@@ -20,8 +20,8 @@ it('previews exact move/copy paths and never offers deletion of shared resources
     onCancel: vi.fn(),
   })
   await fireEvent.click(screen.getByLabelText('Move workflow into package'))
-  expect(screen.getByText('old.yaml ? packages/support/workflows/main.yaml')).toBeVisible()
-  expect(screen.getByText('scripts/job.py ? packages/support/scripts/job.py (copy)')).toBeVisible()
+  expect(screen.getByText('old.yaml to packages/support/workflows/main.yaml')).toBeVisible()
+  expect(screen.getByText('scripts/job.py to packages/support/scripts/job.py (copy)')).toBeVisible()
   await fireEvent.click(screen.getByRole('button', { name: 'Move Workflow' }))
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Source changed; review again.'))
   expect(onImport.mock.calls[0]?.[0]).toMatchObject({ root: 'packages/support', mode: 'move', workflow: source })

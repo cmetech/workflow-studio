@@ -3,6 +3,7 @@ import { buildPackageCatalog, findPackageManifestPaths } from '$src/lib/packages
 import type { WorkflowPackageContract } from '$src/lib/package-contract/types'
 import type { WorkspaceFileEntry } from '$src/lib/workspace/types'
 import type { WorkflowPackageProjection } from '$src/lib/packages/types'
+import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-index'
 export interface PackageCatalogDependencies {
   readonly contract: WorkflowPackageContract
   readonly readManifest: (path: string) => Promise<string>
@@ -72,7 +73,9 @@ export class PackageCatalogController {
     if (
       !pkg
         ? !this.repairableManifest(selection, state.catalog.findings)
-        : selection.kind !== 'overview' && !pkg.artifacts.some((a) => a.workspacePath === selection.path)
+        : selection.kind !== 'overview' &&
+          !(selection.kind === 'artifact' && selection.path === MARKETPLACE_INDEX_PATH) &&
+          !pkg.artifacts.some((a) => a.workspacePath === selection.path)
     )
       return
     $packageCatalog.set({ ...state, active: selection })
@@ -82,6 +85,10 @@ export class PackageCatalogController {
     const state = $packageCatalog.get()
     if (state.active !== selection) return
     const pkg = state.catalog.packages.find((p) => p.id === selection.packageId)
+    if (selection.kind === 'artifact' && selection.path === MARKETPLACE_INDEX_PATH) {
+      await this.dependencies.openArtifact?.(selection.path, undefined)
+      return
+    }
     if (!pkg) {
       if (selection.path) await this.dependencies.openArtifact?.(selection.path, undefined)
       return

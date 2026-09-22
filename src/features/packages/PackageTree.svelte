@@ -4,15 +4,20 @@
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
   import type { PackageCatalog } from '$src/lib/packages/types'
   import type { PackageSelection } from '$src/stores/packages'
+  import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-path'
   let {
     catalog,
     active = null,
     resourceContract,
+    readiness,
+    hasMarketplaceIndex = false,
     onOpen,
   }: {
     catalog: PackageCatalog
     active?: PackageSelection | null
     resourceContract?: ResourceResolutionContract | undefined
+    readiness?: { readonly root: string; readonly ready: boolean } | undefined
+    hasMarketplaceIndex?: boolean
     onOpen: (selection: PackageSelection) => void
   } = $props()
   interface Row {
@@ -87,7 +92,14 @@
       aria-expanded="true"
       aria-selected={active?.packageId === pkg.id && active.kind === 'overview'}
       onclick={() => onOpen({ packageId: pkg.id, kind: 'overview' })}
-      >{pkg.id} package <small>{pkg.manifest.version} | Validation incomplete</small></button
+      >{pkg.id} package
+      <small
+        >{pkg.manifest.version} | {readiness?.root === pkg.root
+          ? readiness.ready
+            ? 'Static checks complete'
+            : 'Preparation blocked'
+          : 'Validation incomplete'}</small
+      ></button
     >
     {#each categoryGroups as group (group.label)}
       <div role="group" aria-label={group.label}>
@@ -103,6 +115,15 @@
       </div>
     {/each}
   {/each}
+  {#if hasMarketplaceIndex && catalog.packages[0]}
+    <button
+      role="treeitem"
+      aria-level="1"
+      aria-selected={active?.path === MARKETPLACE_INDEX_PATH}
+      onclick={() => onOpen({ packageId: catalog.packages[0]!.id, kind: 'artifact', path: MARKETPLACE_INDEX_PATH })}
+      >Marketplace index</button
+    >
+  {/if}
 </div>
 {#if catalog.packages.length === 0}<p>No packages discovered in this workspace.</p>{/if}
 {#each catalog.findings as finding, index (index)}<p role="alert">{finding.path}: {finding.message}</p>

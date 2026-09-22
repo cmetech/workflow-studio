@@ -5,7 +5,7 @@ import { isCanonicalPackageText, parseUniqueJson } from './manifest'
 import { comparePackagePaths, packagePathError, packagePathIdentity } from './paths'
 import type { WorkflowPackageManifest } from './types'
 
-export const MARKETPLACE_INDEX_PATH = '.well-known/hermes-workflows/index.json'
+export { MARKETPLACE_INDEX_PATH } from './marketplace-path'
 export type MarketplaceEntry = Pick<
   WorkflowPackageManifest,
   'id' | 'version' | 'displayName' | 'description' | 'license' | 'publisher' | 'tags'

@@ -16,7 +16,7 @@
   import type { ActivityId, CommandContext, CommandHandlerResult, EditorMode } from '$src/lib/commands/types'
   import { resolveThemeMode } from '$src/lib/branding/load-brand'
   import { loadBundledAuthoringContracts } from '$src/lib/contract/bundled-contracts'
-  import type { ExampleDescriptor } from '$src/lib/examples/types'
+  import type { ExampleDescriptor, PackageExampleDescriptor } from '$src/lib/examples/types'
   import { loadDocumentationGuides } from '$src/lib/docs/guide-sources'
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
@@ -159,23 +159,22 @@
   import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import PackageTree from '$src/features/packages/PackageTree.svelte'
-  import PackageOverview from '$src/features/packages/PackageOverview.svelte'
-  import ResourceActionDialog, {
-    type ResourceDialogMode,
-    type ResourceDialogRequest,
-  } from '$src/features/inspector/ResourceActionDialog.svelte'
+  import type PackageAuthoringDialogs from '$src/features/packages/PackageAuthoringDialogs.svelte'
+  import type { PackageAuthoringDependencies } from '$src/features/packages/package-authoring-controller'
+  import { PreparePackageController } from '$src/features/packages/prepare-package-controller'
+  import { type PackagePreparationSnapshot } from '$src/features/packages/package-preparation'
+  import { disposePackageAnalysisWorker } from '$src/features/packages/package-analysis-client'
+  import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-path'
+  import type { PreparePackageView } from '$src/features/packages/prepare-package-view'
   import {
-    planResourceCreation,
-    planResourceExtraction,
-    planResourceSelection,
-    type ResourceCreationPlan,
-    type ResourceActionContext,
-  } from '$src/lib/packages/resource-actions'
-  import { resolvePackageReferences } from '$src/lib/packages/package-references'
+    $packageReadiness as packageReadiness,
+    $preparedPackage as preparedPackage,
+    resetPackagePreparation,
+  } from '$src/stores/package-preparation'
+  import type { ResourceDialogMode, ResourceDialogRequest } from '$src/features/inspector/ResourceActionDialog.svelte'
+  import { type ResourceCreationPlan, type ResourceActionContext } from '$src/lib/packages/resource-actions'
   import { commitResourcePlan } from '$src/features/packages/resource-action-coordinator'
-  import PackageInspector from '$src/features/packages/PackageInspector.svelte'
-  import PackageManifestEditor from '$src/features/packages/PackageManifestEditor.svelte'
-  import ArtifactEditor from '$src/features/artifacts/ArtifactEditor.svelte'
+  import type PackageManifestEditor from '$src/features/packages/PackageManifestEditor.svelte'
   import {
     ArtifactWorkspaceController,
     type ArtifactWorkspaceState,
@@ -183,11 +182,7 @@
   import { createArtifactRecoveryStore } from '$src/lib/recovery/recovery-store'
   import { $artifactSession as artifactSession } from '$src/stores/artifacts'
   import { $packageCatalog as packageCatalog, resetPackages, type PackageSelection } from '$src/stores/packages'
-  import { PackageCatalogController } from '$src/features/packages/package-catalog-controller'
-  import {
-    loadBundledWorkflowPackageContract,
-    loadBundledResourceResolution,
-  } from '$src/lib/package-contract/bundled-package-contract'
+  import type { PackageCatalogController } from '$src/features/packages/package-catalog-controller'
   import { classifyPackageArtifact, type PackageArtifactKind } from '$src/lib/packages/artifact-kind'
   import type { ResourceResolutionContract } from '$src/lib/package-contract/resource-contract-loader'
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
@@ -236,6 +231,20 @@
       return cached
     }
   }
+
+  let Overview = $state.raw<typeof import('$src/features/packages/PackageOverview.svelte').default | null>(null)
+  const loadPackageInspector = memoizedSurface(() => import('$src/features/packages/PackageInspector.svelte'))
+  const loadArtifactEditor = memoizedSurface(() => import('$src/features/artifacts/ArtifactEditor.svelte'))
+  const loadPackageManifestEditor = memoizedSurface(() => import('$src/features/packages/PackageManifestEditor.svelte'))
+  let AuthoringDialogs = $state.raw<
+    typeof import('$src/features/packages/PackageAuthoringDialogs.svelte').default | null
+  >(null)
+  let PreparationDialog = $state.raw<
+    typeof import('$src/features/packages/PreparePackageDialog.svelte').default | null
+  >(null)
+  let ResourceDialog = $state.raw<typeof import('$src/features/inspector/ResourceActionDialog.svelte').default | null>(
+    null,
+  )
 
   const loadSettingsPage = memoizedSurface(() => import('$src/features/settings/SettingsPage.svelte'))
   const loadContractSettings = memoizedSurface(() => import('$src/features/settings/ContractSettingsHost.svelte'))
@@ -292,6 +301,7 @@
     return guideReadiness
   }
   const native = getNativeBridge()
+  let CatalogController: typeof PackageCatalogController | null = null
   let packageController: PackageCatalogController | null = null
   let packageRefreshGeneration = 0
   let artifactController: ArtifactWorkspaceController | null = null
@@ -303,10 +313,54 @@
   let artifactKind = $state<PackageArtifactKind>('text')
   let artifactWorkspaceId: string | null = null
   let manifestEditor = $state<ReturnType<typeof PackageManifestEditor> | null>(null)
+  let pendingManifestSource: string | null = null
+  function showManifestSource() {
+    if (manifestEditor) manifestEditor.showSource()
+    else pendingManifestSource = packageArtifact?.path ?? null
+  }
+  function captureManifestEditor(instance: unknown | null) {
+    manifestEditor = instance as ReturnType<typeof PackageManifestEditor> | null
+    if (manifestEditor && pendingManifestSource === packageArtifact?.path) {
+      pendingManifestSource = null
+      manifestEditor.showSource()
+    }
+  }
   let artifactMetadata = $state.raw<WorkspaceArtifactMetadata | null>(null)
   let artifactOpeningGeneration = 0
+  let artifactFocus = $state.raw<{
+    workspaceId: string
+    path: string
+    request: import('$src/features/artifacts/TextArtifactEditor.svelte').ArtifactFocusRequest
+  } | null>(null)
+  let artifactFocusId = 0
+  let artifactClosing: Promise<void> | null = null
+  let preparation = $state.raw<{
+    package: WorkflowPackageProjection
+    workspaceId: string
+    opener: HTMLElement | null
+    controller: PreparePackageController<PackagePreparationSnapshot>
+  } | null>(null)
+  let preparationView = $state.raw<PreparePackageView>({ step: 'validate' })
+  let unsubscribePreparation: (() => void) | undefined
+  let packageValidationGeneration = 0
+  let packageValidationRequest = 0
+  let packageAuthoringDialogs: PackageAuthoringDialogs | undefined = $state()
+  let packageAuthoringDependencies = $state.raw<PackageAuthoringDependencies | null>(null)
+  $effect(() => {
+    const workspaceId = $workspace.id
+    void $workspace.files
+    void contracts
+    ++packageValidationGeneration
+    packageReadiness.set(null)
+    if (preparedPackage.get()?.workspaceId !== workspaceId) preparedPackage.set(null)
+  })
   const selectedPackage = $derived(
     $packageCatalog.catalog.packages.find((pkg) => pkg.id === $packageCatalog.active?.packageId),
+  )
+  const selectedPackageAnalysis = $derived(
+    $packageReadiness?.workspaceId === $workspace.id && $packageReadiness?.root === selectedPackage?.root
+      ? $packageReadiness.analysis
+      : undefined,
   )
   const packageSurface = $derived($activeActivity === 'packages' && $packageCatalog.active?.kind !== 'workflow')
   const packageArtifact = $derived(
@@ -316,13 +370,36 @@
       ? $artifactSession
       : null,
   )
+  let resolvePackageReferences = $state.raw<
+    typeof import('$src/lib/packages/package-references').resolvePackageReferences | null
+  >(null)
   let packageResourceContract = $state.raw<ResourceResolutionContract | undefined>(undefined)
-  const packageContract = Promise.all([loadBundledWorkflowPackageContract(), loadBundledResourceResolution()]).then(
-    ([contract, resources]) => {
-      packageResourceContract = resources.contract
-      return contract
-    },
+  const artifactFocusRequest = $derived(
+    artifactFocus?.workspaceId === $workspace.id && artifactFocus?.path === packageArtifact?.path
+      ? artifactFocus?.request
+      : null,
   )
+  let packageContract: Promise<import('$src/lib/package-contract/types').WorkflowPackageContract> | null = null
+  function loadPackageContract() {
+    packageContract ??= import('$src/lib/package-contract/bundled-package-contract')
+      .then(async ({ loadBundledWorkflowPackageContract, loadBundledResourceResolution }) => {
+        const [contract, resources] = await Promise.all([
+          loadBundledWorkflowPackageContract(),
+          loadBundledResourceResolution(),
+        ])
+        resolvePackageReferences = (await import('$src/lib/packages/package-references')).resolvePackageReferences
+        Overview ??= (await import('$src/features/packages/PackageOverview.svelte')).default
+        CatalogController ??= (await import('$src/features/packages/package-catalog-controller'))
+          .PackageCatalogController
+        packageResourceContract = resources.contract
+        return contract
+      })
+      .catch((error: unknown) => {
+        packageContract = null
+        throw error
+      })
+    return packageContract
+  }
   $effect(() => {
     const id = $workspace.id
     const files = $workspace.files
@@ -333,10 +410,10 @@
       resetPackages()
       return
     }
-    void packageContract
+    void loadPackageContract()
       .then((contract) => {
-        if (generation !== packageRefreshGeneration) return
-        packageController ??= new PackageCatalogController({
+        if (generation !== packageRefreshGeneration || !CatalogController) return
+        packageController ??= new CatalogController({
           contract,
           readManifest: async (path) => (await native.workspaceReadTextArtifact(path)).text,
           openWorkflow: async (definitionPath, _companionPath, document) => {
@@ -370,6 +447,10 @@
       return
     artifactReady = false
     const generation = ++artifactOpeningGeneration
+    if (artifactClosing) {
+      await artifactClosing
+      if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
+    }
     if (artifactWorkspaceId !== id) {
       await artifactController?.dispose()
       if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
@@ -397,14 +478,18 @@
       txt: 'text',
     }
     const language = languages[path.split('.').at(-1)?.toLowerCase() ?? '']
+    const { loadBundledResourceResolution } = await import('$src/lib/package-contract/bundled-package-contract')
     const resources = await loadBundledResourceResolution()
     if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
-    artifactKind = classifyPackageArtifact({
-      path: pkg?.root ? path.slice(pkg.root.length + 1) : path,
-      members: pkg?.workflows ?? [],
-      contract: resources.contract,
-      textAvailable: true,
-    }).kind
+    artifactKind =
+      path === MARKETPLACE_INDEX_PATH
+        ? 'generated'
+        : classifyPackageArtifact({
+            path: pkg?.root ? path.slice(pkg.root.length + 1) : path,
+            members: pkg?.workflows ?? [],
+            contract: resources.contract,
+            textAvailable: true,
+          }).kind
     try {
       await artifactController!.open(path, language ?? 'text')
       if (generation === artifactOpeningGeneration && id === $workspace.id) artifactReady = true
@@ -427,11 +512,28 @@
   function editPackageArtifact(text: string): void {
     if (artifactKind !== 'generated') artifactController?.edit(text)
   }
+  function openPackageFinding(pkg: WorkflowPackageProjection, path: string, line?: number, column?: number): void {
+    const workspacePath = path === MARKETPLACE_INDEX_PATH ? path : pkg.root ? pkg.root + '/' + path : path
+    artifactFocus =
+      $workspace.id && line !== undefined
+        ? {
+            workspaceId: $workspace.id,
+            path: workspacePath,
+            request: { id: ++artifactFocusId, line, column: column ?? 1 },
+          }
+        : null
+    openPackageSelection({
+      packageId: pkg.id,
+      kind: pkg.workflows.some((member) => member.definition === path) ? 'workflow' : 'artifact',
+      path: workspacePath,
+    })
+  }
   async function replacePackageBinary(): Promise<void> {
     const captured = artifactMetadata
+    const pkg = selectedPackage
     const workspaceId = workspace.get().id
     const generation = artifactOpeningGeneration
-    if (!captured || captured.readOnly) return
+    if (!captured || captured.readOnly || !pkg) return
     const source = await native.chooseImportArtifact()
     if (
       !source ||
@@ -440,10 +542,19 @@
       artifactMetadata !== captured
     )
       return
+    const snapshot = await native.workspaceHashPackage(pkg.root)
+    if (
+      workspaceId !== workspace.get().id ||
+      snapshot.workspaceId !== workspaceId ||
+      generation !== artifactOpeningGeneration ||
+      artifactMetadata !== captured
+    )
+      return
     const next = await native.workspaceReplaceArtifact({
       relativePath: captured.relativePath,
       sourceGrantToken: source.sourceGrantToken,
       expectedCurrentHash: captured.sha256,
+      packageSnapshotToken: snapshot.sourceSnapshotToken,
     })
     if (workspaceId === workspace.get().id && generation === artifactOpeningGeneration) artifactMetadata = next
     await refreshWorkspace()
@@ -457,6 +568,7 @@
   }
   async function disposeArtifacts(): Promise<void> {
     ++artifactOpeningGeneration
+    if (artifactClosing) await artifactClosing
     await artifactController?.dispose()
     unsubscribeArtifactState?.()
     unsubscribeArtifactState = undefined
@@ -477,6 +589,178 @@
     } finally {
       artifactSaving = false
     }
+  }
+  async function flushPackageDrafts(pkg: WorkflowPackageProjection): Promise<void> {
+    const id = workspace.get().id
+    const inside = (path: string) => !pkg.root || path.startsWith(pkg.root + '/')
+    const artifact = artifactSession.get()
+    if (artifact?.workspaceId === id && inside(artifact.path) && artifact.dirty) {
+      await artifactController?.save()
+      if (artifactSession.get()?.dirty) throw new Error('Save or resolve the artifact draft before preparing.')
+    }
+    const pair = documentSessionStore.get().pair
+    if (pair && inside(pair.definition.path) && isDocumentPairDirty(pair)) {
+      await documentWorkspace.save()
+      const current = documentSessionStore.get().pair
+      if (current && isDocumentPairDirty(current))
+        throw new Error('Save or resolve the workflow draft before preparing.')
+    }
+    await artifactController?.flush()
+    await recoveryDrafts.flush()
+    if (!id || workspace.get().id !== id) throw new Error('The workspace changed. Validate the package again.')
+    const { unresolvedPackageDrafts } = await import('$src/features/packages/package-drafts')
+    const paths = await unresolvedPackageDrafts({
+      workspaceId: id,
+      packageRoot: pkg.root,
+      artifactDrafts: await createArtifactRecoveryStore(native).list(),
+      workflowDrafts: await recoveryStore.list(),
+      read: (path) => native.workspaceReadTextArtifact(path),
+    })
+    if (paths.length)
+      throw new Error(`Recover and save, or discard, the unsaved draft before preparing: ${paths.join(', ')}`)
+  }
+  async function packageAnalysisDependencies(pkg: WorkflowPackageProjection) {
+    await contractReadiness
+    const contract = await loadPackageContract()
+    if (!packageResourceContract) throw new Error('Package resource contract is unavailable.')
+    return {
+      packageRoot: pkg.root,
+      native,
+      contract,
+      resourceContract: packageResourceContract,
+      authoring: contracts.filter(
+        (candidate) => activeContractForProfile(candidate.profile)?.contract_digest === candidate.contract_digest,
+      ),
+    }
+  }
+  async function showCreatedPackage(id: string, root: string, path?: string): Promise<void> {
+    if (workspace.get().id !== id) return
+    await refreshWorkspace()
+    await tick()
+    if (workspace.get().id !== id) return
+    await packageController?.refresh({ id, files: workspace.get().files })
+    if (workspace.get().id !== id) return
+    const pkg = packageCatalog.get().catalog.packages.find((candidate) => candidate.root === root)
+    if (!pkg) throw new Error('The files were saved, but the package could not be opened. Refresh the workspace.')
+    showActivity('packages')
+    await packageController?.open({
+      packageId: pkg.id,
+      kind: path ? 'artifact' : 'overview',
+      ...(path ? { path } : {}),
+    })
+  }
+  async function openPackageAuthoring(
+    mode: 'create' | 'import' | 'artifact',
+    pkg?: WorkflowPackageProjection,
+  ): Promise<void> {
+    const id = workspace.get().id
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (!id) throw new Error('Open a workspace before creating package content.')
+    await contractReadiness
+    const contract = await loadPackageContract()
+    const workflowExamples = await loadExamples()
+    AuthoringDialogs ??= (await import('$src/features/packages/PackageAuthoringDialogs.svelte')).default
+    if (workspace.get().id !== id || !packageResourceContract) return
+    packageAuthoringDependencies = {
+      native,
+      contract,
+      resourceContract: packageResourceContract,
+      workflowExamples,
+      getContext: () => ({
+        workspaceId: workspace.get().id ?? '',
+        files: workspace.get().files,
+        packages: packageCatalog.get().catalog.packages,
+        authoring: contracts.filter(
+          (candidate) => activeContractForProfile(candidate.profile)?.contract_digest === candidate.contract_digest,
+        ),
+        activePair: documentSessionStore.get().pair,
+      }),
+      onCompleted: (root, path) => showCreatedPackage(id, root, path),
+    }
+    await tick()
+    if (workspace.get().id !== id) return
+    if (mode === 'create') await packageAuthoringDialogs?.openCreate(opener)
+    else if (pkg && mode === 'import') await packageAuthoringDialogs?.openImport(pkg, opener)
+    else if (pkg) await packageAuthoringDialogs?.openArtifact(pkg, opener)
+  }
+  async function copyBundledPackage(example: PackageExampleDescriptor): Promise<void> {
+    const id = workspace.get().id
+    if (!id) throw new Error('Open a workspace before copying a package.')
+    await contractReadiness
+    const contract = await loadPackageContract()
+    if (workspace.get().id !== id || !packageResourceContract) return
+    const { createPackageExampleCopy } = await import('$src/lib/examples/package-examples')
+    await createPackageExampleCopy(example, {
+      workspaceId: id,
+      native,
+      contract,
+      resourceContract: packageResourceContract,
+      authoring: contracts.filter(
+        (candidate) => activeContractForProfile(candidate.profile)?.contract_digest === candidate.contract_digest,
+      ),
+      open: (pkg) => showCreatedPackage(id, pkg.root),
+    })
+  }
+  async function validateSelectedPackage(pkg: WorkflowPackageProjection): Promise<void> {
+    const id = workspace.get().id,
+      request = ++packageValidationRequest
+    if (!id) return
+    await flushPackageDrafts(pkg)
+    const deps = await packageAnalysisDependencies(pkg)
+    // Saving drafts and loading contracts can invalidate earlier analyses. Start
+    // this capture after those changes have reached the reactive workspace.
+    await tick()
+    if (request !== packageValidationRequest || id !== workspace.get().id) return
+    const generation = packageValidationGeneration
+    let index
+    try {
+      index = await native.gitReadPackageContext(pkg.root)
+    } catch (error) {
+      workspaceError = error instanceof Error ? error.message : String(error)
+    }
+    const { capturePackageAnalysis } = await import('$src/features/packages/package-analysis')
+    const captured = await capturePackageAnalysis({ ...deps, ...(index ? { index } : {}) })
+    if (request === packageValidationRequest && generation === packageValidationGeneration && id === workspace.get().id)
+      packageReadiness.set({ workspaceId: id, root: pkg.root, analysis: captured.analysis })
+  }
+  function closePackagePreparation(): boolean {
+    if (preparation && !preparation.controller.cancel()) return false
+    unsubscribePreparation?.()
+    unsubscribePreparation = undefined
+    preparation = null
+    return true
+  }
+  async function openPackagePreparation(pkg: WorkflowPackageProjection): Promise<void> {
+    const id = workspace.get().id
+    if (!id || !closePackagePreparation()) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const deps = await packageAnalysisDependencies(pkg)
+    const { createPackagePreparationBackend } = await import('$src/features/packages/package-preparation')
+    PreparationDialog ??= (await import('$src/features/packages/PreparePackageDialog.svelte')).default
+    if (id !== workspace.get().id) return
+    const controller = new PreparePackageController(
+      createPackagePreparationBackend({ ...deps, flush: () => flushPackageDrafts(pkg) }),
+    )
+    preparation = { package: pkg, workspaceId: id, opener, controller }
+    unsubscribePreparation = controller.state.subscribe((view) => {
+      if (preparation?.controller !== controller || id !== workspace.get().id) return
+      preparationView = view
+      if (view.step !== 'complete' && view.analysis)
+        packageReadiness.set({ workspaceId: id, root: pkg.root, analysis: view.analysis })
+      if (view.step === 'complete') {
+        preparedPackage.set({
+          workspaceId: id,
+          root: pkg.root,
+          packageId: pkg.id,
+          version: view.version,
+          commitOid: view.commitOid,
+        })
+        void refreshWorkspace().catch((error) => {
+          workspaceError = String(error)
+        })
+      }
+    })
+    await controller.validate()
   }
   let setupProgress = $state.raw<ProgressState | null>(null)
   let resolveSetupReadiness!: () => void
@@ -552,6 +836,7 @@
     | { readonly phase: 'error'; readonly message: string }
   let exampleCatalogState = $state.raw<ExampleCatalogState>({ phase: 'loading' })
   let exampleReadiness: Promise<readonly ExampleDescriptor[]> | null = null
+  let packageExamples = $state.raw<readonly PackageExampleDescriptor[]>([])
   let widgetRegistry = $state.raw<typeof import('$src/lib/forms/widget-registry') | null>(null)
   let scopedDagRules = $state.raw<typeof import('$src/lib/contract/scoped-dag-rule') | null>(null)
   let canvasProjectionTools = $state.raw<typeof import('$src/features/canvas/project-canvas') | null>(null)
@@ -603,8 +888,11 @@
     if (exampleReadiness) return exampleReadiness
     exampleCatalogState = { phase: 'loading' }
     exampleReadiness = import('$src/lib/examples/load-examples')
-      .then(({ loadExampleCatalog }) => loadExampleCatalog())
-      .then((loaded) => {
+      .then(async ({ loadExampleCatalog, loadPackageExampleCatalog }) =>
+        Promise.all([loadExampleCatalog(), loadPackageExampleCatalog()]),
+      )
+      .then(([loaded, packages]) => {
+        packageExamples = packages
         exampleCatalogState = loaded.length > 0 ? { phase: 'ready', examples: loaded } : { phase: 'empty' }
         return loaded
       })
@@ -682,6 +970,10 @@
   let graphCanvas = $state<ReturnType<typeof GraphCanvas> | null>(null)
   installApplicationReadiness({
     flushRecoveryPersistence: async () => {
+      if (packageAuthoringDialogs?.isBusy())
+        throw new Error('Wait for the package file operation to finish before closing or changing workspaces.')
+      if (preparationView.step !== 'complete' && preparationView.busy)
+        throw new Error('Wait for package preparation to finish before closing or changing workspaces.')
       await graphCanvas?.flushPersistence()
       const layout = activeLayoutStore.get()
       if (layout) await documentWorkspace.persistLayoutChanges(layout)
@@ -1222,7 +1514,8 @@
       analysis = $documentSessionStore.analysis,
       authoring = inspectorContract,
       node = inspectorNodes[0]
-    if (!pkg || !pair || !analysis || !authoring || !node || !packageResourceContract) return {}
+    if (!pkg || !pair || !analysis || !authoring || !node || !packageResourceContract || !resolvePackageReferences)
+      return {}
     const prefix = pkg.root ? pkg.root + '/' : ''
     const refs = resolvePackageReferences({
       contract: packageResourceContract,
@@ -1271,10 +1564,24 @@
   async function returnFromResource(): Promise<void> {
     const captured = resourceReturn
     if (!captured) return
+    const selection = packageCatalog.get().active
+    const generation = artifactOpeningGeneration
+    const controller = artifactController
+    const activity = activeActivity.get()
     const current = () =>
-      workspace.get().id === captured.workspaceId && documentSessionStore.get().pair?.workflowId === captured.workflowId
-    await artifactController?.close()
-    if (!current()) return
+      workspace.get().id === captured.workspaceId &&
+      documentSessionStore.get().pair?.workflowId === captured.workflowId &&
+      generation === artifactOpeningGeneration &&
+      controller === artifactController &&
+      selection === packageCatalog.get().active
+    const closing = artifactClosing ?? controller?.close() ?? Promise.resolve()
+    artifactClosing = closing
+    try {
+      await closing
+    } finally {
+      if (artifactClosing === closing) artifactClosing = null
+    }
+    if (!current() || resourceReturn !== captured || activeActivity.get() !== activity) return
     artifactReady = false
     resourceReturn = null
     showActivity('explorer')
@@ -1342,8 +1649,9 @@
       throw Error('A saved valid workflow in a package is required.')
     const binding = inspectorBindingIdentity,
       scopeKey = inspectorGraph?.scope.key ?? 'root'
+    ResourceDialog ??= (await import('$src/features/inspector/ResourceActionDialog.svelte')).default
     const { capturePackageAnalysis } = await import('$src/features/packages/package-analysis')
-    const contract = await packageContract
+    const contract = await loadPackageContract()
     const captured = await capturePackageAnalysis({
       packageRoot: pkg.root,
       native,
@@ -1405,6 +1713,8 @@
     )
       throw Error('The workflow changed. Close this dialog and try again.')
     resourcePlan = null
+    const { planResourceSelection, planResourceExtraction, planResourceCreation } =
+      await import('$src/lib/packages/resource-actions')
     const plan =
       active.mode === 'select'
         ? await planResourceSelection({ ...active.context, artifactPath: request.artifactPath ?? '' })
@@ -1435,7 +1745,10 @@
       await commitResourcePlan(plan, {
         current: () => (inspectorBindingIdentity === request.binding ? documentSessionStore.get().pair : null),
         workspaceId: () => workspace.get().id,
-        apply: (plan) => native.workspaceApplyTransaction(plan),
+        apply: async (plan) => {
+          const snapshot = await native.workspaceHashPackage(request.context.package.root)
+          return native.workspaceApplyTransaction({ ...plan, packageSnapshotToken: snapshot.sourceSnapshotToken })
+        },
         publish: (pair, transaction) => {
           historyStore.set(recordTransaction(historyStore.get(), transaction))
           documentWorkspace.changed(pair, 'form')
@@ -3326,6 +3639,10 @@
   })
 
   onDestroy(() => {
+    disposePackageAnalysisWorker()
+    preparation?.controller.cancel()
+    unsubscribePreparation?.()
+    resetPackagePreparation()
     packageRefreshGeneration++
     artifactOpeningGeneration++
     packageController?.dispose()
@@ -3441,8 +3758,15 @@
       {/if}
       <div class="left-panel-body" data-contextual-panel-body>
         {#if $activeActivity === 'packages' && $workspace.id !== null}
+          <button onclick={() => runArtifactOperation(() => openPackageAuthoring('create'))}>New Package</button>
           <PackageTree
             resourceContract={packageResourceContract}
+            hasMarketplaceIndex={$workspace.files.some(
+              (file) => file.kind === 'file' && file.relativePath === MARKETPLACE_INDEX_PATH,
+            )}
+            readiness={$packageReadiness?.workspaceId === $workspace.id
+              ? { root: $packageReadiness.root, ready: $packageReadiness.analysis.ready }
+              : undefined}
             catalog={$packageCatalog.catalog}
             active={$packageCatalog.active}
             onOpen={openPackageSelection}
@@ -3559,33 +3883,52 @@
               </section>
             {/if}
             {#if packageArtifact?.path.endsWith('/workflow-package.json') || packageArtifact?.path === 'workflow-package.json'}
-              <PackageManifestEditor
-                bind:this={manifestEditor}
-                document={packageArtifact}
-                onTextChange={editPackageArtifact}
-                onSave={savePackageArtifact}
+              <DeferredSurface
+                load={loadPackageManifestEditor}
+                label="package manifest editor"
+                onInstance={captureManifestEditor}
+                componentProps={{
+                  document: packageArtifact,
+                  focusRequest: artifactFocusRequest,
+                  onTextChange: editPackageArtifact,
+                  onSave: savePackageArtifact,
+                }}
               />
             {:else}
-              <ArtifactEditor
-                document={packageArtifact}
-                metadata={artifactMetadata}
-                generated={artifactKind === 'generated'}
-                command={artifactKind === 'command'}
-                onTextChange={editPackageArtifact}
-                onSave={savePackageArtifact}
-                onReplace={replacePackageBinary}
-                onReveal={async () => {
-                  if (artifactMetadata) await native.workspaceRevealArtifact(artifactMetadata.relativePath)
-                }}
-                onOpen={async () => {
-                  if (artifactMetadata) await native.workspaceOpenArtifact(artifactMetadata.relativePath)
+              <DeferredSurface
+                load={loadArtifactEditor}
+                label="artifact editor"
+                componentProps={{
+                  document: packageArtifact,
+                  focusRequest: artifactFocusRequest,
+                  metadata: artifactMetadata,
+                  generated: artifactKind === 'generated',
+                  command: artifactKind === 'command',
+                  onTextChange: editPackageArtifact,
+                  onSave: savePackageArtifact,
+                  onReplace: replacePackageBinary,
+                  onReveal: async () => {
+                    if (artifactMetadata) await native.workspaceRevealArtifact(artifactMetadata.relativePath)
+                  },
+                  onOpen: async () => {
+                    if (artifactMetadata) await native.workspaceOpenArtifact(artifactMetadata.relativePath)
+                  },
                 }}
               />
             {/if}
           </div>
-        {:else if selectedPackage}
-          <PackageOverview
+        {:else if selectedPackage && Overview}
+          <Overview
             package={selectedPackage}
+            hasMarketplaceIndex={$workspace.files.some(
+              (file) => file.kind === 'file' && file.relativePath === MARKETPLACE_INDEX_PATH,
+            )}
+            onOpenArtifact={(path, line, column) => openPackageFinding(selectedPackage!, path, line, column)}
+            {...selectedPackageAnalysis ? { analysis: selectedPackageAnalysis } : {}}
+            onValidate={() => void runArtifactOperation(() => validateSelectedPackage(selectedPackage!))}
+            onPrepare={() => void runArtifactOperation(() => openPackagePreparation(selectedPackage!))}
+            onAddWorkflow={() => void runArtifactOperation(() => openPackageAuthoring('import', selectedPackage))}
+            onAddArtifact={() => void runArtifactOperation(() => openPackageAuthoring('artifact', selectedPackage))}
             onOpenWorkflow={(path) =>
               openPackageSelection({
                 packageId: selectedPackage!.id,
@@ -3990,11 +4333,15 @@
       {/if}
       {#if packageSurface && selectedPackage}
         {#if packageArtifact && packageArtifact.path === selectedPackage.manifestPath}
-          <PackageInspector
-            text={packageArtifact.text}
-            readOnly={packageArtifact.readOnly}
-            onTextChange={editPackageArtifact}
-            onAdvanced={() => manifestEditor?.showSource()}
+          <DeferredSurface
+            load={loadPackageInspector}
+            label="package inspector"
+            componentProps={{
+              text: packageArtifact.text,
+              readOnly: packageArtifact.readOnly,
+              onTextChange: editPackageArtifact,
+              onAdvanced: showManifestSource,
+            }}
           />
         {:else}<button
             onclick={() =>
@@ -4269,6 +4616,8 @@
           componentProps={{
             embedded: true,
             catalogState: exampleCatalogState,
+            packageExamples,
+            onCreatePackageCopy: copyBundledPackage,
             topicLabels: exampleTopicLabels,
             onCreateEditableCopy: (example: ExampleDescriptor) =>
               runWorkspaceOperation(createEditableExampleCopy(example)),
@@ -4281,6 +4630,31 @@
   </div>
 
   <StatusBar />
+  {#if packageAuthoringDependencies && AuthoringDialogs}
+    <AuthoringDialogs bind:this={packageAuthoringDialogs} deps={packageAuthoringDependencies} onHelp={resourceHelp} />
+  {/if}
+  {#if preparation && PreparationDialog}
+    <PreparationDialog
+      packageId={preparation.package.id}
+      currentVersion={preparation.package.manifest.version}
+      view={preparationView}
+      opener={preparation.opener}
+      onValidate={() => preparation!.controller.validate()}
+      onAcceptReview={() => preparation!.controller.acceptReview()}
+      onPrepare={(input) => preparation!.controller.prepare(input)}
+      onCommit={(input) => preparation!.controller.commit(input)}
+      onCancel={() => {
+        closePackagePreparation()
+      }}
+      onHelp={(topic) => {
+        if (closePackagePreparation()) resourceHelp(topic)
+      }}
+      onOpenArtifact={(path, line, column) => {
+        const pkg = preparation!.package
+        if (closePackagePreparation()) openPackageFinding(pkg, path, line, column)
+      }}
+    />
+  {/if}
   {#if previewRuntimeBrand}
     <DeferredSurface
       load={loadBrandPreview}
@@ -4661,8 +5035,8 @@
   />
 {/if}
 
-{#if resourceRequest}
-  <ResourceActionDialog
+{#if resourceRequest && ResourceDialog}
+  <ResourceDialog
     mode={resourceRequest.mode}
     choices={resourceRequest.choices}
     opener={resourceRequest.opener}

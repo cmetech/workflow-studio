@@ -2,12 +2,25 @@
   import type { ArtifactDocument } from '$src/lib/artifacts/types'
   import PackageInspector from './PackageInspector.svelte'
   import ArtifactEditor from '$src/features/artifacts/ArtifactEditor.svelte'
+  import type { ArtifactFocusRequest } from '$src/features/artifacts/TextArtifactEditor.svelte'
   let {
     document,
+    focusRequest = null,
     onTextChange,
     onSave,
-  }: { document: ArtifactDocument; onTextChange: (text: string) => void; onSave: () => void | Promise<void> } = $props()
+  }: {
+    document: ArtifactDocument
+    focusRequest?: ArtifactFocusRequest | null
+    onTextChange: (text: string) => void
+    onSave: () => void | Promise<void>
+  } = $props()
   let source = $state(false)
+  let lastFocus: { id: string | number; path: string } | null = null
+  $effect(() => {
+    if (!focusRequest || (lastFocus?.id === focusRequest.id && lastFocus.path === document.path)) return
+    lastFocus = { id: focusRequest.id, path: document.path }
+    source = true
+  })
   export function showSource(): void {
     source = true
   }
@@ -29,7 +42,7 @@
       >Advanced Source</button
     >
   </div>
-  {#if source}<ArtifactEditor {document} {onTextChange} {onSave} />{:else}<PackageInspector
+  {#if source}<ArtifactEditor {document} {focusRequest} {onTextChange} {onSave} />{:else}<PackageInspector
       text={document.text}
       readOnly={document.readOnly}
       {onTextChange}
