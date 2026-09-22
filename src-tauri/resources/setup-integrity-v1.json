@@ -58,12 +58,12 @@
     },
     {
       "path": "contracts/workflow-package-provenance.json",
-      "sha256": "646dc7898f2eab6f1a8decca070350cc0b8a736584b0599fd118c5471b2e92b7",
+      "sha256": "8eba4e7caef978fe92fe968003720f24d87ab23eec58fcba63777346d436b3ef",
       "maxBytes": 2097152
     },
     {
       "path": "contracts/workflow-package-resource-resolution-v1-vectors.json",
-      "sha256": "fef1698ff1cb946d90ec433ddca3de5eed3d92b26792def94dcee2da641057e9",
+      "sha256": "0dd7dbb7573ffc3f4e9fa6f9791b1393486481cfaad1ee0c52c5c86d91420ae7",
       "maxBytes": 2097152
     },
     {

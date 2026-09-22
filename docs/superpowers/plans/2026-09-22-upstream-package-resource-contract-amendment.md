@@ -1,6 +1,6 @@
 # Upstream package resource-resolution contract amendment
 
-**Status:** Authorized by the user on 2026-09-22; implemented upstream at `3f921ae05c78f1a9488706fa7e452534a18ca39e` and independently reviewed with a PASS verdict. Studio pins the exported artifacts; the Task 3 interpreter/parity work remains separate. Merge, push, and release are outside this amendment.
+**Status:** Authorized by the user on 2026-09-22; implemented upstream and independently reviewed with a PASS verdict. Current artifact pin: `3e89c2659b6e9c95a627b8f819ff63a11529d86a`, including the independently reviewed serialized-fixture correction. Studio pins the exported artifacts; the Task 3 workflow-level interpreter/parity work remains separate. Merge, push, and release are outside this amendment.
 
 **Goal:** Let offline Studio consumers resolve package resources using agent-owned descriptors and parity vectors, rather than copying Python field lists or guessing lookup behavior.
 
@@ -38,6 +38,8 @@ This amendment does not add Bash as a script runtime, change workflow execution 
 ## Acceptance evidence
 
 The upstream report is `docs/reviews/2026-09-22-package-resource-resolution-contract-review.md` in the agent repository. It independently reproduced committed bytes and checked 72 candidate combinations plus compiler/runtime/sealed/MCP/admission counterexamples. Symlink creation was unavailable on this Windows host and is explicitly unverified here. Broader upstream regression failures are recorded separately from the focused export checks; no full-suite success is claimed.
+
+Studio's first interpreter replay subsequently exposed a serialized MCP fixture-order defect. The corrected fixture now observes its canonicalized published input. The separate `2026-09-22-package-resource-resolution-contract-vector-followup-review.md` reproduces the old defect and records PASS for the correction; runtime lookup code is unchanged. The prior frozen report remains intact. Upstream focused tests now report 12 passed and 1 symlink-capability skip.
 
 Studio's [coverage matrix](../../analysis/2026-09-22-package-resource-resolution-coverage.md) records the remaining consumer obligations. Artifact verification and offline inclusion do not by themselves complete the semantic parity gate below.
 

@@ -67,3 +67,23 @@ Studio test-first evidence:
 Upstream regression receipt (documentation commit `981ba2dd9be77c2f5b7ea62f9fb2681187fd70c0`) records 350 passing tests and 14 failures reproduced on the unchanged baseline. The marketplace package file timed out at 300 seconds; one separately selected package smoke also failed identically on baseline/candidate because descriptor-safe traversal is unavailable. The interrupted broader attempt remains explicitly untriaged. These limitations do not justify a full-suite or cross-platform compatibility claim.
 
 The [surface matrix](../analysis/2026-09-22-package-resource-resolution-coverage.md) defines Task 3's remaining interpreter and shared-vector obligations. No resource graph, full readiness analyzer, package editor, or preparation UI is claimed complete by this prerequisite.
+
+## Upstream amendment follow-up and Studio replay
+
+The current artifact pin is `3e89c2659b6e9c95a627b8f819ff63a11529d86a`; upstream documentation is committed at `5c8c4cd4b2a727730b85d6e76cbc603d2125fd01`. The first Studio interpreter replay passed 38 cases and exposed one published MCP fixture-order defect: sorted JSON mapping keys no longer matched the order used to observe expected candidates. Upstream now canonicalizes the fixture before observing it and tests both rendered and committed JSON replay. Runtime lookup behavior is unchanged. Independent targeted follow-up review passed; the original frozen review remains historical evidence.
+
+- Upstream focused test receipt: 12 passed, 1 skip for unavailable Windows symlink privileges.
+- Studio candidate lookup, context admission, inline discriminator, and MCP candidate primitives: 39 passed. These are the first interpreter batch, not workflow-level reference graph or readiness completion.
+- Combined Studio gate: `npm run test:unit -- src/lib/package-contract src/lib/packages/resource-resolution.test.ts src/lib/native scripts/sync-package-contracts.test.ts tests/installers/release-package.test.ts scripts/sync-contracts.test.ts --maxWorkers=1 --testTimeout=30000`: 127 passed across 9 files.
+- `npm run check`: 0 errors and 0 warnings; targeted package-contract/interpreter ESLint passed.
+- `npm run package-contracts:check`, `npm run resources:verify` (47 files), and `git diff --check` passed against the corrected pin.
+
+The primitive interpreter files remain Task 3 work in progress. Workflow reference graphs, static analysis integration, readiness, and all five full-feature adversarial rounds remain pending. Upstream broader regression limitations above still apply.
+
+## Task 4 native implementation handoff
+
+The independent native implementation is present in the worktree but has not been committed or accepted as complete by the parent. It adds explicit UTF-8 artifact operations, revision-aware binary import/replacement through single-use dialog grants, streamed hashing/copying, contract limits, and constrained external opening. The existing YAML operations retain their boundaries.
+
+Worker-reported evidence: 28 native TypeScript tests passed; 63 Rust workspace tests passed using Rust 1.88.0; owned-file lint and whitespace checks passed. The parent combined 127-test gate above includes the native TypeScript tests. Windows symlink cases returned early because privileges were unavailable; the passing Rust count does not establish symlink containment coverage. Actual OS reveal/open remains a manual acceptance check.
+
+External opening accepts only bounded, verified PNG data re-encoded into a temporary snapshot; all other artifact types use Reveal. Unicode normalization is pinned to Unicode 14.0.0. Native changes and generated ACL metadata remain isolated from this contract-pin commit for subsequent parent review and integration.

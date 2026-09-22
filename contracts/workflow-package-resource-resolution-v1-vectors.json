@@ -1204,9 +1204,9 @@
         }
       },
       "expected": [
-        "external-runtime",
         "data/a.json",
         "missing",
+        "external-runtime",
         "scripts/server.py"
       ]
     }
