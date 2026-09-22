@@ -85,7 +85,7 @@ impl Default for WorkspaceState {
 
 pub(crate) struct WorkspaceBinding {
     pub(crate) root: PathBuf,
-    generation: u64,
+    pub(crate) generation: u64,
 }
 
 struct ActiveWorkspace {
@@ -115,7 +115,7 @@ pub struct WorkspaceScope {
 }
 
 impl WorkspaceScope {
-    fn new(root: &Path) -> WorkspaceResult<Self> {
+    pub(crate) fn new(root: &Path) -> WorkspaceResult<Self> {
         let root = paths::canonical_root(root)?;
         let identity = Handle::from_path(&root).map_err(|_| {
             WorkspaceError::new(
@@ -158,7 +158,7 @@ impl WorkspaceScope {
         Ok(&self.directory)
     }
 
-    fn root_path(&self) -> WorkspaceResult<&Path> {
+    pub(crate) fn root_path(&self) -> WorkspaceResult<&Path> {
         self.verify()
     }
 }

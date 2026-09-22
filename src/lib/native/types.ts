@@ -4,6 +4,9 @@ import type { ContractCacheLoadResult, ContractCacheStoredEntry } from '../contr
 import type { WorkflowProfile } from '../contract/types'
 import type {
   GitDiff,
+  GitPackageContext,
+  GitPackageVersionRequest,
+  GitPackageVersionPreview,
   GitHistoryResult,
   GitPairSnapshot,
   GitRepository,
@@ -86,6 +89,8 @@ export interface ArtifactSourceSelection {
 export interface WorkspaceImportArtifactRequest {
   readonly relativePath: string
   readonly sourceGrantToken: string
+  /** One-use complete package capture for guarded package mutations. */
+  readonly packageSnapshotToken?: string
 }
 
 export interface WorkspaceReplaceArtifactRequest extends WorkspaceImportArtifactRequest {
@@ -101,6 +106,8 @@ export interface WorkspaceMoveRequest {
   readonly destinationPath: string
 }
 export interface PackageMutationPlan {
+  /** Omit only for standalone operations or new-package creation with an absence guard. */
+  readonly packageSnapshotToken?: string
   readonly workspaceId: string
   readonly expectedEntries: readonly ExpectedWorkspaceEntry[]
   readonly writes: readonly WorkspaceWriteRequest[]
@@ -329,6 +336,12 @@ export interface GitNativeBridge extends NativeBridge {
   ): Promise<GitPairSnapshot>
 }
 
+export interface GitPackageNativeBridge extends NativeBridge {
+  gitReadPackageContext(packageRoot: string): Promise<GitPackageContext>
+  gitPreviewPackageVersion(request: GitPackageVersionRequest): Promise<GitPackageVersionPreview>
+  gitCommitPackageVersion(authorizationToken: string): Promise<GitVersionResult>
+}
+
 export interface GitMutationNativeBridge extends NativeBridge {
   gitInit(root: string): Promise<GitRepository>
   gitSetLocalIdentity(root: string, userName: string, userEmail: string): Promise<void>
@@ -364,6 +377,7 @@ export interface WorkspaceNativeBridge
     ContractNativeBridge,
     GitNativeBridge,
     GitMutationNativeBridge,
+    GitPackageNativeBridge,
     BrandNativeBridge,
     SetupNativeBridge,
     UpdateNativeBridge {

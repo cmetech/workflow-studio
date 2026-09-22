@@ -2544,3 +2544,53 @@ fn package_workspace_root_capture_revalidates_without_absolute_joins() {
         "package_source_changed"
     );
 }
+
+#[test]
+fn package_transaction_failure_at_each_staged_file_restores_existing_and_new_package_trees() {
+    for fail in 0..8 {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("existing.md"), "retained bytes").unwrap();
+        let scope = scope(root.path());
+        let paths = [
+            "new/README.md",
+            "new/workflow-package.json",
+            "new/workflows/main.yaml",
+            "new/scripts/helper.py",
+            "new/workflows/main.hermes.yaml",
+            "new/commands/run.md",
+            "new/fixtures/input.json",
+            "new/digests.json",
+        ];
+        let expected: Vec<_> = paths
+            .iter()
+            .map(|path| serde_json::json!({"relativePath":path,"expectedCurrentHash":null}))
+            .collect();
+        let writes: Vec<_> = paths.iter().map(|path| serde_json::json!({"relativePath":path,"text":"new bytes","expectedCurrentHash":null})).collect();
+        let plan = serde_json::from_value(serde_json::json!({"workspaceId":super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":expected,"writes":writes,"moves":[],"trashes":[]})).unwrap();
+        let result = super::transaction::apply_with_staging_hook(&scope, &plan, |position| {
+            if position == fail {
+                Err(super::WorkspaceError::new(
+                    "injected_staging_failure",
+                    "injected disk staging failure",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            result.unwrap_err().code,
+            "injected_staging_failure",
+            "staged position {fail}"
+        );
+        assert_eq!(
+            fs::read(root.path().join("existing.md")).unwrap(),
+            b"retained bytes"
+        );
+        assert!(!root.path().join("new").exists());
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "no temporary siblings after staged failure {fail}"
+        );
+    }
+}

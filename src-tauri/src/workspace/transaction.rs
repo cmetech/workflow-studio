@@ -387,7 +387,27 @@ pub(super) fn apply_verified(
     plan: &PackageMutationPlan,
     verify_before: impl FnOnce(&[String]) -> WorkspaceResult<()>,
     verify_after: impl FnOnce(&[String]) -> WorkspaceResult<()>,
+    hook: impl FnMut(usize) -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    apply_verified_staging(scope, plan, verify_before, verify_after, hook, |_| Ok(()))
+}
+
+#[cfg(test)]
+pub fn apply_with_staging_hook(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    stage: impl FnMut(usize) -> WorkspaceResult<()>,
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    apply_verified_staging(scope, plan, |_| Ok(()), |_| Ok(()), |_| Ok(()), stage)
+}
+
+fn apply_verified_staging(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    verify_before: impl FnOnce(&[String]) -> WorkspaceResult<()>,
+    verify_after: impl FnOnce(&[String]) -> WorkspaceResult<()>,
     mut hook: impl FnMut(usize) -> WorkspaceResult<()>,
+    mut stage: impl FnMut(usize) -> WorkspaceResult<()>,
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
     let expected = validate_plan(scope, plan)?;
     let mut created = Vec::new();
@@ -408,7 +428,8 @@ pub(super) fn apply_verified(
         {
             create_parents(scope, path, &mut created)?;
         }
-        for write in &plan.writes {
+        for (position, write) in plan.writes.iter().enumerate() {
+            stage(position)?;
             let relative = sibling(&write.relative_path, "stage")?;
             artifacts::write_text(scope, &relative, &write.text, None)?;
             let bound = artifacts::bind(scope, &relative)?;

@@ -215,7 +215,8 @@ fn preview_pair_version_with_binding(
     Ok((diff, binding, base))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum GitBase {
     Head { oid: String, reference: String },
     Unborn { reference: String },
@@ -431,6 +432,39 @@ fn create_pair_version_with_interleave(
     definition_path: &str,
     companion_path: Option<&str>,
     message: &str,
+    before_mutation: impl FnMut() -> GitResult<()>,
+    before_candidate_stage: impl FnOnce() -> GitResult<()>,
+    before_index_lock: impl FnOnce() -> GitResult<()>,
+    after_index_lock: impl FnOnce() -> GitResult<()>,
+    before_ref_lock_verification: impl FnOnce() -> GitResult<()>,
+    before_index_publish: impl FnOnce() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    let paths = pair_paths(definition_path, companion_path)?;
+    create_exact_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        authorized_binding,
+        &paths,
+        message,
+        false,
+        before_mutation,
+        before_candidate_stage,
+        before_index_lock,
+        after_index_lock,
+        before_ref_lock_verification,
+        before_index_publish,
+    )
+}
+
+fn create_exact_version_with_interleave(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    authorized_binding: Option<&PairPathBinding>,
+    paths: &[&str],
+    message: &str,
+    package: bool,
     mut before_mutation: impl FnMut() -> GitResult<()>,
     before_candidate_stage: impl FnOnce() -> GitResult<()>,
     before_index_lock: impl FnOnce() -> GitResult<()>,
@@ -438,6 +472,13 @@ fn create_pair_version_with_interleave(
     before_ref_lock_verification: impl FnOnce() -> GitResult<()>,
     before_index_publish: impl FnOnce() -> GitResult<()>,
 ) -> GitResult<GitVersionResult> {
+    let report = |error| {
+        if package {
+            error
+        } else {
+            with_hook_side_effect_warning(error)
+        }
+    };
     let message = required_value(message, "git_message_required", "Enter a version message.")?;
     if message.len() > 64 * 1024 {
         return Err(GitError::new(
@@ -445,7 +486,6 @@ fn create_pair_version_with_interleave(
             "The version message exceeds the 64 KiB safety limit.",
         ));
     }
-    let paths = pair_paths(definition_path, companion_path)?;
     let path_binding =
         PairPathBinding::capture(root, &paths)?.authorize_git_modes(root, &paths, base)?;
     let accepted_binding = authorized_binding.unwrap_or(&path_binding);
@@ -453,13 +493,15 @@ fn create_pair_version_with_interleave(
     path_binding.verify()?;
     base.verify(root)?;
     require_identity(root)?;
-    let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
-    ensure_success("git_status_failed", &pair_status)?;
-    if pair_status.stdout.is_empty() {
-        return Err(GitError::new(
-            "git_nothing_to_commit",
-            "The selected workflow pair has no changes to version.",
-        ));
+    if !package {
+        let pair_status = run_read(root, ReadOperation::PairStatus { paths: &paths })?;
+        ensure_success("git_status_failed", &pair_status)?;
+        if pair_status.stdout.is_empty() {
+            return Err(GitError::new(
+                "git_nothing_to_commit",
+                "The selected workflow pair has no changes to version.",
+            ));
+        }
     }
 
     let empty_tree = run_read(root, ReadOperation::EmptyTree)?;
@@ -477,10 +519,10 @@ fn create_pair_version_with_interleave(
     )?;
     let mut artifacts = TemporaryArtifacts::default();
     let candidate_index = artifacts.create(git_dir, "candidate-index")?;
-    initialize_index(root, &candidate_index, base_treeish)?;
+    initialize_candidate_index(root, &candidate_index, base_treeish, package)?;
     before_candidate_stage()?;
-    stage_exact_paths(root, &candidate_index, &paths)?;
-    let accepted_tree = write_tree(root, &candidate_index)?;
+    stage_candidate_paths(root, &candidate_index, paths, accepted_binding, package)?;
+    let accepted_tree = write_candidate_tree(root, &candidate_index, package)?;
     let accepted_entries =
         verify_tree_pair_entries(root, &accepted_tree, &paths, accepted_binding)?;
 
@@ -488,51 +530,49 @@ fn create_pair_version_with_interleave(
     if let Some(bytes) = &original_index {
         write_private_file(&normalized_index, bytes)?;
     } else {
-        initialize_index(root, &normalized_index, base_treeish)?;
+        initialize_candidate_index(root, &normalized_index, base_treeish, package)?;
     }
-    stage_exact_paths(root, &normalized_index, &paths)?;
+    stage_candidate_paths(root, &normalized_index, paths, accepted_binding, package)?;
 
     let message_file = artifacts.create(git_dir, "message")?;
     let mut message_bytes = message.as_bytes().to_vec();
     message_bytes.push(b'\n');
     write_private_file(&message_file, &message_bytes)?;
 
-    run_commit_hook(root, &candidate_index, "pre-commit", None, None)
-        .map_err(with_hook_side_effect_warning)?;
-    run_commit_hook(
-        root,
-        &candidate_index,
-        "prepare-commit-msg",
-        Some(&message_file),
-        Some("message"),
-    )
-    .map_err(with_hook_side_effect_warning)?;
-    run_commit_hook(
-        root,
-        &candidate_index,
-        "commit-msg",
-        Some(&message_file),
-        None,
-    )
-    .map_err(with_hook_side_effect_warning)?;
-    let _ = read_bounded_file(
-        &message_file,
-        64 * 1024,
-        "git_commit_rejected",
-        "A commit hook made the version message unavailable.",
-        "git_commit_rejected",
-        "A commit hook expanded the version message beyond 64 KiB.",
-    )
-    .map_err(with_hook_side_effect_warning)?;
+    if !package {
+        run_commit_hook(root, &candidate_index, "pre-commit", None, None).map_err(report)?;
+        run_commit_hook(
+            root,
+            &candidate_index,
+            "prepare-commit-msg",
+            Some(&message_file),
+            Some("message"),
+        )
+        .map_err(report)?;
+        run_commit_hook(
+            root,
+            &candidate_index,
+            "commit-msg",
+            Some(&message_file),
+            None,
+        )
+        .map_err(report)?;
+        let _ = read_bounded_file(
+            &message_file,
+            64 * 1024,
+            "git_commit_rejected",
+            "A commit hook made the version message unavailable.",
+            "git_commit_rejected",
+            "A commit hook expanded the version message beyond 64 KiB.",
+        )
+        .map_err(report)?;
+    }
 
-    before_mutation().map_err(with_hook_side_effect_warning)?;
-    path_binding
-        .verify()
-        .map_err(with_hook_side_effect_warning)?;
-    base.verify(root).map_err(with_hook_side_effect_warning)?;
-    let final_tree = write_tree(root, &candidate_index).map_err(with_hook_side_effect_warning)?;
-    let final_entries =
-        pair_tree_entries(root, &final_tree, &paths).map_err(with_hook_side_effect_warning)?;
+    before_mutation().map_err(report)?;
+    path_binding.verify().map_err(report)?;
+    base.verify(root).map_err(report)?;
+    let final_tree = write_candidate_tree(root, &candidate_index, package).map_err(report)?;
+    let final_entries = pair_tree_entries(root, &final_tree, &paths).map_err(report)?;
     if final_tree != accepted_tree || final_entries != accepted_entries {
         return Err(GitError::new(
             "git_commit_candidate_changed",
@@ -540,7 +580,7 @@ fn create_pair_version_with_interleave(
         ));
     }
 
-    let commit = run_mutation_with_index(
+    let commit = candidate_mutation(
         root,
         MutationOperation::CommitTree {
             tree: &accepted_tree,
@@ -548,16 +588,14 @@ fn create_pair_version_with_interleave(
             message_file: &message_file,
         },
         &candidate_index,
+        package,
     )
-    .map_err(with_hook_side_effect_warning)?;
-    ensure_success("git_commit_rejected", &commit).map_err(with_hook_side_effect_warning)?;
-    let candidate_oid = oid_text(&commit.stdout, "git_commit_outcome_unknown")
-        .map_err(with_hook_side_effect_warning)?;
-    before_mutation().map_err(with_hook_side_effect_warning)?;
-    path_binding
-        .verify()
-        .map_err(with_hook_side_effect_warning)?;
-    base.verify(root).map_err(with_hook_side_effect_warning)?;
+    .map_err(report)?;
+    ensure_success("git_commit_rejected", &commit).map_err(report)?;
+    let candidate_oid = oid_text(&commit.stdout, "git_commit_outcome_unknown").map_err(report)?;
+    before_mutation().map_err(report)?;
+    path_binding.verify().map_err(report)?;
+    base.verify(root).map_err(report)?;
 
     let normalized_bytes = read_bounded_file(
         &normalized_index,
@@ -567,13 +605,11 @@ fn create_pair_version_with_interleave(
         "git_index_too_large",
         "The normalized Git index exceeds the 16 MiB safety limit.",
     )
-    .map_err(with_hook_side_effect_warning)?;
-    let normalized_tree =
-        write_tree(root, &normalized_index).map_err(with_hook_side_effect_warning)?;
-    let normalized_entries =
-        pair_tree_entries(root, &normalized_tree, &paths).map_err(with_hook_side_effect_warning)?;
+    .map_err(report)?;
+    let normalized_tree = write_candidate_tree(root, &normalized_index, package).map_err(report)?;
+    let normalized_entries = pair_tree_entries(root, &normalized_tree, &paths).map_err(report)?;
     if normalized_entries != accepted_entries {
-        return Err(with_hook_side_effect_warning(GitError::new(
+        return Err(report(GitError::new(
             "git_commit_candidate_changed",
             "The normalized Git index no longer contains the exact accepted pair entries.",
         )));
@@ -585,29 +621,27 @@ fn create_pair_version_with_interleave(
         before_index_lock,
         after_index_lock,
     )
-    .map_err(with_hook_side_effect_warning)?;
-    before_mutation().map_err(with_hook_side_effect_warning)?;
-    path_binding
-        .verify()
-        .map_err(with_hook_side_effect_warning)?;
-    base.verify(root).map_err(with_hook_side_effect_warning)?;
-    before_ref_lock_verification().map_err(with_hook_side_effect_warning)?;
-    prepared_index
-        .verify_ownership()
-        .map_err(with_hook_side_effect_warning)?;
+    .map_err(report)?;
+    before_mutation().map_err(report)?;
+    path_binding.verify().map_err(report)?;
+    base.verify(root).map_err(report)?;
+    before_ref_lock_verification().map_err(report)?;
+    prepared_index.verify_ownership().map_err(report)?;
 
     let old_oid = base
         .parent()
         .map(str::to_owned)
         .unwrap_or_else(|| "0".repeat(candidate_oid.len()));
-    let update = run_mutation(
-        root,
-        MutationOperation::UpdateRef {
-            reference: base.reference(),
-            new_oid: &candidate_oid,
-            old_oid: &old_oid,
-        },
-    );
+    let update_operation = MutationOperation::UpdateRef {
+        reference: base.reference(),
+        new_oid: &candidate_oid,
+        old_oid: &old_oid,
+    };
+    let update = if package {
+        super::runner::run_package_mutation(root, update_operation, None)
+    } else {
+        run_mutation(root, update_operation)
+    };
     let update_warning = match classify_ref_update(root, base, &candidate_oid, update)? {
         RefUpdateOutcome::Committed { warning } => warning,
         RefUpdateOutcome::NotCommitted(error) => return Err(error),
@@ -631,15 +665,17 @@ fn create_pair_version_with_interleave(
             error.message
         )));
     }
-    if let Some(warning) = post_commit_warning(run_mutation(
-        root,
-        MutationOperation::RunHook {
-            name: "post-commit",
-            message_file: None,
-            source: None,
-        },
-    )) {
-        warnings.push(warning);
+    if !package {
+        if let Some(warning) = post_commit_warning(run_mutation(
+            root,
+            MutationOperation::RunHook {
+                name: "post-commit",
+                message_file: None,
+                source: None,
+            },
+        )) {
+            warnings.push(warning);
+        }
     }
     if let Err(error) = before_mutation() {
         warnings.push(bounded_warning(format!(
@@ -647,7 +683,13 @@ fn create_pair_version_with_interleave(
             error.message
         )));
     }
-    let (refreshed_status, status_warning) = committed_status(status(root));
+    // Even status can invoke a configured clean filter. Package operations do
+    // not inspect the working tree through Git; scoped capture owns that work.
+    let (refreshed_status, status_warning) = if package {
+        (None, None)
+    } else {
+        committed_status(status(root))
+    };
     if let Some(warning) = status_warning {
         warnings.push(warning);
     }
@@ -689,20 +731,165 @@ pub(crate) fn committed_status(
     }
 }
 
-fn initialize_index(root: &Path, index_path: &Path, tree: &str) -> GitResult<()> {
-    let output = run_mutation_with_index(root, MutationOperation::ReadTree { tree }, index_path)?;
-    ensure_success("git_index_unavailable", &output)
-}
-
 fn stage_exact_paths(root: &Path, index_path: &Path, paths: &[&str]) -> GitResult<()> {
     let output = run_mutation_with_index(root, MutationOperation::AddAll { paths }, index_path)?;
     ensure_success("git_stage_failed", &output)
 }
 
-fn write_tree(root: &Path, index_path: &Path) -> GitResult<String> {
-    let output = run_mutation_with_index(root, MutationOperation::WriteTree, index_path)?;
-    ensure_success("git_commit_candidate_changed", &output)?;
-    oid_text(&output.stdout, "git_commit_candidate_changed")
+fn candidate_mutation(
+    root: &Path,
+    operation: MutationOperation<'_>,
+    index: &Path,
+    package: bool,
+) -> GitResult<super::runner::CommandOutput> {
+    if package {
+        super::runner::run_package_mutation(root, operation, Some(index))
+    } else {
+        run_mutation_with_index(root, operation, index)
+    }
+}
+fn initialize_candidate_index(
+    root: &Path,
+    index: &Path,
+    tree: &str,
+    package: bool,
+) -> GitResult<()> {
+    ensure_success(
+        "git_index_unavailable",
+        &candidate_mutation(root, MutationOperation::ReadTree { tree }, index, package)?,
+    )
+}
+fn write_candidate_tree(root: &Path, index: &Path, package: bool) -> GitResult<String> {
+    let result = candidate_mutation(root, MutationOperation::WriteTree, index, package)?;
+    ensure_success("git_commit_candidate_changed", &result)?;
+    oid_text(&result.stdout, "git_commit_candidate_changed")
+}
+
+fn stage_candidate_paths(
+    root: &Path,
+    index: &Path,
+    paths: &[&str],
+    binding: &PairPathBinding,
+    package: bool,
+) -> GitResult<()> {
+    if !package {
+        return stage_exact_paths(root, index, paths);
+    }
+    for (position, path) in paths.iter().enumerate() {
+        let operation = match binding.state(position)? {
+            PairPathState::Missing => MutationOperation::RemoveEntry { path },
+            PairPathState::Regular { .. } => {
+                let blob =
+                    candidate_mutation(root, MutationOperation::HashRaw { path }, index, true)?;
+                ensure_success("git_stage_failed", &blob)?;
+                let oid = oid_text(&blob.stdout, "git_stage_failed")?;
+                let mode = binding
+                    .authorized_mode(position)?
+                    .ok_or_else(|| GitError::new("git_stage_failed", "Missing package mode."))?;
+                let result = candidate_mutation(
+                    root,
+                    MutationOperation::CacheEntry {
+                        path,
+                        mode,
+                        oid: &oid,
+                    },
+                    index,
+                    true,
+                )?;
+                ensure_success("git_stage_failed", &result)?;
+                continue;
+            }
+            PairPathState::SafeSymlink { .. } => {
+                return Err(GitError::new(
+                    "package_symlink_unsupported",
+                    "Package files cannot be links.",
+                ))
+            }
+        };
+        ensure_success(
+            "git_stage_failed",
+            &candidate_mutation(root, operation, index, true)?,
+        )?;
+    }
+    binding.verify()
+}
+
+pub(crate) fn preview_package_candidate(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    paths: &[&str],
+) -> GitResult<(String, Vec<String>, PairPathBinding)> {
+    let binding = PairPathBinding::capture(root, paths)?.authorize_git_modes(root, paths, base)?;
+    let empty = run_read(root, ReadOperation::EmptyTree)?;
+    ensure_success("git_preview_failed", &empty)?;
+    let empty = oid_text(&empty.stdout, "git_preview_failed")?;
+    let base_tree = base.parent().unwrap_or(&empty);
+    let mut artifacts = TemporaryArtifacts::default();
+    let index = artifacts.create(git_dir, "package-preview-index")?;
+    initialize_candidate_index(root, &index, base_tree, true)?;
+    stage_candidate_paths(root, &index, paths, &binding, true)?;
+    let candidate = write_candidate_tree(root, &index, true)?;
+    verify_tree_pair_entries(root, &candidate, paths, &binding)?;
+    let names = run_read(
+        root,
+        ReadOperation::PackageDiff {
+            base: base_tree,
+            tree: &candidate,
+            names: true,
+        },
+    )?;
+    ensure_success("git_preview_failed", &names)?;
+    let changed = names
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| output_text(part))
+        .collect::<GitResult<Vec<_>>>()?;
+    if changed.is_empty() {
+        return Err(GitError::new(
+            "git_nothing_to_commit",
+            "The selected package has no changes to version.",
+        ));
+    }
+    let diff = run_read(
+        root,
+        ReadOperation::PackageDiff {
+            base: base_tree,
+            tree: &candidate,
+            names: false,
+        },
+    )?;
+    ensure_success("git_preview_failed", &diff)?;
+    binding.verify()?;
+    base.verify(root)?;
+    Ok((output_text(&diff.stdout)?, changed, binding))
+}
+
+pub(crate) fn create_package_version(
+    root: &Path,
+    git_dir: &Path,
+    base: &GitBase,
+    binding: &PairPathBinding,
+    paths: &[&str],
+    message: &str,
+    before_mutation: impl FnMut() -> GitResult<()>,
+) -> GitResult<GitVersionResult> {
+    create_exact_version_with_interleave(
+        root,
+        git_dir,
+        base,
+        Some(binding),
+        paths,
+        message,
+        true,
+        before_mutation,
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+        || Ok(()),
+    )
 }
 
 fn verify_tree_pair_entries(

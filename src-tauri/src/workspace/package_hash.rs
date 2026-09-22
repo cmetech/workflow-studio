@@ -23,14 +23,14 @@ pub(super) fn limit(name: &str) -> u64 {
         .as_u64()
         .expect("pinned limit")
 }
-pub(super) fn token() -> WorkspaceResult<String> {
+pub(crate) fn token() -> WorkspaceResult<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| error("workspace_random_failed"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Reuse the exact pinned Unicode14 folding table consumed by the renderer.
-pub(super) fn canonical(path: &str) -> String {
+pub(crate) fn canonical(path: &str) -> String {
     static FOLD: OnceLock<HashMap<char, String>> = OnceLock::new();
     let fold = FOLD.get_or_init(|| {
         let source = include_str!(
@@ -109,6 +109,59 @@ pub struct Capture {
     pub files: Vec<PackageFileHash>,
     pub package_root: String,
     entries: BTreeMap<String, CapturedEntry>,
+}
+impl Capture {
+    pub(crate) fn all_file_paths(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| !entry.kind)
+            .map(|(path, _)| workspace_path(&self.package_root, path))
+            .collect()
+    }
+}
+
+pub(crate) fn workspace_id(scope: &WorkspaceScope) -> WorkspaceResult<String> {
+    super::transaction::workspace_id(scope)
+}
+
+/// A missing component is the only successful absence result. Links, aliases,
+/// unreadable directories and non-directory parents fail closed.
+pub(crate) fn path_exists(scope: &WorkspaceScope, relative: &str) -> WorkspaceResult<bool> {
+    artifacts::validate(relative)?;
+    let parts: Vec<_> = relative.split('/').collect();
+    let mut dir = scope.directory()?.try_clone().map_err(io)?;
+    for (index, part) in parts.iter().enumerate() {
+        let metadata = match dir.symlink_metadata(part) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(io(error)),
+        };
+        artifacts::reject_link(&metadata)?;
+        if index + 1 < parts.len() {
+            dir = dir.open_dir_nofollow(part).map_err(io)?;
+        }
+    }
+    scope.verify()?;
+    Ok(true)
+}
+
+pub(crate) fn take_for_git(
+    state: &PackageSnapshotState,
+    scope: &WorkspaceScope,
+    generation: u64,
+    token: &str,
+) -> WorkspaceResult<Capture> {
+    let granted = state
+        .snapshots
+        .lock()
+        .map_err(|_| error("workspace_state_unavailable"))?
+        .remove(token)
+        .ok_or_else(|| error("package_snapshot_invalid"))?;
+    if granted.generation != generation || granted.workspace_id != workspace_id(scope)? {
+        return Err(error("package_snapshot_invalid"));
+    }
+    verify(scope, &granted.capture)?;
+    Ok(granted.capture)
 }
 #[derive(Default)]
 pub struct PackageSnapshotState {

@@ -396,6 +396,15 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     layoutSave: async (content) => {
       layoutContent = content
     },
+    gitReadPackageContext: async () => {
+      throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitPreviewPackageVersion: async () => {
+      throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitCommitPackageVersion: async () => {
+      throw new NativeError('git_unavailable', 'Creating a Git version requires the desktop application.')
+    },
     gitDetect: async () => null,
     gitBeginHistorySession: async () => {
       gitHistoryEpoch += 1

@@ -626,7 +626,7 @@ fn hooks_run_in_git_order_with_exact_arguments_and_post_commit_is_advisory() {
 
 #[cfg(unix)]
 #[test]
-fn clean_filter_cannot_change_the_accepted_pair_bytes() {
+fn configured_clean_filter_refuses_pair_version_before_any_filter_can_run() {
     let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
@@ -659,7 +659,7 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(error.code, "git_status_filter_unsupported");
     assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
     assert_eq!(fs::read(&index_path).unwrap(), before_index);
     assert_eq!(
@@ -670,7 +670,7 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
 
 #[cfg(unix)]
 #[test]
-fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blob() {
+fn configured_filter_refusal_preserves_head_and_index_even_with_replacement_refs() {
     let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
@@ -722,7 +722,7 @@ fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blo
     .err()
     .expect("raw candidate bytes must not resolve through replacement refs");
 
-    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(error.code, "git_status_filter_unsupported");
     assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
     assert_eq!(fs::read(&index_path).unwrap(), before_index);
 }

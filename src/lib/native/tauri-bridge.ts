@@ -7,6 +7,8 @@ import type { ProgressEvent, ProgressSnapshot } from '../progress/types'
 import type { UpdateEvent, UpdateSnapshot, UpdateStatusResponse } from '../updates/types'
 import type {
   GitDiff,
+  GitPackageContext,
+  GitPackageVersionPreview,
   GitHistoryResult,
   GitPairSnapshot,
   GitRepository,
@@ -197,6 +199,11 @@ export const tauriBridge: WorkspaceNativeBridge = {
   recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),
   layoutLoad: () => invokeTyped<string | null>('layout_load'),
   layoutSave: (content) => invokeTyped<void>('layout_save', { content }),
+  gitReadPackageContext: (packageRoot) => invokeTyped<GitPackageContext>('git_read_package_context', { packageRoot }),
+  gitPreviewPackageVersion: (request) =>
+    invokeTyped<GitPackageVersionPreview>('git_preview_package_version', { request }),
+  gitCommitPackageVersion: (authorizationToken) =>
+    invokeTyped<GitVersionResult>('git_commit_package_version', { authorizationToken }),
   gitDetect: () => invokeTyped<GitRepository | null>('git_detect'),
   gitBeginHistorySession: () => invokeTyped<number>('git_begin_history_session'),
   gitStatus: (root) => invokeTyped<GitStatus>('git_status', { root }),

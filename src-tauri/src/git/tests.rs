@@ -3437,7 +3437,12 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         ],
     );
     for follow in [false, true] {
-        let mut expected = vec!["log"];
+        let mut expected = vec![
+            "log",
+            "--no-show-signature",
+            "--no-ext-diff",
+            "--no-textconv",
+        ];
         if follow {
             expected.push("--follow");
         }
@@ -3467,6 +3472,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         &[
             "show",
             "--no-ext-diff",
+            "--no-textconv",
             "--no-color",
             "0123456789abcdef:flows/main.yaml",
         ],
@@ -3685,3 +3691,6 @@ fn git_with_dates(root: &Path, arguments: &[&str], date: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[path = "package_tests.rs"]
+mod package_tests;

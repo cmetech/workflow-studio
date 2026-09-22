@@ -42,6 +42,24 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) enum ReadOperation<'a> {
+    FilterNames,
+    FilterPaths,
+    FilterAttributes {
+        paths: &'a [&'a str],
+    },
+    PackageDiff {
+        base: &'a str,
+        tree: &'a str,
+        names: bool,
+    },
+    PackageTree {
+        tree: &'a str,
+        path: &'a str,
+    },
+    PackageHistory {
+        base: &'a str,
+        path: &'a str,
+    },
     Version,
     RepositoryContext,
     Branch,
@@ -99,6 +117,17 @@ pub(crate) enum ReadOperation<'a> {
 }
 
 pub(crate) enum MutationOperation<'a> {
+    HashRaw {
+        path: &'a str,
+    },
+    CacheEntry {
+        path: &'a str,
+        mode: &'a str,
+        oid: &'a str,
+    },
+    RemoveEntry {
+        path: &'a str,
+    },
     Init {
         workspace_root: &'a Path,
     },
@@ -142,6 +171,9 @@ pub(crate) struct CommandOutput {
 }
 
 impl CommandOutput {
+    pub(super) fn exit_code(&self) -> Option<i32> {
+        self.status.code()
+    }
     pub(crate) fn success(&self) -> bool {
         self.status.success()
     }
@@ -154,7 +186,20 @@ impl CommandOutput {
 pub(crate) fn run_read(root: &Path, operation: ReadOperation<'_>) -> GitResult<CommandOutput> {
     #[cfg(test)]
     READ_PROBE_COUNT.with(|count| count.set(count.get() + 1));
-    run_command(build_read_command(root, operation)?, READ_TIMEOUT, None)
+    let worktree = matches!(
+        &operation,
+        ReadOperation::Status
+            | ReadOperation::PairStatus { .. }
+            | ReadOperation::HeadDiff { .. }
+            | ReadOperation::UntrackedDiff { .. }
+    );
+    #[cfg(test)]
+    let worktree = worktree || matches!(&operation, ReadOperation::Diff { .. });
+    let mut command = build_read_command(root, operation)?;
+    if worktree {
+        super::filter_guard::prepare(root, &mut command)?;
+    }
+    run_command(command, READ_TIMEOUT, None)
 }
 
 #[cfg(test)]
@@ -188,6 +233,30 @@ pub(crate) fn run_mutation_with_index(
         MUTATION_TIMEOUT,
         None,
     )
+}
+
+pub(crate) fn run_package_mutation(
+    root: &Path,
+    operation: MutationOperation<'_>,
+    index: Option<&Path>,
+) -> GitResult<CommandOutput> {
+    let mut command = build_mutation_command(root, operation)?;
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", git_subprocess_path(index)?);
+    }
+    // OS null devices cannot contain executable hook children. Git still performs
+    // object/index/ref operations, without repository-authored hooks or signers.
+    let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    command
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_0", null_device)
+        .env("GIT_CONFIG_KEY_1", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env("GIT_CONFIG_KEY_2", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_2", "false")
+        .env("GIT_NO_REPLACE_OBJECTS", "1");
+    run_command(command, MUTATION_TIMEOUT, None)
 }
 
 fn run_command(
@@ -439,7 +508,11 @@ fn primary_thread_for(process_id: u32) -> GitResult<HANDLE> {
 pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> GitResult<Command> {
     let raw_objects = matches!(
         &operation,
-        ReadOperation::RawTreeEntry { .. } | ReadOperation::RawBlob { .. }
+        ReadOperation::RawTreeEntry { .. }
+            | ReadOperation::RawBlob { .. }
+            | ReadOperation::PackageTree { .. }
+            | ReadOperation::PackageHistory { .. }
+            | ReadOperation::PackageDiff { .. }
     );
     let root = git_subprocess_path(root)?;
     let mut command = Command::new("git");
@@ -605,6 +678,26 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
         ReadOperation::Status => {
             strings(&["status", "--porcelain=v2", "-z", "--untracked-files=all"])
         }
+        ReadOperation::FilterNames => strings(&[
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            "^filter\\..*\\.(clean|process)$",
+        ]),
+        ReadOperation::FilterPaths => strings(&[
+            "ls-files",
+            "--stage",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]),
+        ReadOperation::FilterAttributes { paths } => {
+            let mut values = strings(&["check-attr", "-z", "filter", "--"]);
+            values.extend(paths.iter().map(OsString::from));
+            values
+        }
         #[cfg(test)]
         ReadOperation::Diff { cached, paths } => {
             let mut values = strings(&["diff"]);
@@ -648,7 +741,12 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values
         }
         ReadOperation::History { follow, paths } => {
-            let mut values = strings(&["log"]);
+            let mut values = strings(&[
+                "log",
+                "--no-show-signature",
+                "--no-ext-diff",
+                "--no-textconv",
+            ]);
             if follow {
                 values.push("--follow".into());
             }
@@ -662,7 +760,7 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values
         }
         ReadOperation::Show { oid, path } => {
-            let mut values = strings(&["show", "--no-ext-diff", "--no-color"]);
+            let mut values = strings(&["show", "--no-ext-diff", "--no-textconv", "--no-color"]);
             values.push(format!("{oid}:{path}").into());
             values
         }
@@ -716,11 +814,43 @@ fn arguments(operation: ReadOperation<'_>) -> Vec<OsString> {
             values.push(oid.into());
             values
         }
+        ReadOperation::PackageTree { tree, path } => {
+            strings(&["ls-tree", "-r", "-z", tree, "--", path])
+        }
+        ReadOperation::PackageHistory { base, path } => strings(&[
+            "log",
+            "--format=%H",
+            "--no-show-signature",
+            "--max-count=257",
+            "--diff-filter=AM",
+            base,
+            "--",
+            path,
+        ]),
+        ReadOperation::PackageDiff { base, tree, names } => {
+            let mut args = strings(&["diff", "--no-ext-diff", "--no-textconv", "--no-renames"]);
+            if names {
+                args.extend(strings(&["--name-only", "-z"]));
+            } else {
+                args.extend(strings(&["--binary", "--full-index"]));
+            }
+            args.extend(strings(&[base, tree, "--"]));
+            args
+        }
     }
 }
 
 fn mutation_arguments(operation: MutationOperation<'_>) -> GitResult<Vec<OsString>> {
     Ok(match operation {
+        MutationOperation::HashRaw { path } => {
+            strings(&["hash-object", "--no-filters", "-w", "--", path])
+        }
+        MutationOperation::CacheEntry { path, mode, oid } => {
+            strings(&["update-index", "--add", "--cacheinfo", mode, oid, path])
+        }
+        MutationOperation::RemoveEntry { path } => {
+            strings(&["update-index", "--force-remove", "--", path])
+        }
         MutationOperation::Init { .. } => unreachable!("init does not use -C arguments"),
         MutationOperation::SetLocalConfig { key, value } => {
             let mut values = strings(&["config", "--local"]);

@@ -32,6 +32,7 @@ pub fn run() {
         .manage(workspace::package_hash::PackageSnapshotState::default())
         .manage(workspace::artifacts::ArtifactGrantState::default())
         .manage(git::GitState::default())
+        .manage(git::package::PackageGitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(contracts::ContractGrantState::default())
         .manage(branding::BrandGrantState::default())
@@ -101,6 +102,9 @@ pub fn run() {
             contracts::contract_choose_hermes_executable,
             contracts::contract_cache_load,
             contracts::contract_cache_write,
+            git::package::git_read_package_context,
+            git::package::git_preview_package_version,
+            git::package::git_commit_package_version,
             git::git_detect,
             git::git_begin_history_session,
             git::git_status,
