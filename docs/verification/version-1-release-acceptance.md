@@ -31,3 +31,18 @@ Recorded: 2026-09-06. v1.0.1 and v1.0.2 remain unpublished failed drafts. v1.0.3
 ## Disposition
 
 No v1.0.8 tag, push, draft workflow, or publication was performed. The local evidence remains historical; the current release gates and follow-up work are tracked in `docs/verification/version-2-release-acceptance.md`.
+
+## Package authoring acceptance addendum — 2026-09-22
+
+This addendum records the later package-authoring work required by Task 16 of the [approved plan](../superpowers/plans/2026-09-03-workflow-package-authoring-local-publishing.md). It does not change the historical v1.0.8 release disposition above or claim a new release candidate has passed its full gate.
+
+| Boundary | Available evidence | Remaining scope |
+| --- | --- | --- |
+| Marketplace interoperability | [Pinned-agent receipt](2026-09-22-package-marketplace-interop.md): unchanged Studio-produced package/index bytes passed public validators, compilation, review, install, explicit trust, and payload/version update on WSL2 Ubuntu 22.04. Trust changed from untrusted to trusted only after explicit review, then returned to untrusted after update. | This is one complete synthetic package lifecycle, not every package shape or destination. |
+| No authored execution or credential use | The acceptance audit allowed only local Git subprocesses, restricted Git transport to `file`, and rejected socket connect/bind. No script, command, workflow runner, provider request, or MCP service ran. A model name was supplied only in the isolated destination configuration; no credentials were supplied. | Runtime availability, credentials, services, and execution success remain destination checks, not preparation claims. |
+| Platform boundary | Linux descriptor-safe traversal was explicitly verified. The native Windows probe independently matched digests and compiled, but public distribution loading rejected unavailable descriptor-safe traversal. | Native Windows agent review/install is not supported by this evidence; Windows Studio authoring is a separate boundary. Installed-app macOS/Windows checks remain open. |
+| Package integrity and mutation | [Security model](../security.md#package-authoring-and-local-preparation-boundary) identifies complete-inventory scanning, contract path/link limits, expected revisions, snapshot-authorized generated writes, rollback/partial-recovery behavior, and credential exclusion responsibilities. | Final clean-checkout native, renderer, malicious-input, crash/recovery, and packaged-resource gates must still be recorded against the final candidate. |
+| Local Git preparation | The implementation binds explicit preview and commit authorization to source, baseline, shared index, message, and included paths. Other package entries and unrelated staged/worktree changes are outside the selected package authorization. Publishing remains an external user action. | Final race/hook/index-loss and installed-app journey evidence must pass before release claims. |
+| Performance, accessibility, and review | Prior historical evidence above remains scoped to its original candidate. | Re-run package refresh/readiness alongside the 250-node/500-edge interaction workload; complete keyboard/focus/reduced-motion checks, the full Task 16 gate, and all five sequential adversarial rounds. No current pass is inferred from historical rows. |
+
+The interoperability receipt also records an isolated bootstrap cleanup limitation: automatic tool policy rejected deletion of three verified task-only installation directories. They remain explicitly identified there; this is not a source change or a successful cleanup claim.
