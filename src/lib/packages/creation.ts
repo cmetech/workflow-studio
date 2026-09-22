@@ -5,6 +5,7 @@ import type { ResourceResolutionContract } from '../package-contract/resource-co
 import type { WorkspaceFileEntry } from '../workspace/types'
 import { analyzeWorkflowPair } from '../validation/analyze-workflow'
 import { parsePackageManifest } from './manifest'
+import { replaceManifestProperty } from './manifest-edit'
 import { packagePathError, packagePathIdentity, validatePackagePaths } from './paths'
 import { resolvePackageReferences } from './package-references'
 import type { WorkflowPackageManifest, PackageWorkflowMember } from './types'
@@ -66,7 +67,8 @@ export class PackageCreationError extends Error {
 function fail(code: string, path: string, message: string): never {
   throw new PackageCreationError(code, message, path)
 }
-const nested = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
+const nested = (a: string, b: string) =>
+  a === '' || b === '' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 const pathCheck = (path: string) => {
   const error = packagePathError(path)
   if (error) fail(error, path, 'Use a canonical relative path inside the workspace.')
@@ -100,10 +102,10 @@ export async function planWorkflowImport(
   request: ImportWorkflowPackageRequest,
   snapshot: PackageCreationSnapshot,
 ): Promise<PackageMutationPlan> {
-  pathCheck(request.root)
+  if (request.root !== '') pathCheck(request.root)
   if (!snapshot.packages.some((pkg) => pkg.root === request.root))
     fail('package_source_unverified', request.root, 'Select an existing package from the current workspace.')
-  const manifestPath = `${request.root}/workflow-package.json`
+  const manifestPath = packagePath(request.root, 'workflow-package.json')
   const entry = requireSource(manifestPath, snapshot)
   const parsed = parsePackageManifest(entry.text!, manifestPath, snapshot.contract)
   if (!parsed.ok) fail(parsed.findings[0]!.code, manifestPath, parsed.findings[0]!.message)
@@ -117,7 +119,7 @@ export async function planWorkflowImport(
     )
   )
     fail('package_member_duplicate', member.definition, 'This workflow is already a package member.')
-  const manifestText = `${JSON.stringify({ ...(parsed.rawDocument as Record<string, unknown>), workflows: [...parsed.manifest.workflows, member] }, null, 2)}\n`
+  const manifestText = replaceManifestProperty(entry.text!, 'workflows', [...parsed.manifest.workflows, member])
   validateManifest(manifestText, request.root, snapshot)
   return buildPlan(request, snapshot, manifestText, entry.sha256!, false)
 }
@@ -126,7 +128,7 @@ function workflowMember(source: PackageWorkflowSource): PackageWorkflowMember {
   return { definition: source.definition.path, ...(source.companion ? { companion: source.companion.path } : {}) }
 }
 function validateManifest(text: string, root: string, snapshot: PackageCreationSnapshot): void {
-  const result = parsePackageManifest(text, `${root}/workflow-package.json`, snapshot.contract)
+  const result = parsePackageManifest(text, packagePath(root, 'workflow-package.json'), snapshot.contract)
   if (!result.ok) fail(result.findings[0]!.code, root, result.findings[0]!.message)
 }
 function requireSource(path: string, snapshot: PackageCreationSnapshot): PackageCreationEntry {
@@ -161,7 +163,7 @@ async function buildPlan(
   if (mode === 'move' && source.kind !== 'workspace')
     fail('package_source_unverified', request.root, 'Only identified workspace workflows can be moved.')
   const supplied = [source.definition, ...(source.companion ? [source.companion] : []), ...source.resources]
-  const manifestPath = `${request.root}/workflow-package.json`
+  const manifestPath = packagePath(request.root, 'workflow-package.json')
   const writes: WorkspaceWriteRequest[] = [
     { relativePath: manifestPath, text: manifestText, expectedCurrentHash: manifestHash },
   ]
@@ -169,8 +171,11 @@ async function buildPlan(
   const expectations = new Map<string, string | null>([[manifestPath, manifestHash]])
   if (creating) expectations.set(request.root, null)
   const packageEntries = snapshot.entries
-    .filter((entry) => entry.relativePath.startsWith(`${request.root}/`))
-    .map((entry) => ({ ...entry, relativePath: entry.relativePath.slice(request.root.length + 1) }))
+    .filter((entry) => request.root === '' || entry.relativePath.startsWith(`${request.root}/`))
+    .map((entry) => ({
+      ...entry,
+      relativePath: request.root === '' ? entry.relativePath : entry.relativePath.slice(request.root.length + 1),
+    }))
   const occupied = new Set(packageEntries.map((entry) => packagePathIdentity(entry.relativePath)))
   const artifactTexts = new Map(
     packageEntries.filter((entry) => entry.text !== undefined).map((entry) => [entry.relativePath, entry.text!]),
@@ -186,7 +191,7 @@ async function buildPlan(
     if (occupied.has(packagePathIdentity(file.path)))
       fail('package_path_collision', file.path, 'Destination files must not already exist.')
     occupied.add(packagePathIdentity(file.path))
-    const destination = `${request.root}/${file.path}`
+    const destination = packagePath(request.root, file.path)
     expectations.set(destination, null)
     if (source.kind === 'workspace') {
       if (!file.sourcePath)
@@ -203,7 +208,7 @@ async function buildPlan(
       fail('package_source_unverified', file.path, 'Bundled sources must not claim workspace origin.')
     const isWorkflow = file === source.definition || file === source.companion
     if (mode === 'move' && isWorkflow) {
-      if (snapshot.packages.some((pkg) => file.sourcePath!.startsWith(`${pkg.root}/`)))
+      if (snapshot.packages.some((pkg) => pkg.root === '' || file.sourcePath!.startsWith(`${pkg.root}/`)))
         fail(
           'package_membership_conflict',
           file.sourcePath!,
@@ -255,9 +260,13 @@ async function buildPlan(
       requestId: 'package-creation',
       workflowId: source.definition.path,
       pairGeneration: 0,
-      definition: { path: `${request.root}/${source.definition.path}`, text: source.definition.text, revision: 0 },
+      definition: {
+        path: packagePath(request.root, source.definition.path),
+        text: source.definition.text,
+        revision: 0,
+      },
       companion: source.companion
-        ? { path: `${request.root}/${source.companion.path}`, text: source.companion.text, revision: 0 }
+        ? { path: packagePath(request.root, source.companion.path), text: source.companion.text, revision: 0 }
         : null,
       profile: source.authoring.profile,
       contractDigest: source.authoring.contract_digest,
@@ -285,7 +294,7 @@ async function buildPlan(
   if (blocker) fail(blocker.code, blocker.path, blocker.message)
   for (const reference of references.references) {
     if (!reference.artifactPath || supplied.some((file) => file.path === reference.artifactPath)) continue
-    const original = requireSource(`${request.root}/${reference.artifactPath}`, snapshot)
+    const original = requireSource(packagePath(request.root, reference.artifactPath), snapshot)
     expectations.set(original.relativePath, original.sha256!)
   }
   return {
@@ -322,4 +331,8 @@ export function assertPackageContentLimits(
     paths.size > limits.max_traversal_entries
   )
     fail('package_size_limit', '', 'The package exceeds its contract limits.')
+}
+
+function packagePath(root: string, path: string): string {
+  return root ? `${root}/${path}` : path
 }

@@ -315,3 +315,64 @@ it('excludes only root digest metadata from payload limits and counts distinct i
     ),
   ).resolves.toMatchObject({ workspaceId: 'workspace' })
 })
+
+function importSnapshot(root: string, text: string): PackageCreationSnapshot {
+  return {
+    ...snapshot,
+    packages: [{ root, id: fixtureManifest.id }],
+    entries: [
+      {
+        relativePath: root ? `${root}/workflow-package.json` : 'workflow-package.json',
+        text,
+        sha256: 'b'.repeat(64),
+        kind: 'file',
+        symlink: 'none',
+        readOnly: false,
+        size: new TextEncoder().encode(text).byteLength,
+        modifiedAt: '',
+      },
+    ],
+  }
+}
+it('imports into a workspace-root package with canonical relative write and guard paths', async () => {
+  const existing = importSnapshot('', JSON.stringify(fixtureManifest))
+  const plan = await planWorkflowImport({ root: '', workflow: source, mode: 'copy' }, existing)
+  expect(plan.writes.map((write) => write.relativePath)).toEqual([
+    'workflow-package.json',
+    'workflows/main.yaml',
+    'workflows/main.hermes.yaml',
+  ])
+  expect(plan.expectedEntries).toContainEqual({
+    relativePath: 'workflow-package.json',
+    expectedCurrentHash: 'b'.repeat(64),
+  })
+  expect(plan.expectedEntries.every((entry) => entry.relativePath !== '' && !entry.relativePath.startsWith('/'))).toBe(
+    true,
+  )
+  expect(plan.writes[1]!.text).toBe(source.definition.text)
+  await expect(planPackageCreation(request(), existing)).rejects.toMatchObject({ code: 'package_root_nested' })
+})
+it('updates only manifest membership while preserving contract-admitted extensions and unrelated lexical bytes', async () => {
+  const oldMembers = JSON.stringify(fixtureManifest.workflows)
+  const text =
+    JSON.stringify(fixtureManifest).replace(
+      '"workflows":' + oldMembers,
+      '"unknownNumber" : 9007199254740993, "escaped" : "\\u0061", "workflows" : ' + oldMembers,
+    ) + '\r\n'
+  const existing = importSnapshot('packages/existing', text)
+  // Simulate an authoritative contract extension while preserving the pinned contract's strict default.
+  const extended = {
+    ...existing,
+    contract: {
+      ...existing.contract,
+      package_manifest_schema: { ...existing.contract.package_manifest_schema, additionalProperties: true },
+    },
+  }
+  const plan = await planWorkflowImport({ root: 'packages/existing', workflow: source, mode: 'copy' }, extended)
+  const replacement = JSON.stringify([
+    ...fixtureManifest.workflows,
+    { definition: source.definition.path, companion: source.companion!.path },
+  ])
+  expect(plan.writes[0]!.text).toBe(text.replace(oldMembers, replacement))
+  expect(plan.writes[0]!.text).toContain('9007199254740993')
+})
