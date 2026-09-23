@@ -49,6 +49,7 @@ export function buildPackageCatalog(input: PackageCatalogInput): PackageCatalog 
       }
     }
   const projections: WorkflowPackageProjection[] = []
+  const safeManifestPaths: string[] = []
   for (const { root, manifestPath } of candidates) {
     if (rejected.has(manifestPath)) continue
     const code = packagePathError(manifestPath)
@@ -75,6 +76,7 @@ export function buildPackageCatalog(input: PackageCatalogInput): PackageCatalog 
       )
       continue
     }
+    safeManifestPaths.push(manifestPath)
     const text = input.manifestTexts.get(manifestPath)
     if (text === undefined) {
       findings.push(
@@ -135,8 +137,10 @@ export function buildPackageCatalog(input: PackageCatalogInput): PackageCatalog 
           ),
         )
       }
+  const packages = projections.filter((projection) => !rejected.has(projection.manifestPath))
   return freezePackageValue({
-    packages: projections.filter((projection) => !rejected.has(projection.manifestPath)),
+    packages,
+    repairableManifestPaths: safeManifestPaths.filter((path) => !packages.some((pkg) => pkg.manifestPath === path)),
     findings: findings.sort((a, b) => comparePackagePaths(a.path, b.path) || comparePackagePaths(a.code, b.code)),
   })
 }

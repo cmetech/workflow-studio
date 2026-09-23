@@ -214,10 +214,11 @@
 {/if}
 {#if catalog.packages.length === 0}<p>No packages discovered in this workspace.</p>{/if}
 {#each catalog.findings as finding, index (index)}<p role="alert">{finding.path}: {finding.message}</p>
-  {#if finding.path.split('/').at(-1) === 'workflow-package.json'}<button
-      onclick={() => onOpen({ packageId: `manifest:${finding.path}`, kind: 'artifact', path: finding.path })}
-      >Repair manifest: {finding.path}</button
-    >{/if}
+{/each}
+{#each catalog.repairableManifestPaths ?? [] as path (path)}
+  <button onclick={() => onOpen({ packageId: `manifest:${path}`, kind: 'artifact', path })}
+    >Repair manifest: {path}</button
+  >
 {/each}
 
 <style>

@@ -99,6 +99,25 @@ describe('package discovery', () => {
     expect(catalog.findings.some((f) => f.code === 'package_member_missing')).toBe(true)
   })
 
+  it('offers only the rejected existing manifest for repair while preserving a separate package', () => {
+    const fixture = input(['a', 'b'])
+    fixture.files = fixture.files.filter((f) => f.relativePath !== 'a/main.yaml')
+    expect(buildPackageCatalog(fixture)).toMatchObject({
+      repairableManifestPaths: ['a/workflow-package.json'],
+      packages: [expect.objectContaining({ root: 'b' })],
+    })
+    fixture.files.push(entry('a/main.yaml'))
+    expect(buildPackageCatalog(fixture)).toMatchObject({ repairableManifestPaths: [], findings: [] })
+  })
+
+  it('does not offer nested or aliased package roots as manifest repair paths', () => {
+    for (const roots of [
+      ['a', 'a/child'],
+      ['a', 'A'],
+    ])
+      expect(buildPackageCatalog(input(roots))).toMatchObject({ packages: [], repairableManifestPaths: [] })
+  })
+
   it('detects case-folded directory aliases and file/directory ancestry conflicts', () => {
     for (const paths of [
       ['fixtures/Stra\u00dfe/a', 'fixtures/STRASSE/b'],

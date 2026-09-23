@@ -2,7 +2,7 @@ import { $packageCatalog, type PackageSelection } from '$src/stores/packages'
 import { buildPackageCatalog, findPackageManifestPaths } from '$src/lib/packages/discovery'
 import type { WorkflowPackageContract } from '$src/lib/package-contract/types'
 import type { WorkspaceFileEntry } from '$src/lib/workspace/types'
-import type { WorkflowPackageProjection } from '$src/lib/packages/types'
+import type { PackageCatalog, WorkflowPackageProjection } from '$src/lib/packages/types'
 import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-index'
 export interface PackageCatalogDependencies {
   readonly contract: WorkflowPackageContract
@@ -46,7 +46,7 @@ export class PackageCatalogController {
         catalog,
         active:
           active &&
-          (catalog.packages.some((p) => p.id === active.packageId) || this.repairableManifest(active, catalog.findings))
+          (catalog.packages.some((p) => p.id === active.packageId) || this.repairableManifest(active, catalog))
             ? active
             : null,
         error: null,
@@ -60,11 +60,11 @@ export class PackageCatalogController {
       })
     }
   }
-  private repairableManifest(selection: PackageSelection, findings: readonly { path: string }[]): boolean {
+  private repairableManifest(selection: PackageSelection, catalog: PackageCatalog): boolean {
     return (
       selection.kind === 'artifact' &&
-      selection.path?.split('/').at(-1) === 'workflow-package.json' &&
-      findings.some((f) => f.path === selection.path)
+      selection.path !== undefined &&
+      (catalog.repairableManifestPaths?.includes(selection.path) ?? false)
     )
   }
   select(selection: PackageSelection): void {
@@ -72,7 +72,7 @@ export class PackageCatalogController {
     const pkg = state.catalog.packages.find((p) => p.id === selection.packageId)
     if (
       !pkg
-        ? !this.repairableManifest(selection, state.catalog.findings)
+        ? !this.repairableManifest(selection, state.catalog)
         : selection.kind !== 'overview' &&
           !(selection.kind === 'artifact' && selection.path === MARKETPLACE_INDEX_PATH) &&
           !pkg.artifacts.some((a) => a.workspacePath === selection.path)

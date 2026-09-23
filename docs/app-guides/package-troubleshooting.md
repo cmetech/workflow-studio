@@ -2,6 +2,8 @@
 
 Start with the package overview and the first blocking finding. Repair `workflow-package.json` in source mode if structured metadata cannot load. A missing `scripts/analyze.py` requires restoring or explicitly selecting the intended resource; changing the reference blindly can bind a different file.
 
+If a declared workflow or companion is missing, the Packages view offers **Repair manifest** for the existing safe manifest. Open **Advanced Source**, correct the member path, and save. Package navigation returns when membership is valid; validate again before preparing. Unsafe or inaccessible paths must be corrected outside the app before they can be opened.
+
 ## Drafts and external changes
 
 Invalid script and command drafts can be saved. Recovery preserves differing unsaved edits by workspace and path. When disk content changes, Compare shows both versions. Keep Mine requires comparison and a fresh revision check. Reload Disk accepts current disk content; accepting a deletion closes the artifact while retaining its recovery draft. A second external edit can require another comparison.

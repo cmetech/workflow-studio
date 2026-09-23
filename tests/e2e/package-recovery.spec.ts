@@ -1,6 +1,37 @@
 import { expect, test } from '@playwright/test'
 import { openPackages, packageFiles, selectLaptop } from './package-support'
 
+test('repairs a missing declared companion through the existing manifest and restores package navigation', async ({
+  page,
+}) => {
+  await openPackages(page)
+  const path = 'packages/laptop-diagnostic/workflow-package.json'
+  const before = await packageFiles(page)
+  const original = before[path]!
+  const manifest = JSON.parse(original)
+  manifest.workflows[0].companion = 'workflows/missing.hermes.yaml'
+  await page.evaluate(({ path, text }) => window.__WORKFLOW_STUDIO_PACKAGE_E2E__!.change(path, text), {
+    path,
+    text: JSON.stringify(manifest, null, 2) + '\n',
+  })
+  await expect(page.getByRole('alert').filter({ hasText: 'Declared workflow member is missing' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Prepare Package', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: `Repair manifest: ${path}`, exact: true }).click()
+  const region = page.getByRole('region', { name: 'Package manifest editor', exact: true })
+  await region.getByRole('tab', { name: 'Advanced Source', exact: true }).click()
+  const editor = region.getByRole('textbox', { name: path, exact: true })
+  await editor.fill(original)
+  await editor.press('ControlOrMeta+s')
+  await expect.poll(async () => (await packageFiles(page))[path]).toBe(original)
+  await expect(page.getByRole('treeitem', { name: /laptop-diagnostic package/ })).toBeVisible()
+  await page.getByRole('treeitem', { name: 'workflows/laptop-diagnostic.yaml', exact: true }).click()
+  await expect(page.getByRole('group', { name: /node analyze-cpu$/ })).toBeVisible()
+  await selectLaptop(page)
+  await page.getByRole('button', { name: 'Validate Package', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Prepare Package', exact: true })).toBeEnabled()
+  expect(await packageFiles(page)).toEqual(before)
+})
+
 test('restores a malformed script recovery draft without changing the saved file', async ({ page }) => {
   await openPackages(page, 'package-recovery')
   const path = 'packages/laptop-diagnostic/scripts/analyze-snapshot.py'

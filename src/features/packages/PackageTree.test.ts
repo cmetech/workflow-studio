@@ -11,6 +11,37 @@ import { fireEvent, within } from '@testing-library/svelte'
 import { loadBundledResourceResolution } from '$src/lib/package-contract/bundled-package-contract'
 import type { WorkflowPackageProjection } from '$src/lib/packages/types'
 import manifestText from '../../../tests/fixtures/workflow-packages/multiple/packages/diagnostics/workflow-package.json?raw'
+import { buildPackageCatalog } from '$src/lib/packages/discovery'
+import { loadBundledWorkflowPackageContract } from '$src/lib/package-contract/bundled-package-contract'
+
+it('offers repair for an existing manifest with missing members without offering unsafe manifest findings', async () => {
+  const contract = await loadBundledWorkflowPackageContract()
+  const entry = (relativePath: string) => ({
+    relativePath,
+    kind: 'file' as const,
+    size: 64,
+    modifiedAt: '',
+    symlink: 'none' as const,
+    readOnly: false,
+  })
+  const catalog = buildPackageCatalog({
+    contract,
+    files: [entry('p/workflow-package.json'), entry('../workflow-package.json')],
+    manifestTexts: new Map([
+      ['p/workflow-package.json', manifestText],
+      ['../workflow-package.json', '{broken'],
+    ]),
+  })
+  const onOpen = vi.fn()
+  render(PackageTree, { catalog, onOpen })
+  await fireEvent.click(screen.getByRole('button', { name: 'Repair manifest: p/workflow-package.json' }))
+  expect(onOpen).toHaveBeenCalledWith({
+    packageId: 'manifest:p/workflow-package.json',
+    kind: 'artifact',
+    path: 'p/workflow-package.json',
+  })
+  expect(screen.queryByRole('button', { name: 'Repair manifest: ../workflow-package.json' })).not.toBeInTheDocument()
+})
 it('groups resources from the canonical contract and keeps keyboard navigation through workflow members', async () => {
   const { contract } = await loadBundledResourceResolution()
   const resourceContract = {

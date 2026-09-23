@@ -52,6 +52,8 @@ export interface WorkflowPackageProjection {
 export interface PackageCatalog {
   readonly packages: readonly WorkflowPackageProjection[]
   readonly findings: readonly PackageFinding[]
+  /** Existing, path-validated manifests whose rejected packages can be repaired in source mode. */
+  readonly repairableManifestPaths?: readonly string[]
 }
 export interface PackageCatalogInput {
   readonly contract: WorkflowPackageContract
