@@ -71,3 +71,34 @@ it('groups resources from the canonical contract and keeps keyboard navigation t
   await fireEvent.click(screen.getByRole('treeitem', { name: 'main.yaml' }))
   expect(open).toHaveBeenCalledWith({ packageId: 'diagnostics', kind: 'workflow', path: 'p/main.yaml' })
 })
+
+it('provides keyboard artifact context actions and restores the row when cancelled', async () => {
+  const pkg: WorkflowPackageProjection = {
+    id: 'diagnostics',
+    root: 'p',
+    manifestPath: 'p/workflow-package.json',
+    manifest: JSON.parse(manifestText),
+    workflows: [{ definition: 'main.yaml' }],
+    artifacts: [{ path: 'notes.txt', workspacePath: 'p/notes.txt', kind: 'file', size: 1, readOnly: false }],
+  }
+  const onAction = vi.fn()
+  render(PackageTree, { catalog: { packages: [pkg], findings: [] }, onOpen: vi.fn(), onAction })
+  const row = screen.getByRole('treeitem', { name: 'notes.txt' })
+  row.focus()
+  await fireEvent.keyDown(row, { key: 'F10', shiftKey: true })
+  const menu = await screen.findByRole('menu', { name: 'Artifact actions' })
+  for (const name of ['Rename', 'Replace', 'Reveal', 'Open externally', 'Trash'])
+    expect(within(menu).getByRole('menuitem', { name })).toBeVisible()
+  expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toHaveFocus()
+  await fireEvent.keyDown(within(menu).getByRole('menuitem', { name: 'Rename' }), { key: 'ArrowDown' })
+  expect(within(menu).getByRole('menuitem', { name: 'Replace' })).toHaveFocus()
+  await fireEvent.keyDown(within(menu).getByRole('menuitem', { name: 'Replace' }), { key: 'End' })
+  expect(within(menu).getByRole('menuitem', { name: 'Trash' })).toHaveFocus()
+  await fireEvent.keyDown(menu, { key: 'Escape' })
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  expect(row).toHaveFocus()
+  expect(onAction).not.toHaveBeenCalled()
+  await fireEvent.contextMenu(row)
+  await fireEvent.click(await screen.findByRole('menuitem', { name: 'Reveal' }))
+  expect(onAction).toHaveBeenCalledWith(pkg, 'reveal', 'p/notes.txt', row)
+})

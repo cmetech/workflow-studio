@@ -101,3 +101,14 @@ it('links the shared index only when its existence is confirmed and an opener is
   await rerender({ ...props, hasMarketplaceIndex: false, onOpenArtifact })
   expect(screen.queryByRole('button', { name: `Open ${MARKETPLACE_INDEX_PATH}:2:1` })).not.toBeInTheDocument()
 })
+
+it('offers explicit removal for a declared workflow without removing it on selection', async () => {
+  const onRemoveWorkflow = vi.fn()
+  render(PackageOverview, {
+    package: { ...pkg, workflows: [{ definition: 'main.yaml', companion: 'policy/custom.yaml' }] },
+    onRemoveWorkflow,
+  })
+  expect(onRemoveWorkflow).not.toHaveBeenCalled()
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove Workflow: main.yaml' }))
+  expect(onRemoveWorkflow).toHaveBeenCalledWith('main.yaml')
+})

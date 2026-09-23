@@ -1,3 +1,11 @@
+import { extractTransactionRecovery, type TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
+import {
+  planPackageMutation,
+  type PackageMutationRequest,
+  type PackageMutationPreview,
+  type PackageMutationChange,
+} from '$src/lib/packages/package-mutations'
+import type { MutationAnalyzer } from '$src/lib/documents/transactions'
 import type { AuthoringContract } from '$src/lib/contract/types'
 import type { WorkflowPairText } from '$src/lib/documents/types'
 import type { ExampleDescriptor } from '$src/lib/examples/types'
@@ -16,7 +24,7 @@ import {
 import { packagePathError, packagePathIdentity, validatePackagePaths } from '$src/lib/packages/paths'
 import type { WorkflowPackageProjection } from '$src/lib/packages/types'
 import type { WorkspaceFileEntry } from '$src/lib/workspace/types'
-import { capturePackageAnalysis } from './package-analysis'
+import { capturePackageAnalysis, type CapturedPackageAnalysis } from './package-analysis'
 import { buildPackageAuthoringSources } from './package-authoring-sources'
 export interface PackageAuthoringContext {
   readonly workspaceId: string
@@ -24,8 +32,10 @@ export interface PackageAuthoringContext {
   readonly packages: readonly WorkflowPackageProjection[]
   readonly authoring: readonly AuthoringContract[]
   readonly activePair: WorkflowPairText | null
+  readonly unsavedPaths?: readonly string[]
 }
 export interface PackageAuthoringDependencies {
+  readonly analyzePair?: MutationAnalyzer | undefined
   readonly getContext: () => PackageAuthoringContext | Promise<PackageAuthoringContext>
   readonly native: Pick<
     WorkspaceNativeBridge,
@@ -35,21 +45,39 @@ export interface PackageAuthoringDependencies {
     | 'workspaceApplyTransaction'
     | 'chooseImportArtifact'
     | 'workspaceImportArtifact'
+    | 'workspaceReplaceArtifact'
   >
   readonly contract: WorkflowPackageContract
   readonly resourceContract: ResourceResolutionContract
   readonly workflowExamples?: readonly ExampleDescriptor[]
+  readonly assertCanMutatePackage?: (root: string) => Promise<void>
+  readonly onRecovery?: (receipt: TransactionRecoveryReceipt) => void
   readonly onCompleted: (root: string, path?: string) => void | Promise<void>
 }
 export interface PackageAuthoringSession {
   readonly context: PackageAuthoringContext
   readonly snapshot: PackageCreationSnapshot
   readonly sources: readonly PackageWorkflowOption[]
+  readonly captureErrors: ReadonlyMap<string, string>
+  readonly captures: ReadonlyMap<string, CapturedPackageAnalysis>
   readonly packageSnapshots: ReadonlyMap<string, WorkspacePackageSnapshot>
 }
+export interface PackageReplacementPreview {
+  readonly kind: 'replacement'
+  readonly root: string
+  readonly path: string
+  readonly changes: readonly PackageMutationChange[]
+  readonly referenceChanges: readonly []
+}
+export type PackageChangePreview = PackageMutationPreview | PackageReplacementPreview
 export function createPackageAuthoringController(deps: PackageAuthoringDependencies) {
   const sessions = new WeakSet<PackageAuthoringSession>()
+  const previews = new WeakMap<PackageChangePreview, { session: PackageAuthoringSession; sourceGrantToken?: string }>()
   let committing = false
+  function reportRecovery(result: unknown) {
+    const receipt = extractTransactionRecovery(result)
+    if (receipt.pathResults.length || receipt.omittedPathResults) deps.onRecovery?.(receipt)
+  }
   async function current(session: PackageAuthoringSession) {
     const context = await deps.getContext()
     if (!sessions.has(session) || context.workspaceId !== session.context.workspaceId)
@@ -80,14 +108,21 @@ export function createPackageAuthoringController(deps: PackageAuthoringDependenc
       files.map((file) => [file.relativePath, { ...file } as PackageCreationSnapshot['entries'][number]]),
     )
     const captures = new Map<string, Awaited<ReturnType<typeof capturePackageAnalysis>>>()
+    const captureErrors = new Map<string, string>()
     for (const pkg of context.packages) {
-      const captured = await capturePackageAnalysis({
-        packageRoot: pkg.root,
-        native: deps.native,
-        contract: deps.contract,
-        resourceContract: deps.resourceContract,
-        authoring: context.authoring,
-      })
+      let captured: CapturedPackageAnalysis
+      try {
+        captured = await capturePackageAnalysis({
+          packageRoot: pkg.root,
+          native: deps.native,
+          contract: deps.contract,
+          resourceContract: deps.resourceContract,
+          authoring: context.authoring,
+        })
+      } catch (cause) {
+        captureErrors.set(pkg.root, cause instanceof Error ? cause.message : String(cause))
+        continue
+      }
       if (captured.snapshot.workspaceId !== context.workspaceId)
         throw Error('The workspace changed while reading package sources.')
       captures.set(pkg.root, captured)
@@ -132,6 +167,8 @@ export function createPackageAuthoringController(deps: PackageAuthoringDependenc
       context,
       snapshot,
       sources,
+      captures,
+      captureErrors,
       packageSnapshots: new Map([...captures].map(([root, value]) => [root, value.snapshot])),
     }
     sessions.add(session)
@@ -187,17 +224,21 @@ export function createPackageAuthoringController(deps: PackageAuthoringDependenc
       await authorizeSource(session, request.workflow)
       const plan = await planPackageCreation(request, session.snapshot)
       await authorizeSource(session, request.workflow)
-      await deps.native.workspaceApplyTransaction(plan)
+      reportRecovery(await deps.native.workspaceApplyTransaction(plan))
       await completed(session, request.root)
     })
   }
   async function importWorkflow(session: PackageAuthoringSession, request: ImportWorkflowPackageRequest) {
     return mutate(session, async () => {
       await authorizeSource(session, request.workflow)
+      if (!session.captures.has(request.root))
+        throw Error(
+          `The selected package capture is unavailable: ${session.captureErrors.get(request.root) ?? 'reopen this dialog'}`,
+        )
       const plan = await planWorkflowImport(request, session.snapshot)
       const guardedPlan = { ...plan, packageSnapshotToken: await freshPackageToken(session, request.root) }
       await authorizeSource(session, request.workflow)
-      await deps.native.workspaceApplyTransaction(guardedPlan)
+      reportRecovery(await deps.native.workspaceApplyTransaction(guardedPlan))
       await completed(session, request.root)
     })
   }
@@ -245,7 +286,7 @@ export function createPackageAuthoringController(deps: PackageAuthoringDependenc
         moves: [],
         trashes: [],
       }
-      await deps.native.workspaceApplyTransaction(plan)
+      reportRecovery(await deps.native.workspaceApplyTransaction(plan))
       await completed(session, root, target.relativePath)
     })
   }
@@ -260,10 +301,124 @@ export function createPackageAuthoringController(deps: PackageAuthoringDependenc
         sourceGrantToken: source.sourceGrantToken,
         packageSnapshotToken: await freshPackageToken(session, root),
       }
-      await deps.native.workspaceImportArtifact(request)
+      reportRecovery(await deps.native.workspaceImportArtifact(request))
       await completed(session, root, target.relativePath)
       return true
     })
   }
-  return { prepare, create, importWorkflow, addTextArtifact, importArtifact }
+  async function assertMutable(session: PackageAuthoringSession, root: string) {
+    const context = await current(session)
+    const inside = (path: string) => !root || path.startsWith(root + '/')
+    const pair = context.activePair
+    if (
+      context.unsavedPaths?.some(inside) ||
+      (pair &&
+        inside(pair.definition.path) &&
+        (pair.generation !== pair.savedGeneration ||
+          pair.definition.revision !== pair.definition.savedRevision ||
+          (pair.companion && pair.companion.revision !== pair.companion.savedRevision)))
+    )
+      throw Error('Save or discard package drafts before changing files or membership.')
+    await deps.assertCanMutatePackage?.(root)
+    await current(session)
+  }
+  async function previewMutation(session: PackageAuthoringSession, root: string, request: PackageMutationRequest) {
+    await assertMutable(session, root)
+    const capture = session.captures.get(root)
+    if (!capture)
+      throw Error(
+        `The selected package capture is unavailable: ${session.captureErrors.get(root) ?? 'reopen this dialog'}`,
+      )
+    const preview = await planPackageMutation(
+      {
+        capture,
+        contract: deps.contract,
+        resourceContract: deps.resourceContract,
+        authoring: session.context.authoring,
+        ...(deps.analyzePair ? { analyzePair: deps.analyzePair } : {}),
+      },
+      request,
+    )
+    await assertMutable(session, root)
+    previews.set(preview, { session })
+    return preview
+  }
+  async function previewReplacement(
+    session: PackageAuthoringSession,
+    root: string,
+    path: string,
+  ): Promise<PackageReplacementPreview | null> {
+    return mutate(session, async () => {
+      await assertMutable(session, root)
+      const capture = session.captures.get(root)
+      const file = capture?.snapshot.files.find((file) => file.relativePath === path)
+      const entry = capture?.snapshot.entries.find((entry) => entry.relativePath === (root ? root + '/' + path : path))
+      if (
+        packagePathError(path) ||
+        !capture ||
+        !file ||
+        !entry ||
+        entry.readOnly ||
+        entry.symlink !== 'none' ||
+        ['workflow-package.json', 'digests.json'].includes(packagePathIdentity(path)) ||
+        capture.package.workflows.some((member) => member.definition === path || member.companion === path)
+      )
+        throw Error(
+          'Choose a writable supporting artifact; declared workflow files require validated workflow editing.',
+        )
+      const source = await deps.native.chooseImportArtifact()
+      if (!source) return null
+      await assertMutable(session, root)
+      const preview: PackageReplacementPreview = Object.freeze({
+        kind: 'replacement',
+        root,
+        path,
+        changes: Object.freeze([
+          { path: entry.relativePath, operation: 'replace' as const, expectedHash: file.sha256 },
+        ]),
+        referenceChanges: Object.freeze([]) as readonly [],
+      })
+      previews.set(preview, { session, sourceGrantToken: source.sourceGrantToken })
+      return preview
+    })
+  }
+  async function commitMutation(session: PackageAuthoringSession, preview: PackageChangePreview) {
+    return mutate(session, async () => {
+      const authorization = previews.get(preview)
+      if (!authorization || authorization.session !== session)
+        throw Error('Prepare a new exact preview before confirming changes.')
+      await assertMutable(session, preview.root)
+      previews.delete(preview)
+      let path: string | undefined
+      if ('kind' in preview && preview.kind === 'replacement') {
+        const capture = session.captures.get(preview.root)!
+        const result = await deps.native.workspaceReplaceArtifact({
+          relativePath: preview.changes[0]!.path,
+          expectedCurrentHash: preview.changes[0]!.expectedHash,
+          sourceGrantToken: authorization.sourceGrantToken!,
+          packageSnapshotToken: capture.snapshot.sourceSnapshotToken,
+        })
+        reportRecovery(result)
+        path = result.relativePath
+      } else {
+        const mutation = preview as PackageMutationPreview
+        const result = await deps.native.workspaceApplyTransaction(mutation.plan)
+        if (result.status !== 'committed') throw Error('The package transaction did not report a committed outcome.')
+        reportRecovery(result)
+        if (mutation.request.kind === 'rename-artifact')
+          path = (mutation.root ? mutation.root + '/' : '') + mutation.request.destination
+      }
+      await completed(session, preview.root, path)
+    })
+  }
+  return {
+    prepare,
+    create,
+    importWorkflow,
+    addTextArtifact,
+    importArtifact,
+    previewMutation,
+    previewReplacement,
+    commitMutation,
+  }
 }

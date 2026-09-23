@@ -181,6 +181,7 @@
   } from '$src/features/artifacts/artifact-workspace-controller'
   import { createArtifactRecoveryStore } from '$src/lib/recovery/recovery-store'
   import { $artifactSession as artifactSession } from '$src/stores/artifacts'
+  import type { PackageArtifactAction } from '$src/lib/packages/package-mutations'
   import { $packageCatalog as packageCatalog, resetPackages, type PackageSelection } from '$src/stores/packages'
   import type { PackageCatalogController } from '$src/features/packages/package-catalog-controller'
   import { classifyPackageArtifact, type PackageArtifactKind } from '$src/lib/packages/artifact-kind'
@@ -300,6 +301,8 @@
       })
     return guideReadiness
   }
+  let applicationUnmounted = false
+  let workspaceRefreshGeneration = 0
   const native = getNativeBridge()
   let CatalogController: typeof PackageCatalogController | null = null
   let packageController: PackageCatalogController | null = null
@@ -416,15 +419,34 @@
         packageController ??= new CatalogController({
           contract,
           readManifest: async (path) => (await native.workspaceReadTextArtifact(path)).text,
-          openWorkflow: async (definitionPath, _companionPath, document) => {
-            const entry = $workspace.entries.find(
-              (entry) => entry.kind === 'workflow' && entry.definitionPath === definitionPath,
+          openWorkflow: async (definitionPath, companionPath, document) => {
+            const current = workspace.get()
+            const definition = current.files.find(
+              (file) => file.kind === 'file' && file.relativePath === definitionPath,
             )
-            if (entry?.kind === 'workflow') {
-              await openEntry(entry)
-              showYamlDocument(document ?? 'definition')
-              if (document === 'companion') showEditorMode('yaml')
+            const companion =
+              companionPath === null
+                ? null
+                : current.files.find((file) => file.kind === 'file' && file.relativePath === companionPath)
+            if (!current.id || !definition || (companionPath !== null && !companion))
+              throw new Error('The declared workflow files changed. Refresh the package.')
+            const entry: WorkflowPairEntry = {
+              kind: 'workflow',
+              id: `workflow:${current.id}:${definitionPath}`,
+              name: definitionPath.split('/').at(-1)!,
+              relativePath: definitionPath,
+              definitionPath,
+              companionPath,
+              state: companionPath === null ? 'legacy' : 'paired',
+              readOnly:
+                definition.readOnly ||
+                Boolean(companion?.readOnly) ||
+                definition.symlink !== 'none' ||
+                Boolean(companion && companion.symlink !== 'none'),
             }
+            await openEntry(entry)
+            showYamlDocument(document ?? 'definition')
+            if (document === 'companion') showEditorMode('yaml')
           },
           openArtifact: openPackageArtifact,
         })
@@ -531,33 +553,8 @@
   async function replacePackageBinary(): Promise<void> {
     const captured = artifactMetadata
     const pkg = selectedPackage
-    const workspaceId = workspace.get().id
-    const generation = artifactOpeningGeneration
     if (!captured || captured.readOnly || !pkg) return
-    const source = await native.chooseImportArtifact()
-    if (
-      !source ||
-      workspaceId !== workspace.get().id ||
-      generation !== artifactOpeningGeneration ||
-      artifactMetadata !== captured
-    )
-      return
-    const snapshot = await native.workspaceHashPackage(pkg.root)
-    if (
-      workspaceId !== workspace.get().id ||
-      snapshot.workspaceId !== workspaceId ||
-      generation !== artifactOpeningGeneration ||
-      artifactMetadata !== captured
-    )
-      return
-    const next = await native.workspaceReplaceArtifact({
-      relativePath: captured.relativePath,
-      sourceGrantToken: source.sourceGrantToken,
-      expectedCurrentHash: captured.sha256,
-      packageSnapshotToken: snapshot.sourceSnapshotToken,
-    })
-    if (workspaceId === workspace.get().id && generation === artifactOpeningGeneration) artifactMetadata = next
-    await refreshWorkspace()
+    await packageArtifactAction(pkg, 'replace', captured.relativePath)
   }
   async function runArtifactOperation(operation: () => Promise<void>): Promise<void> {
     try {
@@ -634,27 +631,32 @@
     }
   }
   async function showCreatedPackage(id: string, root: string, path?: string): Promise<void> {
-    if (workspace.get().id !== id) return
+    if (applicationUnmounted || workspace.get().id !== id) return
     await refreshWorkspace()
     await tick()
-    if (workspace.get().id !== id) return
+    if (applicationUnmounted || workspace.get().id !== id) return
     await packageController?.refresh({ id, files: workspace.get().files })
-    if (workspace.get().id !== id) return
+    if (applicationUnmounted || workspace.get().id !== id) return
     const pkg = packageCatalog.get().catalog.packages.find((candidate) => candidate.root === root)
     if (!pkg) throw new Error('The files were saved, but the package could not be opened. Refresh the workspace.')
     showActivity('packages')
     await packageController?.open({
       packageId: pkg.id,
-      kind: path ? 'artifact' : 'overview',
+      kind: path
+        ? pkg.workflows.some((member) => (root ? root + '/' : '') + member.definition === path)
+          ? 'workflow'
+          : 'artifact'
+        : 'overview',
       ...(path ? { path } : {}),
     })
   }
   async function openPackageAuthoring(
-    mode: 'create' | 'import' | 'artifact',
+    mode: 'create' | 'import' | 'artifact' | 'mutation',
     pkg?: WorkflowPackageProjection,
+    mutation?: { action: PackageArtifactAction; path: string; opener?: HTMLElement },
   ): Promise<void> {
     const id = workspace.get().id
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const opener = mutation?.opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
     if (!id) throw new Error('Open a workspace before creating package content.')
     await contractReadiness
     const contract = await loadPackageContract()
@@ -663,6 +665,7 @@
     if (workspace.get().id !== id || !packageResourceContract) return
     packageAuthoringDependencies = {
       native,
+      analyzePair: analyzePairInWorker,
       contract,
       resourceContract: packageResourceContract,
       workflowExamples,
@@ -674,14 +677,58 @@
           (candidate) => activeContractForProfile(candidate.profile)?.contract_digest === candidate.contract_digest,
         ),
         activePair: documentSessionStore.get().pair,
+        unsavedPaths:
+          artifactSession.get()?.workspaceId === workspace.get().id && artifactSession.get()?.dirty
+            ? [artifactSession.get()!.path]
+            : [],
       }),
+      assertCanMutatePackage: async (root) => {
+        await artifactController?.flush()
+        await recoveryDrafts.flush()
+        const { unresolvedPackageDrafts } = await import('$src/features/packages/package-drafts')
+        const paths = await unresolvedPackageDrafts({
+          workspaceId: id,
+          packageRoot: root,
+          artifactDrafts: await createArtifactRecoveryStore(native).list(),
+          workflowDrafts: await recoveryStore.list(),
+          read: (path) => native.workspaceReadTextArtifact(path),
+        })
+        if (paths.length)
+          throw new Error(
+            `Recover and save, or discard, the unsaved drafts before changing package files: ${paths.join(', ')}`,
+          )
+        if (workspace.get().id !== id) throw new Error('The workspace changed. Open the package action again.')
+      },
       onCompleted: (root, path) => showCreatedPackage(id, root, path),
     }
     await tick()
     if (workspace.get().id !== id) return
     if (mode === 'create') await packageAuthoringDialogs?.openCreate(opener)
     else if (pkg && mode === 'import') await packageAuthoringDialogs?.openImport(pkg, opener)
+    else if (pkg && mutation) await packageAuthoringDialogs?.openMutation(pkg, mutation.action, mutation.path, opener)
     else if (pkg) await packageAuthoringDialogs?.openArtifact(pkg, opener)
+  }
+  async function packageArtifactAction(
+    pkg: WorkflowPackageProjection,
+    action: PackageArtifactAction,
+    path: string,
+    opener?: HTMLElement,
+  ): Promise<void> {
+    if (!pkg.artifacts.some((artifact) => artifact.kind === 'file' && artifact.workspacePath === path))
+      throw new Error('The selected artifact is no longer part of this package. Refresh the package.')
+    if (action === 'reveal') {
+      await native.workspaceRevealArtifact(path)
+      return
+    }
+    if (action === 'open-externally') {
+      await native.workspaceOpenArtifact(path)
+      return
+    }
+    await openPackageAuthoring('mutation', pkg, {
+      action,
+      path: pkg.root ? path.slice(pkg.root.length + 1) : path,
+      ...(opener ? { opener } : {}),
+    })
   }
   async function copyBundledPackage(example: PackageExampleDescriptor): Promise<void> {
     const id = workspace.get().id
@@ -1209,13 +1256,18 @@
   const explorerCatalogError = $derived(
     explorerCatalogOperation.phase === 'error' ? explorerCatalogOperation.message : undefined,
   )
-  const activeDocumentEntry = $derived(
-    $workspace.entries.find((entry) => entry.id === $documentSessionStore.pair?.workflowId),
-  )
   const documentDirty = $derived(
     $documentSessionStore.pair === null ? false : isDocumentPairDirty($documentSessionStore.pair),
   )
-  const documentReadOnly = $derived(activeDocumentEntry?.readOnly !== false)
+  const documentReadOnly = $derived.by(() => {
+    const pair = $documentSessionStore.pair
+    if (!pair) return true
+    const paths = [pair.definition.path, ...(pair.companion ? [pair.companion.path] : [])]
+    return paths.some((path) => {
+      const file = $workspace.files.find((file) => file.kind === 'file' && file.relativePath === path)
+      return !file || file.readOnly || file.symlink !== 'none'
+    })
+  })
   const documentSaveAvailable = $derived.by(() => {
     const pair = $documentSessionStore.pair
     return Boolean(pair && documentDirty && !documentReadOnly && !$documentWorkspaceState.missingChange)
@@ -2890,13 +2942,33 @@
 
   async function refreshWorkspace(): Promise<void> {
     const current = $workspace
-    if (!current.id || !current.displayName) return
+    if (applicationUnmounted || !current.id || !current.displayName) return
+    const generation = ++workspaceRefreshGeneration
+    const stale = () =>
+      applicationUnmounted ||
+      generation !== workspaceRefreshGeneration ||
+      workspace.get().id !== current.id ||
+      workspace.get().rootPath !== current.rootPath ||
+      workspace.get().files !== current.files
+    const settleSuperseded = () => {
+      if (!applicationUnmounted && generation === workspaceRefreshGeneration)
+        explorerCatalogOperation = { phase: 'ready' }
+    }
     explorerCatalogOperation = { phase: 'loading' }
     try {
-      loadWorkspaceEntries(current.id, current.displayName, await native.workspaceScan(), current.rootPath)
+      const files = await native.workspaceScan()
+      if (stale()) {
+        settleSuperseded()
+        return
+      }
+      loadWorkspaceEntries(current.id, current.displayName, files, current.rootPath)
       explorerCatalogOperation = { phase: 'ready' }
       void refreshGit()
     } catch (error: unknown) {
+      if (stale()) {
+        settleSuperseded()
+        return
+      }
       explorerCatalogOperation = {
         phase: 'error',
         message: error instanceof Error ? error.message : 'Workspace workflows could not be refreshed.',
@@ -3003,6 +3075,64 @@
     return activeContractForProfile(profile)
   }
 
+  async function packageMemberFor(path: string) {
+    const current = workspace.get()
+    const manifests = current.files.filter(
+      (file) => file.kind === 'file' && file.relativePath.split('/').at(-1) === 'workflow-package.json',
+    )
+    const enclosing = manifests.filter((file) => {
+      const root = file.relativePath.slice(0, -'workflow-package.json'.length)
+      return path.startsWith(root)
+    })
+    if (!current.id || !enclosing.length) return null
+    const contract = await loadPackageContract()
+    const { buildPackageCatalog } = await import('$src/lib/packages/discovery')
+    const texts = await Promise.all(
+      manifests.map(
+        async (file) => [file.relativePath, (await native.workspaceReadTextArtifact(file.relativePath)).text] as const,
+      ),
+    )
+    if (workspace.get().id !== current.id) throw new Error('The workspace changed. Open the workflow again.')
+    const catalog = buildPackageCatalog({ contract, files: current.files, manifestTexts: new Map(texts) })
+    const packages = catalog.packages.filter((pkg) => !pkg.root || path.startsWith(pkg.root + '/'))
+    if (
+      !packages.length ||
+      catalog.findings.some((finding) => enclosing.some((file) => finding.path === file.relativePath))
+    )
+      throw new Error('Repair the package manifest before opening or changing its workflow files.')
+    for (const pkg of packages) {
+      const full = (value: string) => (pkg.root ? pkg.root + '/' : '') + value
+      const member = pkg.workflows.find(
+        (item) => full(item.definition) === path || (item.companion && full(item.companion) === path),
+      )
+      if (member)
+        return {
+          pkg,
+          member,
+          definitionPath: full(member.definition),
+          companionPath: member.companion ? full(member.companion) : null,
+        }
+    }
+    return { pkg: packages[0]!, member: null, definitionPath: path, companionPath: null }
+  }
+  async function declaredEntry(entry: WorkflowPairEntry): Promise<WorkflowPairEntry> {
+    const declared = await packageMemberFor(entry.definitionPath)
+    if (!declared?.member) return entry
+    const files = workspace.get().files
+    const paths = [declared.definitionPath, ...(declared.companionPath ? [declared.companionPath] : [])]
+    const actual = paths.map((path) => files.find((file) => file.kind === 'file' && file.relativePath === path))
+    if (actual.some((file) => !file))
+      throw new Error('A declared workflow file is missing. Repair the package manifest.')
+    return {
+      ...entry,
+      id: `workflow:${workspace.get().id}:${declared.definitionPath}`,
+      relativePath: declared.definitionPath,
+      definitionPath: declared.definitionPath,
+      companionPath: declared.companionPath,
+      state: declared.companionPath ? 'paired' : 'legacy',
+      readOnly: actual.some((file) => file!.readOnly || file!.symlink !== 'none'),
+    }
+  }
   async function openEntry(
     entry: WorkflowPairEntry,
     requestToken: number = documentWorkspace.beginActivation(),
@@ -3010,6 +3140,7 @@
     let didOpen = false
     await withCanvasLayoutBarrier(async () => {
       await contractReadiness
+      entry = await declaredEntry(entry)
       const contract = await activeContractFor(entry)
       const workspaceId = $workspace.id
       if (!workspaceId) return
@@ -3186,6 +3317,27 @@
     },
   })
 
+  async function coordinatePackageWorkspaceAction(
+    intent: Parameters<typeof coordinateWorkspaceAction>[0],
+  ): Promise<void> {
+    const entry = workspace.get().entries.find((item) => item.id === intent.targetEntryId)
+    if (entry?.kind === 'workflow') {
+      const declared = await packageMemberFor(entry.definitionPath)
+      if (declared) {
+        if (intent.kind === 'workflow.rename' || intent.kind === 'workflow.trash') {
+          await packageArtifactAction(
+            declared.pkg,
+            intent.kind === 'workflow.rename' ? 'rename' : declared.member ? 'remove-workflow' : 'trash',
+            declared.definitionPath,
+          )
+          return
+        }
+        if (intent.kind === 'workflow.create-companion' || intent.kind === 'workflow.remove-companion')
+          throw new Error('Edit the package manifest to change its declared companion, then validate the package.')
+      }
+    }
+    await coordinateWorkspaceAction(intent)
+  }
   $effect(() => {
     const intent = $workspaceIntent
     if (intent.revision === 0 || intent.revision === handledIntent) return
@@ -3195,7 +3347,7 @@
     else if (intent.kind === 'quick-open') {
       quickOpenOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
       quickOpenVisible = true
-    } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinateWorkspaceAction(intent))
+    } else if (intent.kind?.startsWith('workflow.')) runWorkspaceOperation(coordinatePackageWorkspaceAction(intent))
   })
 
   $effect(() => {
@@ -3639,6 +3791,8 @@
   })
 
   onDestroy(() => {
+    applicationUnmounted = true
+    workspaceRefreshGeneration++
     disposePackageAnalysisWorker()
     preparation?.controller.cancel()
     unsubscribePreparation?.()
@@ -3770,6 +3924,8 @@
             catalog={$packageCatalog.catalog}
             active={$packageCatalog.active}
             onOpen={openPackageSelection}
+            onAction={(pkg, action, path, opener) =>
+              void runArtifactOperation(() => packageArtifactAction(pkg, action, path, opener))}
           />
           {#if $packageCatalog.error}<p role="alert">{$packageCatalog.error}</p>{/if}
         {:else if $activeActivity === 'explorer' && $workspace.id !== null}
@@ -3927,6 +4083,14 @@
             {...selectedPackageAnalysis ? { analysis: selectedPackageAnalysis } : {}}
             onValidate={() => void runArtifactOperation(() => validateSelectedPackage(selectedPackage!))}
             onPrepare={() => void runArtifactOperation(() => openPackagePreparation(selectedPackage!))}
+            onRemoveWorkflow={(path) =>
+              void runArtifactOperation(() =>
+                packageArtifactAction(
+                  selectedPackage!,
+                  'remove-workflow',
+                  (selectedPackage!.root ? selectedPackage!.root + '/' : '') + path,
+                ),
+              )}
             onAddWorkflow={() => void runArtifactOperation(() => openPackageAuthoring('import', selectedPackage))}
             onAddArtifact={() => void runArtifactOperation(() => openPackageAuthoring('artifact', selectedPackage))}
             onOpenWorkflow={(path) =>

@@ -1,7 +1,7 @@
 import type { AuthoringContract } from '../contract/types'
 import type { DocumentAnalysis, DocumentRevision, WorkflowPairText } from '../documents/types'
 import { createDocumentRevision, isAnalysisCurrent } from '../documents/revisions'
-import { applyWorkflowMutation, type YamlTransaction } from '../documents/transactions'
+import { applyWorkflowMutation, type YamlTransaction, type MutationAnalyzer } from '../documents/transactions'
 import type { ExpectedWorkspaceEntry, PackageMutationPlan } from '../native/types'
 import type {
   ResourceResolutionContract,
@@ -17,6 +17,7 @@ import { admitResourceResolution, interpretResourceDiscriminator, resolveCompile
 import type { WorkflowPackageProjection } from './types'
 
 export interface ResourceActionContext {
+  readonly analyzePair?: MutationAnalyzer
   readonly package: WorkflowPackageProjection
   readonly workflow: WorkflowPairText
   readonly analysis: DocumentAnalysis
@@ -187,7 +188,7 @@ async function prepare(input: ResourceActionContext) {
     host_python_supplied: workspace.hostPython !== undefined,
   })
   if (admitted) fail(admitted, 'The resource contract does not support this workflow context.')
-  const analysis = await analyzePair(workflow, authoring)
+  const analysis = await (input.analyzePair ?? analyzePair)(workflow, authoring)
   if (!analysis.structurallyValid)
     fail('resource_stale_workflow', 'The exact current workflow is not structurally valid.')
   if (!record(analysis.projection) || !Array.isArray(analysis.projection.graphs))
@@ -337,8 +338,10 @@ async function finish(
     fail('resource_name_invalid', 'The resource name does not match its contract.')
   if (prepared.runtimeBound) {
     const suffixes = at(runtimeValidation, [`${prepared.runtime}_suffixes`])
-    const suffix = relative.slice(relative.lastIndexOf('.')).toLowerCase()
-    if (!Array.isArray(suffixes) || !suffixes.includes(suffix))
+    const basename = relative.split('/').at(-1)!
+    const dot = basename.lastIndexOf('.')
+    const suffix = dot < 0 ? '' : basename.slice(dot).toLowerCase()
+    if (suffix && (!Array.isArray(suffixes) || !suffixes.includes(suffix)))
       fail('resource_suffix_unsupported', 'The selected file extension does not match the resource runtime.')
   }
   const yamlMutation: WorkflowMutation = {
@@ -351,11 +354,11 @@ async function finish(
     input.workflow,
     yamlMutation,
     input.authoring,
-    analyzePair,
+    input.analyzePair ?? analyzePair,
     prepared.analysis,
   )
   if (!result.ok) fail(result.code, result.message)
-  const validated = result.analysis ?? (await analyzePair(result.pair, input.authoring))
+  const validated = result.analysis ?? (await (input.analyzePair ?? analyzePair)(result.pair, input.authoring))
   if (!validated.structurallyValid)
     fail('resource_invalid_workflow', 'The proposed resource reference makes the workflow invalid.')
   const artifactPath = packageArtifactPath(input.package.root, relative)

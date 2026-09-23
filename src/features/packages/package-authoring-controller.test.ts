@@ -300,3 +300,87 @@ it('creates a writable first-workflow copy from a read-only bundled example with
   expect((await f.native.workspaceReadTextArtifact('copy/workflows/main.yaml')).text).toBe(text)
   expect(example.definitionText).toBe(text)
 })
+
+it('previews a captured artifact rename without writing and commits only its exact one-use preview', async () => {
+  const f = await packageSetup('name: One\ndescription: Example\nnodes:\n  - id: run\n    prompt: Hello\n', {
+    'pkg/notes.txt': 'exact note\n',
+  })
+  const session = await f.controller.prepare()
+  const apply = vi.spyOn(f.native, 'workspaceApplyTransaction')
+  const preview = await f.controller.previewMutation(session, 'pkg', {
+    kind: 'rename-artifact',
+    path: 'notes.txt',
+    destination: 'renamed.txt',
+  })
+  expect(apply).not.toHaveBeenCalled()
+  await expect(f.controller.commitMutation(session, { ...preview })).rejects.toThrow('preview')
+  expect(apply).not.toHaveBeenCalled()
+  await f.controller.commitMutation(session, preview)
+  expect((await f.native.workspaceReadTextArtifact('pkg/renamed.txt')).text).toBe('exact note\n')
+  expect(f.onCompleted).toHaveBeenCalledWith('pkg', 'pkg/renamed.txt')
+  await expect(f.controller.commitMutation(session, preview)).rejects.toThrow('preview')
+  expect(apply).toHaveBeenCalledOnce()
+})
+it('refuses a mutation when an editor becomes dirty after preview without losing the draft', async () => {
+  const f = await packageSetup('name: One\ndescription: Example\nnodes:\n  - id: run\n    prompt: Hello\n', {
+    'pkg/notes.txt': 'saved',
+  })
+  const session = await f.controller.prepare()
+  const preview = await f.controller.previewMutation(session, 'pkg', { kind: 'trash-artifact', path: 'notes.txt' })
+  f.setContext({ ...f.getContext(), unsavedPaths: ['pkg/notes.txt'] })
+  const apply = vi.spyOn(f.native, 'workspaceApplyTransaction')
+  await expect(f.controller.commitMutation(session, preview)).rejects.toThrow('Save')
+  expect(apply).not.toHaveBeenCalled()
+  expect((await f.native.workspaceReadTextArtifact('pkg/notes.txt')).text).toBe('saved')
+})
+it('preserves native per-path recovery failure and does not publish completion for a failed package mutation', async () => {
+  const f = await packageSetup('name: One\ndescription: Example\nnodes:\n  - id: run\n    prompt: Hello\n', {
+    'pkg/notes.txt': 'saved',
+  })
+  const session = await f.controller.prepare()
+  const preview = await f.controller.previewMutation(session, 'pkg', { kind: 'trash-artifact', path: 'notes.txt' })
+  const failure = Object.assign(Error('Recovery required'), {
+    pathResults: [
+      {
+        relativePath: 'pkg/notes.txt',
+        destinationPath: 'pkg/.recovery/exact',
+        status: 'partial',
+        message: 'Retained original',
+      },
+    ],
+  })
+  vi.spyOn(f.native, 'workspaceApplyTransaction').mockRejectedValueOnce(failure)
+  await expect(f.controller.commitMutation(session, preview)).rejects.toBe(failure)
+  expect(f.onCompleted).not.toHaveBeenCalled()
+  expect((await f.native.workspaceReadTextArtifact('pkg/notes.txt')).text).toBe('saved')
+})
+
+it('isolates a selected valid package from an unrelated package with a missing declared member', async () => {
+  const brokenText = JSON.stringify({
+    ...fixtureManifest,
+    id: 'broken',
+    workflows: [{ definition: 'missing.yaml', companion: null }],
+  })
+  const f = await packageSetup(undefined, { 'pkg/notes.txt': 'keep', 'broken/workflow-package.json': brokenText })
+  const broken = {
+    ...f.getContext().packages[0]!,
+    root: 'broken',
+    id: 'broken',
+    manifestPath: 'broken/workflow-package.json',
+    manifest: JSON.parse(brokenText),
+    workflows: [{ definition: 'missing.yaml', companion: null }],
+    artifacts: [],
+  }
+  f.setContext({ ...f.getContext(), packages: [...f.getContext().packages, broken] })
+  const session = await f.controller.prepare()
+  const preview = await f.controller.previewMutation(session, 'pkg', {
+    kind: 'rename-artifact',
+    path: 'notes.txt',
+    destination: 'new.txt',
+  })
+  await f.controller.commitMutation(session, preview)
+  expect((await f.native.workspaceReadTextArtifact('pkg/new.txt')).text).toBe('keep')
+  await expect(
+    f.controller.previewMutation(session, 'broken', { kind: 'trash-artifact', path: 'missing.yaml' }),
+  ).rejects.toThrow(/capture|missing|unavailable/i)
+})

@@ -153,9 +153,7 @@ describe('App companion contract readiness', () => {
       await fireEvent.click(
         await screen.findByRole('treeitem', { name: /existing.yaml, paired workflow/i }, deferredSurfaceWait),
       )
-      expect(
-        await screen.findByRole('group', { name: 'command node collect', exact: true }, deferredSurfaceWait),
-      ).toBeVisible()
+      expect(await screen.findByRole('group', { name: 'command node collect' }, deferredSurfaceWait)).toBeVisible()
     } finally {
       rendered.unmount()
       hydration.resolve([])

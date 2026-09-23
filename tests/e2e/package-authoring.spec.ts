@@ -33,10 +33,57 @@ test('replaces a binary resource through a chosen file without offering text edi
   await expect(resource).toContainText('2 bytes')
   await expect(resource.getByRole('textbox')).toHaveCount(0)
   await resource.getByRole('button', { name: 'Replace', exact: true }).click()
+  const replacement = page.getByRole('dialog', { name: 'Replace artifact', exact: true })
+  await replacement.getByRole('button', { name: 'Choose replacement file', exact: true }).click()
+  await expect(replacement.getByRole('region', { name: 'Exact package changes' })).toContainText('assets/sample.bin')
+  expect(await page.evaluate(() => window.__WORKFLOW_STUDIO_PACKAGE_E2E__!.calls())).not.toContain(
+    'workspaceReplaceArtifact',
+  )
+  await replacement.getByRole('button', { name: 'Confirm changes', exact: true }).click()
   await expect(resource).toContainText('3 bytes')
   const calls = await page.evaluate(() => window.__WORKFLOW_STUDIO_PACKAGE_E2E__!.calls())
   expect(calls).toContain('chooseImportArtifact')
   expect(calls).toContain('workspaceReplaceArtifact')
+  expect(calls.filter((call) => /execute|spawn|push|fetch|pull/i.test(call))).toEqual([])
+})
+
+test('previews and cancels a shared script rename before committing both consumer updates', async ({ page }) => {
+  await openPackages(page)
+  const before = await packageFiles(page)
+  const root = 'packages/laptop-diagnostic/'
+  const source = root + 'scripts/analyze-snapshot.py'
+  const destination = root + 'scripts/renamed-snapshot.py'
+  const workflow = root + 'workflows/laptop-diagnostic.yaml'
+  const item = page.getByRole('treeitem', { name: 'scripts/analyze-snapshot.py', exact: true })
+  const prepare = async () => {
+    await item.focus()
+    await item.press('Shift+F10')
+    const menu = page.getByRole('menu', { name: 'Artifact actions', exact: true })
+    await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused()
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'Rename artifact', exact: true })
+    await dialog.getByLabel('New package-relative path').fill('scripts/renamed-snapshot.py')
+    await dialog.getByRole('button', { name: 'Preview changes', exact: true }).click()
+    await expect(dialog.getByRole('region', { name: 'Exact package changes' })).toContainText('analyze-cpu')
+    await expect(dialog.getByRole('region', { name: 'Exact package changes' })).toContainText('analyze-memory')
+    return dialog
+  }
+  const cancelled = await prepare()
+  expect(await packageFiles(page)).toEqual(before)
+  await cancelled.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(item).toBeFocused()
+  expect(await packageFiles(page)).toEqual(before)
+  const confirmed = await prepare()
+  await confirmed.getByRole('button', { name: 'Confirm changes', exact: true }).click()
+  await expect.poll(async () => (await packageFiles(page))[destination]).toBe(before[source])
+  const after = await packageFiles(page)
+  expect(after[source]).toBeUndefined()
+  expect(after[workflow]?.match(/script: renamed-snapshot\.py/g)).toHaveLength(2)
+  for (const [path, text] of Object.entries(before)) {
+    if (path !== source && path !== workflow) expect(after[path]).toBe(text)
+  }
+  const calls = await page.evaluate(() => window.__WORKFLOW_STUDIO_PACKAGE_E2E__!.calls())
+  expect(calls).toContain('workspaceApplyTransaction')
   expect(calls.filter((call) => /execute|spawn|push|fetch|pull/i.test(call))).toEqual([])
 })
 

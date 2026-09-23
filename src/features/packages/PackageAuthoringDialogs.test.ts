@@ -2,13 +2,19 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { expect, it, vi } from 'vitest'
 import PackageAuthoringDialogs from './PackageAuthoringDialogs.svelte'
 const mocks = vi.hoisted(() => ({
+  captureDependencies: vi.fn(),
   prepare: vi.fn(),
   create: vi.fn(),
   importWorkflow: vi.fn(),
   addTextArtifact: vi.fn(),
   importArtifact: vi.fn(),
 }))
-vi.mock('./package-authoring-controller', () => ({ createPackageAuthoringController: () => mocks }))
+vi.mock('./package-authoring-controller', () => ({
+  createPackageAuthoringController: (deps: unknown) => {
+    mocks.captureDependencies(deps)
+    return mocks
+  },
+}))
 it('dismisses the authoring modal when opening its help page', async () => {
   mocks.prepare.mockResolvedValueOnce({ sources: [], snapshot: {}, context: {} })
   const onHelp = vi.fn()
@@ -81,5 +87,30 @@ it('exposes pending creation to the workspace-close guard and prevents cancellin
   expect(screen.getByRole('heading', { name: 'New Package' })).toBeVisible()
   complete()
   await waitFor(() => expect(component.isBusy()).toBe(false))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+
+it('retains a successful artifact-operation recovery receipt until the user closes it', async () => {
+  mocks.prepare.mockResolvedValueOnce({ sources: [], snapshot: {}, context: {} })
+  const { component } = render(PackageAuthoringDialogs, { deps: {} as never })
+  await component.openArtifact({ root: 'pkg', manifest: { displayName: 'Example' } } as never)
+  mocks.addTextArtifact.mockImplementationOnce(async () => {
+    const deps = mocks.captureDependencies.mock.calls.at(-1)![0] as { onRecovery: (receipt: unknown) => void }
+    deps.onRecovery({
+      pathResults: [
+        {
+          relativePath: 'pkg/notes.txt',
+          destinationPath: '/vault/exact-original',
+          status: 'recoveryRetained',
+          message: 'Retained original',
+        },
+      ],
+      omittedPathResults: 0,
+    })
+  })
+  await fireEvent.click(screen.getByRole('button', { name: 'Create text artifact' }))
+  expect(await screen.findByText('/vault/exact-original')).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Changes saved with retained recovery files' })).toBeVisible()
+  await fireEvent.click(screen.getByRole('button', { name: 'Close' }))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

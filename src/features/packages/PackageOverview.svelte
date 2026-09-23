@@ -9,6 +9,7 @@
     hasMarketplaceIndex = false,
     onOpenArtifact,
     onOpenWorkflow,
+    onRemoveWorkflow,
     onValidate,
     onAddWorkflow,
     onAddArtifact,
@@ -19,6 +20,7 @@
     hasMarketplaceIndex?: boolean
     onOpenArtifact?: (path: string, line?: number, column?: number) => void
     onOpenWorkflow?: (path: string) => void
+    onRemoveWorkflow?: (path: string) => void
     onValidate?: () => void
     onAddWorkflow?: () => void
     onAddArtifact?: () => void
@@ -68,7 +70,9 @@
   {#each pkg.workflows as member (member.definition)}<button
       disabled={!onOpenWorkflow}
       onclick={() => onOpenWorkflow?.(member.definition)}>Open Workflow: {member.definition}</button
-    >{/each}
+    >{#if onRemoveWorkflow}<button onclick={() => onRemoveWorkflow?.(member.definition)}
+        >Remove Workflow: {member.definition}</button
+      >{/if}{/each}
   <h2>Resources</h2>
   <ul>
     {#each pkg.artifacts.filter((a) => a.kind === 'file') as artifact (artifact.path)}<li>

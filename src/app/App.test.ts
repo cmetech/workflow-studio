@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import { undo } from '@codemirror/commands'
 import { EditorView } from '@codemirror/view'
 import { tick } from 'svelte'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { applyBrandTheme, loadBundledBrand } from '$src/lib/branding/load-brand'
 import { editDocumentText } from '$src/lib/documents/revisions'
 import {
@@ -16,6 +16,7 @@ import {
   openCommandPalette,
   showActivity,
   showEditorMode,
+  requestWorkflowAction,
 } from '$src/stores/shell'
 import { setNativeBridgeForTest } from '$src/lib/native/bridge'
 import { createBrowserBridge } from '$src/lib/native/browser-bridge'
@@ -318,6 +319,284 @@ class RealDocumentWorker {
 }
 
 describe('App', () => {
+  it.each(['policy/custom.yaml', null] as const)(
+    'honors package membership from an Explorer activation with companion %s',
+    async (companion) => {
+      onTestFinished(installRealDocumentWorker())
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'pkg/workflow-package.json': JSON.stringify({
+            ...JSON.parse(packageManifest),
+            workflows: [{ definition: 'main.yaml', companion }],
+          }),
+          'pkg/main.yaml': 'name: Explorer member\ndescription: Example\nnodes:\n  - id: hello\n    prompt: Hello\n',
+          'pkg/main.hermes.yaml': 'language_compatibility: archon-2026-07\n# stray\n',
+          ...(companion ? { ['pkg/' + companion]: 'language_compatibility: archon-2026-07\n# declared\n' } : {}),
+        },
+      })
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      render(App)
+      await waitForSetupReady()
+      const entry = workspace
+        .get()
+        .entries.find((item) => item.kind === 'workflow' && item.definitionPath === 'pkg/main.yaml')!
+      requestWorkflowAction('workflow.open', entry.id)
+      await waitFor(
+        () => expect($documentSession.get().pair?.definition.text).toContain('Explorer member'),
+        deferredSurfaceWait,
+      )
+      expect($documentSession.get().pair?.companion?.path ?? null).toBe(companion ? 'pkg/' + companion : null)
+      for (const action of ['workflow.rename', 'workflow.trash'] as const) {
+        requestWorkflowAction(action, entry.id)
+        const dialog = await screen.findByRole(
+          'dialog',
+          { name: action === 'workflow.rename' ? 'Rename artifact' : 'Remove workflow' },
+          deferredSurfaceWait,
+        )
+        await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      }
+      requestWorkflowAction(companion ? 'workflow.remove-companion' : 'workflow.create-companion', entry.id)
+      expect(await screen.findByText(/Edit the package manifest to change its declared companion/)).toBeVisible()
+      expect((await backing.workspaceRead('pkg/main.hermes.yaml')).text).toContain('# stray')
+    },
+    30000,
+  )
+
+  it('routes Explorer rename and trash of undeclared package YAML through artifact previews', async () => {
+    const definition = 'name: Supporting YAML\ndescription: Example\nnodes:\n  - id: hello\n    prompt: Hello\n'
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'pkg/workflow-package.json': JSON.stringify({
+          ...JSON.parse(packageManifest),
+          workflows: [{ definition: 'main.yaml', companion: null }],
+        }),
+        'pkg/main.yaml': definition,
+        'pkg/extra.yaml': definition,
+        'pkg/extra.hermes.yaml': '# unrelated standalone bytes\n',
+      },
+    })
+    const apply = vi.spyOn(backing, 'workspaceApplyTransaction')
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    const entry = workspace
+      .get()
+      .entries.find((item) => item.kind === 'workflow' && item.definitionPath === 'pkg/extra.yaml')!
+    for (const action of ['workflow.rename', 'workflow.trash'] as const) {
+      requestWorkflowAction(action, entry.id)
+      const dialog = await screen.findByRole(
+        'dialog',
+        { name: action === 'workflow.rename' ? 'Rename artifact' : 'Trash artifact' },
+        deferredSurfaceWait,
+      )
+      await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    }
+    expect(apply).not.toHaveBeenCalled()
+    expect((await backing.workspaceRead('pkg/extra.hermes.yaml')).text).toBe('# unrelated standalone bytes\n')
+  }, 30000)
+
+  it.each([false, true])(
+    'removes package workflow membership with trashPair=%s only after its exact preview',
+    async (trashPair) => {
+      const members = [
+        { definition: 'one.yaml', companion: 'policy/one.yaml' },
+        { definition: 'two.yaml', companion: 'policy/two.yaml' },
+      ]
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'pkg/workflow-package.json': JSON.stringify({ ...JSON.parse(packageManifest), workflows: members }),
+          ...Object.fromEntries(
+            members.flatMap((member, index) => [
+              [
+                'pkg/' + member.definition,
+                `name: Member${index}\ndescription: Example\nnodes:\n  - id: hello\n    prompt: Hello\n`,
+              ],
+              ['pkg/' + member.companion, 'language_compatibility: archon-2026-07\n'],
+            ]),
+          ),
+          'pkg/shared.txt': 'Keep shared supporting bytes\n',
+        },
+      })
+      const apply = vi.spyOn(backing, 'workspaceApplyTransaction')
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /diagnostics package/ }, deferredSurfaceWait))
+      await fireEvent.click(
+        await screen.findByRole('button', { name: 'Remove Workflow: one.yaml' }, deferredSurfaceWait),
+      )
+      const dialog = await screen.findByRole('dialog', { name: 'Remove workflow' }, deferredSurfaceWait)
+      await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(apply).not.toHaveBeenCalled()
+      await fireEvent.click(screen.getByRole('button', { name: 'Remove Workflow: one.yaml' }))
+      await fireEvent.click(
+        await screen.findByRole(
+          'button',
+          { name: trashPair ? 'Trash declared pair' : 'Remove membership only' },
+          deferredSurfaceWait,
+        ),
+      )
+      const confirm = await screen.findByRole('button', { name: 'Confirm changes' }, deferredSurfaceWait)
+      expect(apply).not.toHaveBeenCalled()
+      expect(screen.getByRole('region', { name: 'Exact package changes' })).toHaveTextContent(
+        'pkg/workflow-package.json',
+      )
+      await fireEvent.click(confirm)
+      await waitFor(
+        async () =>
+          expect(
+            JSON.parse((await backing.workspaceReadTextArtifact('pkg/workflow-package.json')).text).workflows,
+          ).toEqual([members[1]]),
+        deferredSurfaceWait,
+      )
+      expect((await backing.workspaceReadTextArtifact('pkg/shared.txt')).text).toBe('Keep shared supporting bytes\n')
+      if (trashPair)
+        await expect(backing.workspaceReadTextArtifact('pkg/policy/one.yaml')).rejects.toMatchObject({
+          code: 'path_not_found',
+        })
+      else expect((await backing.workspaceReadTextArtifact('pkg/policy/one.yaml')).text).toContain('archon-2026-07')
+      expect(apply).toHaveBeenCalledOnce()
+    },
+    30000,
+  )
+
+  it('renames then replaces a supporting artifact from its package context actions after explicit previews', async () => {
+    onTestFinished(installRealDocumentWorker())
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'pkg/workflow-package.json': JSON.stringify({
+          ...JSON.parse(packageManifest),
+          workflows: [{ definition: 'main.yaml', companion: 'policy/custom.yaml' }],
+        }),
+        'pkg/main.yaml': 'name: Member\ndescription: Example\nnodes:\n  - id: hello\n    prompt: Hello\n',
+        'pkg/policy/custom.yaml': 'language_compatibility: archon-2026-07\n',
+        'pkg/notes.txt': 'original note',
+      },
+      chooseArtifactSource: async () => new TextEncoder().encode('replacement note'),
+    })
+    const replace = vi.spyOn(backing, 'workspaceReplaceArtifact')
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'notes.txt' }, deferredSurfaceWait))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    await fireEvent.input(await screen.findByLabelText('New package-relative path', {}, deferredSurfaceWait), {
+      target: { value: 'renamed.txt' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Preview changes' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Confirm changes' }, deferredSurfaceWait))
+    await waitFor(
+      async () => expect((await backing.workspaceReadTextArtifact('pkg/renamed.txt')).text).toBe('original note'),
+      deferredSurfaceWait,
+    )
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument(), deferredSurfaceWait)
+    await fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'renamed.txt' }, deferredSurfaceWait))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Replace' }))
+    await fireEvent.click(await screen.findByRole('button', { name: 'Choose replacement file' }, deferredSurfaceWait))
+    const confirm = await screen.findByRole('button', { name: 'Confirm changes' }, deferredSurfaceWait)
+    expect(replace).not.toHaveBeenCalled()
+    await fireEvent.click(confirm)
+    await waitFor(
+      async () => expect((await backing.workspaceReadTextArtifact('pkg/renamed.txt')).text).toBe('replacement note'),
+      deferredSurfaceWait,
+    )
+    expect(replace).toHaveBeenCalledOnce()
+    expect(replace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relativePath: 'pkg/renamed.txt',
+        expectedCurrentHash: expect.any(String),
+        sourceGrantToken: expect.any(String),
+        packageSnapshotToken: expect.any(String),
+      }),
+    )
+  }, 30000)
+
+  it.each(['policy/custom.yaml', null] as const)(
+    'activates the exact package companion declaration %s through open, save and companion navigation',
+    async (companion) => {
+      const restoreWorker = installRealDocumentWorker()
+      try {
+        const definition =
+          'name: Declared pair\ndescription: Exact package member\nnodes:\n  - id: first\n    prompt: Hello\n'
+        const policy = 'language_compatibility: archon-2026-07\n'
+        const stray = 'language_compatibility: archon-2026-07\n# unrelated conventional sidecar\n'
+        const manifest = JSON.stringify({
+          ...JSON.parse(packageManifest),
+          workflows: [{ definition: 'flows/main.yaml', companion }],
+        })
+        const backing = createBrowserBridge({
+          initialFiles: {
+            'pkg/workflow-package.json': manifest,
+            'pkg/flows/main.yaml': definition,
+            'pkg/flows/main.hermes.yaml': stray,
+            ...(companion ? { ['pkg/' + companion]: policy } : {}),
+          },
+        })
+        setNativeBridgeForTest(backing)
+        loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+        render(App)
+        await waitForSetupReady()
+        await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+        await fireEvent.click(await screen.findByRole('treeitem', { name: 'flows/main.yaml' }, deferredSurfaceWait))
+        await waitFor(
+          () =>
+            expect(
+              $documentSession.get().pair?.definition.path,
+              document.querySelector('[aria-label="Application notices"]')?.textContent ?? '',
+            ).toBe('pkg/flows/main.yaml'),
+          deferredSurfaceWait,
+        )
+        expect($documentSession.get().pair?.definition.text).toBe(definition)
+        await waitFor(
+          () =>
+            expect($documentSession.get().pair?.companion?.path ?? null).toBe(companion ? 'pkg/' + companion : null),
+          deferredSurfaceWait,
+        )
+        expect($documentSession.get().pair?.companion?.text ?? null).toBe(companion ? policy : null)
+        const contracts = await loadBundledAuthoringContracts()
+        expect($documentSession.get().revision?.contractDigest).toBe(
+          contracts.find((entry) => entry.profile === (companion ? 'archon-2026-07' : 'hermes-legacy'))!
+            .contract_digest,
+        )
+        const pair = $documentSession.get().pair!
+        const kind = companion ? 'companion' : 'definition'
+        const edited = editDocumentText(pair, kind, (companion ? policy : definition) + '# saved package edit\n')
+        updateDocumentSession(edited, $documentSession.get().revision!.contractDigest)
+        publishCurrentAnalysis(true)
+        await waitFor(
+          () => expect(screen.getByRole('button', { name: 'Save workflow' })).toBeEnabled(),
+          deferredSurfaceWait,
+        )
+        await fireEvent.click(screen.getByRole('button', { name: 'Save workflow' }))
+        await waitFor(
+          async () =>
+            expect(
+              (await backing.workspaceRead(companion ? 'pkg/' + companion : 'pkg/flows/main.yaml')).text,
+            ).toContain('# saved package edit'),
+          deferredSurfaceWait,
+        )
+        expect((await backing.workspaceRead('pkg/flows/main.hermes.yaml')).text).toBe(stray)
+        if (companion) {
+          await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+          await fireEvent.click(await screen.findByRole('treeitem', { name: companion }, deferredSurfaceWait))
+          await waitFor(
+            () => expect($documentSession.get().pair?.companion?.path).toBe('pkg/' + companion),
+            deferredSurfaceWait,
+          )
+          expect($documentSession.get().pair?.companion?.text).toContain('# saved package edit')
+        }
+      } finally {
+        restoreWorker()
+      }
+    },
+    30000,
+  )
   it('creates a package and adds an artifact through the application', async () => {
     const backing = createBrowserBridge()
     setNativeBridgeForTest(backing)
@@ -533,6 +812,12 @@ describe('App', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
     await fireEvent.click(await screen.findByRole('treeitem', { name: /image.bin/ }, deferredSurfaceWait))
     await fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Replace artifact' }, deferredSurfaceWait)
+    expect(replace).not.toHaveBeenCalled()
+    await fireEvent.click(await within(dialog).findByRole('button', { name: 'Choose replacement file' }))
+    const confirm = await within(dialog).findByRole('button', { name: 'Confirm changes' })
+    expect(replace).not.toHaveBeenCalled()
+    await fireEvent.click(confirm)
     await waitFor(async () => expect((await backing.workspaceReadArtifact('image.bin')).size).toBe(3))
     expect(replace).toHaveBeenCalledWith(expect.objectContaining({ packageSnapshotToken: expect.any(String) }))
   }, 20000)
@@ -1950,9 +2235,7 @@ nodes:
       render(App)
       await waitForSetupReady()
 
-      await fireEvent.click(
-        await screen.findByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true }),
-      )
+      await fireEvent.click(await screen.findByRole('button', { name: 'Create Editable Copy: Minimal prompt' }))
       await waitFor(() => expect(creationWriteStarted).toBe(true))
       await fireEvent.click(screen.getByRole('button', { name: 'Explorer' }))
       const releaseEntry = await screen.findByRole('treeitem', { name: /release-demo\.yaml/i }, deferredSurfaceWait)

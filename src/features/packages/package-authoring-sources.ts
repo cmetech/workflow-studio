@@ -107,6 +107,7 @@ export async function buildPackageAuthoringSources(
     })
   }
   for (const candidate of candidates.values()) {
+    if (candidate.root !== null && !captures.has(candidate.root)) continue
     const definition = entries.get(candidate.definition)
     const companion = candidate.companion ? entries.get(candidate.companion) : undefined
     if (definition?.text === undefined) continue

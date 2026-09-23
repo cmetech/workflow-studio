@@ -1,5 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import PackageMutationDialog from './PackageMutationDialog.svelte'
+  import TransactionRecoveryDetails from './TransactionRecoveryDetails.svelte'
+  import { extractTransactionRecovery, type TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
+  import type { PackageArtifactAction } from '$src/lib/packages/package-mutations'
   import ModalShell from '$src/app/ModalShell.svelte'
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
   import CreatePackageDialog from './CreatePackageDialog.svelte'
@@ -15,7 +19,7 @@
     onHelp?: (topicId: string) => void
   }
   let { deps, onCancel, onHelp }: Props = $props()
-  let mode = $state<'create' | 'import' | 'artifact' | null>(null)
+  let mode = $state<'create' | 'import' | 'artifact' | 'mutation' | 'receipt' | 'recovery-error' | null>(null)
   let session = $state.raw<PackageAuthoringSession | null>(null)
   let pkg = $state.raw<WorkflowPackageProjection | null>(null)
   let opener = $state.raw<HTMLElement | null>(null)
@@ -23,9 +27,15 @@
   let busy = $state(false)
   let filename = $state('assets/new-file.txt')
   let initialText = $state('')
+  let mutationMode = $state<'rename' | 'replace' | 'trash' | 'remove-workflow'>('rename')
+  let mutationPath = $state('')
+  let recovery = $state.raw<TransactionRecoveryReceipt>({ pathResults: [], omittedPathResults: 0 })
   let generation = 0
   const controller = createPackageAuthoringController({
     getContext: () => deps.getContext(),
+    get analyzePair() {
+      return deps.analyzePair
+    },
     get native() {
       return deps.native
     },
@@ -39,6 +49,13 @@
       return deps.workflowExamples ?? []
     },
     onCompleted: (root, path) => deps.onCompleted(root, path),
+    assertCanMutatePackage: async (root) => {
+      await deps.assertCanMutatePackage?.(root)
+    },
+    onRecovery: (receipt) => {
+      recovery = receipt
+      deps.onRecovery?.(receipt)
+    },
   })
   function close() {
     if (busy) return
@@ -60,6 +77,7 @@
     session = null
     filename = 'assets/new-file.txt'
     initialText = ''
+    recovery = { pathResults: [], omittedPathResults: 0 }
     try {
       const loaded = await controller.prepare()
       if (token === generation) session = loaded
@@ -79,6 +97,27 @@
   export async function openArtifact(selected: WorkflowPackageProjection, element?: HTMLElement | null) {
     await open('artifact', selected, element)
   }
+  export async function openMutation(
+    selected: WorkflowPackageProjection,
+    action: PackageArtifactAction,
+    path: string,
+    element?: HTMLElement | null,
+  ) {
+    if (busy || action === 'reveal' || action === 'open-externally') return
+    mutationMode = action
+    mutationPath = path
+    await open('mutation', selected, element)
+  }
+  function finish() {
+    mode = recovery.pathResults.length || recovery.omittedPathResults ? 'receipt' : null
+    session = null
+  }
+  function recordFailure(cause: unknown) {
+    error = cause instanceof Error ? cause.message : String(cause)
+    const receipt = extractTransactionRecovery(cause)
+    if (receipt.pathResults.length || receipt.omittedPathResults) recovery = receipt
+    if (recovery.pathResults.length || recovery.omittedPathResults) mode = 'recovery-error'
+  }
   async function artifact(importFile: boolean) {
     if (!session || !pkg || busy) return
     busy = true
@@ -87,10 +126,9 @@
       if (importFile) {
         if (!(await controller.importArtifact(session, pkg.root, filename))) return
       } else await controller.addTextArtifact(session, pkg.root, filename, initialText)
-      mode = null
-      session = null
+      finish()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause)
+      recordFailure(cause)
     } finally {
       busy = false
     }
@@ -107,8 +145,10 @@
       busy = true
       try {
         await controller.create(session, request)
-        mode = null
-        session = null
+        finish()
+      } catch (cause) {
+        recordFailure(cause)
+        throw cause
       } finally {
         busy = false
       }
@@ -126,18 +166,49 @@
       busy = true
       try {
         await controller.importWorkflow(session, request)
-        mode = null
-        session = null
+        finish()
+      } catch (cause) {
+        recordFailure(cause)
+        throw cause
       } finally {
         busy = false
       }
     }}
   />
+{:else if mode === 'mutation' && session && pkg}
+  <PackageMutationDialog
+    root={pkg.root}
+    mode={mutationMode}
+    path={mutationPath}
+    {opener}
+    onCancel={close}
+    onBusyChanged={(value) => {
+      busy = value
+    }}
+    onPreview={(request) => controller.previewMutation(session!, pkg!.root, request)}
+    onChooseReplacement={() => controller.previewReplacement(session!, pkg!.root, mutationPath)}
+    onCommit={async (preview) => {
+      await controller.commitMutation(session!, preview)
+      finish()
+    }}
+  />
 {:else if mode}
   <ModalShell titleId="package-authoring-title" {opener} {busy} onCancel={close}>
-    <h2 id="package-authoring-title">{mode === 'artifact' ? 'Add Artifact' : 'Package authoring'}</h2>
+    <h2 id="package-authoring-title">
+      {mode === 'receipt'
+        ? 'Changes saved with retained recovery files'
+        : mode === 'recovery-error'
+          ? 'Package operation recovery'
+          : mode === 'artifact'
+            ? 'Add Artifact'
+            : 'Package authoring'}
+    </h2>
     {#if error}<p role="alert">{error}</p>{/if}
-    {#if !session && !error}<p role="status">Reading verified workspace sources...</p>{/if}
+    <TransactionRecoveryDetails
+      receipt={recovery}
+      title={mode === 'receipt' ? 'Retained recovery files' : 'Transaction recovery locations'}
+    />
+    {#if !session && !error && mode !== 'receipt'}<p role="status">Reading verified workspace sources...</p>{/if}
     {#if mode === 'artifact' && session}
       <p>
         Create or import a file with this exact name inside {pkg?.manifest.displayName}. Existing files cannot be

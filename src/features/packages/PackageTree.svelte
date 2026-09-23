@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { tick } from 'svelte'
+  import type { PackageArtifactAction } from '$src/lib/packages/package-mutations'
   import { classifyPackageArtifact } from '$src/lib/packages/artifact-kind'
   import type { ResourceResolutionContract } from '$src/lib/package-contract/resource-contract-loader'
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
@@ -12,12 +14,19 @@
     readiness,
     hasMarketplaceIndex = false,
     onOpen,
+    onAction,
   }: {
     catalog: PackageCatalog
     active?: PackageSelection | null
     resourceContract?: ResourceResolutionContract | undefined
     readiness?: { readonly root: string; readonly ready: boolean } | undefined
     hasMarketplaceIndex?: boolean
+    onAction?: (
+      pkg: WorkflowPackageProjection,
+      action: PackageArtifactAction,
+      path: string,
+      opener: HTMLElement,
+    ) => void
     onOpen: (selection: PackageSelection) => void
   } = $props()
   interface Row {
@@ -65,6 +74,63 @@
     return [...grouped].filter(([, rows]) => rows.length).map(([label, rows]) => ({ label, rows }))
   }
   const packages = $derived(catalog.packages.map((pkg) => ({ pkg, groups: groups(pkg) })))
+  let context = $state.raw<{ pkg: WorkflowPackageProjection; row: Row; opener: HTMLButtonElement } | null>(null)
+  let menu = $state<HTMLDivElement>()
+  const actions: readonly { action: PackageArtifactAction; label: string }[] = [
+    { action: 'rename', label: 'Rename' },
+    { action: 'replace', label: 'Replace' },
+    { action: 'reveal', label: 'Reveal' },
+    { action: 'open-externally', label: 'Open externally' },
+    { action: 'trash', label: 'Trash' },
+  ]
+  async function showActions(event: MouseEvent | KeyboardEvent, pkg: WorkflowPackageProjection, row: Row) {
+    if (!onAction) return
+    event.preventDefault()
+    context = { pkg, row, opener: event.currentTarget as HTMLButtonElement }
+    await tick()
+    menu?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }
+  function closeActions() {
+    const opener = context?.opener
+    context = null
+    opener?.focus()
+  }
+  function disabled(action: PackageArtifactAction): boolean {
+    if (!context || action === 'reveal' || action === 'open-externally') return false
+    const { pkg, row } = context
+    const artifact = pkg.artifacts.find((item) => item.workspacePath === row.path)
+    const member = pkg.workflows.some((item) => item.definition === row.label || item.companion === row.label)
+    return (
+      artifact?.readOnly !== false ||
+      ['workflow-package.json', 'digests.json'].includes(row.label) ||
+      (member && (action === 'replace' || action === 'trash'))
+    )
+  }
+  function menuKeys(event: KeyboardEvent) {
+    event.stopPropagation()
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      closeActions()
+      if (event.key === 'Escape') event.preventDefault()
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const items = [...menu!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+    const index = items.indexOf(document.activeElement as HTMLButtonElement)
+    items[
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+    ]?.focus()
+  }
+  function invoke(action: PackageArtifactAction) {
+    const selected = context
+    if (!selected || disabled(action)) return
+    closeActions()
+    onAction?.(selected.pkg, action, selected.row.path, selected.opener)
+  }
   function navigate(event: KeyboardEvent) {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     const items = Array.from(
@@ -108,6 +174,12 @@
           <button
             role="treeitem"
             aria-level="2"
+            aria-haspopup={onAction ? 'menu' : undefined}
+            oncontextmenu={(event) => showActions(event, pkg, row)}
+            onkeydown={(event) => {
+              if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))
+                void showActions(event, pkg, row)
+            }}
             aria-selected={active?.path === row.path}
             onclick={() => onOpen({ packageId: pkg.id, kind: row.kind, path: row.path })}>{row.label}</button
           >
@@ -125,6 +197,18 @@
     >
   {/if}
 </div>
+{#if context}
+  <div bind:this={menu} role="menu" aria-label="Artifact actions" tabindex="-1" onkeydown={menuKeys}>
+    {#each actions as item (item.action)}<button
+        role="menuitem"
+        disabled={disabled(item.action)}
+        onclick={() => invoke(item.action)}>{item.label}</button
+      >{/each}
+    {#if context.row.kind === 'workflow'}<button role="menuitem" onclick={() => invoke('remove-workflow')}
+        >Remove Workflow</button
+      >{/if}
+  </div>
+{/if}
 {#if catalog.packages.length === 0}<p>No packages discovered in this workspace.</p>{/if}
 {#each catalog.findings as finding, index (index)}<p role="alert">{finding.path}: {finding.message}</p>
   {#if finding.path.split('/').at(-1) === 'workflow-package.json'}<button
