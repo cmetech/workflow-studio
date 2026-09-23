@@ -896,6 +896,49 @@ describe('App', () => {
     )
   }, 20000)
 
+  it.each(['success', 'failure'] as const)(
+    'shows native artifact save recovery locations after %s',
+    async (outcome) => {
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'workflow-package.json': packageManifest,
+          'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        },
+      })
+      const save = backing.workspaceWriteTextArtifact.bind(backing)
+      const row = {
+        relativePath: 'workflow-package.json',
+        destinationPath: 'C:/Recovery/exact-live-original',
+        status: 'recoveryRetained' as const,
+        message: 'Retained original with provenance',
+      }
+      vi.spyOn(backing, 'workspaceWriteTextArtifact').mockImplementation(async (request) => {
+        if (outcome === 'failure')
+          throw Object.assign(new Error('Artifact cleanup failed'), {
+            code: 'workspace_write_partial',
+            pathResults: [row],
+          })
+        return { ...(await save(request)), recoveryResults: [row] }
+      })
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: 'workflow-package.json' }, deferredSurfaceWait))
+      const editor = await screen.findByRole('region', { name: 'Package manifest editor' }, deferredSurfaceWait)
+      await fireEvent.input(within(editor).getByLabelText('Display name'), { target: { value: 'Changed package' } })
+      await fireEvent.click(within(editor).getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText(row.destinationPath, {}, deferredSurfaceWait)).toBeVisible()
+      expect(screen.getByRole('region', { name: 'Retained artifact files' })).toHaveTextContent(row.relativePath)
+      if (outcome === 'failure')
+        expect(await screen.findByText(/Artifact cleanup failed/, {}, deferredSurfaceWait)).toBeVisible()
+      await fireEvent.click(screen.getByRole('button', { name: 'Dismiss artifact save recovery notice' }))
+      expect(screen.queryByText(row.destinationPath)).not.toBeInTheDocument()
+    },
+    30000,
+  )
+
   it('opens the Packages catalog in the contextual workbench', async () => {
     const backing = createBrowserBridge({ initialFiles: {} })
     setNativeBridgeForTest(backing)

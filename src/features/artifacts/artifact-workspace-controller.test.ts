@@ -54,6 +54,56 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+it('retains successful save recovery locations across later saves and artifact navigation until acknowledged', async () => {
+  const s = setup()
+  const row = {
+    relativePath: 'scripts/a.py',
+    destinationPath: '/vault/original-a',
+    status: 'recoveryRetained' as const,
+    message: 'Original retained with metadata',
+  }
+  await s.controller.open('scripts/a.py', 'python')
+  s.controller.edit('studio')
+  const saved = { relativePath: 'scripts/a.py', sha256: 'saved', size: 6, modifiedAt: '', recoveryResults: [row] }
+  s.native.workspaceWriteTextArtifact.mockResolvedValueOnce(saved)
+  await s.controller.save()
+  expect(s.controller.state.get().writeRecovery).toEqual({ pathResults: [row], omittedPathResults: 0 })
+  expect($artifactSession.get()?.dirty).toBe(false)
+  s.controller.edit('later')
+  s.native.workspaceWriteTextArtifact.mockResolvedValueOnce({
+    relativePath: 'scripts/a.py',
+    sha256: 'later',
+    size: 5,
+    modifiedAt: '',
+  })
+  await s.controller.save()
+  await s.controller.close()
+  await s.controller.open('scripts/other.py', 'python')
+  expect(s.controller.state.get().writeRecovery.pathResults).toEqual([row])
+  s.controller.clearWriteRecovery()
+  expect(s.controller.state.get().writeRecovery.pathResults).toEqual([])
+  await s.controller.dispose()
+})
+
+it('keeps failed-save recovery locations and the dirty draft without replacing the native error', async () => {
+  const s = setup()
+  const row = {
+    relativePath: 'scripts/a.py',
+    destinationPath: '/vault/external-live',
+    status: 'partial' as const,
+    errorCode: 'permission_denied',
+    message: 'Inspect both versions',
+  }
+  const failure = Object.assign(new Error('Cleanup failed'), { code: 'workspace_write_partial', pathResults: [row] })
+  await s.controller.open('scripts/a.py', 'python')
+  s.controller.edit('unsaved')
+  s.native.workspaceWriteTextArtifact.mockRejectedValueOnce(failure)
+  await expect(s.controller.save()).rejects.toBe(failure)
+  expect(s.controller.state.get().writeRecovery).toEqual({ pathResults: [row], omittedPathResults: 0 })
+  expect($artifactSession.get()).toMatchObject({ text: 'unsaved', dirty: true })
+  await s.controller.dispose()
+})
+
 it('saves invalid text verbatim and recovers only unsaved differing drafts across restart', async () => {
   const s = setup()
   await s.controller.open('scripts/a.py', 'python')

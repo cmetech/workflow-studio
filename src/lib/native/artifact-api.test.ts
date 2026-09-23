@@ -195,3 +195,21 @@ it.each(['workspaceImportArtifact', 'workspaceReplaceArtifact'] as const)(
     ).resolves.toBe(metadata)
   },
 )
+
+it('preserves ordinary artifact save recovery receipts on success and rejection', async () => {
+  const row = {
+    relativePath: 'pkg/script.py',
+    destinationPath: 'C:/Recovery/live-original',
+    status: 'recoveryRetained',
+    message: 'Retained with original-path metadata',
+  }
+  const result = { relativePath: row.relativePath, sha256: 'saved', size: 5, modifiedAt: '', recoveryResults: [row] }
+  const request = { relativePath: row.relativePath, text: 'draft', expectedCurrentHash: 'old' }
+  invoke.mockResolvedValueOnce(result)
+  await expect(tauriBridge.workspaceWriteTextArtifact(request)).resolves.toBe(result)
+  invoke.mockRejectedValueOnce({ code: 'workspace_write_partial', message: 'Cleanup failed', pathResults: [row] })
+  await expect(tauriBridge.workspaceWriteTextArtifact(request)).rejects.toMatchObject({
+    code: 'workspace_write_partial',
+    pathResults: [row],
+  })
+})

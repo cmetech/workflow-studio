@@ -67,6 +67,8 @@ export interface WorkspaceWriteRequest {
 }
 
 export interface WorkspaceWriteResult {
+  /** Exact retained live-file locations after an artifact save; display only. */
+  readonly recoveryResults?: readonly PathOperationResult[]
   readonly relativePath: string
   readonly sha256: string
   readonly size: number

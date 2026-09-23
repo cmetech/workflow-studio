@@ -21,6 +21,7 @@
   import type { DocumentationGuide, DocumentationIndex } from '$src/lib/docs/types'
   import { createContractCache, type ContractCache, type ContractCacheAdvisory } from '$src/lib/contract/contract-cache'
   import Loop24Mark from '$src/features/branding/Loop24Mark.svelte'
+  import TransactionRecoveryDetails from '$src/features/packages/TransactionRecoveryDetails.svelte'
   import type { AuthoringContract, WorkflowProfile } from '$src/lib/contract/types'
   import type { FormField, FormFieldCommit } from '$src/lib/forms/types'
   import { applyWorkflowMutation, type ApplyWorkflowMutationResult } from '$src/lib/documents/transactions'
@@ -308,7 +309,11 @@
   let packageController: PackageCatalogController | null = null
   let packageRefreshGeneration = 0
   let artifactController: ArtifactWorkspaceController | null = null
-  let artifactState = $state.raw<ArtifactWorkspaceState>({ externalChange: null, recoveryOffers: [] })
+  let artifactState = $state.raw<ArtifactWorkspaceState>({
+    externalChange: null,
+    recoveryOffers: [],
+    writeRecovery: { pathResults: [], omittedPathResults: 0 },
+  })
   let artifactComparison = $state.raw<{ mine: string; disk: string | null } | null>(null)
   let unsubscribeArtifactState: (() => void) | undefined
   let artifactSaving = false
@@ -572,7 +577,11 @@
     artifactController = null
     artifactReady = false
     artifactWorkspaceId = null
-    artifactState = { externalChange: null, recoveryOffers: [] }
+    artifactState = {
+      externalChange: null,
+      recoveryOffers: [],
+      writeRecovery: { pathResults: [], omittedPathResults: 0 },
+    }
     artifactMetadata = null
   }
   async function savePackageArtifact(): Promise<void> {
@@ -3845,7 +3854,7 @@
     </div>
   </header>
 
-  {#if (contractsLoaded && contracts.length === 0) || contractCacheAdvisories.length > 0 || workspaceError}
+  {#if (contractsLoaded && contracts.length === 0) || contractCacheAdvisories.length > 0 || workspaceError || artifactState.writeRecovery.pathResults.length || artifactState.writeRecovery.omittedPathResults}
     <section class="application-notices" aria-label="Application notices">
       {#if contractsLoaded && contracts.length === 0}
         <ApplicationNotice
@@ -3865,6 +3874,18 @@
           dismissible
           onDismiss={() => (workspaceError = null)}
         />
+      {/if}
+      {#if artifactState.writeRecovery.pathResults.length || artifactState.writeRecovery.omittedPathResults}
+        <details open class="artifact-save-recovery">
+          <summary
+            >Artifact save recovery files ({artifactState.writeRecovery.pathResults.length +
+              artifactState.writeRecovery.omittedPathResults})</summary
+          >
+          <p role="status">Review retained files from artifact saves.</p>
+          <TransactionRecoveryDetails receipt={artifactState.writeRecovery} title="Retained artifact files" />
+          <button onclick={() => artifactController?.clearWriteRecovery()}>Dismiss artifact save recovery notice</button
+          >
+        </details>
       {/if}
     </section>
   {/if}
@@ -5303,6 +5324,18 @@
 
   .application-notices :global(button),
   .application-notices :global(a) {
+    pointer-events: auto;
+  }
+
+  .artifact-save-recovery {
+    width: min(32rem, calc(100vw - 2rem));
+    max-height: min(40dvh, 18rem);
+    padding: 0.75rem;
+    overflow: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    background: var(--color-surface);
+    color: var(--color-text);
     pointer-events: auto;
   }
 

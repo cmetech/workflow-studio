@@ -193,7 +193,7 @@
     }}
   />
 {:else if mode}
-  <ModalShell titleId="package-authoring-title" {opener} {busy} onCancel={close}>
+  <ModalShell titleId="package-authoring-title" {opener} {busy} dismissible={!busy} onCancel={close}>
     <h2 id="package-authoring-title">
       {mode === 'receipt'
         ? 'Changes saved with retained recovery files'

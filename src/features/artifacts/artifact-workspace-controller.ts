@@ -11,6 +11,7 @@ import {
 import { createArtifactRecoveryDraft, type ArtifactRecoveryStore } from '$src/lib/recovery/recovery-store'
 import type { ArtifactRecoveryDraft } from '$src/lib/recovery/types'
 import { $artifactSession } from '$src/stores/artifacts'
+import { extractTransactionRecovery, type TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
 
 export type ArtifactExternalChangeChoice = 'keep-mine' | 'reload-disk' | 'compare'
 export interface ArtifactExternalChange {
@@ -20,6 +21,7 @@ export interface ArtifactExternalChange {
   readonly comparedRevision: number | null
 }
 export interface ArtifactWorkspaceState {
+  readonly writeRecovery: TransactionRecoveryReceipt
   readonly externalChange: ArtifactExternalChange | null
   readonly recoveryOffers: readonly ArtifactRecoveryDraft[]
 }
@@ -31,7 +33,11 @@ export interface ArtifactWorkspaceControllerDependencies {
 }
 
 export class ArtifactWorkspaceController {
-  readonly state = atom<ArtifactWorkspaceState>({ externalChange: null, recoveryOffers: [] })
+  readonly state = atom<ArtifactWorkspaceState>({
+    externalChange: null,
+    recoveryOffers: [],
+    writeRecovery: { pathResults: [], omittedPathResults: 0 },
+  })
   private publishedDocument: ArtifactDocument | null = null
   private generation = 0
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -79,6 +85,7 @@ export class ArtifactWorkspaceController {
     )
     this.publish(document)
     this.state.set({
+      ...this.state.get(),
       externalChange: null,
       recoveryOffers: offers.filter(
         (draft) => draft.artifactId === document.artifactId && (!disk || draft.text !== disk.text),
@@ -105,6 +112,26 @@ export class ArtifactWorkspaceController {
     return this.startSave(this.current())
   }
 
+  clearWriteRecovery(): void {
+    this.state.set({ ...this.state.get(), writeRecovery: { pathResults: [], omittedPathResults: 0 } })
+  }
+
+  private recordWriteRecovery(value: unknown): void {
+    const receipt = extractTransactionRecovery(value)
+    if (!receipt.pathResults.length && !receipt.omittedPathResults) return
+    const state = this.state.get()
+    this.state.set({
+      ...state,
+      writeRecovery: extractTransactionRecovery({
+        pathResults: [...receipt.pathResults, ...state.writeRecovery.pathResults],
+        omittedPathResults: Math.min(
+          Number.MAX_SAFE_INTEGER,
+          receipt.omittedPathResults + state.writeRecovery.omittedPathResults,
+        ),
+      }),
+    })
+  }
+
   private startSave(captured: ArtifactDocument, expectedHash = captured.diskHash): Promise<void> {
     if (captured.readOnly) return Promise.reject(new Error('Artifact is read-only'))
     const generation = this.generation
@@ -115,6 +142,7 @@ export class ArtifactWorkspaceController {
         expectedCurrentHash: expectedHash,
       })
       .then((result) => {
+        this.recordWriteRecovery(result)
         const current = $artifactSession.get()
         if (
           generation !== this.generation ||
@@ -130,6 +158,7 @@ export class ArtifactWorkspaceController {
         this.changed(next)
       })
       .catch(async (error: unknown) => {
+        this.recordWriteRecovery(error)
         if (
           generation === this.generation &&
           typeof error === 'object' &&
@@ -225,7 +254,7 @@ export class ArtifactWorkspaceController {
     }
     const next = { ...reloadArtifactDocument(current, disk.text, disk.sha256), readOnly: disk.readOnly }
     this.publish(next)
-    this.state.set({ externalChange: null, recoveryOffers: [] })
+    this.state.set({ ...this.state.get(), externalChange: null, recoveryOffers: [] })
     this.changed(next)
     await this.flush()
   }
@@ -247,7 +276,7 @@ export class ArtifactWorkspaceController {
       dirty: true,
     }
     this.publish(next)
-    this.state.set({ externalChange: null, recoveryOffers: [] })
+    this.state.set({ ...this.state.get(), externalChange: null, recoveryOffers: [] })
     this.changed(next)
     await this.flush()
   }
@@ -288,7 +317,7 @@ export class ArtifactWorkspaceController {
       await this.flush()
       if ($artifactSession.get() === this.publishedDocument) $artifactSession.set(null)
       this.publishedDocument = null
-      this.state.set({ externalChange: null, recoveryOffers: [] })
+      this.state.set({ ...this.state.get(), externalChange: null, recoveryOffers: [] })
     } finally {
       this.closing = false
     }

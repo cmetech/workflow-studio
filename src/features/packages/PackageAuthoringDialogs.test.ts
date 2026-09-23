@@ -114,3 +114,50 @@ it('retains a successful artifact-operation recovery receipt until the user clos
   await fireEvent.click(screen.getByRole('button', { name: 'Close' }))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
+
+it.each(['Escape', 'backdrop', 'native cancel'])(
+  'keeps a pending artifact operation and its eventual recovery error visible after %s',
+  async (dismissal) => {
+    mocks.prepare.mockResolvedValueOnce({ sources: [], snapshot: {}, context: {} })
+    let reject!: (reason: unknown) => void
+    mocks.addTextArtifact.mockReturnValueOnce(
+      new Promise<void>((_, fail) => {
+        reject = fail
+      }),
+    )
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    const error = Object.assign(new Error('Original retained after cleanup failure'), {
+      pathResults: [
+        {
+          relativePath: 'pkg/assets/new-file.txt',
+          destinationPath: '/vault/exact-original',
+          status: 'recoveryRetained',
+          message: 'Inspect retained original',
+        },
+      ],
+    })
+    try {
+      const { component } = render(PackageAuthoringDialogs, { deps: {} as never })
+      await component.openArtifact({ root: 'pkg', manifest: { displayName: 'Example' } } as never, opener)
+      await fireEvent.click(screen.getByRole('button', { name: 'Create text artifact' }))
+      await waitFor(() => expect(component.isBusy()).toBe(true))
+      const dialog = screen.getByRole('dialog')
+      if (dismissal === 'Escape') await fireEvent.keyDown(dialog, { key: 'Escape' })
+      else if (dismissal === 'backdrop') await fireEvent.click(dialog)
+      else await fireEvent(dialog, new Event('cancel', { cancelable: true }))
+      expect(dialog).toHaveAttribute('open')
+      reject(error)
+      expect(await screen.findByRole('alert')).toHaveTextContent(error.message)
+      expect(screen.getByText('/vault/exact-original')).toBeVisible()
+      expect(dialog).toHaveAttribute('open')
+      await fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+      await waitFor(() => expect(opener).toHaveFocus())
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    } finally {
+      reject(error)
+      opener.remove()
+    }
+  },
+)
