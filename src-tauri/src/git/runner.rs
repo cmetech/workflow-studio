@@ -555,6 +555,11 @@ pub(crate) fn build_read_command(root: &Path, operation: ReadOperation<'_>) -> G
     command
         .env("GIT_PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0")
+        // Object lookup must never materialize a promisor object from a remote.
+        // The empty protocol allowlist also fails closed on older Git versions
+        // without GIT_NO_LAZY_FETCH, overriding ambient protocol.*.allow settings.
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("LC_ALL", "C");
     if raw_objects {
@@ -611,6 +616,8 @@ fn build_mutation_command(root: &Path, operation: MutationOperation<'_>) -> GitR
     command
         .env("GIT_PAGER", "cat")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
         .env("LC_ALL", "C");
     Ok(command)
 }

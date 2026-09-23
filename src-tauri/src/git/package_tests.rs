@@ -149,6 +149,137 @@ fn package_fixture() -> tempfile::TempDir {
     commit_all(root, "baseline");
     temporary
 }
+
+// A subprocess confines ambient Git settings to this fixture, even under parallel tests.
+fn assert_package_promisor_stays_local(scenario: &str) {
+    use std::process::Command;
+    let temporary = package_fixture();
+    let root = temporary.path();
+    let trace = root.join("git-trace.json");
+    let missing = if scenario == "context_blob" {
+        "HEAD:sample/script.py"
+    } else {
+        "HEAD:sample"
+    };
+    let oid = super::git_output(root, &["rev-parse", missing]);
+    let origin = root.join("absent-local-origin");
+    git(root, &["config", "extensions.partialClone", "origin"]);
+    git(root, &["config", "remote.origin.promisor", "true"]);
+    git(
+        root,
+        &["config", "remote.origin.url", origin.to_str().unwrap()],
+    );
+    git(root, &["config", "protocol.file.allow", "always"]);
+    // Probe Git's own support independently of the production constructor. Older
+    // versions may start an internal fetch, but must stop before any transport.
+    // A production guard regression must not change this expected capability.
+    let mut probe = Command::new("git");
+    probe
+        .arg("-C")
+        .arg(root)
+        .args([
+            "cat-file",
+            "blob",
+            "1111111111111111111111111111111111111111",
+        ])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.join("absent-global-config"))
+        .env("GIT_CONFIG_COUNT", "0")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env("GIT_TRACE2_EVENT", "1")
+        .env("LC_ALL", "C");
+    let probe = crate::git::runner::run_command_for_test(probe, std::time::Duration::from_secs(10))
+        .unwrap();
+    assert!(!probe.success());
+    let lacks_lazy_fetch_switch =
+        super::assert_promisor_trace_stays_local(&probe.stderr_text(), true) > 0;
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git::tests::package_tests::package_promisor_child_fixture",
+            "--nocapture",
+        ])
+        .env("STUDIO_PROMISOR_ROOT", root)
+        .env("STUDIO_PROMISOR_SCENARIO", scenario)
+        .env("STUDIO_PROMISOR_OID", oid.trim())
+        .env("GIT_TRACE2_EVENT", &trace)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.join("absent-global-config"))
+        .env("GIT_NO_LAZY_FETCH", "0")
+        .env("GIT_ALLOW_PROTOCOL", "file")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "protocol.file.allow")
+        .env("GIT_CONFIG_VALUE_0", "always")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{scenario}: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace = fs::read_to_string(trace).unwrap();
+    super::assert_promisor_trace_stays_local(&trace, lacks_lazy_fetch_switch);
+}
+
+#[test]
+fn package_promisor_missing_baseline_blob_stays_local() {
+    assert_package_promisor_stays_local("context_blob");
+}
+
+#[test]
+fn package_promisor_missing_baseline_tree_stays_local() {
+    assert_package_promisor_stays_local("context_tree");
+}
+
+#[test]
+fn package_promisor_missing_preview_tree_stays_local() {
+    assert_package_promisor_stays_local("preview_tree");
+}
+
+#[test]
+fn package_promisor_child_fixture() {
+    let Some(root) = std::env::var_os("STUDIO_PROMISOR_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let scenario = std::env::var("STUDIO_PROMISOR_SCENARIO").unwrap();
+    let oid = std::env::var("STUDIO_PROMISOR_OID").unwrap();
+    let scope = WorkspaceScope::new(&root).unwrap();
+    let state = PackageGitState::default();
+    let context = if scenario == "preview_tree" {
+        Some(state.context(&scope, 1, "sample").unwrap())
+    } else {
+        None
+    };
+    fs::remove_file(root.join(".git/objects").join(&oid[..2]).join(&oid[2..])).unwrap();
+    let before_index = fs::read(root.join(".git/index")).unwrap();
+    let before_head = fs::read(root.join(".git/refs/heads/main")).unwrap();
+    if let Some(context) = context {
+        let index = fs::read_to_string(root.join(".well-known/hermes-workflows/index.json"))
+            .unwrap()
+            .replace("1.0.0", "2.0.0");
+        fs::write(root.join(".well-known/hermes-workflows/index.json"), &index).unwrap();
+        let capture = crate::workspace::package_hash::capture(&scope, "sample").unwrap();
+        assert!(state
+            .preview(&scope, 1, request(context, &index, false), Some(capture))
+            .is_err());
+    } else {
+        assert_eq!(
+            state.context(&scope, 1, "sample").unwrap_err().code,
+            "git_package_baseline_unavailable"
+        );
+    }
+    assert_eq!(fs::read(root.join(".git/index")).unwrap(), before_index);
+    assert_eq!(
+        fs::read(root.join(".git/refs/heads/main")).unwrap(),
+        before_head
+    );
+}
+
 fn request(
     context: crate::git::package::GitPackageContext,
     index: &str,
