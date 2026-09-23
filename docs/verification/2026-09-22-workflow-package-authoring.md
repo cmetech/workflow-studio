@@ -1,5 +1,7 @@
 # Package authoring implementation evidence
 
+Current status, September 23: all five independent full-feature reports are frozen, and their accepted findings have committed corrections. Final corrected-candidate verification and required installed-app/manual acceptance remain open. The entries below retain chronological evidence; earlier passes do not establish a pass for later candidates.
+
 ## Task 1: pinned package contract boundary
 
 Implemented the offline package-contract loader, immutable envelope/vector projections, exact-commit sync/check tooling, provenance, and release-resource inclusion. Upstream files remain byte-identical to agent commit `748b6c5711bc055449cc245dc4e9800cc6bb0412`.
@@ -299,3 +301,23 @@ The independent round 02 report reviewed `5f5350a40a3d6ff4cea689ecf449350776d649
 Frontend corrections are committed in `73f9558`. All 45 affected controller/dialog/bridge/receipt tests passed, and both actual-App success/error receipt cases passed after observed failures. Global static checks reported zero errors and warnings; lint and formatting passed. A bounded independent source review found no actionable frontend defects, with native behavior excluded. The production build passed in 16.05 seconds and its static startup closure passed the unchanged budget at 1,306,796 bytes / 340,590 gzip.
 
 Native corrections are committed in `5f7a97a`. Actual Windows regressions reproduced original/staged live-file loss and changed retained permissions. The Linux regression reproduced a FIFO read exceeding its five-second deadline, then passed all five modes after correction. A bounded independent native review found a further staged-commit rollback disposal interleaving; its deterministic regression failed, the correction passed, and the independent follow-up found no remaining actionable defect. Final affected workspace gates passed 112 tests on Windows (159.42 seconds) and 112 on Ubuntu 22.04 WSL2 (17.78 seconds). The reconciliation pins source hashes and platform limits. Round 02 remediation is complete; full review rounds 03–05 and the final corrected-candidate gate remain pending.
+
+## Five-round correction summary, September 23
+
+Each original report remains **BLOCK** for the candidate it reviewed. Corrections and subsequent checks are separate evidence; none rewrites a reviewer's original verdict.
+
+| Round | Findings at review | Correction commits | Evidence |
+| --- | --- | --- | --- |
+| 01 | Six Important | `b958591`, `9f340e6`, `05d851f` | [Round 01 reconciliation](../reviews/workflow-package-authoring/round-01-reconciliation.md) |
+| 02 | Two Important, one Minor | `73f9558`, `5f7a97a` | [Round 02 reconciliation](../reviews/workflow-package-authoring/round-02-reconciliation.md) |
+| 03 | Three Important, one Minor | `daae2e4`, `3d75eaa`, `8fd78f6` | [Round 03 reconciliation](../reviews/workflow-package-authoring/round-03-reconciliation.md) |
+| 04 | One Important, two Minor | `2250040`, `8357a92` | [Round 04 reconciliation](../reviews/workflow-package-authoring/round-04-reconciliation.md) |
+| 05 | Two Important | `52df418`, `e1c6f7b` | [Round 05 reconciliation](../reviews/workflow-package-authoring/round-05-reconciliation.md) |
+
+Round 03 corrected extensionless loop-command analysis, binary classification/replacement, explicit Add Workflow destinations and safe workflow-name copying, and saved command-consumer references. Round 04 corrected implicit Git transport, commit-message normalization, and package Git change summaries/proposals. Their reconciliations record observed regression failures, passing affected checks, and bounded independent review results.
+
+Round 05 restored access to safe manifests when a declared member is missing. The correction passed 29 focused tests, four affected App flows, and a browser source-repair/save/navigation/readiness regression after observed failures; static and documentation checks passed. Its independent source follow-up verified committed correction `52df418`, with no actionable issue.
+
+Native correction `e1c6f7b` supports ordinary workspaces on another filesystem by selecting a private same-filesystem retention directory outside the workspace when app-data storage is unsuitable. It preserves live-inode recovery, persistent provenance, identity/link checks, retention budgets, and no automatic purge. Final affected native checks passed **120 Windows workspace tests** (87.21 seconds) and **124 Linux workspace tests** (12.92 seconds). Linux tested real `/tmp` versus `/dev/shm` filesystems and confirmed actual directory-creation denial as UID 1000. Exact Rust formatting, diff checks, and both updated-guide documentation tests passed. The reconciliation preserves the intermediate failed admission approach and verified cleanup of its empty test artifacts.
+
+These affected checks are not the final full suite. Remaining boundaries include the complete corrected-candidate gate, fresh Studio-produced package interoperability against the pinned agent, installed native GUI/OS picker/opener/screen-reader observations, and platform-specific acceptance not available here. Filesystem-root workspaces or mounted resources with no safe external retention location fail closed. Physical Windows two-volume and crash/power-loss tests have not been performed. No merge, push, publication, signed build, or release is authorized by this evidence.
