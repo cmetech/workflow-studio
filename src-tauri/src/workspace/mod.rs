@@ -187,16 +187,12 @@ pub fn workspace_set_root(
     app: AppHandle,
 ) -> WorkspaceResult<WorkspaceRootInfo> {
     let mut scope = WorkspaceScope::new(Path::new(&root_path))?;
-    let recovery = app
+    let primary = app
         .path()
         .app_data_dir()
-        .map_err(|error| WorkspaceError::new("workspace_recovery_unavailable", error.to_string()))
-        .and_then(|app_data| {
-            transaction_recovery::RecoveryStore::open_outside(
-                &app_data.join("transaction-recovery"),
-                &scope,
-            )
-        });
+        .ok()
+        .map(|path| path.join("transaction-recovery"));
+    let recovery = transaction_recovery::RecoveryStore::select(primary.as_deref(), &scope);
     match recovery {
         Ok(store) => scope.recovery = Some(store),
         Err(error) => {

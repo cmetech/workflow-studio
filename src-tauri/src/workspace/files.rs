@@ -672,6 +672,9 @@ where
     } else {
         bind_path(scope, relative)?
     };
+    if artifact && scope.recovery.is_some() {
+        super::transaction_recovery::preflight(scope, relative)?;
+    }
     let mut temporary = StagedFile::new(&bound.parent)?;
     let mut recovery_results = Vec::new();
     #[cfg(windows)]

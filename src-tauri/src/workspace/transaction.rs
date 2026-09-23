@@ -289,6 +289,7 @@ fn validate_plan(
         {
             return Err(error("package_path_collision"));
         }
+        super::transaction_recovery::preflight(scope, path)?;
     }
     Ok(expected)
 }

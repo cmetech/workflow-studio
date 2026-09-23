@@ -1,5 +1,6 @@
 //! Native-only, durable inode retention. Never copy/unlink or automatically purge.
 use super::{files, PathOperationResult, WorkspaceError, WorkspaceResult, WorkspaceScope};
+use cap_fs_ext::{DirExt, MetadataExt};
 use cap_std::{ambient_authority, fs::Dir};
 use same_file::Handle;
 use std::{
@@ -12,17 +13,114 @@ const MAX_ENTRIES: usize = 4096;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 
+#[path = "recovery_security.rs"]
+mod security;
+
 #[derive(Debug)]
 pub(super) struct RecoveryStore {
     root: PathBuf,
     directory: Dir,
     identity: Handle,
+    private: bool,
     #[cfg(test)]
     fixture: Option<tempfile::TempDir>,
 }
 
 impl RecoveryStore {
     pub(super) fn open_outside(root: &Path, scope: &WorkspaceScope) -> WorkspaceResult<Self> {
+        Self::reject_inside(root, scope)?;
+        Self::select(Some(root), scope)
+    }
+
+    pub(super) fn select(primary: Option<&Path>, scope: &WorkspaceScope) -> WorkspaceResult<Self> {
+        Self::select_with_verification(primary, scope, Self::verify)
+    }
+
+    fn select_with_verification(
+        primary: Option<&Path>,
+        scope: &WorkspaceScope,
+        verify: impl Fn(&Self, &WorkspaceScope) -> WorkspaceResult<()>,
+    ) -> WorkspaceResult<Self> {
+        let device = scope
+            .directory()?
+            .dir_metadata()
+            .map_err(|e| failure(e.to_string()))?
+            .dev();
+        let mut reasons = Vec::new();
+        if let Some(primary) = primary {
+            match Self::reject_inside(primary, scope).and_then(|()| Self::open(primary)) {
+                Ok(store) if store.device()? == device => {
+                    match security::verify_writable(&store.directory) {
+                        Ok(()) => return Ok(store),
+                        Err(error) => reasons.push(format!(
+                            "App-data recovery does not permit file creation: {error}"
+                        )),
+                    }
+                }
+                Ok(_) => reasons.push("App-data recovery is on another filesystem.".to_string()),
+                Err(error) => reasons.push(error.message),
+            }
+        } else {
+            reasons.push("The platform app-data location is unavailable.".into());
+        }
+        let user = security::user_key().map_err(|e| failure(e.to_string()))?;
+        let mut key = user.into_bytes();
+        key.push(0);
+        key.extend_from_slice(scope.root_path()?.as_os_str().as_encoded_bytes());
+        let name = format!(".loop24-transaction-recovery-{}", files::hash_bytes(&key));
+        for ancestor in scope.root_path()?.ancestors().skip(1) {
+            let candidate = ancestor.join(&name);
+            let mut created = false;
+            let outcome = (|| {
+                super::artifacts::reject_ambient_links(ancestor)?;
+                let parent = Dir::open_ambient_dir(ancestor, ambient_authority())
+                    .map_err(|e| failure(e.to_string()))?;
+                if parent
+                    .dir_metadata()
+                    .map_err(|e| failure(e.to_string()))?
+                    .dev()
+                    != device
+                {
+                    return Err(failure(
+                        "The outside-workspace ancestor is on another filesystem.",
+                    ));
+                }
+                let identity = Handle::from_file(
+                    parent
+                        .try_clone()
+                        .map_err(|e| failure(e.to_string()))?
+                        .into_std_file(),
+                )
+                .map_err(|e| failure(e.to_string()))?;
+                created = security::create_private(&parent, ancestor, &name)
+                    .map_err(|e| failure(e.to_string()))?;
+                super::artifacts::reject_ambient_links(&candidate)?;
+                let mut store = Self::open(&candidate)?;
+                security::verify_private(&store.directory).map_err(|e| failure(e.to_string()))?;
+                store.private = true;
+                if Handle::from_path(ancestor).map_err(|e| failure(e.to_string()))? != identity
+                    || store.device()? != device
+                {
+                    return Err(failure(
+                        "Recovery ancestor or filesystem changed during selection.",
+                    ));
+                }
+                verify(&store, scope)?;
+                Ok(store)
+            })();
+            match outcome {
+                Ok(store) => return Ok(store),
+                Err(error) if created => return Err(failure(format!(
+                    "New private recovery location {} could not be verified: {}. The directory was preserved for inspection; no further locations were created and no source files were removed.",
+                    candidate.display(), error.message
+                ))),
+                Err(error) => reasons.push(format!("{}: {}", candidate.display(), error.message)),
+            }
+        }
+        Err(failure(format!("No safe same-filesystem recovery location outside the workspace is available. Root workspaces, read-only ancestors, and nested mounts may require another workspace location. No source files were removed. {}", reasons.join(" "))))
+    }
+
+    fn reject_inside(root: &Path, scope: &WorkspaceScope) -> WorkspaceResult<()> {
         for ancestor in root.ancestors() {
             if let Ok(canonical) = ancestor.canonicalize() {
                 if canonical.starts_with(scope.root_path()?) {
@@ -31,13 +129,15 @@ impl RecoveryStore {
                 break;
             }
         }
-        Self::open(root).map_err(|error| {
-            failure(format!(
-                "Native recovery location {} is unavailable: {}",
-                root.display(),
-                error.message
-            ))
-        })
+        Ok(())
+    }
+
+    fn device(&self) -> WorkspaceResult<u64> {
+        Ok(self
+            .directory
+            .dir_metadata()
+            .map_err(|e| failure(e.to_string()))?
+            .dev())
     }
 
     pub(super) fn open(root: &Path) -> WorkspaceResult<Self> {
@@ -87,6 +187,7 @@ impl RecoveryStore {
             root,
             directory,
             identity,
+            private: false,
             #[cfg(test)]
             fixture: None,
         })
@@ -108,8 +209,80 @@ impl RecoveryStore {
                 "Recovery storage changed or lies inside the selected workspace.",
             ));
         }
+        if self.private {
+            security::verify_private(&self.directory).map_err(|e| failure(e.to_string()))?;
+        }
+        security::verify_writable(&self.directory).map_err(|e| {
+            failure(format!(
+                "Recovery storage does not permit file creation: {e}"
+            ))
+        })?;
         Ok(())
     }
+}
+
+/// Check the nearest existing parent before any staging or transaction mutation.
+/// A nested mount cannot borrow a vault on the workspace root's filesystem.
+pub(super) fn preflight(scope: &WorkspaceScope, relative: &str) -> WorkspaceResult<()> {
+    super::artifacts::validate(relative)?;
+    let store = scope.recovery.as_ref().ok_or_else(|| {
+        failure(format!(
+            "Native recovery storage is unavailable; no mutation was started. {}",
+            scope
+                .recovery_error
+                .as_deref()
+                .unwrap_or("No recovery capability is bound.")
+        ))
+    })?;
+    store.verify(scope)?;
+    let mut parent = scope
+        .directory()?
+        .try_clone()
+        .map_err(|e| failure(e.to_string()))?;
+    let parts: Vec<_> = relative.split('/').collect();
+    let mut complete_parent = true;
+    for part in &parts[..parts.len() - 1] {
+        match parent.symlink_metadata(part) {
+            Ok(metadata) => {
+                super::artifacts::reject_link(&metadata)?;
+                parent = parent
+                    .open_dir_nofollow(part)
+                    .map_err(|e| failure(e.to_string()))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                complete_parent = false;
+                break;
+            }
+            Err(error) => return Err(failure(error.to_string())),
+        }
+    }
+    if parent
+        .dir_metadata()
+        .map_err(|e| failure(e.to_string()))?
+        .dev()
+        != store.device()?
+    {
+        return Err(failure("The artifact is on a filesystem without a bound outside-workspace recovery vault; no mutation was started."));
+    }
+    if complete_parent {
+        let bound = files::BoundPath {
+            parent,
+            name: parts[parts.len() - 1].into(),
+            reject_symlinks: true,
+        };
+        match super::artifacts::open(&bound) {
+            Ok(file)
+                if file.metadata().map_err(|e| failure(e.to_string()))?.dev()
+                    != store.device()? =>
+            {
+                return Err(failure("The mounted artifact is on a filesystem without a bound outside-workspace recovery vault; no mutation was started."));
+            }
+            Ok(_) => (),
+            Err(error) if error.code == "path_not_found" => (),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn failure(message: impl Into<String>) -> WorkspaceError {
@@ -274,6 +447,335 @@ fn retain_with_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_runtime_save_retains_live_inode(root: &Path, primary: &Path) {
+        use std::io::{Seek, SeekFrom, Write};
+        let target = root.join("script.py");
+        std::fs::write(&target, "original").unwrap();
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .unwrap();
+        let mut scope = WorkspaceScope::new(root).unwrap();
+        match RecoveryStore::open_outside(primary, &scope) {
+            Ok(store) => scope.recovery = Some(store),
+            Err(error) => {
+                scope.recovery = None;
+                scope.recovery_error = Some(error.message);
+            }
+        }
+        let saved = super::super::artifacts::write_text(
+            &scope,
+            "script.py",
+            "replacement",
+            Some(&files::hash_bytes(b"original")),
+        )
+        .expect("a writable workspace must save with an available same-volume external vault");
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
+        let retained = PathBuf::from(
+            saved
+                .recovery_results
+                .iter()
+                .find(|entry| entry.status == "recoveryRetained")
+                .unwrap()
+                .destination_path
+                .as_ref()
+                .unwrap(),
+        );
+        assert!(!retained.starts_with(root.canonicalize().unwrap()));
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 1);
+        writer.seek(SeekFrom::Start(0)).unwrap();
+        writer.write_all(b"late external write").unwrap();
+        writer.set_len(19).unwrap();
+        writer.sync_all().unwrap();
+        drop(scope);
+        assert_eq!(std::fs::read(&retained).unwrap(), b"late external write");
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(retained.with_extension("json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["relativePath"], "script.py");
+        assert_eq!(
+            metadata["workspaceRoot"],
+            root.canonicalize().unwrap().to_str().unwrap()
+        );
+        let restarted = WorkspaceScope::new(root).unwrap();
+        let reopened = RecoveryStore::open_outside(primary, &restarted).unwrap();
+        assert_eq!(retained.parent().unwrap(), reopened.root);
+    }
+
+    #[test]
+    fn recovery_runtime_save_when_app_data_is_unavailable() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let blocked = sandbox.path().join("unavailable-app-data");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        assert_runtime_save_retains_live_inode(&root, &blocked.join("transaction-recovery"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_runtime_save_when_existing_primary_denies_file_creation() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let primary = sandbox.path().join("readonly-primary");
+        security::create_read_only_for_test(&primary).unwrap();
+        Dir::open_ambient_dir(&primary, ambient_authority()).expect("readable existing primary");
+        assert_eq!(
+            std::fs::File::create(primary.join("denied"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "prove actual Windows create denial"
+        );
+        assert_runtime_save_retains_live_inode(&root, &primary);
+        assert_eq!(
+            std::fs::File::create(primary.join("still-denied"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "selection must not rewrite the primary DACL"
+        );
+        assert_eq!(std::fs::read_dir(primary).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_runtime_save_with_effective_primary_write_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let primary = sandbox.path().join("readonly-primary");
+        std::fs::create_dir(&primary).unwrap();
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let create_denied = match std::fs::File::create(primary.join("permission-check")) {
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                true
+            }
+            Ok(file) => {
+                // Privileged users may legitimately bypass 0500. Do not claim a denial in that case.
+                drop(file);
+                std::fs::remove_file(primary.join("permission-check")).unwrap();
+                false
+            }
+        };
+        eprintln!(
+            "effective uid={}, actual primary create denial={create_denied}",
+            unsafe { libc::geteuid() }
+        );
+        assert_runtime_save_retains_live_inode(&root, &primary);
+        assert_eq!(
+            std::fs::metadata(&primary).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+        if create_denied {
+            assert_eq!(std::fs::read_dir(&primary).unwrap().count(), 0);
+        }
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn recovery_full_primary_budget_is_not_bypassed_by_selecting_a_fallback() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        let primary = sandbox.path().join("primary");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&primary).unwrap();
+        std::fs::File::create(primary.join("full.retained"))
+            .unwrap()
+            .set_len(MAX_BYTES)
+            .unwrap();
+        std::fs::write(root.join("source"), "original").unwrap();
+        let mut scope = WorkspaceScope::new(&root).unwrap();
+        let selected = RecoveryStore::select(Some(&primary), &scope).unwrap();
+        assert_eq!(selected.root, primary.canonicalize().unwrap());
+        scope.recovery = Some(selected);
+        let error = super::super::artifacts::write_text(
+            &scope,
+            "source",
+            "new",
+            Some(&files::hash_bytes(b"original")),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("full"));
+        assert_eq!(std::fs::read(root.join("source")).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(sandbox.path()).unwrap().count(), 2);
+        assert_eq!(
+            std::fs::metadata(primary.join("full.retained"))
+                .unwrap()
+                .len(),
+            MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn recovery_new_private_vault_verification_failure_stops_ancestor_search() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let parent = sandbox.path().join("parent");
+        let root = parent.join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("source"), "original").unwrap();
+        let scope = WorkspaceScope::new(&root).unwrap();
+        let first = std::cell::RefCell::new(None);
+        let error = RecoveryStore::select_with_verification(None, &scope, |store, _| {
+            assert!(
+                first.borrow().is_none(),
+                "a newly created vault failed verification; must not create another ancestor vault"
+            );
+            security::verify_private(&store.directory).unwrap();
+            *first.borrow_mut() = Some(store.root.clone());
+            std::fs::write(store.root.join("inspection-evidence"), "preserve").unwrap();
+            Err(failure(
+                "injected post-creation capability verification failure",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "workspace_recovery_unavailable");
+        let retained = first.into_inner().unwrap();
+        assert_eq!(
+            std::fs::read(retained.join("inspection-evidence")).unwrap(),
+            b"preserve"
+        );
+        assert_eq!(std::fs::read(root.join("source")).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(sandbox.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(parent).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn recovery_missing_app_data_resolution_selects_private_restartable_vault() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let scope = WorkspaceScope::new(&root).unwrap();
+        let store = RecoveryStore::select(None, &scope).unwrap();
+        security::verify_private(&store.directory).unwrap();
+        assert!(store.private);
+        assert_eq!(
+            store.root.parent().unwrap(),
+            sandbox.path().canonicalize().unwrap()
+        );
+        assert_eq!(
+            store.root,
+            RecoveryStore::select(None, &scope).unwrap().root
+        );
+        assert!(std::fs::read_dir(root).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn recovery_private_creation_never_takes_over_existing_unrelated_directory() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let path = sandbox.path().join("existing");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("unrelated"), "keep").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let parent = Dir::open_ambient_dir(sandbox.path(), ambient_authority()).unwrap();
+        let directory = parent.open_dir_nofollow("existing").unwrap();
+        assert!(security::verify_private(&directory).is_err());
+        security::create_private(&parent, sandbox.path(), "existing").unwrap();
+        assert!(security::verify_private(&directory).is_err());
+        assert_eq!(std::fs::read(path.join("unrelated")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn recovery_unavailable_transaction_is_rejected_before_staging_or_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("source"), "original").unwrap();
+        let mut scope = WorkspaceScope::new(root.path()).unwrap();
+        scope.recovery = None;
+        let plan: super::super::transaction::PackageMutationPlan = serde_json::from_value(
+            serde_json::json!({"workspaceId":super::super::transaction::workspace_id(&scope).unwrap(),
+                "expectedEntries":[{"relativePath":"source","expectedCurrentHash":files::hash_bytes(b"original")}],
+                "writes":[{"relativePath":"source","text":"new","expectedCurrentHash":files::hash_bytes(b"original")}],
+                "moves":[],"trashes":[]})
+        ).unwrap();
+        let error = super::super::transaction::apply_with_staging_hook(&scope, &plan, |_| {
+            panic!("recovery must be selected before staging")
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "workspace_recovery_unavailable");
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"original"
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_cross_filesystem_preflight_preserves_workspace_without_staging() {
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let other = tempfile::tempdir_in("/dev/shm").unwrap();
+        std::fs::write(root.path().join("source"), "original").unwrap();
+        let mut scope = WorkspaceScope::new(root.path()).unwrap();
+        scope.recovery = Some(RecoveryStore::open(other.path()).unwrap());
+        let error = super::super::artifacts::write_text(
+            &scope,
+            "source",
+            "new",
+            Some(&files::hash_bytes(b"original")),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("no mutation was started"));
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"original"
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_filesystem_root_without_external_location_fails_closed() {
+        let scope = WorkspaceScope::new(Path::new("/")).unwrap();
+        let error = RecoveryStore::select(None, &scope).unwrap_err();
+        assert!(error
+            .message
+            .contains("No safe same-filesystem recovery location outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_private_permissions_and_identity_are_rechecked_before_retention() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = tempfile::tempdir().unwrap();
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("source"), "original").unwrap();
+        let mut scope = WorkspaceScope::new(&root).unwrap();
+        scope.recovery = Some(RecoveryStore::select(None, &scope).unwrap());
+        let vault = scope.recovery.as_ref().unwrap().root.clone();
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(preflight(&scope, "source").is_err());
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let moved = vault.with_extension("moved");
+        std::fs::rename(&vault, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &vault).unwrap();
+        assert!(preflight(&scope, "source").is_err());
+        assert_eq!(std::fs::read(root.join("source")).unwrap(), b"original");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_runtime_save_with_app_data_on_a_distinct_filesystem() {
+        let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+        let primary = tempfile::tempdir_in("/dev/shm").unwrap();
+        assert_ne!(
+            std::fs::metadata(sandbox.path()).unwrap().dev(),
+            std::fs::metadata(primary.path()).unwrap().dev(),
+            "test requires two real filesystems"
+        );
+        let root = sandbox.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        assert_runtime_save_retains_live_inode(&root, primary.path());
+    }
 
     #[test]
     fn recovery_metadata_identifies_original_after_scope_is_closed() {
