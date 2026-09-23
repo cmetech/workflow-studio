@@ -46,3 +46,11 @@ Clean-machine functional installs and staged-update exercises are required follo
 ## Preparation and execution receipts
 
 Preparation began from feature commit `93aa45878bfacc09d8bd1c774894ec8b0a887c5b`. The focused version suite first failed five assertions against 3.0.3, then passed all ten after synchronization. Frozen dependency baselines allow only application-version changes. Repository-wide formatting and lint, Svelte/TypeScript checks (zero errors or warnings), authoring/package contract checks, examples, and all 72 resource checks passed. A fresh production build passed: initial renderer closure 1,401,105 bytes minified / 375,037 bytes gzip, within its unchanged limits. Independent read-only release-preparation review found no issues. Fresh CI and release artifacts remain pending.
+
+### Preparation CI failure and bounded correction
+
+Initial PR #6 run `35855258407` at `61a3172bcf49f40e45b04c05013dd1fb4837e566` passed the unit suite but failed native test `branding::tests::list_bounds_wide_corrupt_storage_and_preserves_an_accepted_pack` (351 native library passes, one failure; zero accepted packs instead of one). The branding source was unchanged from `origin/base`. Candidate collection stopped after the first 256 directory names before sorting, so filesystem enumeration could omit the accepted `acme` pack among 300 corrupt directories.
+
+A deterministic regression put `acme` last, observed RED (`z-corrupt-000` instead of `acme`), and passed after retaining the lexicographically first 256 candidates across the existing 8,192-entry scan budget. Candidate memory, pack validation, storage and warning limits remain bounded. The existing one-entry lookahead remains; a new infinite-invalid-name test verifies termination. All 38 Windows branding tests passed, including the original scenario. Independent read-only review found no issues. Selection beyond the overall scan budget remains limited and reports truncation; this does not promise every pack in arbitrarily over-limit storage is listed.
+
+The failed CI log is retained locally in the release plan workspace. Fresh full CI is required for the corrected commit; the failed attempt remains part of the record.
