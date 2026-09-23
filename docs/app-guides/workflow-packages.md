@@ -12,4 +12,6 @@ Use a package when a workflow needs scripts, commands, fixtures, or shared resou
 
 Start in Packages, open a package overview, and inspect its members and findings. For a standalone workflow, create a package or import the workflow into an existing package. Preserve required technical names such as `.hermes.yaml` and `.well-known/hermes-workflows/index.json`.
 
+Package rows show local change counts. The overview lists saved files added, modified, or removed compared with the committed package, including changes to its generated digest file. Unsaved drafts are not part of this comparison. Loading or unavailable Git comparisons are shown explicitly. Validate the saved package for a proposed version; review the final version and exact files during preparation.
+
 See [Folder structure](#guide:package-folder-structure), [Creating a package](#guide:creating-a-package), and [Preparing packages](#guide:preparing-packages).
