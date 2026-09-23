@@ -14,7 +14,7 @@ const MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 
 #[path = "recovery_security.rs"]
-mod security;
+pub(crate) mod security;
 
 #[derive(Debug)]
 pub(super) struct RecoveryStore {

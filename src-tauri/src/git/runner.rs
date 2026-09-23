@@ -240,7 +240,43 @@ pub(crate) fn run_package_mutation(
     operation: MutationOperation<'_>,
     index: Option<&Path>,
 ) -> GitResult<CommandOutput> {
-    let mut command = build_mutation_command(root, operation)?;
+    // Serializing a copied real index can stat unrelated racy entries and run
+    // their clean/process filters, even with --cacheinfo. Give these operations
+    // an empty working directory while retaining the bound repository/index.
+    let isolated = matches!(
+        &operation,
+        MutationOperation::ReadTree { .. }
+            | MutationOperation::CacheEntry { .. }
+            | MutationOperation::RemoveEntry { .. }
+            | MutationOperation::WriteTree
+    );
+    let isolation_error = || {
+        GitError::new(
+            "git_index_isolation_failed",
+            "A private empty directory for package Git index operations could not be verified.",
+        )
+    };
+    let directory = if isolated {
+        Some(
+            super::private_index_directory::PrivateIndexDirectory::new()
+                .map_err(|_| isolation_error())?,
+        )
+    } else {
+        None
+    };
+    let mut command =
+        build_mutation_command(directory.as_ref().map_or(root, |dir| dir.path()), operation)?;
+    if let Some(directory) = &directory {
+        let index = index
+            .filter(|path| path.is_absolute())
+            .ok_or_else(isolation_error)?;
+        let git_dir = index.parent().ok_or_else(isolation_error)?;
+        command
+            .current_dir(directory.path())
+            .env("GIT_DIR", git_subprocess_path(git_dir)?)
+            .env("GIT_WORK_TREE", git_subprocess_path(directory.path())?);
+        directory.verify().map_err(|_| isolation_error())?;
+    }
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", git_subprocess_path(index)?);
     }
@@ -256,7 +292,11 @@ pub(crate) fn run_package_mutation(
         .env("GIT_CONFIG_KEY_2", "core.fsmonitor")
         .env("GIT_CONFIG_VALUE_2", "false")
         .env("GIT_NO_REPLACE_OBJECTS", "1");
-    run_command(command, MUTATION_TIMEOUT, None)
+    let output = run_command(command, MUTATION_TIMEOUT, None)?;
+    if let Some(directory) = &directory {
+        directory.verify().map_err(|_| isolation_error())?;
+    }
+    Ok(output)
 }
 
 fn run_command(

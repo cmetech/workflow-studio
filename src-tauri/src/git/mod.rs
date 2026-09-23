@@ -1,5 +1,6 @@
 mod mutate;
 mod filter_guard;
+mod private_index_directory;
 pub(crate) mod package;
 mod package_index;
 mod parse;

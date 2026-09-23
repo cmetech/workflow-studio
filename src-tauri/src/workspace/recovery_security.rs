@@ -8,7 +8,7 @@ pub(super) fn user_key() -> io::Result<String> {
 }
 
 #[cfg(unix)]
-pub(super) fn create_private(parent: &Dir, _path: &Path, name: &str) -> io::Result<bool> {
+pub(crate) fn create_private(parent: &Dir, _path: &Path, name: &str) -> io::Result<bool> {
     use cap_std::fs::{DirBuilder, DirBuilderExt};
     let mut builder = DirBuilder::new();
     builder.mode(0o700);
@@ -19,7 +19,7 @@ pub(super) fn create_private(parent: &Dir, _path: &Path, name: &str) -> io::Resu
 }
 
 #[cfg(unix)]
-pub(super) fn verify_private(directory: &Dir) -> io::Result<()> {
+pub(crate) fn verify_private(directory: &Dir) -> io::Result<()> {
     use cap_std::fs::MetadataExt;
     let metadata = directory.dir_metadata()?;
     if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
@@ -51,7 +51,9 @@ pub(super) fn verify_writable(directory: &Dir) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub(super) use windows::{create_private, user_key, verify_private, verify_writable};
+pub(crate) use windows::{create_private, verify_private};
+#[cfg(windows)]
+pub(super) use windows::{user_key, verify_writable};
 
 #[cfg(all(test, windows))]
 pub(super) use windows::create_read_only_for_test;

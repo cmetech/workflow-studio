@@ -477,6 +477,119 @@ fn package_git_never_runs_filters_textconv_hooks_fsmonitor_or_signers() {
     );
 }
 
+fn assert_package_index_does_not_filter_racy_entry(root: &std::path::Path, driver: &str) {
+    use std::time::{Duration, SystemTime};
+
+    git(root, &["config", "core.autocrlf", "false"]);
+    fs::write(
+        root.join("unrelated-filtered.txt"),
+        "staged unrelated bytes\n",
+    )
+    .unwrap();
+    // Preserve a genuinely racy entry even on nanosecond-capable filesystems:
+    // its cached mtime is later than every temporary index written by this test.
+    fs::File::options()
+        .write(true)
+        .open(root.join("unrelated-filtered.txt"))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(3600)))
+        .unwrap();
+    git(root, &["add", "unrelated-filtered.txt"]);
+    let staged = super::git_output(
+        root,
+        &["ls-files", "--stage", "--", "unrelated-filtered.txt"],
+    );
+    fs::write(
+        root.join(".gitattributes"),
+        "unrelated-filtered.txt filter=explode\n",
+    )
+    .unwrap();
+    git(
+        root,
+        &[
+            "config",
+            &format!("filter.explode.{driver}"),
+            "sh -c 'echo forbidden > package-execution-marker; exit 97'",
+        ],
+    );
+    git(root, &["config", "filter.explode.required", "true"]);
+
+    let scope = WorkspaceScope::new(root).unwrap();
+    let state = PackageGitState::default();
+    let context = state.context(&scope, 1, "sample").unwrap();
+    fs::write(
+        root.join("sample/script.py"),
+        "print('raw package bytes')\r\n",
+    )
+    .unwrap();
+    let index_path = root.join(".well-known/hermes-workflows/index.json");
+    let index = fs::read_to_string(&index_path)
+        .unwrap()
+        .replace("1.0.0", "2.0.0");
+    fs::write(&index_path, &index).unwrap();
+    let capture = crate::workspace::package_hash::capture(&scope, "sample").unwrap();
+    let preview = state.preview(&scope, 1, request(context, &index, false), Some(capture));
+    assert!(
+        !root.join("package-execution-marker").exists(),
+        "package preview executed a {driver} filter on an unrelated racy index entry"
+    );
+    let preview = preview.unwrap();
+    let result = state.commit(&scope, 1, &preview.authorization_token, || Ok(()));
+    assert!(
+        !root.join("package-execution-marker").exists(),
+        "package commit executed a {driver} filter on an unrelated racy index entry"
+    );
+    assert!(result.unwrap().committed_oid().is_some());
+    assert_eq!(
+        super::git_output(
+            root,
+            &["ls-files", "--stage", "--", "unrelated-filtered.txt"]
+        ),
+        staged
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("unrelated-filtered.txt")).unwrap(),
+        "staged unrelated bytes\n"
+    );
+    assert_eq!(
+        super::git_output(root, &["cat-file", "blob", "HEAD:sample/script.py"]),
+        "print('raw package bytes')\r\n"
+    );
+    assert!(
+        super::git_output(root, &["ls-tree", "HEAD", "--", "unrelated-filtered.txt"]).is_empty()
+    );
+}
+
+#[test]
+fn package_index_updates_never_filter_racy_unrelated_staged_entries() {
+    for driver in ["clean", "process"] {
+        let temporary = package_fixture();
+        assert_package_index_does_not_filter_racy_entry(temporary.path(), driver);
+    }
+}
+
+#[test]
+fn package_linked_index_updates_never_filter_racy_unrelated_staged_entries() {
+    let temporary = package_fixture();
+    let linked = tempdir().unwrap();
+    git(
+        temporary.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "package-linked",
+            linked.path().to_str().unwrap(),
+        ],
+    );
+    let original_main_index = fs::read(temporary.path().join(".git/index")).unwrap();
+    assert_package_index_does_not_filter_racy_entry(linked.path(), "clean");
+    assert_eq!(
+        fs::read(temporary.path().join(".git/index")).unwrap(),
+        original_main_index
+    );
+}
+
 #[test]
 fn package_preview_reports_no_repository_and_noop_without_mutation() {
     let no_repo = tempdir().unwrap();

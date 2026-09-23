@@ -8,6 +8,10 @@ pub(crate) mod transaction;
 mod transaction_recovery;
 mod watcher;
 
+pub(crate) use transaction_recovery::security::{
+    create_private as create_private_directory, verify_private as verify_private_directory,
+};
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
