@@ -179,6 +179,13 @@ pub(super) fn verify_binding(
 pub(super) fn open(bound: &files::BoundPath) -> WorkspaceResult<File> {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    {
+        use cap_fs_ext::OpenOptionsSyncExt;
+        // A leaf can become a FIFO after binding. Open first without waiting,
+        // then reject special files using metadata from the opened descriptor.
+        options.nonblock(true);
+    }
     let file = bound
         .parent
         .open_with(&bound.name, &options)
@@ -281,12 +288,11 @@ pub fn read_text(
     })
 }
 
-fn map_write_error(error: WorkspaceError) -> WorkspaceError {
+fn map_write_error(mut error: WorkspaceError) -> WorkspaceError {
     if error.code == "external_revision_conflict" {
-        issue("workspace_revision_conflict", error.message)
-    } else {
-        error
+        error.code = "workspace_revision_conflict";
     }
+    error
 }
 
 pub fn write_text(
@@ -463,7 +469,7 @@ pub(super) fn import_captured(
             .collect();
         return Ok(metadata);
     }
-    files::write_artifact_stream_verified(
+    let result = files::write_artifact_stream_verified(
         scope,
         relative,
         &mut grant.file,
@@ -481,7 +487,14 @@ pub(super) fn import_captured(
         },
     )
     .map_err(map_write_error)?;
-    read(scope, relative)
+    let mut metadata = read(scope, relative).map_err(|mut error| {
+        error
+            .path_results
+            .extend(result.recovery_results.iter().cloned());
+        error
+    })?;
+    metadata.recovery_results = result.recovery_results;
+    Ok(metadata)
 }
 
 pub fn passive_png(scope: &WorkspaceScope, relative: &str) -> WorkspaceResult<Vec<u8>> {
