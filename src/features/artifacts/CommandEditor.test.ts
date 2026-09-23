@@ -4,6 +4,26 @@ import { expect, it, vi } from 'vitest'
 import CommandEditor from './CommandEditor.svelte'
 import { EditorView } from '@codemirror/view'
 
+it.each(['loading', 'unavailable'] as const)(
+  'does not claim no consumers while saved references are %s',
+  async (referencesStatus) => {
+    render(CommandEditor, {
+      path: 'commands/review.md',
+      text: 'Review.',
+      referencesStatus,
+      onTextChange: vi.fn(),
+      onSave: vi.fn(),
+    })
+    await fireEvent.click(screen.getByRole('tab', { name: 'References' }))
+    expect(screen.queryByText('No saved workflow references this command.')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      referencesStatus === 'loading'
+        ? 'Loading saved workflow references'
+        : 'Saved workflow references are unavailable',
+    )
+  },
+)
+
 it('reveals Edit and focuses the source when a finding is opened from Preview', async () => {
   const props = { path: 'command.md', text: '# Title\nBody', onTextChange: vi.fn(), onSave: vi.fn() }
   const { container, rerender } = render(CommandEditor, props)

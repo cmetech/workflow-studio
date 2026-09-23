@@ -53,7 +53,13 @@ export async function capturePackageAnalysis(deps: PackageAnalysisDependencies):
         throw new Error('package_analysis_stale')
       texts.set(file.relativePath, read.text)
     } catch (error) {
-      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'invalid_utf8') throw error
+      if (
+        !error ||
+        typeof error !== 'object' ||
+        !('code' in error) ||
+        (error.code !== 'invalid_utf8' && error.code !== 'artifact_binary')
+      )
+        throw error
       // A binary payload participates in native snapshot revalidation and digest composition.
     }
     analyzedHashes.set(file.relativePath, file.sha256)

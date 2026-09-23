@@ -11,6 +11,8 @@
     readOnly?: boolean
     schema?: object
     references?: readonly PackageReference[]
+    referencesStatus?: 'loading' | 'ready' | 'unavailable'
+    unsavedWorkflowEdits?: boolean
     focusRequest?: ArtifactFocusRequest | null
     onTextChange: (text: string) => void
     onSave: () => void | Promise<void>
@@ -22,6 +24,8 @@
     readOnly = false,
     schema,
     references = [],
+    referencesStatus = 'ready',
+    unsavedWorkflowEdits = false,
     focusRequest = null,
     onTextChange,
     onSave,
@@ -79,10 +83,18 @@
     {#if selected === 1}<CommandPreview markdown={analysis.body} />{/if}
   </div>
   <div role="tabpanel" id={`${id}-panel-2`} aria-labelledby={`${id}-tab-2`} hidden={selected !== 2}>
-    {#if references.length}<ul aria-label="Referencing workflow nodes">
+    <p>Saved workflow references</p>
+    {#if unsavedWorkflowEdits}<p role="note">
+        Unsaved workflow edits are not included. Save the workflow to refresh its references.
+      </p>{/if}
+    {#if referencesStatus === 'loading'}<p role="status">Loading saved workflow references…</p>
+    {:else if referencesStatus === 'unavailable'}<p role="status">
+        Saved workflow references are unavailable. Check package validation and refresh the workspace.
+      </p>
+    {:else if references.length}<ul aria-label="Referencing workflow nodes">
         {#each references as reference, index (index)}<li>{reference.workflowPath} — {reference.nodeId}</li>{/each}
       </ul>
-    {:else}<p>No workflow references this command.</p>{/if}
+    {:else}<p>No saved workflow references this command.</p>{/if}
   </div>
 </div>
 

@@ -99,11 +99,20 @@ export function browserArtifacts(
     workspaceReadArtifact: metadata,
     workspaceReadTextArtifact: async (path) => {
       const meta = await metadata(path)
+      let text: string
       try {
-        return { ...meta, text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(content(path)) }
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(content(path))
       } catch {
         throw new NativeError('invalid_utf8', 'The artifact is not UTF-8 text.')
       }
+      // Match native read_text: TAB/LF/CR are text; other C0 controls and DEL
+      // are binary payloads even when their bytes form valid UTF-8.
+      for (const character of text) {
+        const code = character.codePointAt(0)!
+        if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127)
+          throw new NativeError('artifact_binary', 'The artifact contains binary control bytes.')
+      }
+      return { ...meta, text }
     },
     workspaceWriteTextArtifact: ({ relativePath, text, expectedCurrentHash }) =>
       write(relativePath, new TextEncoder().encode(text), expectedCurrentHash),

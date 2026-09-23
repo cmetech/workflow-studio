@@ -143,6 +143,45 @@ it('rejects source text changed after the native hash snapshot', async () => {
   await expect(capturePackageAnalysis(source)).rejects.toThrow('package_analysis_stale')
 })
 
+it('retains UTF-8 binary payload hashes without sending their controls to text analysis', async () => {
+  const source = await fixture()
+  const path = 'fixtures/control.bin'
+  const bytes = new Uint8Array([0, 13, 10, 1])
+  const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('')
+  const file = {
+    relativePath: path,
+    size: bytes.length,
+    sha256,
+    identity: { size: bytes.length, sha256, modifiedAt: 'now' },
+  }
+  source.native.workspaceHashPackage.mockResolvedValue({
+    ...source.snapshot,
+    files: [...source.snapshot.files, file],
+    entries: [
+      ...source.snapshot.entries,
+      {
+        relativePath: source.packageRoot + '/' + path,
+        size: bytes.length,
+        modifiedAt: 'now',
+        readOnly: false,
+        kind: 'file',
+        symlink: 'none',
+      },
+    ],
+  })
+  const originalRead = source.native.workspaceReadTextArtifact.getMockImplementation()!
+  source.native.workspaceReadTextArtifact.mockImplementation(async (workspacePath) => {
+    if (workspacePath === source.packageRoot + '/' + path) throw { code: 'artifact_binary' }
+    return originalRead(workspacePath)
+  })
+  const result = await capturePackageAnalysis(source)
+  expect(result.artifactTexts.has(path)).toBe(false)
+  expect(result.analyzedHashes.get(path)).toBe(sha256)
+  expect(result.snapshot.files).toContainEqual(file)
+})
+
 it('worker messages survive structured cloning with identical findings and reference data', async () => {
   const { processPackageAnalysisRequest } = await import('./package-analysis-worker')
   const source = await fixture()

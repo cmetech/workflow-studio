@@ -278,6 +278,17 @@ pub fn read_text(
     let metadata = snapshot(scope, relative, &mut bytes)?;
     let text = String::from_utf8(bytes)
         .map_err(|_| issue("invalid_utf8", "The artifact is not valid UTF-8 text."))?;
+    // Match the browser adapter. Successful UTF-8 decoding alone does not make
+    // a resource safe for a text editor that normalizes line separators.
+    if text
+        .bytes()
+        .any(|byte| (byte < 32 && ![9, 10, 13].contains(&byte)) || byte == 127)
+    {
+        return Err(issue(
+            "artifact_binary",
+            "The artifact contains binary control bytes.",
+        ));
+    }
     Ok(files::WorkspaceReadResult {
         relative_path: relative.into(),
         text,

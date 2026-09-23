@@ -9,6 +9,39 @@ import { normalizeNfc } from '../packages/unicode/workflow-marketplace-casefold'
 import { encode } from 'fast-png'
 
 describe('scoped artifacts', () => {
+  it('keeps valid UTF-8 binary controls out of text editing and preserves replacement bytes', async () => {
+    const original = new Uint8Array([0, 13, 10, 1, 2, 3])
+    const replacement = new Uint8Array([0, 13, 10, 127, 5])
+    const bridge = createBrowserBridge({
+      initialArtifacts: { 'data.bin': original },
+      chooseArtifactSource: async () => replacement,
+    })
+    await expect(bridge.workspaceReadTextArtifact('data.bin')).rejects.toMatchObject({ code: 'artifact_binary' })
+    const before = await bridge.workspaceReadArtifact('data.bin')
+    const grant = (await bridge.chooseImportArtifact())!
+    const result = await bridge.workspaceReplaceArtifact({
+      relativePath: 'data.bin',
+      sourceGrantToken: grant.sourceGrantToken,
+      expectedCurrentHash: before.sha256,
+    })
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', replacement))
+    expect(result.sha256).toBe(Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join(''))
+    expect(result.size).toBe(replacement.length)
+    await expect(bridge.workspaceReadTextArtifact('data.bin')).rejects.toMatchObject({ code: 'artifact_binary' })
+  })
+  it('preserves ordinary Unicode text, BOM and tab/CR/LF regardless of extension', async () => {
+    const text = '\ufeffCafé 日本語\tvalue\r\nnext\n'
+    const bridge = createBrowserBridge({ initialFiles: { 'ordinary.bin': text } })
+    expect((await bridge.workspaceReadTextArtifact('ordinary.bin')).text).toBe(text)
+  })
+  it('uses the same binary control boundary as native artifact reads', async () => {
+    for (const byte of [...Array.from({ length: 32 }, (_, index) => index), 127].filter(
+      (value) => ![9, 10, 13].includes(value),
+    )) {
+      const bridge = createBrowserBridge({ initialArtifacts: { 'control.bin': new Uint8Array([97, byte, 13, 10]) } })
+      await expect(bridge.workspaceReadTextArtifact('control.bin')).rejects.toMatchObject({ code: 'artifact_binary' })
+    }
+  })
   it('preserves UTF-8 BOM bytes across artifact import and text reads', async () => {
     const text = '\ufeff# draft\n'
     const bridge = createBrowserBridge({ chooseArtifactSource: async () => new TextEncoder().encode(text) })

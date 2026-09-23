@@ -5,6 +5,38 @@ use tempfile::tempdir;
 use super::{files, paths, WorkspaceScope};
 
 #[test]
+fn artifact_utf8_binary_controls_are_metadata_only_and_plain_unicode_remains_text() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for byte in (0u8..=31)
+        .chain(std::iter::once(127))
+        .filter(|b| ![9, 10, 13].contains(b))
+    {
+        let bytes = [b'a', byte, 13, 10];
+        fs::write(root.path().join("data.bin"), bytes).unwrap();
+        assert_eq!(
+            super::artifacts::read_text(&scope, "data.bin")
+                .unwrap_err()
+                .code,
+            "artifact_binary"
+        );
+        assert_eq!(
+            super::artifacts::read(&scope, "data.bin").unwrap().size,
+            bytes.len() as u64
+        );
+        assert_eq!(fs::read(root.path().join("data.bin")).unwrap(), bytes);
+    }
+    let text = "\u{feff}Café 日本語\tvalue\r\nnext\n";
+    fs::write(root.path().join("plain.bin"), text).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "plain.bin")
+            .unwrap()
+            .text,
+        text
+    );
+}
+
+#[test]
 fn artifact_executes_pinned_single_path_vectors() {
     let vectors: serde_json::Value = serde_json::from_str(include_str!(
         "../../../contracts/workflow-package-v1-vectors.json"

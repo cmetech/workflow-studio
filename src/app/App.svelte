@@ -185,7 +185,12 @@
   import type { PackageArtifactAction } from '$src/lib/packages/package-mutations'
   import { $packageCatalog as packageCatalog, resetPackages, type PackageSelection } from '$src/stores/packages'
   import type { PackageCatalogController } from '$src/features/packages/package-catalog-controller'
-  import { classifyPackageArtifact, type PackageArtifactKind } from '$src/lib/packages/artifact-kind'
+  import {
+    classifyPackageArtifact,
+    commandResourceKinds,
+    type PackageArtifactKind,
+  } from '$src/lib/packages/artifact-kind'
+  import type { PackageReference, PackageReferenceGraph } from '$src/lib/packages/package-references'
   import type { ResourceResolutionContract } from '$src/lib/package-contract/resource-contract-loader'
   import type { WorkflowPackageProjection } from '$src/lib/packages/types'
   import type { ArtifactLanguage } from '$src/lib/artifacts/types'
@@ -382,6 +387,81 @@
     typeof import('$src/lib/packages/package-references').resolvePackageReferences | null
   >(null)
   let packageResourceContract = $state.raw<ResourceResolutionContract | undefined>(undefined)
+  let artifactReferences = $state.raw<readonly PackageReference[]>([])
+  let artifactReferencesStatus = $state<'loading' | 'ready' | 'unavailable'>('loading')
+  let authenticatedCommand = $state.raw<{ workspaceId: string; path: string; command: boolean } | null>(null)
+  const selectedArtifactPath = $derived(packageArtifact?.path)
+  const artifactCommandKinds = $derived(
+    packageResourceContract ? commandResourceKinds(packageResourceContract) : new Set<string>(),
+  )
+  const artifactIsCommand = $derived(
+    artifactKind === 'command' ||
+      (authenticatedCommand?.workspaceId === $workspace.id &&
+        authenticatedCommand?.path === selectedArtifactPath &&
+        authenticatedCommand.command),
+  )
+  const artifactHasUnsavedWorkflow = $derived.by(() => {
+    const pair = $documentSessionStore.pair
+    const pkg = selectedPackage
+    if (!pair || !pkg || !isDocumentPairDirty(pair)) return false
+    const prefix = pkg.root ? pkg.root + '/' : ''
+    return pkg.workflows.some((member) => prefix + member.definition === pair.definition.path)
+  })
+  let referenceCache: {
+    workspaceId: string
+    files: typeof $workspace.files
+    contracts: readonly AuthoringContract[]
+    values: Map<string, Promise<PackageReferenceGraph>>
+  } | null = null
+  $effect(() => {
+    const workspaceId = $workspace.id
+    const files = $workspace.files
+    const activeContracts = contracts
+    const pkg = selectedPackage
+    const path = selectedArtifactPath
+    const available = selectedPackageAnalysis?.references
+    artifactReferences = []
+    artifactReferencesStatus = 'loading'
+    if (!workspaceId || !pkg || !path || artifactKind === 'generated' || artifactKind === 'manifest') return
+    if (
+      referenceCache?.workspaceId !== workspaceId ||
+      referenceCache.files !== files ||
+      referenceCache.contracts !== activeContracts
+    )
+      referenceCache = { workspaceId, files, contracts: activeContracts, values: new Map() }
+    let pending = available ? Promise.resolve(available) : referenceCache.values.get(pkg.root)
+    if (!pending) {
+      pending = packageAnalysisDependencies(pkg).then(async (deps) => {
+        const { capturePackageAnalysis } = await import('$src/features/packages/package-analysis')
+        return (await capturePackageAnalysis(deps)).analysis.references
+      })
+      referenceCache.values.set(pkg.root, pending)
+    }
+    let current = true
+    void pending
+      .then((graph) => {
+        if (!current || applicationUnmounted || workspace.get().id !== workspaceId) return
+        const relativePath = pkg.root ? path.slice(pkg.root.length + 1) : path
+        artifactReferences = graph.references.filter(
+          (reference) => reference.ownership === 'packaged' && reference.artifactPath === relativePath,
+        )
+        authenticatedCommand = {
+          workspaceId,
+          path,
+          command: artifactReferences.some((reference) => artifactCommandKinds.has(reference.kind)),
+        }
+        // Invalid/unsupported saved workflows cannot prove an empty consumer list.
+        artifactReferencesStatus = graph.findings.some((finding) => finding.severity === 'blocking')
+          ? 'unavailable'
+          : 'ready'
+      })
+      .catch(() => {
+        if (current && !applicationUnmounted) artifactReferencesStatus = 'unavailable'
+      })
+    return () => {
+      current = false
+    }
+  })
   const artifactFocusRequest = $derived(
     artifactFocus?.workspaceId === $workspace.id && artifactFocus?.path === packageArtifact?.path
       ? artifactFocus?.request
@@ -521,7 +601,13 @@
       await artifactController!.open(path, language ?? 'text')
       if (generation === artifactOpeningGeneration && id === $workspace.id) artifactReady = true
     } catch (error) {
-      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'invalid_utf8') throw error
+      if (
+        !error ||
+        typeof error !== 'object' ||
+        !('code' in error) ||
+        (error.code !== 'invalid_utf8' && error.code !== 'artifact_binary')
+      )
+        throw error
       if (generation !== artifactOpeningGeneration || id !== $workspace.id) return
       await artifactController!.close()
       const metadata = await native.workspaceReadArtifact(path)
@@ -4080,7 +4166,10 @@
                   focusRequest: artifactFocusRequest,
                   metadata: artifactMetadata,
                   generated: artifactKind === 'generated',
-                  command: artifactKind === 'command',
+                  command: artifactIsCommand,
+                  references: artifactReferences,
+                  referencesStatus: artifactReferencesStatus,
+                  unsavedWorkflowEdits: artifactHasUnsavedWorkflow,
                   onTextChange: editPackageArtifact,
                   onSave: savePackageArtifact,
                   onReplace: replacePackageBinary,

@@ -773,6 +773,69 @@ describe('App', () => {
     expect(await screen.findByRole('textbox', { name: 'settings.cfg' })).toBeVisible()
   }, 20000)
 
+  it('shows saved command consumers, refreshes saved YAML edits and isolates similarly named package resources', async () => {
+    const definition = (id: string) =>
+      `name: ${id}\ndescription: Example\nnodes:\n  - id: ${id}\n    loop:\n      command: review\n      max_iterations: 2\n      until: done\n`
+    const manifest = (id: string) =>
+      JSON.stringify({
+        ...JSON.parse(packageManifest),
+        id,
+        workflows: [{ definition: 'main.yaml', companion: 'main.hermes.yaml' }],
+      })
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'alpha/workflow-package.json': manifest('alpha'),
+        'alpha/main.yaml': definition('alpha-check'),
+        'alpha/main.hermes.yaml': 'language_compatibility: archon-2026-07\n',
+        'alpha/commands/review': '---\ndescription: Review\n---\nReview data.\n',
+        'beta/workflow-package.json': manifest('beta'),
+        'beta/main.yaml': definition('beta-check'),
+        'beta/main.hermes.yaml': 'language_compatibility: archon-2026-07\n',
+        'beta/commands/review': '---\ndescription: Review\n---\nReview data.\n',
+      },
+    })
+    const write = vi.spyOn(backing, 'workspaceWrite')
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    const commandRows = await screen.findAllByRole('treeitem', { name: 'commands/review' }, deferredSurfaceWait)
+    await fireEvent.click(commandRows[0]!)
+    await fireEvent.click(await screen.findByRole('tab', { name: 'References' }, deferredSurfaceWait))
+    await waitFor(() => expect(screen.getByText('main.yaml — alpha-check')).toBeVisible(), deferredSurfaceWait)
+    expect(screen.getByText('Saved workflow references')).toBeVisible()
+    await fireEvent.click((await screen.findAllByRole('treeitem', { name: 'main.yaml' }))[0]!)
+    await waitFor(
+      () => expect($documentSession.get().pair?.definition.path).toBe('alpha/main.yaml'),
+      deferredSurfaceWait,
+    )
+    updateDocumentSession(
+      editDocumentText($documentSession.get().pair!, 'definition', definition('draft-check')),
+      $documentSession.get().revision!.contractDigest,
+    )
+    await fireEvent.click((await screen.findAllByRole('treeitem', { name: 'commands/review' }))[0]!)
+    await fireEvent.click(await screen.findByRole('tab', { name: 'References' }, deferredSurfaceWait))
+    expect(await screen.findByText(/Unsaved workflow edits are not included/, {}, deferredSurfaceWait)).toBeVisible()
+    await waitFor(() => expect(screen.getByText('main.yaml — alpha-check')).toBeVisible(), deferredSurfaceWait)
+    expect(screen.queryByText('main.yaml — draft-check')).not.toBeInTheDocument()
+    expect(write).not.toHaveBeenCalled()
+    const prior = await backing.workspaceReadTextArtifact('alpha/main.yaml')
+    await backing.workspaceWriteTextArtifact({
+      relativePath: prior.relativePath,
+      text: definition('saved-check'),
+      expectedCurrentHash: prior.sha256,
+    })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    await waitFor(() => expect(screen.getByText('main.yaml — saved-check')).toBeVisible(), deferredSurfaceWait)
+    expect(screen.queryByText('main.yaml — alpha-check')).not.toBeInTheDocument()
+    await fireEvent.click((await screen.findAllByRole('treeitem', { name: 'commands/review' }))[1]!)
+    await fireEvent.click(await screen.findByRole('tab', { name: 'References' }, deferredSurfaceWait))
+    await waitFor(() => expect(screen.getByText('main.yaml — beta-check')).toBeVisible(), deferredSurfaceWait)
+    expect(screen.queryByText('main.yaml — saved-check')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Unsaved workflow edits are not included/)).not.toBeInTheDocument()
+  }, 30000)
+
   it('opens the shared marketplace index as read-only generated content', async () => {
     const path = '.well-known/hermes-workflows/index.json'
     const backing = createBrowserBridge({
@@ -795,32 +858,40 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   }, 30000)
 
-  it('replaces a binary package resource only through its selected native source grant', async () => {
-    const backing = createBrowserBridge({
-      initialFiles: {
-        'workflow-package.json': packageManifest,
-        'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
-      },
-      initialArtifacts: { 'image.bin': new Uint8Array([255, 0]) },
-      chooseArtifactSource: async () => new Uint8Array([255, 1, 2]),
-    })
-    const replace = vi.spyOn(backing, 'workspaceReplaceArtifact')
-    setNativeBridgeForTest(backing)
-    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
-    render(App)
-    await waitForSetupReady()
-    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
-    await fireEvent.click(await screen.findByRole('treeitem', { name: /image.bin/ }, deferredSurfaceWait))
-    await fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Replace artifact' }, deferredSurfaceWait)
-    expect(replace).not.toHaveBeenCalled()
-    await fireEvent.click(await within(dialog).findByRole('button', { name: 'Choose replacement file' }))
-    const confirm = await within(dialog).findByRole('button', { name: 'Confirm changes' })
-    expect(replace).not.toHaveBeenCalled()
-    await fireEvent.click(confirm)
-    await waitFor(async () => expect((await backing.workspaceReadArtifact('image.bin')).size).toBe(3))
-    expect(replace).toHaveBeenCalledWith(expect.objectContaining({ packageSnapshotToken: expect.any(String) }))
-  }, 20000)
+  it.each([new Uint8Array([255, 0]), new Uint8Array([0, 13, 10, 1, 2, 3])])(
+    'replaces a binary package resource only through its selected native source grant (%j)',
+    async (bytes) => {
+      const backing = createBrowserBridge({
+        initialFiles: {
+          'workflow-package.json': packageManifest,
+          'main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        },
+        initialArtifacts: { 'image.bin': bytes },
+        chooseArtifactSource: async () => new Uint8Array([0, 13, 10, 1, 2, 3, 120]),
+      })
+      const replace = vi.spyOn(backing, 'workspaceReplaceArtifact')
+      setNativeBridgeForTest(backing)
+      loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+      render(App)
+      await waitForSetupReady()
+      await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+      await fireEvent.click(await screen.findByRole('treeitem', { name: /image.bin/ }, deferredSurfaceWait))
+      await fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
+      expect(screen.queryByRole('textbox', { name: 'image.bin' })).not.toBeInTheDocument()
+      const dialog = await screen.findByRole('dialog', { name: 'Replace artifact' }, deferredSurfaceWait)
+      expect(replace).not.toHaveBeenCalled()
+      await fireEvent.click(await within(dialog).findByRole('button', { name: 'Choose replacement file' }))
+      const confirm = await within(dialog).findByRole('button', { name: 'Confirm changes' })
+      expect(replace).not.toHaveBeenCalled()
+      await fireEvent.click(confirm)
+      await waitFor(async () => expect((await backing.workspaceReadArtifact('image.bin')).size).toBe(7))
+      expect((await backing.workspaceReadArtifact('image.bin')).sha256).toBe(
+        await sha256Hex(new Uint8Array([0, 13, 10, 1, 2, 3, 120])),
+      )
+      expect(replace).toHaveBeenCalledWith(expect.objectContaining({ packageSnapshotToken: expect.any(String) }))
+    },
+    20000,
+  )
 
   it('offers artifact draft recovery and compares an external manifest change before keeping edits', async () => {
     const backing = createBrowserBridge({

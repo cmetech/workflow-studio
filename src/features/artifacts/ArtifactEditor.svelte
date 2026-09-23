@@ -12,6 +12,8 @@
     command?: boolean
     focusRequest?: ArtifactFocusRequest | null
     references?: readonly PackageReference[]
+    referencesStatus?: 'loading' | 'ready' | 'unavailable'
+    unsavedWorkflowEdits?: boolean
     onTextChange: (text: string) => void
     onSave: () => void | Promise<void>
     onReplace?: () => void | Promise<void>
@@ -25,6 +27,8 @@
     command = false,
     focusRequest = null,
     references = [],
+    referencesStatus = 'ready',
+    unsavedWorkflowEdits = false,
     onTextChange,
     onSave,
     onReplace,
@@ -43,6 +47,8 @@
         dirty={document.dirty}
         readOnly={generated || document.readOnly}
         {references}
+        {referencesStatus}
+        {unsavedWorkflowEdits}
         {focusRequest}
         {onTextChange}
         {onSave}

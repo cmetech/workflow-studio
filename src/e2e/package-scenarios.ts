@@ -65,7 +65,8 @@ export function installPackageScenario(
           try {
             result[entry.relativePath] = (await bridge.workspaceReadTextArtifact(entry.relativePath)).text
           } catch (error) {
-            if (!(error instanceof NativeError) || error.code !== 'invalid_utf8') throw error
+            if (!(error instanceof NativeError) || (error.code !== 'invalid_utf8' && error.code !== 'artifact_binary'))
+              throw error
           }
         }
       return result
