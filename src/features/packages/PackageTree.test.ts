@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/svelte'
 import { expect, it, vi } from 'vitest'
 import PackageTree from './PackageTree.svelte'
+import type { PackageGitSummary } from './package-git-summary'
 it('provides a keyboard accessible empty package catalog', () => {
   render(PackageTree, { catalog: { packages: [], findings: [] }, onOpen: vi.fn() })
   expect(screen.getByRole('tree', { name: 'Packages' })).toBeVisible()
@@ -49,7 +50,19 @@ it('groups resources from the canonical contract and keeps keyboard navigation t
     resourceContract,
     onOpen: open,
     readiness: { root: 'p', ready: true },
+    gitSummaries: new Map<string, PackageGitSummary>([
+      [
+        'p',
+        {
+          phase: 'ready',
+          changes: [{ kind: 'modified', path: 'notes.txt' }],
+          baselineVersion: '1.2.3',
+          proposedVersion: '1.2.4',
+        },
+      ],
+    ]),
   })
+  expect(screen.getByRole('treeitem', { name: /diagnostics package.*1 local change/ })).toBeVisible()
   expect(
     within(screen.getByRole('group', { name: 'Commands' })).getByRole('treeitem', { name: 'custom/review.md' }),
   ).toBeVisible()

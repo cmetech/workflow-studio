@@ -3,9 +3,11 @@
   import type { PackageAnalysis } from '$src/lib/packages/readiness'
   import { packagePathError } from '$src/lib/packages/paths'
   import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-path'
+  import { packageGitSummaryLabel, type PackageGitSummary } from './package-git-summary'
   let {
     package: pkg,
     analysis,
+    gitSummary,
     hasMarketplaceIndex = false,
     onOpenArtifact,
     onOpenWorkflow,
@@ -17,6 +19,7 @@
   }: {
     package: WorkflowPackageProjection
     analysis?: PackageAnalysis
+    gitSummary?: PackageGitSummary | undefined
     hasMarketplaceIndex?: boolean
     onOpenArtifact?: (path: string, line?: number, column?: number) => void
     onOpenWorkflow?: (path: string) => void
@@ -50,8 +53,30 @@
     <dt>License</dt>
     <dd>{pkg.manifest.license}</dd>
     <dt>Local changes</dt>
-    <dd>Not compared with a local Git version</dd>
+    <dd>{packageGitSummaryLabel(gitSummary)}</dd>
+    {#if gitSummary?.phase === 'ready'}
+      <dt>Last local version</dt>
+      <dd>{gitSummary.baselineVersion ?? 'No committed package version'}</dd>
+      <dt>Proposed version</dt>
+      <dd>
+        {gitSummary.proposedVersion ??
+          (gitSummary.changes.length ? 'Validate package for a version suggestion' : 'No version change proposed')}
+      </dd>
+    {/if}
   </dl>
+  {#if gitSummary?.phase === 'ready'}
+    <section aria-label="Saved package changes">
+      <p>Saved files compared with local Git. Unsaved edits are not included.</p>
+      {#if gitSummary.changes.length === 0}<p>No saved package changes</p>{:else}
+        <ul>
+          {#each gitSummary.changes as change (change.path)}<li>
+              {change.kind === 'added' ? 'Added' : change.kind === 'removed' ? 'Deleted' : 'Modified'}: {change.path}
+            </li>{/each}
+        </ul>
+        <p>Review the proposed version during package preparation.</p>
+      {/if}
+    </section>
+  {/if}
   <p role="status">{analysis?.ready ? 'Static checks complete' : 'Validation incomplete'}</p>
   {#if !analysis}<p>
       Complete package scan, workflow and artifact analysis, digest verification, and marketplace checks are required

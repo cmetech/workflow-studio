@@ -688,7 +688,9 @@ describe('App', () => {
       },
     })
     const indexPath = '.well-known/hermes-workflows/index.json'
+    let committed: Awaited<ReturnType<typeof backing.gitReadPackageContext>> | null = null
     backing.gitReadPackageContext = vi.fn(async () => {
+      if (committed) return committed
       let index = null
       try {
         index = await backing.workspaceReadTextArtifact(indexPath)
@@ -718,12 +720,23 @@ describe('App', () => {
       changedPaths: [root + '/workflow-package.json', root + '/main.yaml', root + '/digests.json', indexPath],
       diff: '+ exact package preview',
     }))
-    const commit = vi.fn(async () => ({
-      outcome: 'committed' as const,
-      oid: 'package-commit',
-      status: null,
-      warnings: [],
-    }))
+    const commit = vi.fn(async () => {
+      const context = await backing.gitReadPackageContext(root)
+      const snapshot = await backing.workspaceHashPackage(root)
+      const manifest = await backing.workspaceReadTextArtifact(root + '/workflow-package.json')
+      const digest = await backing.workspaceReadTextArtifact(root + '/digests.json')
+      committed = {
+        ...context,
+        base: { kind: 'head', oid: 'package-commit', reference: 'refs/heads/main' },
+        baselineManifestText: manifest.text,
+        committedManifestText: manifest.text,
+        committedFiles: [
+          ...snapshot.files.map((file) => ({ ...file, gitMode: '100644' })),
+          { relativePath: 'digests.json', sha256: digest.sha256, size: digest.size, gitMode: '100644' },
+        ],
+      }
+      return { outcome: 'committed' as const, oid: 'package-commit', status: null, warnings: [] }
+    })
     backing.gitCommitPackageVersion = commit
     setNativeBridgeForTest(backing)
     loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
@@ -754,6 +767,7 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Prepared locally' }, deferredSurfaceWait)).toBeVisible()
     expect(commit).toHaveBeenCalledExactlyOnceWith('final-preview')
     expect(screen.getByRole('status', { name: 'Package preparation status' })).toHaveTextContent('diagnostics 1.2.4')
+    expect(await screen.findByText(/1.2.4.*0 local changes/, {}, deferredSurfaceWait)).toBeInTheDocument()
   }, 30000)
 
   it('opens supporting UTF-8 files without requiring a known extension', async () => {
@@ -834,6 +848,60 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('main.yaml — beta-check')).toBeVisible(), deferredSurfaceWait)
     expect(screen.queryByText('main.yaml — saved-check')).not.toBeInTheDocument()
     expect(screen.queryByText(/Unsaved workflow edits are not included/)).not.toBeInTheDocument()
+  }, 30000)
+
+  it('shows saved package Git changes and refreshes the baseline in the application', async () => {
+    const manifest = JSON.stringify({
+      ...JSON.parse(packageManifest),
+      workflows: [{ definition: 'main.yaml', companion: 'main.hermes.yaml' }],
+    })
+    const backing = createBrowserBridge({
+      initialFiles: {
+        'pkg/workflow-package.json': manifest,
+        'pkg/notes.txt': 'before',
+        'pkg/main.yaml': 'name: Example\ndescription: Example\nnodes:\n  - id: first\n    prompt: hello\n',
+        'pkg/main.hermes.yaml': 'language_compatibility: archon-2026-07\n',
+      },
+    })
+    let snapshot = await backing.workspaceHashPackage('pkg')
+    backing.gitReadPackageContext = vi.fn(async () => ({
+      workspaceId: 'browser-workspace',
+      packageRoot: 'pkg',
+      repository: { root: '/repo', branch: 'main', detachedHead: null },
+      base: { kind: 'head' as const, oid: 'local', reference: 'refs/heads/main' },
+      contextToken: 'summary',
+      committedManifestText: manifest,
+      baselineManifestText: manifest,
+      committedFiles: snapshot.files.map((file) => ({ ...file, gitMode: '100644' })),
+      committedIndexText: null,
+      workingIndexText: null,
+      workingIndexHash: null,
+    }))
+    setNativeBridgeForTest(backing)
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    render(App)
+    await waitForSetupReady()
+    await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+    await fireEvent.click(
+      await screen.findByRole('treeitem', { name: /package.*0 local changes/ }, deferredSurfaceWait),
+    )
+    const overview = await screen.findByRole('region', { name: 'Package overview' }, deferredSurfaceWait)
+    expect(within(overview).getByText('No saved package changes')).toBeVisible()
+    const before = await backing.workspaceReadTextArtifact('pkg/notes.txt')
+    await backing.workspaceWriteTextArtifact({
+      relativePath: before.relativePath,
+      text: 'after',
+      expectedCurrentHash: before.sha256,
+    })
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    expect(await within(overview).findByText('Modified: notes.txt', {}, deferredSurfaceWait)).toBeVisible()
+    expect(within(overview).getByText('Validate package for a version suggestion')).toBeVisible()
+    expect(screen.getByRole('treeitem', { name: /package.*1 local change/ })).toBeVisible()
+    await fireEvent.click(within(overview).getByRole('button', { name: 'Validate Package' }))
+    expect(await within(overview).findByText('1.2.4', {}, deferredSurfaceWait)).toBeVisible()
+    snapshot = await backing.workspaceHashPackage('pkg')
+    loadWorkspaceEntries('browser-workspace', 'Workspace', await backing.workspaceScan())
+    expect(await within(overview).findByText('No saved package changes', {}, deferredSurfaceWait)).toBeVisible()
   }, 30000)
 
   it('opens the shared marketplace index as read-only generated content', async () => {

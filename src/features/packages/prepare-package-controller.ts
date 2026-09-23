@@ -8,6 +8,10 @@ export interface PackageVersionInput {
   readonly version: string
   readonly message: string
 }
+/** Strip boundary whitespace recognized by either JavaScript or native Unicode trim; retain the message body. */
+export function normalizePackageCommitMessage(message: string): string {
+  return message.replace(/^[\s\p{White_Space}]+|[\s\p{White_Space}]+$/gu, '')
+}
 export interface PreparationReview<Snapshot> {
   readonly snapshot: Snapshot
   readonly analysis: PackageAnalysis
@@ -104,6 +108,7 @@ export class PreparePackageController<Snapshot> {
   }
 
   async prepare(input: PackageVersionInput): Promise<void> {
+    input = { ...input, message: normalizePackageCommitMessage(input.message) }
     const view = this.state.get(),
       review = this.review
     if (this.mutationPending || view.step !== 'version' || !review) return
@@ -135,6 +140,7 @@ export class PreparePackageController<Snapshot> {
   }
 
   async commit(input: PackageVersionInput): Promise<void> {
+    input = { ...input, message: normalizePackageCommitMessage(input.message) }
     const view = this.state.get(),
       preview = this.preview
     if (this.mutationPending || view.step !== 'version') return

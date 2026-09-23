@@ -42,6 +42,23 @@ it('requires validation and leaves step transitions to the controller', async ()
   expect(screen.queryByRole('button', { name: 'Prepare local version' })).toBeNull()
 })
 
+it('shows the normalized message used by the final preview and commit', async () => {
+  const callbacks = props()
+  const rendered = render(PreparePackageDialog, { ...callbacks, view: versionView })
+  await fireEvent.input(screen.getByLabelText('Commit message'), {
+    target: { value: '  Prepare sample\n\nDetails.\n' },
+  })
+  await fireEvent.click(screen.getByRole('button', { name: 'Prepare preview' }))
+  const message = 'Prepare sample\n\nDetails.'
+  expect(callbacks.onPrepare).toHaveBeenCalledWith({ version: '1.0.1', message })
+  expect(screen.getByLabelText('Commit message')).toHaveValue(message)
+  await rendered.rerender({
+    ...callbacks,
+    view: { ...versionView, finalPreview: { version: '1.0.1', message, diff: '+ reviewed' } },
+  })
+  await fireEvent.click(screen.getByRole('button', { name: 'Commit local version' }))
+  expect(callbacks.onCommit).toHaveBeenCalledWith({ version: '1.0.1', message })
+})
 it('preserves the reviewed version and message after a rejected local commit', async () => {
   const callbacks = props()
   callbacks.onCommit.mockRejectedValue(new Error('HEAD changed. Review again.'))

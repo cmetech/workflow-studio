@@ -30,6 +30,27 @@ it('never claims that discovery has completed preparation checks', () => {
   expect(screen.getByRole('button', { name: 'Prepare Package' })).toBeDisabled()
 })
 
+it('shows exact local changes, baseline and proposed version outside preparation', () => {
+  render(PackageOverview, {
+    package: pkg,
+    gitSummary: {
+      phase: 'ready',
+      baselineVersion: '1.0.0',
+      proposedVersion: '1.0.1',
+      changes: [
+        { kind: 'added', path: 'new.txt' },
+        { kind: 'modified', path: 'script.py' },
+        { kind: 'removed', path: 'old.txt' },
+      ],
+    },
+  })
+  expect(screen.getByText('3 local changes')).toBeVisible()
+  expect(screen.getByText('1.0.1')).toBeVisible()
+  expect(screen.getByText('Added: new.txt')).toBeVisible()
+  expect(screen.getByText('Modified: script.py')).toBeVisible()
+  expect(screen.getByText('Deleted: old.txt')).toBeVisible()
+})
+
 const blocked: PackageAnalysis = {
   ready: false,
   findings: [],

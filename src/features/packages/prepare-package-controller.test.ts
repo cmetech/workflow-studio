@@ -57,6 +57,18 @@ it('flushes, validates, reviews final bytes, and only then records a local commi
   })
   expect(deps.commit).toHaveBeenCalledExactlyOnceWith('preview')
 })
+it('normalizes the authored message before preparing and committing its displayed authorization', async () => {
+  const { controller, deps } = fixture()
+  await controller.validate()
+  controller.acceptReview()
+  const authored = { ...input, message: ' \nPrepare version\n\nKeep details.\t\n' }
+  const normalized = { ...input, message: 'Prepare version\n\nKeep details.' }
+  await controller.prepare(authored)
+  expect(deps.prepare).toHaveBeenCalledWith(expect.anything(), normalized)
+  expect(controller.state.get()).toMatchObject({ step: 'version', finalPreview: normalized })
+  await controller.commit(authored)
+  expect(deps.commit).toHaveBeenCalledExactlyOnceWith('preview')
+})
 it('blocks preparation for findings and retains the validation report', async () => {
   const { controller, review, deps } = fixture()
   review.analysis = {

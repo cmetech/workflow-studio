@@ -7,11 +7,13 @@
   import type { PackageCatalog } from '$src/lib/packages/types'
   import type { PackageSelection } from '$src/stores/packages'
   import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-path'
+  import { packageGitSummaryLabel, type PackageGitSummary } from './package-git-summary'
   let {
     catalog,
     active = null,
     resourceContract,
     readiness,
+    gitSummaries,
     hasMarketplaceIndex = false,
     onOpen,
     onAction,
@@ -20,6 +22,7 @@
     active?: PackageSelection | null
     resourceContract?: ResourceResolutionContract | undefined
     readiness?: { readonly root: string; readonly ready: boolean } | undefined
+    gitSummaries?: ReadonlyMap<string, PackageGitSummary> | undefined
     hasMarketplaceIndex?: boolean
     onAction?: (
       pkg: WorkflowPackageProjection,
@@ -164,7 +167,7 @@
           ? readiness.ready
             ? 'Static checks complete'
             : 'Preparation blocked'
-          : 'Validation incomplete'}</small
+          : 'Validation incomplete'} | {packageGitSummaryLabel(gitSummaries?.get(pkg.root))}</small
       ></button
     >
     {#each categoryGroups as group (group.label)}

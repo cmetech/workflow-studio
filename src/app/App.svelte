@@ -160,6 +160,7 @@
   import { historyStore, recordTransaction, redoTransaction, undoTransaction } from '$src/stores/history'
   import { createCanvasActivationBarrier } from '$src/features/canvas/canvas-activation-barrier'
   import PackageTree from '$src/features/packages/PackageTree.svelte'
+  import { createPackageGitSummaries } from '$src/features/packages/package-git-summary'
   import type PackageAuthoringDialogs from '$src/features/packages/PackageAuthoringDialogs.svelte'
   import type { PackageAuthoringDependencies } from '$src/features/packages/package-authoring-controller'
   import { PreparePackageController } from '$src/features/packages/prepare-package-controller'
@@ -313,6 +314,11 @@
   let CatalogController: typeof PackageCatalogController | null = null
   let packageController: PackageCatalogController | null = null
   let packageRefreshGeneration = 0
+  const packageGitController = createPackageGitSummaries(native)
+  const packageGitSummaries = packageGitController.state
+  const summaryCatalog = $derived($packageCatalog.catalog)
+  const summaryWorkspaceId = $derived($packageCatalog.workspaceId)
+  const savedPackageGeneration = $derived($documentSessionStore.pair?.savedGeneration)
   let artifactController: ArtifactWorkspaceController | null = null
   let artifactState = $state.raw<ArtifactWorkspaceState>({
     externalChange: null,
@@ -622,6 +628,33 @@
       workspaceError = String(error)
     })
   }
+  $effect(() => {
+    const id = $workspace.id
+    const catalog = summaryCatalog
+    const resources = packageResourceContract
+    void savedPackageGeneration
+    void contracts
+    packageGitController.reset()
+    if (!id || summaryWorkspaceId !== id || !resources || !catalog.packages.length) return
+    let cancelled = false
+    void loadPackageContract()
+      .then((contract) => {
+        if (!cancelled)
+          void packageGitController.refresh(
+            id,
+            catalog.packages.map((pkg) => pkg.root),
+            contract,
+            resources,
+          )
+      })
+      .catch(() => {
+        /* Contract readiness owns its diagnostics. */
+      })
+    return () => {
+      cancelled = true
+      packageGitController.reset()
+    }
+  })
   function editPackageArtifact(text: string): void {
     if (artifactKind !== 'generated') artifactController?.edit(text)
   }
@@ -862,8 +895,14 @@
     }
     const { capturePackageAnalysis } = await import('$src/features/packages/package-analysis')
     const captured = await capturePackageAnalysis({ ...deps, ...(index ? { index } : {}) })
-    if (request === packageValidationRequest && generation === packageValidationGeneration && id === workspace.get().id)
+    if (
+      request === packageValidationRequest &&
+      generation === packageValidationGeneration &&
+      id === workspace.get().id
+    ) {
       packageReadiness.set({ workspaceId: id, root: pkg.root, analysis: captured.analysis })
+      packageGitController.applyAnalysis(pkg.root, captured)
+    }
   }
   function closePackagePreparation(): boolean {
     if (preparation && !preparation.controller.cancel()) return false
@@ -3892,6 +3931,7 @@
     preparation?.controller.cancel()
     unsubscribePreparation?.()
     resetPackagePreparation()
+    packageGitController.reset()
     packageRefreshGeneration++
     artifactOpeningGeneration++
     packageController?.dispose()
@@ -4021,6 +4061,9 @@
         {#if $activeActivity === 'packages' && $workspace.id !== null}
           <button onclick={() => runArtifactOperation(() => openPackageAuthoring('create'))}>New Package</button>
           <PackageTree
+            gitSummaries={$packageGitSummaries.workspaceId === $workspace.id
+              ? $packageGitSummaries.summaries
+              : undefined}
             resourceContract={packageResourceContract}
             hasMarketplaceIndex={$workspace.files.some(
               (file) => file.kind === 'file' && file.relativePath === MARKETPLACE_INDEX_PATH,
@@ -4186,6 +4229,9 @@
         {:else if selectedPackage && Overview}
           <Overview
             package={selectedPackage}
+            gitSummary={$packageGitSummaries.workspaceId === $workspace.id
+              ? $packageGitSummaries.summaries.get(selectedPackage.root)
+              : undefined}
             hasMarketplaceIndex={$workspace.files.some(
               (file) => file.kind === 'file' && file.relativePath === MARKETPLACE_INDEX_PATH,
             )}

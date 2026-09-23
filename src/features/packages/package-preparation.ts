@@ -2,10 +2,10 @@ import { NativeError } from '$src/lib/native/types'
 import { extractTransactionRecovery, type TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
 import type { WorkspaceNativeBridge, WorkspacePackageSnapshot } from '$src/lib/native/types'
 import type { GitPackageContext } from '$src/lib/git/types'
-import { comparePackageFiles, packageVersionError, suggestPackageVersion } from '$src/lib/git/package-version-actions'
+import { comparePackageFiles, packageVersionError } from '$src/lib/git/package-version-actions'
 import { parsePackageManifest } from '$src/lib/packages/manifest'
 import { replaceManifestProperty } from '$src/lib/packages/manifest-edit'
-import { classifyPackageArtifact } from '$src/lib/packages/artifact-kind'
+import { packageVersionProposal } from './package-version-proposal'
 import { comparePackagePaths } from '$src/lib/packages/paths'
 import { prepareGeneratedPackageFiles } from '$src/lib/packages/preparation'
 import { MARKETPLACE_INDEX_PATH } from '$src/lib/packages/marketplace-index'
@@ -14,7 +14,11 @@ import {
   type CapturedPackageAnalysis,
   type PackageAnalysisDependencies,
 } from './package-analysis'
-import type { PreparePackageDependencies, PreparationReview } from './prepare-package-controller'
+import {
+  normalizePackageCommitMessage,
+  type PreparePackageDependencies,
+  type PreparationReview,
+} from './prepare-package-controller'
 
 export interface PackagePreparationSnapshot {
   readonly captured: CapturedPackageAnalysis
@@ -88,42 +92,15 @@ export function createPackagePreparationBackend(
         context.committedFiles.filter((file) => file.relativePath !== 'digests.json'),
         captured.snapshot.files,
       )
-      const summary = {
-        removedWorkflows:
-          baselineManifest?.workflows
-            .filter((old) => !captured.package.workflows.some((current) => current.definition === old.definition))
-            .map((member) => member.definition) ?? [],
-        addedCapabilities: changes
-          .filter(
-            (change) =>
-              change.kind === 'added' &&
-              (['script', 'command', 'workflow'].includes(
-                classifyPackageArtifact({
-                  path: change.path,
-                  members: captured.package.workflows,
-                  contract: deps.resourceContract,
-                  textAvailable: captured.artifactTexts.has(change.path),
-                }).kind,
-              ) ||
-                captured.analysis.references.references.some((reference) => reference.artifactPath === change.path)),
-          )
-          .map((change) => change.path),
-        // Companion changes conservatively suggest a major version; users explicitly choose the final version.
-        compatibilityChanged:
-          !!baselineManifest &&
-          (baselineManifest.id !== captured.package.id ||
-            changes.some((change) =>
-              captured.package.workflows.some((member) => member.companion === change.path && change.kind !== 'added'),
-            )),
-      }
-      const currentVersion = captured.package.manifest.version
-      const suggestion = baselineManifest
-        ? suggestPackageVersion(summary, baselineManifest.version, deps.contract)
-        : null
-      const suggestedVersion =
-        baselineManifest && packageVersionError(currentVersion, baselineManifest.version, deps.contract) === null
-          ? currentVersion
-          : (suggestion?.version ?? currentVersion)
+      const { summary, suggestion, suggestedVersion } = packageVersionProposal(
+        baselineManifest,
+        captured.package.manifest,
+        changes,
+        captured.analysis.references.references,
+        new Set(captured.artifactTexts.keys()),
+        deps.contract,
+        deps.resourceContract,
+      )
       const viewChanges = [
         ...changes.map((change) => ({ ...change, path: root + '/' + change.path, trustImpact: true })),
         { kind: 'metadata' as const, path: root + '/digests.json' },
@@ -144,6 +121,7 @@ export function createPackagePreparationBackend(
       }
     },
     async prepare(review, input) {
+      input = { ...input, message: normalizePackageCommitMessage(input.message) }
       let recovery = preparedStates.get(review)?.recovery ?? extractTransactionRecovery(null)
       const retain = (result: unknown) => {
         const next = extractTransactionRecovery(result)

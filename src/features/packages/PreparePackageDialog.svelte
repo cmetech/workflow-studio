@@ -4,6 +4,7 @@
   import PackageReadiness from './PackageReadiness.svelte'
   import PackageChangeList from './PackageChangeList.svelte'
   import type { PreparePackageView } from './prepare-package-view'
+  import { normalizePackageCommitMessage } from './prepare-package-controller'
   interface Props {
     packageId: string
     currentVersion: string
@@ -163,7 +164,10 @@
         type="button"
         disabled={busy || !ready || !version.trim() || !message.trim()}
         onclick={() => {
-          if (ready && version.trim() && message.trim()) void act(() => onPrepare({ version, message }))
+          if (ready && version.trim() && message.trim()) {
+            message = normalizePackageCommitMessage(message)
+            void act(() => onPrepare({ version, message }))
+          }
         }}>{busy ? 'Working locally...' : 'Prepare preview'}</button
       >
       <button
