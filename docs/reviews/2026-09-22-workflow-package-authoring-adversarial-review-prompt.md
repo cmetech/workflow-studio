@@ -1,6 +1,6 @@
 # Workflow package authoring: five-round adversarial code review
 
-**Status:** Required review protocol; no review round has run yet.
+**Status:** Required five-round review protocol. Per-round prompts, frozen reports and remediation evidence are recorded under `docs/reviews/workflow-package-authoring/`.
 
 This protocol accompanies the [implementation plan](../superpowers/plans/2026-09-03-workflow-package-authoring-local-publishing.md). It adapts the sibling agent's prompts at commit `748b6c5711bc055449cc245dc4e9800cc6bb0412`:
 
