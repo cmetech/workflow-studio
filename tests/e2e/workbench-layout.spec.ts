@@ -1064,6 +1064,43 @@ test('the workflow details panel grows by pointer and supports keyboard height b
   await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(Math.round(maximumHeight))
 })
 
+test('a deferred loop heading preserves newer keyboard focus on the details resize handle', async ({ page }) => {
+  let releaseHeader!: () => void
+  let requestedHeader!: () => void
+  const headerReleased = new Promise<void>((resolve) => {
+    releaseHeader = resolve
+  })
+  const headerRequested = new Promise<void>((resolve) => {
+    requestedHeader = resolve
+  })
+  await page.route(/\/GraphScopeHeader\.svelte(?:\?|$)/, async (route) => {
+    requestedHeader()
+    await headerReleased
+    await route.continue()
+  })
+  try {
+    await page.setViewportSize({ width: 1024, height: 700 })
+    await openSeededPair(page, { scenario: 'loop-group-state-restoration' })
+    await page.locator('.svelte-flow__node[data-id="polish"]').focus()
+    await page.keyboard.press('Enter')
+    await headerRequested
+    const handle = page.getByRole('separator', { name: 'Resize workflow details panel' })
+    const panel = page.locator('[data-scroll-frame="auxiliary"]')
+    await handle.focus()
+    await page.keyboard.press('Home')
+    await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(96)
+    releaseHeader()
+    await expect(page.locator('[data-scope-heading]')).toBeVisible()
+    await expect(handle).toBeFocused()
+    await page.keyboard.press('End')
+    await expect
+      .poll(async () => Math.round((await panel.boundingBox())!.height))
+      .toBe(Math.round(Number(await handle.getAttribute('aria-valuemax'))))
+  } finally {
+    releaseHeader()
+  }
+})
+
 test('standalone Problems constrains its issue list to the layer scroll owner', async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 600 })
   await page.goto('/tests/e2e/fixtures/problems-panel.html')
