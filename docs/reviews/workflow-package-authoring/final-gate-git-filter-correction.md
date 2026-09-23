@@ -56,8 +56,19 @@ handles are now closed before removal while ancestor locks remain held.
   Rust/Cargo 1.88, offline/locked, one test thread; library 40.79s and Git
   integration 2.56s. This source snapshot includes the final production fix;
   the subsequently added Windows-only ancestor-lock test was not in it.
-- Immutable correction identity, final platform results, and independent
-  immutable follow-up remain pending. The feature completion gate is open.
+- Correction commit: `f424805ec2ab7f78428b9b4f4668a90c321c11ba`, tree
+  `867525af529e709a491101b76a96fbb9baef8f2d`. Independent targeted source review
+  verified all eight changed files against the original candidate and returned
+  PASS with zero findings. The reviewer did not run tests.
+- Full Windows native verification of that clean commit passed: 330 library,
+  one IPC dispatch, and 12 Git integration tests (343 total), zero failed or
+  ignored; library 1135.16s and integration 164.54s.
+- A subsequent exact-archive Linux run passed 352 library and one dispatch test,
+  but passed only 25 of 26 integration tests. The existing symlink-retarget
+  test failed its normalized-index consistency check. An isolated 30-run probe
+  reproduced two failures. This is investigated separately in
+  [the normalized-index correction](final-gate-normalized-index-correction.md);
+  the Linux full gate and feature completion gate remain open.
 
 Earlier final-gate results remain valid only for their recorded candidate:
 Linux Git 2.34.1 had 334 passing and 12 failing library tests because its Git

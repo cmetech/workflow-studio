@@ -977,6 +977,78 @@ fn tracked_symlink_retarget_commits_link_bytes_and_target_content_only_is_not_pa
 
 #[cfg(unix)]
 #[test]
+fn symlink_retarget_survives_copied_index_stat_cache_and_preserves_unrelated_staging() {
+    use std::ffi::CString;
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let _environment = environment_lock();
+    let root = repository();
+    assert_git(root.path(), &["config", "core.checkStat", "minimal"]);
+    assert_git(root.path(), &["config", "core.trustctime", "false"]);
+    fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
+    fs::write(root.path().join("two.yaml"), "name: two\n").unwrap();
+    let link = root.path().join("flow.yaml");
+    let stamp = 1_600_000_000;
+    let set_link_time = || {
+        let path = CString::new(link.as_os_str().as_bytes()).unwrap();
+        let times = [libc::timespec {
+            tv_sec: stamp,
+            tv_nsec: 0,
+        }; 2];
+        assert_eq!(
+            unsafe {
+                libc::utimensat(
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    times.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    };
+    symlink("one.yaml", &link).unwrap();
+    set_link_time();
+    assert_git(root.path(), &["add", "flow.yaml"]);
+    assert_git(root.path(), &["commit", "-m", "base link"]);
+    fs::write(root.path().join("unrelated.txt"), "keep staged\n").unwrap();
+    assert_git(root.path(), &["add", "unrelated.txt"]);
+    let staged = assert_git(root.path(), &["ls-files", "--stage", "--", "unrelated.txt"]);
+
+    fs::remove_file(&link).unwrap();
+    symlink("two.yaml", &link).unwrap();
+    set_link_time();
+    // The real index must recheck the racy link bytes. Copying its bytes to a
+    // newly created index loses that timestamp protection without changing
+    // any cached stat fields. No scheduling delay or inode reuse is required.
+    fs::File::options()
+        .write(true)
+        .open(root.path().join(".git/index"))
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(stamp as u64)),
+        )
+        .unwrap();
+
+    create_pair_version(root.path(), "flow.yaml", None, "retarget racy link").unwrap();
+
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.yaml"]),
+        "two.yaml"
+    );
+    assert_eq!(assert_git(root.path(), &["show", ":flow.yaml"]), "two.yaml");
+    assert_eq!(
+        assert_git(root.path(), &["ls-files", "--stage", "--", "unrelated.txt"]),
+        staged
+    );
+    assert!(assert_git(root.path(), &["ls-tree", "HEAD", "--", "unrelated.txt"]).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
 fn rejects_escaping_symlink_before_candidate_index_staging() {
     use std::os::unix::fs::symlink;
 

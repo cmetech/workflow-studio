@@ -530,9 +530,9 @@ fn create_exact_version_with_interleave(
     if let Some(bytes) = &original_index {
         write_private_file(&normalized_index, bytes)?;
     } else {
-        initialize_candidate_index(root, &normalized_index, base_treeish, package)?;
+        initialize_candidate_index(root, &normalized_index, base_treeish, true)?;
     }
-    stage_candidate_paths(root, &normalized_index, paths, accepted_binding, package)?;
+    normalize_accepted_entries(root, &normalized_index, paths, &accepted_entries)?;
 
     let message_file = artifacts.create(git_dir, "message")?;
     let mut message_bytes = message.as_bytes().to_vec();
@@ -606,7 +606,7 @@ fn create_exact_version_with_interleave(
         "The normalized Git index exceeds the 16 MiB safety limit.",
     )
     .map_err(report)?;
-    let normalized_tree = write_candidate_tree(root, &normalized_index, package).map_err(report)?;
+    let normalized_tree = write_candidate_tree(root, &normalized_index, true).map_err(report)?;
     let normalized_entries = pair_tree_entries(root, &normalized_tree, &paths).map_err(report)?;
     if normalized_entries != accepted_entries {
         return Err(report(GitError::new(
@@ -734,6 +734,44 @@ pub(crate) fn committed_status(
 fn stage_exact_paths(root: &Path, index_path: &Path, paths: &[&str]) -> GitResult<()> {
     let output = run_mutation_with_index(root, MutationOperation::AddAll { paths }, index_path)?;
     ensure_success("git_stage_failed", &output)
+}
+
+fn normalize_accepted_entries(
+    root: &Path,
+    index: &Path,
+    paths: &[&str],
+    entries: &[Option<GitTreeEntry>],
+) -> GitResult<()> {
+    // Copying index bytes advances its filesystem timestamp, which can make a
+    // stale stat cache appear clean. Install only the already verified selected
+    // entries; preserve unrelated staged entries without consulting their files.
+    if paths.len() != entries.len() {
+        return Err(GitError::new(
+            "git_commit_candidate_changed",
+            "The accepted workflow entries do not match the selected paths.",
+        ));
+    }
+    for (path, entry) in paths.iter().zip(entries) {
+        let operation = match entry {
+            Some(entry) if entry.path == *path => MutationOperation::CacheEntry {
+                path,
+                mode: &entry.mode,
+                oid: &entry.oid,
+            },
+            Some(_) => {
+                return Err(GitError::new(
+                    "git_commit_candidate_changed",
+                    "An accepted workflow entry has a different path.",
+                ));
+            }
+            None => MutationOperation::RemoveEntry { path },
+        };
+        ensure_success(
+            "git_stage_failed",
+            &super::runner::run_package_mutation(root, operation, Some(index))?,
+        )?;
+    }
+    Ok(())
 }
 
 fn candidate_mutation(
