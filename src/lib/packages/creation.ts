@@ -1,9 +1,12 @@
+import { isAlias, isScalar } from 'yaml'
 import type { AuthoringContract } from '../contract/types'
 import type { PackageMutationPlan, WorkspaceWriteRequest, WorkspaceMoveRequest } from '../native/types'
 import type { WorkflowPackageContract } from '../package-contract/types'
 import type { ResourceResolutionContract } from '../package-contract/resource-contract-loader'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import { analyzeWorkflowPair } from '../validation/analyze-workflow'
+import { parseWorkflowYaml } from '../yaml/parse-document'
+import { patchWorkflowDocument } from '../yaml/patch-document'
 import { parsePackageManifest } from './manifest'
 import { replaceManifestProperty } from './manifest-edit'
 import { packagePathError, packagePathIdentity, validatePackagePaths } from './paths'
@@ -53,6 +56,12 @@ export interface ImportWorkflowPackageRequest {
   readonly root: string
   readonly workflow: PackageWorkflowSource
   readonly mode: 'copy' | 'move'
+  /** Destination choices never replace the selected source or its captured bytes. */
+  readonly destination?: {
+    readonly definition: string
+    readonly companion?: string
+    readonly name?: string
+  }
 }
 export class PackageCreationError extends Error {
   constructor(
@@ -109,7 +118,9 @@ export async function planWorkflowImport(
   const entry = requireSource(manifestPath, snapshot)
   const parsed = parsePackageManifest(entry.text!, manifestPath, snapshot.contract)
   if (!parsed.ok) fail(parsed.findings[0]!.code, manifestPath, parsed.findings[0]!.message)
-  const member = workflowMember(request.workflow)
+  const source = importDestination(request)
+  const nameExpectations = new Map<string, string>()
+  const member = workflowMember(source)
   const paths = [member.definition, ...(member.companion ? [member.companion] : [])].map(packagePathIdentity)
   if (
     parsed.manifest.workflows.some((item) =>
@@ -119,9 +130,91 @@ export async function planWorkflowImport(
     )
   )
     fail('package_member_duplicate', member.definition, 'This workflow is already a package member.')
+  if (request.destination) {
+    const name = packageWorkflowName(source)
+    for (const existing of parsed.manifest.workflows) {
+      const original = requireSource(packagePath(request.root, existing.definition), snapshot, true)
+      nameExpectations.set(original.relativePath, original.sha256!)
+      const existingName = packageWorkflowName({
+        ...source,
+        definition: { path: existing.definition, text: original.text! },
+      })
+      if (name === existingName)
+        fail(
+          'package_workflow_name_duplicate',
+          member.definition,
+          'Choose a workflow name distinct from existing package members.',
+        )
+    }
+  }
   const manifestText = replaceManifestProperty(entry.text!, 'workflows', [...parsed.manifest.workflows, member])
   validateManifest(manifestText, request.root, snapshot)
-  return buildPlan(request, snapshot, manifestText, entry.sha256!, false)
+  const plan = await buildPlan(request, snapshot, manifestText, entry.sha256!, false, source)
+  const expectations = new Map(plan.expectedEntries.map((item) => [item.relativePath, item.expectedCurrentHash]))
+  for (const [path, hash] of nameExpectations) expectations.set(path, hash)
+  return {
+    ...plan,
+    expectedEntries: [...expectations].map(([relativePath, expectedCurrentHash]) => ({
+      relativePath,
+      expectedCurrentHash,
+    })),
+  }
+}
+
+export function packageWorkflowName(source: PackageWorkflowSource): string {
+  const parsed = parseWorkflowYaml(source.definition.text, {
+    document: 'definition',
+    maxBytes: source.authoring.limits.max_document_bytes,
+  })
+  const document = parsed.parsed?.document
+  if (!document) return ''
+  const authored = document.get('name', true)
+  const name = isAlias(authored) ? authored.resolve(document) : authored
+  return isScalar(name) && typeof name.value === 'string' ? name.value : ''
+}
+
+function importDestination(request: ImportWorkflowPackageRequest): PackageWorkflowSource {
+  const { workflow: source, destination } = request
+  if (!destination) return source
+  if (Boolean(source.companion) !== Boolean(destination.companion))
+    fail(
+      'package_companion_destination',
+      destination.definition,
+      'Choose a destination for the selected companion; companion membership cannot change during import.',
+    )
+  let text = source.definition.text
+  if (destination.name !== undefined && destination.name !== packageWorkflowName(source)) {
+    if (request.mode === 'move')
+      fail(
+        'package_move_name_change',
+        destination.definition,
+        'Moving preserves the workflow name. Copy the workflow to change its name.',
+      )
+    if (!destination.name.trim())
+      fail('package_workflow_invalid', destination.definition, 'Enter a non-empty workflow name.')
+    const authoredName = parseWorkflowYaml(text, {
+      document: 'definition',
+      maxBytes: source.authoring.limits.max_document_bytes,
+    }).parsed?.document.get('name', true)
+    if (isScalar(authoredName) && authoredName.anchor)
+      fail(
+        'package_workflow_name_anchored',
+        destination.definition,
+        'Renaming an anchored workflow name can change other YAML values. Keep the original name or explicitly resolve its anchor and aliases in the source YAML before copying.',
+      )
+    const patched = patchWorkflowDocument(
+      text,
+      { type: 'set-field', document: 'definition', path: ['name'], value: destination.name },
+      source.authoring,
+    )
+    if (!patched.ok) fail(patched.code, destination.definition, patched.message)
+    text = patched.text
+  }
+  return {
+    ...source,
+    definition: { ...source.definition, path: destination.definition, text },
+    companion: source.companion ? { ...source.companion, path: destination.companion! } : null,
+  }
 }
 
 function workflowMember(source: PackageWorkflowSource): PackageWorkflowMember {
@@ -131,14 +224,14 @@ function validateManifest(text: string, root: string, snapshot: PackageCreationS
   const result = parsePackageManifest(text, packagePath(root, 'workflow-package.json'), snapshot.contract)
   if (!result.ok) fail(result.findings[0]!.code, root, result.findings[0]!.message)
 }
-function requireSource(path: string, snapshot: PackageCreationSnapshot): PackageCreationEntry {
+function requireSource(path: string, snapshot: PackageCreationSnapshot, allowReadOnly = false): PackageCreationEntry {
   pathCheck(path)
   const entry = snapshot.entries.find((item) => item.relativePath === path)
   if (
     !entry ||
     entry.kind !== 'file' ||
     entry.symlink !== 'none' ||
-    entry.readOnly ||
+    (entry.readOnly && !allowReadOnly) ||
     typeof entry.text !== 'string' ||
     !entry.sha256 ||
     !/^[a-f0-9]{64}$/.test(entry.sha256)
@@ -156,9 +249,9 @@ async function buildPlan(
   manifestText: string,
   manifestHash: string | null,
   creating: boolean,
+  source: PackageWorkflowSource = request.workflow,
 ): Promise<PackageMutationPlan> {
   if (!snapshot.workspaceId) fail('package_source_unverified', request.root, 'An active workspace is required.')
-  const source = request.workflow
   const mode = request.mode ?? 'copy'
   if (mode === 'move' && source.kind !== 'workspace')
     fail('package_source_unverified', request.root, 'Only identified workspace workflows can be moved.')
@@ -201,7 +294,13 @@ async function buildPlan(
           'Every workspace resource needs its explicitly selected source path.',
         )
       const original = requireSource(file.sourcePath, snapshot)
-      if (original.text !== file.text)
+      const selectedFile =
+        file === source.definition
+          ? request.workflow.definition
+          : file === source.companion
+            ? request.workflow.companion!
+            : file
+      if (original.text !== selectedFile.text)
         fail('package_source_changed', file.sourcePath, 'Source bytes changed after selection.')
       expectations.set(file.sourcePath, original.sha256!)
     } else if (file.sourcePath !== undefined)

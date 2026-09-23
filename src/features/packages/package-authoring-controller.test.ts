@@ -172,6 +172,108 @@ it('imports a source and updates only existing package membership', async () => 
   ).toHaveLength(2)
   expect(f.onCompleted).toHaveBeenCalledWith('pkg')
 })
+
+it('rejects import if an existing workflow name changes after destination validation was captured', async () => {
+  const f = await packageSetup()
+  const session = await f.controller.prepare()
+  const source = session.sources.find((item) => item.id.startsWith('blank:'))!.source
+  const previous = await f.native.workspaceReadTextArtifact('pkg/main.yaml')
+  await f.native.workspaceWriteTextArtifact({
+    relativePath: 'pkg/main.yaml',
+    text: previous.text.replace('name: Saved', 'name: Second'),
+    expectedCurrentHash: previous.sha256,
+  })
+  await expect(
+    f.controller.importWorkflow(session, {
+      root: 'pkg',
+      workflow: source,
+      mode: 'copy',
+      destination: { definition: 'workflows/second.yaml', companion: 'workflows/second.hermes.yaml', name: 'Second' },
+    }),
+  ).rejects.toThrow()
+  expect(
+    JSON.parse((await f.native.workspaceReadTextArtifact('pkg/workflow-package.json')).text).workflows,
+  ).toHaveLength(1)
+  expect((await f.native.workspaceReadTextArtifact('pkg/main.yaml')).text).toContain('name: Second')
+})
+
+it('adds two gallery sources sharing a basename using independent destinations and authenticated original bytes', async () => {
+  const example = (id: string): ExampleDescriptor => ({
+    id,
+    title: id,
+    summary: 'Example',
+    difficulty: 'starter',
+    profiles: ['archon-2026-07'],
+    profile: 'archon-2026-07',
+    concepts: [],
+    highlightedNodeIds: [],
+    highlightedFieldIds: [],
+    documentationTopicIds: [],
+    definitionPath: `examples/${id}/workflow.yaml`,
+    companionPath: `examples/${id}/workflow.hermes.yaml`,
+    definitionText: `# ${id}\r\nname: Example\r\ndescription: Example\r\nnodes:\r\n  - id: hello\r\n    prompt: Say hello\r\n`,
+    companionText: 'language_compatibility: archon-2026-07\n',
+    readOnly: true,
+  })
+  const examples = [example('first'), example('second')]
+  const f = await setup({}, examples)
+  let session = await f.controller.prepare()
+  await f.controller.create(session, {
+    root: 'pkg',
+    metadata: fixtureManifest,
+    workflow: session.sources.find((item) => item.id === 'example:first')!.source,
+  })
+  const refresh = async () => {
+    const files = await f.native.workspaceScan()
+    const manifest = (await f.native.workspaceReadTextArtifact('pkg/workflow-package.json')).text
+    f.setContext({
+      ...f.getContext(),
+      files,
+      packages: buildPackageCatalog({
+        contract,
+        files,
+        manifestTexts: new Map([['pkg/workflow-package.json', manifest]]),
+      }).packages,
+    })
+  }
+  await refresh()
+  session = await f.controller.prepare()
+  const selected = session.sources.find((item) => item.id === 'example:second')!.source
+  const destination = { definition: 'workflows/second.yaml', companion: 'policies/second.yaml', name: 'Second example' }
+  await expect(
+    f.controller.importWorkflow(session, {
+      root: 'pkg',
+      workflow: { ...selected, definition: { ...selected.definition, text: selected.definition.text + '# forged' } },
+      mode: 'copy',
+      destination,
+    }),
+  ).rejects.toThrow('Choose a source')
+  await f.controller.importWorkflow(session, { root: 'pkg', workflow: selected, mode: 'copy', destination })
+  expect((await f.native.workspaceReadTextArtifact('pkg/workflows/workflow.yaml')).text).toBe(
+    examples[0]!.definitionText,
+  )
+  expect((await f.native.workspaceReadTextArtifact('pkg/workflows/second.yaml')).text).toBe(
+    examples[1]!.definitionText.replace('name: Example', 'name: Second example'),
+  )
+  expect((await f.native.workspaceReadTextArtifact('pkg/policies/second.yaml')).text).toBe(examples[1]!.companionText)
+  expect(selected.definition.text).toBe(examples[1]!.definitionText)
+  await expect(
+    f.controller.importWorkflow(session, {
+      root: 'pkg',
+      workflow: selected,
+      mode: 'copy',
+      destination: {
+        ...destination,
+        definition: 'workflows/third.yaml',
+        companion: 'policies/third.yaml',
+        name: 'Third',
+      },
+    }),
+  ).rejects.toThrow()
+  expect(
+    JSON.parse((await f.native.workspaceReadTextArtifact('pkg/workflow-package.json')).text).workflows,
+  ).toHaveLength(2)
+})
 it('creates exact text artifacts exclusively and rejects reserved or occupied filenames', async () => {
   const f = await packageSetup()
   const session = await f.controller.prepare()

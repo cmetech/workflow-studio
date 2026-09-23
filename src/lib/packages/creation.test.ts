@@ -9,6 +9,7 @@ import {
 import {
   planPackageCreation,
   planWorkflowImport,
+  packageWorkflowName,
   type PackageCreationSnapshot,
   type PackageWorkflowSource,
 } from './creation'
@@ -41,6 +42,190 @@ beforeAll(async () => {
 })
 const metadata = { ...fixtureManifest, id: 'new-package', workflows: undefined }
 const request = () => ({ root: 'packages/new-package', metadata, workflow: source })
+
+it('reads an aliased workflow name using YAML scalar semantics for destination uniqueness', () => {
+  expect(
+    packageWorkflowName({
+      ...source,
+      definition: {
+        ...source.definition,
+        text: source.definition.text.replace(
+          'name: test\r\ndescription: Example',
+          'description: &title Example\r\nname: *title',
+        ),
+      },
+    }),
+  ).toBe('Example')
+})
+
+it.each([
+  [
+    'anchored name used by a prompt',
+    'name: &title Original\ndescription: Example\nnodes:\n  - id: hello\n    prompt: *title\n',
+  ],
+  [
+    'anchored name without consumers',
+    'name: &title Original\ndescription: Example\nnodes:\n  - id: hello\n    prompt: Hello\n',
+  ],
+])('refuses copy rename of an %s without changing other YAML semantics', async (_label, text) => {
+  const first = await planPackageCreation(request(), snapshot)
+  const existing = {
+    ...snapshot,
+    packages: [{ root: request().root, id: metadata.id }],
+    entries: first.writes.map((file) => ({
+      relativePath: file.relativePath,
+      text: file.text,
+      sha256: 'a'.repeat(64),
+      kind: 'file' as const,
+      symlink: 'none' as const,
+      readOnly: false,
+      size: file.text.length,
+      modifiedAt: '',
+    })),
+  }
+  const selected = { ...source, definition: { ...source.definition, text } }
+  await expect(
+    planWorkflowImport(
+      {
+        root: request().root,
+        workflow: selected,
+        mode: 'copy',
+        destination: {
+          definition: 'workflows/copied.yaml',
+          companion: 'workflows/copied.hermes.yaml',
+          name: 'Changed',
+        },
+      },
+      existing,
+    ),
+  ).rejects.toMatchObject({
+    code: 'package_workflow_name_anchored',
+    message: expect.stringContaining('Keep the original name'),
+  })
+  expect(selected.definition.text).toBe(text)
+})
+
+it.each(['copy', 'move'] as const)(
+  'preserves an anchored workflow name and all aliases during %s with unchanged name',
+  async (mode) => {
+    const text = 'name: &title Original\ndescription: Example\nnodes:\n  - id: hello\n    prompt: *title\n'
+    const selected = {
+      ...source,
+      kind: 'workspace' as const,
+      definition: { ...source.definition, text, sourcePath: 'old/main.yaml' },
+      companion: { ...source.companion!, sourcePath: 'old/main.hermes.yaml' },
+    }
+    const first = await planPackageCreation(request(), snapshot)
+    const existing = {
+      ...snapshot,
+      packages: [{ root: request().root, id: metadata.id }],
+      entries: [
+        ...first.writes.map((file) => ({ relativePath: file.relativePath, text: file.text })),
+        ...[selected.definition, selected.companion].map((file) => ({
+          relativePath: file.sourcePath,
+          text: file.text,
+        })),
+      ].map((file) => ({
+        ...file,
+        sha256: 'a'.repeat(64),
+        kind: 'file' as const,
+        symlink: 'none' as const,
+        readOnly: false,
+        size: file.text.length,
+        modifiedAt: '',
+      })),
+    }
+    expect(packageWorkflowName(selected)).toBe('Original')
+    const plan = await planWorkflowImport(
+      {
+        root: request().root,
+        workflow: selected,
+        mode,
+        destination: {
+          definition: 'workflows/copied.yaml',
+          companion: 'workflows/copied.hermes.yaml',
+          name: 'Original',
+        },
+      },
+      existing,
+    )
+    if (mode === 'copy') expect(plan.writes.find((file) => file.relativePath.endsWith('/copied.yaml'))?.text).toBe(text)
+    else {
+      expect(plan.writes).toHaveLength(1)
+      expect(plan.moves).toContainEqual({
+        sourcePath: 'old/main.yaml',
+        destinationPath: request().root + '/workflows/copied.yaml',
+      })
+    }
+    expect(selected.definition.text).toBe(text)
+  },
+)
+
+it('adds a second blank at explicit destinations with a distinct name while preserving unrelated YAML bytes', async () => {
+  const first = await planPackageCreation(request(), snapshot)
+  const existing = {
+    ...snapshot,
+    packages: [{ root: request().root, id: metadata.id }],
+    entries: first.writes.map((file) => ({
+      relativePath: file.relativePath,
+      text: file.text,
+      sha256: 'a'.repeat(64),
+      kind: 'file' as const,
+      symlink: 'none' as const,
+      readOnly: false,
+      size: file.text.length,
+      modifiedAt: '',
+    })),
+  }
+  const destination = {
+    definition: 'workflows/second.yaml',
+    companion: 'policies/second.yaml',
+    name: 'Second workflow',
+  }
+  const plan = await planWorkflowImport({ root: request().root, workflow: source, mode: 'copy', destination }, existing)
+  expect(plan.writes[1]).toEqual({
+    relativePath: request().root + '/' + destination.definition,
+    text: source.definition.text.replace('name: test', 'name: Second workflow'),
+    expectedCurrentHash: null,
+  })
+  expect(plan.writes[2]?.text).toBe(source.companion!.text)
+  expect(JSON.parse(plan.writes[0]!.text).workflows).toEqual([
+    { definition: source.definition.path, companion: source.companion!.path },
+    { definition: destination.definition, companion: destination.companion },
+  ])
+  expect(plan.expectedEntries).toContainEqual({
+    relativePath: request().root + '/workflow-package.json',
+    expectedCurrentHash: 'a'.repeat(64),
+  })
+  expect(source.definition.path).toBe('workflows/main.yaml')
+  expect(source.definition.text).toContain('name: test\r\n')
+  const withReadOnlyMember = {
+    ...existing,
+    entries: existing.entries.map((entry) =>
+      entry.relativePath.endsWith('/main.yaml') ? { ...entry, readOnly: true } : entry,
+    ),
+  }
+  await expect(
+    planWorkflowImport({ root: request().root, workflow: source, mode: 'copy', destination }, withReadOnlyMember),
+  ).resolves.toMatchObject({ moves: [], trashes: [] })
+  await expect(
+    planWorkflowImport(
+      { root: request().root, workflow: source, mode: 'copy', destination: { ...destination, name: 'test' } },
+      existing,
+    ),
+  ).rejects.toMatchObject({ code: 'package_workflow_name_duplicate' })
+  await expect(
+    planWorkflowImport(
+      {
+        root: request().root,
+        workflow: source,
+        mode: 'copy',
+        destination: { ...destination, definition: source.definition.path },
+      },
+      existing,
+    ),
+  ).rejects.toMatchObject({ code: 'package_member_duplicate' })
+})
 
 it('plans a package and first workflow together without changing source bytes', async () => {
   const plan = await planPackageCreation(request(), snapshot)
@@ -150,6 +335,65 @@ it('copies only explicitly identified resources and binds original hashes when a
     expectedCurrentHash: 'a'.repeat(64),
   })
   expect(plan.trashes).toEqual([])
+})
+
+it('keeps exact workspace move sources and bytes when changing only import destination paths', async () => {
+  const first = await planPackageCreation(request(), snapshot)
+  const selected = {
+    ...source,
+    kind: 'workspace' as const,
+    definition: {
+      ...source.definition,
+      text: source.definition.text.replace('name: test', 'name: Moved'),
+      sourcePath: 'old/main.yaml',
+    },
+    companion: { ...source.companion!, sourcePath: 'old/main.hermes.yaml' },
+  }
+  const existing = {
+    ...snapshot,
+    packages: [{ root: request().root, id: metadata.id }],
+    entries: [
+      ...first.writes.map((file) => ({ relativePath: file.relativePath, text: file.text })),
+      ...[selected.definition, selected.companion].map((file) => ({ relativePath: file.sourcePath, text: file.text })),
+    ].map((file) => ({
+      ...file,
+      sha256: 'a'.repeat(64),
+      kind: 'file' as const,
+      symlink: 'none' as const,
+      readOnly: false,
+      size: file.text.length,
+      modifiedAt: '',
+    })),
+  }
+  const destination = { definition: 'workflows/moved.yaml', companion: 'policies/moved.yaml' }
+  const plan = await planWorkflowImport(
+    { root: request().root, workflow: selected, mode: 'move', destination },
+    existing,
+  )
+  expect(plan.moves).toEqual([
+    { sourcePath: 'old/main.yaml', destinationPath: request().root + '/workflows/moved.yaml' },
+    { sourcePath: 'old/main.hermes.yaml', destinationPath: request().root + '/policies/moved.yaml' },
+  ])
+  expect(plan.writes).toHaveLength(1)
+  expect(plan.trashes).toEqual([])
+  expect(plan.expectedEntries).toContainEqual({ relativePath: 'old/main.yaml', expectedCurrentHash: 'a'.repeat(64) })
+  await expect(
+    planWorkflowImport(
+      { root: request().root, workflow: selected, mode: 'move', destination: { ...destination, name: 'Changed' } },
+      existing,
+    ),
+  ).rejects.toMatchObject({ code: 'package_move_name_change' })
+  await expect(
+    planWorkflowImport(
+      {
+        root: request().root,
+        workflow: { ...selected, definition: { ...selected.definition, text: selected.definition.text + '# forged' } },
+        mode: 'copy',
+        destination: { ...destination, name: 'Changed' },
+      },
+      existing,
+    ),
+  ).rejects.toMatchObject({ code: 'package_source_changed' })
 })
 
 it('imports membership with an exact manifest hash and refuses existing member destinations', async () => {
