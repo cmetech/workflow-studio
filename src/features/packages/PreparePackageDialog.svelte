@@ -1,5 +1,6 @@
 <script lang="ts">
   import ModalShell from '$src/app/ModalShell.svelte'
+  import TransactionRecoveryDetails from './TransactionRecoveryDetails.svelte'
   import PackageReadiness from './PackageReadiness.svelte'
   import PackageChangeList from './PackageChangeList.svelte'
   import type { PreparePackageView } from './prepare-package-view'
@@ -128,12 +129,21 @@
         {#if view.error}<ul>
             {#each view.error.recovery as action, index (index)}<li>{action}</li>{/each}
           </ul>{/if}
+        {#if view.error}
+          <TransactionRecoveryDetails
+            receipt={{
+              pathResults: view.error.pathResults ?? [],
+              omittedPathResults: view.error.omittedPathResults ?? 0,
+            }}
+          />
+        {/if}
         <button type="button" onclick={() => onHelp('guide:package-troubleshooting#preparation-failures')}
           >Read preparation troubleshooting</button
         >
       </section>
     {/if}
   {/if}
+  {#if view.recovery}<TransactionRecoveryDetails receipt={view.recovery} title="Retained recovery files" />{/if}
   {#snippet actions()}
     <button type="button" disabled={busy} onclick={onCancel}>{view.step === 'complete' ? 'Done' : 'Cancel'}</button>
     {#if view.step === 'validate'}

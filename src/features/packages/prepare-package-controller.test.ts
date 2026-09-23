@@ -1,3 +1,4 @@
+import { NativeError } from '$src/lib/native/types'
 import { expect, it, vi } from 'vitest'
 import { PreparePackageController } from './prepare-package-controller'
 import type { PackageAnalysis } from '$src/lib/packages/readiness'
@@ -144,4 +145,72 @@ it('prevents duplicate mutations and cancellation while a commit is pending', as
   resolve({ outcome: 'committed', oid: 'abc', status: null, warnings: [] })
   await pending
   expect(controller.state.get().step).toBe('complete')
+})
+
+it('preserves partial rollback source, recovery destination, status and bounded reason', async () => {
+  const { controller, deps } = fixture()
+  await controller.validate()
+  controller.acceptReview()
+  const paths = [
+    {
+      relativePath: 'packages/demo/digests.json',
+      destinationPath: 'packages/demo/.workflow-studio-original-123',
+      status: 'partial' as const,
+      message: 'Destination changed',
+    },
+    {
+      relativePath: 'marketplace/index.json',
+      destinationPath: 'marketplace/.workflow-studio-original-456',
+      status: 'failed' as const,
+      message: 'x'.repeat(9000),
+    },
+  ]
+  deps.prepare.mockRejectedValue(
+    new NativeError('workspace_transaction_partial', 'Verified recovery files remain.', paths),
+  )
+  await controller.prepare(input)
+  const state = controller.state.get()
+  expect(state).toMatchObject({
+    step: 'validate',
+    error: { pathResults: [paths[0], { ...paths[1], message: 'x'.repeat(1024) }], omittedPathResults: 0 },
+  })
+  expect(deps.commit).not.toHaveBeenCalled()
+  // Error records are a stable recovery receipt, not a mutable alias of the rejected payload.
+  paths[0]!.destinationPath = 'changed-after-rejection'
+  expect(state).toMatchObject({
+    error: {
+      pathResults: [
+        expect.objectContaining({ destinationPath: 'packages/demo/.workflow-studio-original-123' }),
+        expect.anything(),
+      ],
+    },
+  })
+})
+
+it('keeps successful preparation recovery receipts visible through the completed local commit', async () => {
+  const { controller, deps, review } = fixture()
+  const recovery = {
+    pathResults: [
+      {
+        relativePath: 'pkg/digests.json',
+        destinationPath: 'C:/Studio/recovery/original-123',
+        status: 'recoveryRetained' as const,
+        message: 'Manual recovery copy retained.',
+      },
+    ],
+    omittedPathResults: 0,
+  }
+  deps.prepare.mockImplementation(async (_snapshot, value) => ({
+    ...value,
+    authorizationToken: 'preview',
+    diff: '+ reviewed bytes',
+    includedPaths: review.includedPaths,
+    recovery,
+  }))
+  await controller.validate()
+  controller.acceptReview()
+  await controller.prepare(input)
+  expect(controller.state.get()).toMatchObject({ step: 'version', recovery })
+  await controller.commit(input)
+  expect(controller.state.get()).toMatchObject({ step: 'complete', recovery })
 })

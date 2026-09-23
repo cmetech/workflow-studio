@@ -2222,7 +2222,9 @@ pub(super) fn transaction_move(
     source: &BoundPath,
     destination: &BoundPath,
     identity: &Handle,
+    hash: &str,
 ) -> WorkspaceResult<()> {
+    transaction_require_matches(source, identity, hash)?;
     let outcome = move_noclobber_with_expected(source, destination, identity, || {}, || {});
     if matches!(outcome, MoveNoClobberOutcome::Moved) {
         Ok(())
@@ -2233,9 +2235,53 @@ pub(super) fn transaction_move(
         ))
     }
 }
-pub(super) fn transaction_remove(path: &BoundPath, identity: &Handle) -> WorkspaceResult<()> {
-    remove_verified_name(path, identity)
-        .map_err(|issue| WorkspaceError::new(issue.code, issue.message))
+#[cfg(test)]
+pub(super) fn transaction_remove(
+    scope: &WorkspaceScope,
+    relative: &str,
+    path: &BoundPath,
+    identity: &Handle,
+    hash: &str,
+) -> WorkspaceResult<PathOperationResult> {
+    transaction_remove_with_hook(scope, relative, path, identity, hash, || {})
+}
+
+pub(super) fn transaction_remove_with_hook(
+    scope: &WorkspaceScope,
+    relative: &str,
+    path: &BoundPath,
+    identity: &Handle,
+    hash: &str,
+    hook: impl FnOnce(),
+) -> WorkspaceResult<PathOperationResult> {
+    transaction_require_matches(path, identity, hash)?;
+    hook();
+    let receipt = super::transaction_recovery::retain(scope, path, identity, relative)?;
+    // This check diagnoses conflicts; retention, not the check, protects bytes
+    // written in the final syscall gap or through an already-open writer later.
+    let changed = !transaction_matches(path, identity, hash);
+    if let Err(issue) = remove_verified_name(path, identity) {
+        return Err(WorkspaceError::new(issue.code, issue.message).with_path_results(vec![receipt]));
+    }
+    if changed {
+        return Err(WorkspaceError::new("workspace_revision_conflict", "The file changed during disposal; its live contents remain at the recovery destination.").with_path_results(vec![receipt]));
+    }
+    Ok(receipt)
+}
+
+fn transaction_require_matches(
+    path: &BoundPath,
+    identity: &Handle,
+    hash: &str,
+) -> WorkspaceResult<()> {
+    if transaction_matches(path, identity, hash) {
+        Ok(())
+    } else {
+        Err(WorkspaceError::new(
+            "workspace_revision_conflict",
+            "The file identity or content changed before transaction cleanup or relocation; the current file was preserved.",
+        ))
+    }
 }
 pub(super) fn transaction_trash(
     scope: &WorkspaceScope,

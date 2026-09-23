@@ -65,12 +65,14 @@ struct Staged {
     relative: String,
     bound: files::BoundPath,
     identity: Handle,
+    hash: String,
     active: bool,
 }
 struct Installed {
     relative: String,
     bound: files::BoundPath,
     identity: Handle,
+    hash: String,
     backup: Option<usize>,
 }
 struct CreatedDirectory {
@@ -401,6 +403,7 @@ pub(super) fn apply_verified(
         hook,
         |_| Ok(()),
         |write, path| stage_text(scope, write, path),
+        |_| {},
     )
 }
 
@@ -418,6 +421,7 @@ pub fn apply_with_staging_hook(
         |_| Ok(()),
         stage,
         |write, path| stage_text(scope, write, path),
+        |_| {},
     )
 }
 
@@ -429,6 +433,7 @@ fn apply_verified_staging(
     mut hook: impl FnMut(usize) -> WorkspaceResult<()>,
     mut stage: impl FnMut(usize) -> WorkspaceResult<()>,
     mut stage_write: impl FnMut(&WriteRequest, &str) -> WorkspaceResult<String>,
+    mut disposal_hook: impl FnMut(&str),
 ) -> WorkspaceResult<WorkspaceTransactionResult> {
     let expected = validate_plan(scope, plan)?;
     let mut created = Vec::new();
@@ -460,6 +465,7 @@ fn apply_verified_staging(
                 relative,
                 bound,
                 identity,
+                hash: write_hashes.last().unwrap().clone(),
                 active: true,
             });
             if let Some(original) = &expected[&write.relative_path] {
@@ -532,6 +538,7 @@ fn apply_verified_staging(
                     &backup.original_bound,
                     &backup.saved_bound,
                     &backup.identity,
+                    &backup.hash,
                 )?;
                 if !files::transaction_matches(&backup.saved_bound, &backup.identity, &backup.hash)
                 {
@@ -549,9 +556,10 @@ fn apply_verified_staging(
                 relative: write.relative_path.clone(),
                 bound: clone_bound(&destination)?,
                 identity,
+                hash: source.hash.clone(),
                 backup: None,
             });
-            files::transaction_move(&source.bound, &destination, &source.identity)?;
+            files::transaction_move(&source.bound, &destination, &source.identity, &source.hash)?;
             source.active = false;
             hook(step)?;
             step += 1;
@@ -568,9 +576,15 @@ fn apply_verified_staging(
                 relative: movement.destination_path.clone(),
                 bound: clone_bound(&destination)?,
                 identity,
+                hash: backup.hash.clone(),
                 backup: Some(index),
             });
-            files::transaction_move(&backup.saved_bound, &destination, &backup.identity)?;
+            files::transaction_move(
+                &backup.saved_bound,
+                &destination,
+                &backup.identity,
+                &backup.hash,
+            )?;
             backup.active = false;
             hook(step)?;
             step += 1;
@@ -642,21 +656,34 @@ fn apply_verified_staging(
         }
         Ok(())
     })();
-    if let Err(cause) = operation {
+    if let Err(mut cause) = operation {
         let mut recovery = Vec::new();
         for value in installed.iter().rev() {
             let restored = if let Some(index) = value.backup {
                 let backup = &mut backups[index];
-                let outcome =
-                    files::transaction_move(&value.bound, &backup.saved_bound, &value.identity);
+                let outcome = files::transaction_move(
+                    &value.bound,
+                    &backup.saved_bound,
+                    &value.identity,
+                    &value.hash,
+                );
                 if outcome.is_ok() {
                     backup.active = true;
                 }
                 outcome
             } else {
-                files::transaction_remove(&value.bound, &value.identity)
+                files::transaction_remove_with_hook(
+                    scope,
+                    &value.relative,
+                    &value.bound,
+                    &value.identity,
+                    &value.hash,
+                    || disposal_hook(&value.relative),
+                )
+                .map(|receipt| recovery.push(receipt))
             };
             if let Err(error) = restored {
+                recovery.extend(error.path_results);
                 recovery.push(result(
                     &value.relative,
                     None,
@@ -670,6 +697,7 @@ fn apply_verified_staging(
                 &backup.saved_bound,
                 &backup.original_bound,
                 &backup.identity,
+                &backup.hash,
             ) {
                 recovery.push(result(
                     &backup.original,
@@ -680,7 +708,17 @@ fn apply_verified_staging(
             }
         }
         for file in staged.iter().filter(|value| value.active) {
-            if let Err(error) = files::transaction_remove(&file.bound, &file.identity) {
+            if let Err(error) = files::transaction_remove_with_hook(
+                scope,
+                &file.relative,
+                &file.bound,
+                &file.identity,
+                &file.hash,
+                || disposal_hook(&file.relative),
+            )
+            .map(|receipt| recovery.push(receipt))
+            {
+                recovery.extend(error.path_results);
                 recovery.push(result(&file.relative, None, "partial", Some(error.message)));
             }
         }
@@ -688,7 +726,11 @@ fn apply_verified_staging(
         drop(backups);
         drop(staged);
         recovery.extend(cleanup_directories(&mut created));
-        if recovery.is_empty() {
+        if recovery
+            .iter()
+            .all(|entry| entry.status == "recoveryRetained")
+        {
+            cause.path_results.extend(recovery);
             return Err(cause);
         }
         return Err(WorkspaceError::new(
@@ -709,7 +751,15 @@ fn apply_verified_staging(
         let outcome = if trash_paths.contains(backup.original.as_str()) {
             files::transaction_trash(scope, &backup.saved_bound, &backup.saved, &backup.hash)
         } else {
-            files::transaction_remove(&backup.saved_bound, &backup.identity)
+            files::transaction_remove_with_hook(
+                scope,
+                &backup.original,
+                &backup.saved_bound,
+                &backup.identity,
+                &backup.hash,
+                || disposal_hook(&backup.saved),
+            )
+            .map(|receipt| results.push(receipt))
         };
         if let Err(error) = outcome {
             partial = true;
@@ -844,5 +894,25 @@ pub(super) fn apply_captured_stream(
             )?;
             Ok(hash.into())
         },
+        |_| {},
+    )
+}
+
+#[cfg(test)]
+pub(super) fn apply_with_disposal_hook(
+    scope: &WorkspaceScope,
+    plan: &PackageMutationPlan,
+    hook: impl FnMut(usize) -> WorkspaceResult<()>,
+    disposal: impl FnMut(&str),
+) -> WorkspaceResult<WorkspaceTransactionResult> {
+    apply_verified_staging(
+        scope,
+        plan,
+        |_| Ok(()),
+        |_| Ok(()),
+        hook,
+        |_| Ok(()),
+        |write, path| stage_text(scope, write, path),
+        disposal,
     )
 }

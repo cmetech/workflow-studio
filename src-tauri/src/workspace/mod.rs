@@ -5,6 +5,7 @@ pub(crate) mod generated_write;
 pub(crate) mod package_hash;
 mod paths;
 pub(crate) mod transaction;
+mod transaction_recovery;
 mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use same_file::Handle;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceError {
@@ -112,6 +113,8 @@ pub struct WorkspaceScope {
     root: PathBuf,
     identity: Handle,
     directory: Dir,
+    recovery: Option<transaction_recovery::RecoveryStore>,
+    recovery_error: Option<String>,
 }
 
 impl WorkspaceScope {
@@ -133,6 +136,11 @@ impl WorkspaceScope {
             root,
             identity,
             directory,
+            #[cfg(test)]
+            recovery: Some(transaction_recovery::RecoveryStore::isolated()?),
+            #[cfg(not(test))]
+            recovery: None,
+            recovery_error: None,
         })
     }
 
@@ -178,7 +186,24 @@ pub fn workspace_set_root(
     git_state: State<'_, crate::git::GitState>,
     app: AppHandle,
 ) -> WorkspaceResult<WorkspaceRootInfo> {
-    let scope = WorkspaceScope::new(Path::new(&root_path))?;
+    let mut scope = WorkspaceScope::new(Path::new(&root_path))?;
+    let recovery = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| WorkspaceError::new("workspace_recovery_unavailable", error.to_string()))
+        .and_then(|app_data| {
+            transaction_recovery::RecoveryStore::open_outside(
+                &app_data.join("transaction-recovery"),
+                &scope,
+            )
+        });
+    match recovery {
+        Ok(store) => scope.recovery = Some(store),
+        Err(error) => {
+            scope.recovery = None;
+            scope.recovery_error = Some(error.message);
+        }
+    }
     let root = scope.verify()?;
     let (info, git_metadata) = discover_workspace_root(root)?;
     let watcher = watcher::start(root, git_metadata.as_ref(), app)?;

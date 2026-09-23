@@ -1,3 +1,4 @@
+import TransactionRecoveryDetails from './TransactionRecoveryDetails.svelte'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { expect, it, vi } from 'vitest'
 import type { PackageAnalysis } from '$src/lib/packages/readiness'
@@ -132,4 +133,74 @@ it('requires an explicit final preview and invalidates commit whenever either dr
   await fireEvent.input(screen.getByLabelText('Commit message'), { target: { value: 'Different message' } })
   expect(screen.getByRole('button', { name: 'Commit local version' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'Prepare preview' })).toBeEnabled()
+})
+
+it('renders every reported recovery location and reason without opening or mutating files', () => {
+  const callbacks = props(),
+    onOpenArtifact = vi.fn()
+  const view = {
+    step: 'validate' as const,
+    error: {
+      message: 'Some verified recovery files remain.',
+      recovery: ['Inspect saved files before retrying.'],
+      pathResults: [
+        {
+          relativePath: 'packages/demo/digests.json',
+          destinationPath: 'packages/demo/.workflow-studio-original-123',
+          status: 'partial' as const,
+          message: 'Destination changed',
+        },
+        {
+          relativePath: 'marketplace/index.json',
+          destinationPath: 'marketplace/.workflow-studio-original-456',
+          status: 'failed' as const,
+          message: '<script>not executable</script>',
+        },
+      ],
+      omittedPathResults: 2,
+    },
+  }
+  render(PreparePackageDialog, { ...callbacks, onOpenArtifact, view })
+  const alert = screen.getByRole('alert')
+  for (const path of view.error.pathResults) {
+    expect(alert).toHaveTextContent(path.relativePath)
+    expect(alert).toHaveTextContent(path.destinationPath)
+    expect(alert).toHaveTextContent(path.status)
+    expect(alert).toHaveTextContent(path.message)
+  }
+  expect(alert).toHaveTextContent('2 additional file results could not be displayed')
+  expect(alert.querySelector('script')).toBeNull()
+  expect(onOpenArtifact).not.toHaveBeenCalled()
+  expect(callbacks.onPrepare).not.toHaveBeenCalled()
+  expect(callbacks.onCommit).not.toHaveBeenCalled()
+})
+
+it('shows retained recovery locations after successful local preparation', () => {
+  const recovery = {
+    pathResults: [
+      {
+        relativePath: 'pkg/digests.json',
+        destinationPath: 'C:/Studio/recovery/original-123',
+        status: 'recoveryRetained' as const,
+        message: 'Manual recovery copy retained.',
+      },
+    ],
+    omittedPathResults: 0,
+  }
+  render(PreparePackageDialog, {
+    ...props(),
+    view: { step: 'complete', commitOid: 'abc', version: '1.0.1', includedPaths: ['pkg/digests.json'], recovery },
+  })
+  const receipt = screen.getByRole('region', { name: 'Retained recovery files' })
+  expect(receipt).toHaveTextContent('C:/Studio/recovery/original-123')
+  expect(receipt).toHaveTextContent('pkg/digests.json')
+  expect(receipt).toHaveTextContent('Retained for recovery')
+  expect(receipt).toHaveTextContent('Manual recovery copy retained.')
+})
+
+it('labels rolled-back recovery results in readable text', () => {
+  render(TransactionRecoveryDetails, {
+    receipt: { pathResults: [{ relativePath: 'pkg/source', status: 'rolledBack' }], omittedPathResults: 0 },
+  })
+  expect(screen.getByRole('region', { name: 'Transaction recovery locations' })).toHaveTextContent('Rolled back')
 })

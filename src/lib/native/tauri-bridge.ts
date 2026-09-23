@@ -82,7 +82,8 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
     value === 'trashed' ||
     value === 'written' ||
     value === 'failed' ||
-    value === 'partial'
+    value === 'partial' ||
+    value === 'recoveryRetained'
   )
 }
 

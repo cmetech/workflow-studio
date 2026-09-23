@@ -147,3 +147,40 @@ it('allows a new explicit preview after changing the chosen version without acce
   )
   expect(native.gitCommitPackageVersion).not.toHaveBeenCalled()
 })
+
+it.each([false, true])(
+  'preserves recovery from both successful mutations when later preview fails: %s',
+  async (fails) => {
+    const { backend, native } = await fixture()
+    const retained = (path: string) => ({
+      relativePath: path,
+      destinationPath: 'C:/Studio/recovery/' + path.split('/').at(-1),
+      status: 'recoveryRetained' as const,
+      message: 'Manual recovery copy retained.',
+    })
+    const manifestReceipt = retained('packages/laptop/workflow-package.json'),
+      generatedReceipt = retained('packages/laptop/digests.json')
+    const apply = native.workspaceApplyTransaction.bind(native),
+      generated = native.workspaceReplaceGeneratedFiles.bind(native)
+    native.workspaceApplyTransaction = async (request) => {
+      const result = await apply(request)
+      return { ...result, results: [...result.results, manifestReceipt] }
+    }
+    native.workspaceReplaceGeneratedFiles = async (request) => {
+      const result = await generated(request)
+      return { ...result, results: [...result.results, generatedReceipt] }
+    }
+    const review = await backend.validate()
+    if (fails) vi.mocked(native.gitPreviewPackageVersion).mockRejectedValue(new Error('git_identity_missing'))
+    const result = backend.prepare(review.snapshot, { version: '1.0.1', message: 'Prepare laptop' })
+    if (fails)
+      await expect(result).rejects.toMatchObject({
+        message: 'git_identity_missing',
+        pathResults: [manifestReceipt, generatedReceipt],
+      })
+    else
+      await expect(result).resolves.toMatchObject({
+        recovery: { pathResults: [manifestReceipt, generatedReceipt], omittedPathResults: 0 },
+      })
+  },
+)

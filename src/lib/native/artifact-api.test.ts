@@ -169,3 +169,29 @@ it('passes optional package snapshot authority verbatim for binary import and re
   await tauriBridge.workspaceReplaceArtifact(replacement)
   expect(invoke).toHaveBeenLastCalledWith('workspace_replace_artifact', replacement)
 })
+
+it.each(['workspaceImportArtifact', 'workspaceReplaceArtifact'] as const)(
+  'preserves successful native recovery metadata without decoding away optional fields: %s',
+  async (method) => {
+    const metadata = {
+      relativePath: 'pkg/image.png',
+      mediaType: 'image/png',
+      size: 12,
+      sha256: 'hash',
+      modifiedAt: 'now',
+      readOnly: false,
+      recoveryResults: [
+        {
+          relativePath: 'pkg/image.png',
+          destinationPath: 'C:/Users/me/AppData/Studio/recovery/source-123',
+          status: 'recoveryRetained',
+          message: 'Verified bytes retained.',
+        },
+      ],
+    }
+    invoke.mockResolvedValueOnce(metadata)
+    await expect(
+      tauriBridge[method]({ relativePath: 'pkg/image.png', sourceGrantToken: 'grant', expectedCurrentHash: 'old' }),
+    ).resolves.toBe(metadata)
+  },
+)

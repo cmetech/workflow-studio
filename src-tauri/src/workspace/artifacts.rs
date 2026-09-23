@@ -25,6 +25,8 @@ pub struct WorkspaceArtifactMetadata {
     pub sha256: String,
     pub modified_at: String,
     pub read_only: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recovery_results: Vec<super::PathOperationResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,6 +232,7 @@ fn snapshot(
         sha256: hash,
         modified_at: files::modified_timestamp(&metadata),
         read_only: metadata.permissions().readonly(),
+        recovery_results: Vec::new(),
     })
 }
 
@@ -339,7 +342,7 @@ pub fn grant_source(
     })
 }
 
-fn reject_ambient_links(path: &Path) -> WorkspaceResult<()> {
+pub(super) fn reject_ambient_links(path: &Path) -> WorkspaceResult<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component);
@@ -425,7 +428,7 @@ pub(super) fn import_captured(
             trashes: vec![],
         };
         let size = grant.file.metadata().map_err(io)?.len();
-        super::transaction::apply_captured_stream(
+        let transaction = super::transaction::apply_captured_stream(
             scope,
             &plan,
             captured,
@@ -443,7 +446,22 @@ pub(super) fn import_captured(
                 Ok(())
             },
         )?;
-        return read(scope, relative);
+        let mut metadata = read(scope, relative).map_err(|mut error| {
+            error.path_results.extend(
+                transaction
+                    .results
+                    .iter()
+                    .filter(|entry| entry.status == "recoveryRetained")
+                    .cloned(),
+            );
+            error
+        })?;
+        metadata.recovery_results = transaction
+            .results
+            .into_iter()
+            .filter(|entry| entry.status == "recoveryRetained")
+            .collect();
+        return Ok(metadata);
     }
     files::write_artifact_stream_verified(
         scope,

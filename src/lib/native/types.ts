@@ -74,6 +74,8 @@ export interface WorkspaceWriteResult {
 }
 
 export interface WorkspaceArtifactMetadata {
+  /** Exact native recovery locations retained after a successful import or replacement. */
+  readonly recoveryResults?: readonly PathOperationResult[]
   readonly relativePath: string
   readonly mediaType: string
   readonly size: number
@@ -180,7 +182,7 @@ export interface WorkspaceTrashRequest {
 export interface PathOperationResult {
   readonly relativePath: string
   readonly destinationPath?: string
-  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'written' | 'failed' | 'partial'
+  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'written' | 'failed' | 'partial' | 'recoveryRetained'
   readonly errorCode?: string
   readonly message?: string
 }

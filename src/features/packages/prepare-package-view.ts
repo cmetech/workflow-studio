@@ -1,3 +1,4 @@
+import type { TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
 import type { PackageAnalysis } from '$src/lib/packages/readiness'
 
 export interface PackageChange {
@@ -6,11 +7,11 @@ export interface PackageChange {
   previousPath?: string
   trustImpact?: boolean
 }
-export interface PreparePackageFailure {
+export interface PreparePackageFailure extends Partial<TransactionRecoveryReceipt> {
   message: string
   recovery: readonly string[]
 }
-export type PreparePackageView =
+export type PreparePackageView = { readonly recovery?: TransactionRecoveryReceipt } & (
   | { step: 'validate'; busy?: boolean; analysis?: PackageAnalysis; error?: PreparePackageFailure }
   | {
       step: 'review' | 'version'
@@ -31,3 +32,4 @@ export type PreparePackageView =
       includedPaths: readonly string[]
       warnings?: readonly string[]
     }
+)

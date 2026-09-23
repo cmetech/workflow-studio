@@ -1,3 +1,4 @@
+import { extractTransactionRecovery, type TransactionRecoveryReceipt } from '$src/lib/native/transaction-recovery'
 import { atom } from 'nanostores'
 import type { GitVersionResult } from '$src/lib/git/types'
 import type { PackageAnalysis } from '$src/lib/packages/readiness'
@@ -17,6 +18,7 @@ export interface PreparationReview<Snapshot> {
   readonly suggestionReasons: readonly string[]
 }
 export interface FinalPackagePreview extends PackageVersionInput {
+  readonly recovery?: TransactionRecoveryReceipt
   readonly authorizationToken: string
   readonly diff: string
   readonly includedPaths: readonly string[]
@@ -40,6 +42,7 @@ function failure(cause: unknown): PreparePackageFailure {
         : 'Package preparation failed.'
   return {
     message: message.slice(0, 4096),
+    ...extractTransactionRecovery(cause),
     recovery: [
       'Inspect saved and generated files before retrying.',
       'Resolve the reported issue, then validate and review a fresh preview.',
@@ -120,6 +123,7 @@ export class PreparePackageController<Snapshot> {
         ...clearPreview(view),
         busy: false,
         includedPaths: preview.includedPaths,
+        ...(preview.recovery ? { recovery: preview.recovery } : {}),
         finalPreview: { diff: preview.diff, version: preview.version, message: preview.message },
       })
     } catch (cause) {
@@ -154,6 +158,7 @@ export class PreparePackageController<Snapshot> {
         version: preview.version,
         includedPaths: preview.includedPaths,
         warnings: result.warnings,
+        ...(view.recovery ? { recovery: view.recovery } : {}),
       })
     } catch (cause) {
       this.state.set({ ...clearPreview(view), busy: false, error: failure(cause) })

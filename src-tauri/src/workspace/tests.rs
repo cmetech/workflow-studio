@@ -2231,6 +2231,334 @@ fn transaction_reports_recovery_when_external_file_blocks_rollback() {
 }
 
 #[test]
+fn transaction_preserves_same_identity_concurrent_installed_write_and_original() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}],
+        "moves": [], "trashes": []
+    }))
+    .unwrap();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 2 {
+            let before = same_file::Handle::from_path(root.path().join("old")).unwrap();
+            fs::write(root.path().join("old"), "C").unwrap();
+            assert_eq!(
+                before,
+                same_file::Handle::from_path(root.path().join("old")).unwrap()
+            );
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "C");
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == "old" && value.status == "partial"));
+    let backup = error
+        .path_results
+        .iter()
+        .find_map(|value| value.destination_path.as_ref())
+        .expect("actionable original recovery path");
+    assert_eq!(fs::read_to_string(root.path().join(backup)).unwrap(), "A");
+}
+
+#[test]
+fn transaction_disposal_preserves_write_in_final_hash_to_unlink_gap() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("installed"), "B").unwrap();
+    let scope = scope(root.path());
+    let bound = super::artifacts::bind(&scope, "installed").unwrap();
+    let identity = files::transaction_identity(&bound).unwrap();
+    let result = files::transaction_remove_with_hook(
+        &scope,
+        "installed",
+        &bound,
+        &identity,
+        &files::hash_bytes(b"B"),
+        || {
+            fs::write(root.path().join("installed"), "C").unwrap();
+            assert_eq!(identity, files::transaction_identity(&bound).unwrap());
+        },
+    );
+    assert!(result.is_err(), "changed bytes need a recovery receipt");
+    let error = result.unwrap_err();
+    let retained = error
+        .path_results
+        .iter()
+        .find_map(|entry| entry.destination_path.as_ref())
+        .expect("exact retained path");
+    assert_eq!(fs::read_to_string(retained).unwrap(), "C");
+}
+
+#[test]
+fn transaction_disposal_retains_later_writes_through_open_handle() {
+    use std::io::{Seek, SeekFrom, Write};
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("installed"), "B").unwrap();
+    let scope = scope(root.path());
+    let bound = super::artifacts::bind(&scope, "installed").unwrap();
+    let identity = files::transaction_identity(&bound).unwrap();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join("installed"))
+        .unwrap();
+    let receipt = files::transaction_remove(
+        &scope,
+        "installed",
+        &bound,
+        &identity,
+        &files::hash_bytes(b"B"),
+    )
+    .unwrap();
+    assert!(!root.path().join("installed").exists());
+    writer.seek(SeekFrom::Start(0)).unwrap();
+    writer.write_all(b"C").unwrap();
+    writer.sync_all().unwrap();
+    assert_eq!(receipt.status, "recoveryRetained");
+    let saved = receipt.destination_path.unwrap();
+    assert!(!std::path::Path::new(&saved).starts_with(root.path()));
+    assert_eq!(fs::read_to_string(saved).unwrap(), "C");
+}
+
+#[test]
+fn transaction_rollback_reports_inner_gap_write_and_restores_original() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+    })).unwrap();
+    let error = super::transaction::apply_with_disposal_hook(
+        &scope,
+        &plan,
+        |step| {
+            if step == 2 {
+                Err(super::WorkspaceError::new(
+                    "injected",
+                    "rollback installed write",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+        |relative| {
+            assert_eq!(relative, "old");
+            let before = same_file::Handle::from_path(root.path().join(relative)).unwrap();
+            fs::write(root.path().join(relative), "C").unwrap();
+            assert_eq!(
+                before,
+                same_file::Handle::from_path(root.path().join(relative)).unwrap()
+            );
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "A");
+    let receipt = error
+        .path_results
+        .iter()
+        .find(|entry| entry.status == "recoveryRetained")
+        .unwrap();
+    assert_eq!(receipt.relative_path, "old");
+    assert_eq!(
+        fs::read_to_string(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        "C"
+    );
+}
+
+#[test]
+fn transaction_success_discloses_original_recovery_without_package_pollution() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("workflow-package.json"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"workflow-package.json","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"workflow-package.json","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+    })).unwrap();
+    let result = super::transaction::apply(&scope, &plan).unwrap();
+    assert_eq!(result.status, "committed");
+    let receipt = result
+        .results
+        .iter()
+        .find(|entry| entry.status == "recoveryRetained")
+        .unwrap();
+    assert_eq!(receipt.relative_path, "workflow-package.json");
+    assert_eq!(
+        fs::read_to_string(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        "A"
+    );
+    let snapshot = super::package_hash::capture(&scope, "").unwrap();
+    assert_eq!(snapshot.files.len(), 1);
+    assert_eq!(snapshot.files[0].sha256, files::hash_bytes(b"B"));
+}
+
+#[test]
+fn transaction_binary_replacement_returns_recovery_receipt_and_rejects_user_hardlinks() {
+    let root = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    fs::write(root.path().join("old.bin"), [0, 255]).unwrap();
+    fs::write(external.path().join("new.bin"), [255, 0]).unwrap();
+    let scope = scope(root.path());
+    let captured = super::package_hash::capture(&scope, "").unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    let grant =
+        super::artifacts::grant_source(&external.path().join("new.bin"), 1, &grants).unwrap();
+    let imported = super::artifacts::import_captured(
+        &scope,
+        1,
+        &grants,
+        "old.bin",
+        &grant.source_grant_token,
+        Some(&files::hash_bytes(&[0, 255])),
+        Some(&captured),
+    )
+    .unwrap();
+    assert_eq!(imported.recovery_results.len(), 1);
+    let receipt = &imported.recovery_results[0];
+    assert_eq!(receipt.status, "recoveryRetained");
+    assert_eq!(
+        fs::read(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        [0, 255]
+    );
+    assert_eq!(
+        super::package_hash::capture(&scope, "")
+            .unwrap()
+            .files
+            .len(),
+        1
+    );
+    fs::hard_link(
+        root.path().join("old.bin"),
+        external.path().join("user-linked.bin"),
+    )
+    .unwrap();
+    assert!(super::package_hash::capture(&scope, "").is_err());
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_moved_file() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":files::hash_bytes(b"A")},{"relativePath":"dest","expectedCurrentHash":null}],
+        "writes": [], "moves": [{"sourcePath":"old","destinationPath":"dest"}], "trashes": []
+    })).unwrap();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 2 {
+            fs::write(root.path().join("dest"), "C").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join("dest")).unwrap(), "C");
+    assert!(!root.path().join("old").exists());
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == "dest" && value.status == "partial"));
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_staged_file() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"dest","expectedCurrentHash":null}],
+        "writes": [{"relativePath":"dest","text":"B","expectedCurrentHash":null}], "moves": [], "trashes": []
+    })).unwrap();
+    let mut saved = String::new();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 0 {
+            saved = fs::read_dir(root.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            fs::write(root.path().join(&saved), "C").unwrap();
+            return Err(super::WorkspaceError::new(
+                "injected",
+                "stop before installation",
+            ));
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join(&saved)).unwrap(), "C");
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == saved && value.status == "partial"));
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_backup_on_failure_and_success() {
+    for fail in [true, false] {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("old"), "A").unwrap();
+        let scope = scope(root.path());
+        let hash = files::hash_bytes(b"A");
+        let plan = serde_json::from_value(serde_json::json!({
+            "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+            "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+            "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+        })).unwrap();
+        let mut saved = String::new();
+        let result = super::transaction::apply_with_hook(&scope, &plan, |step| {
+            if step == 2 {
+                saved = fs::read_dir(root.path())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
+                    .find(|name| name.starts_with(".workflow-studio-original-"))
+                    .unwrap();
+                fs::write(root.path().join(&saved), "C").unwrap();
+                if fail {
+                    return Err(super::WorkspaceError::new(
+                        "injected",
+                        "stop after installation",
+                    ));
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_err(), "changed backup must be reported");
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "workspace_transaction_partial");
+        assert_eq!(fs::read_to_string(root.path().join(&saved)).unwrap(), "C");
+        assert!(error
+            .path_results
+            .iter()
+            .any(|value| value.destination_path.as_ref() == Some(&saved)
+                && value.status == "partial"));
+        if fail {
+            assert!(!root.path().join("old").exists());
+        } else {
+            assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "B");
+        }
+    }
+}
+
+#[test]
 fn package_contract_filesystem_boundary_recipes() {
     use base64::Engine;
     let vectors: serde_json::Value = serde_json::from_str(include_str!(
