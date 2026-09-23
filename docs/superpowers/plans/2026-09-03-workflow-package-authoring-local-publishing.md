@@ -12,6 +12,8 @@
 
 **Reconciled 2026-09-22:** See [2026-09-22 marketplace contract reconciliation](../../analysis/2026-09-22-workflow-package-marketplace-contract-reconciliation.md) for immutable artifact pins, exact format rules, evidence, and remaining gates. No implementation task is completed by this reconciliation.
 
+**Verification status 2026-09-23:** All five adversarial rounds have frozen reports and reconciled corrections. Additional final-gate fixes received independent follow-up review. The [final verification receipt](../../verification/2026-09-23-package-final-gate.md) identifies exact tested sources, preserved failures, fresh marketplace interoperability, and remaining acceptance. Windows functional, full unit/native, strict reference performance, and package interoperability checks passed. The full Linux run had 427 passes, two failures, and three configured skips; its selection-test precondition is corrected and verified, while intermittent WebKit capacity deadline acceptance remains open. Required native manual observations also remain open. No full Linux or implementation-completion claim is made.
+
 ## Global Constraints
 
 - Execute this plan on an implementation branch created from `base`; create the isolated worktree at execution time with `superpowers:using-git-worktrees`.
@@ -1407,7 +1409,7 @@ git commit -m "test: verify workflow package authoring"
 - [x] **Round 4: Local Git and marketplace handoff.** Review selected-path commits, shared-index consistency, dirty unrelated packages, versions, publishing claims, and actual agent compatibility/trust boundaries. Reconcile and verify remediation before proceeding.
 - [x] **Round 5: Full candidate and product/release readiness.** Review the entire resulting feature and unchanged callers, including remediation regressions, offline packaging, accessibility, performance, and branding. Fix blocking findings and obtain targeted independent verification on any subsequently changed candidate.
 - [ ] **Final verification:** Run the full Task 16 gate on the corrected candidate. Record all five reports, exact commit/tree identities, finding dispositions, fix/test evidence, and justified Minor deferrals. No unresolved Critical/Important finding or unverified required acceptance check may pass the completion gate.
-- [ ] **Commit evidence:** Commit review/reconciliation artifacts and verified fixes using exact paths; preserve report identity separately from any later evidence-only commit. No merge, push, or release is implied by a review verdict.
+- [x] **Commit evidence:** Commit review/reconciliation artifacts and verified fixes using exact paths; preserve report identity separately from any later evidence-only commit. No merge, push, or release is implied by a review verdict. Final acceptance remains open as recorded above.
 
 ## Implementation Completion Gate
 

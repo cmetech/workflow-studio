@@ -47,7 +47,12 @@ Full Linux native verification passed: 352 library tests (48.94s), one IPC
 dispatch test (0.01s), and 27 Git integration tests (2.64s), 380 total with zero
 failed or ignored and exit code 0. Both the original intermittent symlink test
 and the deterministic regression passed. Independent preliminary source review
-found no issues; immutable follow-up and Windows verification remain pending.
+found no issues. The subsequent independent immutable review of `e30788a`
+confirmed no actionable findings. Full native verification on `d5a9090`
+passed 380 tests on Linux and 343 on Windows. The final frontend candidate
+`a18369d` has the identical `src-tauri` tree
+`7c7c13a17689e334361be754438a1a3514618715`, with unchanged package manifests
+and lockfiles; those native results apply to that unchanged implementation.
 
 No timeout, assertion, or safety guard has been relaxed to accept the failing
 run. The initial green test's PowerShell wrapper reported an error for

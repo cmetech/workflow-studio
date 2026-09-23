@@ -4,6 +4,8 @@ The bounded Task 16 Step 5 acceptance passed on WSL2 Ubuntu 22.04 with CPython 3
 
 ## Immutable inputs and backend
 
+The [September 23 final-candidate receipt](2026-09-23-package-final-gate.md#marketplace-handoff) records a fresh generation and acceptance run from clean Studio commit `a18369d4eab8ac3d6e84a1e7a65718bff4946c95`, against the same pinned agent production source. The original inputs and procedure below remain historical evidence.
+
 - Agent production source: `3e89c2659b6e9c95a627b8f819ff63a11529d86a`, materialized using `git archive --format=tar` from the read-only `hermes-agent-resource-contract` checkout. Its checkout HEAD was `5c8c4cd4b2a727730b85d6e76cbc603d2125fd01`; only two review documents differ from the archive pin. No sibling source was edited. Its eight pre-existing untracked evidence files remained present.
 - Studio generation checkout HEAD when captured: `53a21d232fd669acbc81bbe37bfb9921b47bcc5d`. The producer byte hashes below identify the actual working-tree code, including any uncommitted changes at generation time.
 - WSL2 Ubuntu 22.04, kernel `6.18.33.2-microsoft-standard-WSL2`, Git `2.34.1`, CPython `3.11.15` (Clang 22.1.3).
