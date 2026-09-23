@@ -4,6 +4,10 @@ Use one package for workflows that are versioned and distributed together. In `p
 
 Use Add Workflow to copy a selected workflow into the package. Choose unique destination paths, for example `workflows/diagnose.yaml` and `workflows/report.yaml`. Preserve companion pairing when present. Shared scripts can live once at `scripts/analyze.py`, with multiple workflow nodes resolving to the same artifact.
 
+Definition destination and Companion destination are relative to the package root. For a copy, choose a distinct Workflow name as well as destination paths; review the exact source and destination list before confirming. Move preserves the source workflow name and contents. Choose Copy when you need to change the name during import. Supporting resources retain their verified paths, and collisions are reported instead of overwriting existing files.
+
+If the workflow name uses a YAML anchor or alias, keep its original name or resolve the anchor and aliases explicitly in YAML before renaming the copy. This prevents a name change from altering other fields that share the value.
+
 Validate every member after adding or moving resources. The package digest covers the whole root, so changing one shared script changes the package even when the other definitions are untouched. Check the reference list before replacing or removing shared artifacts.
 
 Each member must have a unique workflow `name`, as well as its own declared definition path. Studio opens the exact companion listed in the manifest; an absent companion does not select a similarly named file automatically.

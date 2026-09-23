@@ -2,11 +2,15 @@
 
 A command resource is a Markdown file, commonly `commands/interpret.md`, resolved through the active workflow contract. Select the artifact to edit it, preview its body, or inspect referencing workflow nodes. Command text remains authored content; technical identifiers are preserved.
 
+Commands used by ordinary nodes and loop nodes receive the same command-body checks. A filename need not end in `.md` when the contract resolves it as a command resource.
+
 ## Frontmatter and preview
 
 Optional frontmatter begins at the start of the file with a `---` line and ends at its closing delimiter. Use one YAML mapping. Duplicate keys, malformed syntax, or unsupported structure appear as blocking findings. The currently bundled contract does not export a command-frontmatter schema; unknown metadata is retained rather than silently discarded or validated against an invented key list.
 
 The preview removes scripts, embedded images, navigation attributes, styles, and event handlers. It does not fetch remote content or execute commands. Edit, Preview, and References support keyboard navigation.
+
+References lists consumers from saved workflow files in the selected package. Unsaved workflow changes are identified separately; inspecting references does not save them. Save a workflow edit to refresh its consumers. Loading or unavailable analysis is shown explicitly rather than as an empty reference list.
 
 Save preserves the exact text, even while it contains errors. Resolve diagnostics before preparing the package. When disk content changes externally, compare both versions before Keep Mine; Reload Disk adopts the current disk version.
 
