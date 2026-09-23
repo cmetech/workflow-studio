@@ -78,3 +78,17 @@ Windows Chromium had 212 passing and three failing functional tests; isolated
 repeats passed nine of nine without changing assertions or timeouts. Their
 full-run failure cause is still under investigation. Installed-app manual
 acceptance remains unverified.
+
+## Unix type-width follow-up
+
+A subsequent portability review found that locked libc 0.2.189 declares
+`S_ISVTX` as `mode_t`, which is `u16` on Apple targets. Rust filesystem metadata
+returns its mode as `u32`. The direct bitwise operation therefore fails to
+typecheck on macOS. The check now explicitly converts the constant with
+`u32::from`, preserving its value on both supported Unix type widths; Windows
+does not compile this Unix-only branch.
+
+A small compiler probe failed with the original `u32 & u16` expression and
+passed with the conversion for both constant widths. Independent source
+review confirmed the locked-library definitions and correction. This is
+type-check evidence, not a macOS application build or runtime acceptance result.

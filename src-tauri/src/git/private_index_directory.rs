@@ -119,7 +119,7 @@ fn verify_parent_chain(path: &Path) -> io::Result<()> {
         let metadata = std::fs::symlink_metadata(ancestor)?;
         let trusted_owner = metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() };
         let mutable_by_others = metadata.mode() & 0o022 != 0;
-        let sticky = metadata.mode() & libc::S_ISVTX != 0;
+        let sticky = metadata.mode() & u32::from(libc::S_ISVTX) != 0;
         if !metadata.is_dir() || !trusted_owner || (mutable_by_others && !sticky) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
