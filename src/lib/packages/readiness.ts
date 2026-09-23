@@ -11,6 +11,8 @@ import {
 } from './package-references'
 import { comparePackagePaths, validatePackagePaths } from './paths'
 import type { PackageFinding, WorkflowPackageProjection } from './types'
+import type { WorkflowProjection } from '../projection/types'
+import { validateAuthenticatedPackageReferences } from './authenticated-references'
 
 export interface ArtifactStaticAnalysis {
   readonly path: string
@@ -71,6 +73,24 @@ export function analyzePackageReadiness(input: PackageReadinessInput): PackageAn
     maxArtifactBytes: input.contract.resource_rules.max_file_bytes,
   })
   findings.push(...references.findings)
+  findings.push(...validateAuthenticatedPackageReferences(input.resources, references))
+  const workflowNames = new Map<string, string[]>()
+  for (const workflow of input.resources.workflows) {
+    const name = (workflow.analysis.projection as WorkflowProjection | undefined)?.name
+    if (typeof name !== 'string') continue
+    const paths = workflowNames.get(name) ?? []
+    paths.push(workflow.path)
+    workflowNames.set(name, paths)
+  }
+  for (const [name, paths] of workflowNames) {
+    if (paths.length < 2) continue
+    for (const path of paths)
+      add(
+        'package_workflow_invalid',
+        path,
+        `Workflow name "${name}" is ambiguous across package members: ${paths.join(', ')}.`,
+      )
+  }
   if (
     input.resources.packageRoot !== input.package.root ||
     JSON.stringify(input.resources.members) !== JSON.stringify(input.package.workflows)
