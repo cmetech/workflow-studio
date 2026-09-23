@@ -3,6 +3,24 @@ import type { PackageWorkflowMember } from './types'
 
 export type PackageArtifactKind =
   'workflow' | 'companion' | 'manifest' | 'generated' | 'command' | 'script' | 'yaml' | 'json' | 'text' | 'binary'
+
+/** Command consumers come from the verified contract, independently of the resource's filename. */
+export function commandResourceKinds(contract: ResourceResolutionContract): ReadonlySet<string> {
+  const surfaces: readonly unknown[] = Array.isArray(contract.surfaces) ? contract.surfaces : []
+  return new Set(
+    surfaces.flatMap((surface) =>
+      surface !== null &&
+      typeof surface === 'object' &&
+      'lookup_kind' in surface &&
+      surface.lookup_kind === 'command' &&
+      'resource_kind' in surface &&
+      typeof surface.resource_kind === 'string'
+        ? [surface.resource_kind]
+        : [],
+    ),
+  )
+}
+
 export function classifyPackageArtifact(input: {
   readonly path: string
   readonly members: readonly PackageWorkflowMember[]

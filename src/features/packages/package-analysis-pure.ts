@@ -6,7 +6,7 @@ import type { ArtifactLanguage } from '$src/lib/artifacts/types'
 import { analyzeWorkflowPair, selectWorkflowProfile } from '$src/lib/validation/analyze-workflow'
 import { parseWorkflowYaml } from '$src/lib/yaml/parse-document'
 import { buildPackageCatalog } from '$src/lib/packages/discovery'
-import { classifyPackageArtifact } from '$src/lib/packages/artifact-kind'
+import { classifyPackageArtifact, commandResourceKinds } from '$src/lib/packages/artifact-kind'
 import { resolvePackageReferences, type PackageReferenceInput } from '$src/lib/packages/package-references'
 import { analyzePackageReadiness, type ArtifactStaticAnalysis, type PackageAnalysis } from '$src/lib/packages/readiness'
 import { analyzeCommandMarkdown } from '$src/lib/packages/command-markdown'
@@ -126,6 +126,7 @@ export async function analyzeCapturedPackage(deps: PackageAnalysisInput): Promis
     maxArtifactBytes: deps.contract.resource_rules.max_file_bytes,
   }
   const references = resolvePackageReferences(resources)
+  const commandKinds = commandResourceKinds(deps.resourceContract)
   const artifacts: ArtifactStaticAnalysis[] = []
   for (const [path, text] of texts) {
     const kind = classifyPackageArtifact({
@@ -136,7 +137,7 @@ export async function analyzeCapturedPackage(deps: PackageAnalysisInput): Promis
     })
     const consumers = references.references.filter((r) => r.artifactPath === path && r.kind !== 'mcp_resource')
     if (!kind.requiresStaticAnalysis && !consumers.length) continue
-    if (kind.kind === 'command' || consumers.some((r) => r.kind === 'command'))
+    if (kind.kind === 'command' || consumers.some((r) => commandKinds.has(r.kind)))
       artifacts.push(analyzeCommandMarkdown(path, text))
     else {
       const runtimes = [...new Set(consumers.map((r) => r.runtime).filter(Boolean))]

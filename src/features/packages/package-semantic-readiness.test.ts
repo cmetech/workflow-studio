@@ -30,6 +30,49 @@ const definition = (nodes: string, name = 'command-demo') => `name: ${name}\ndes
 const consumer = '  - id: summarize\n    command: summarize\n'
 const producer = '  - id: producer\n    prompt: Produce\n'
 
+it.each([
+  ['extensionless root loop', 'review', false, false],
+  ['non-Markdown suffix root loop', 'review.txt', false, false],
+  ['extensionless scoped loop', 'review', true, false],
+  ['shared command and loop body', 'review', false, true],
+] as const)('analyzes command Markdown for %s', async (_label, resource, scoped, shared) => {
+  const loop = { id: 'repeat', loop: { command: resource, max_iterations: 2, until: 'done' } }
+  const nodes = scoped
+    ? [{ id: 'group', loop_group: { max_iterations: 2, until: 'done', nodes: [loop] } }]
+    : [...(shared ? [{ id: 'direct', command: resource }] : []), loop]
+  const result = await analyze({
+    [definitionPath]: stringify({ name: 'command-demo', description: 'Test', nodes }),
+    [`commands/${resource}`]: '---\ndescription: Review supplied data\n---\nReview supplied data.\n',
+  })
+  expect(result.references.references).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'loop_command',
+        nodeId: scoped ? 'group/repeat' : 'repeat',
+        artifactPath: `commands/${resource}`,
+      }),
+    ]),
+  )
+  expect(result.blockers).toEqual([])
+  expect(result.ready).toBe(true)
+})
+
+it('checks frontmatter in an extensionless loop command instead of reporting an unsupported script', async () => {
+  const result = await analyze({
+    [definitionPath]: stringify({
+      name: 'command-demo',
+      description: 'Test',
+      nodes: [{ id: 'repeat', loop: { command: 'review', max_iterations: 2, until: 'done' } }],
+    }),
+    'commands/review': '---\ndescription: [unterminated\n---\nReview supplied data.\n',
+  })
+  expect(result.blockers).toContainEqual(
+    expect.objectContaining({ path: 'commands/review', code: 'command_frontmatter_invalid' }),
+  )
+  expect(result.blockers.some((finding) => finding.code === 'package_analysis_required')).toBe(false)
+  expect(result.ready).toBe(false)
+})
+
 it.each(['status', 'missing'])('checks authenticated structured output path %s', async (field) => {
   const result = await analyze({
     [definitionPath]: stringify({
