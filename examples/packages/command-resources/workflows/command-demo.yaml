@@ -1,0 +1,5 @@
+name: command-demo
+description: Reuse a packaged command document.
+nodes:
+  - id: summarize
+    command: summarize

@@ -1,0 +1,10 @@
+{
+  "commit": "3e89c2659b6e9c95a627b8f819ff63a11529d86a",
+  "directory": "plugins/workflow/contracts",
+  "files": {
+    "workflow-package-v1.json": "e728d99608e9186a08fc2b866cdaa9f116d8f51c5cde68930a82ef79d398e30d",
+    "workflow-package-v1-vectors.json": "644055e4234837f3e42ccaa952ed1622cf67edc96db69e983556580fb6ce82ed",
+    "workflow-package-resource-resolution-v1.json": "edf34f7fd0e06d5d8f5b2f6b90d3686a50c73253d796372f5df424748e364e68",
+    "workflow-package-resource-resolution-v1-vectors.json": "0dd7dbb7573ffc3f4e9fa6f9791b1393486481cfaad1ee0c52c5c86d91420ae7"
+  }
+}

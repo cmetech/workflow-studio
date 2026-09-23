@@ -1,4 +1,17 @@
+import type { ArtifactLanguage } from '$src/lib/artifacts/types'
+
 export const RECOVERY_SCHEMA_VERSION = 1 as const
+
+export interface ArtifactRecoveryDraft extends RecoveryDocumentDraft {
+  readonly schemaVersion: 2
+  readonly recordType: 'artifact'
+  readonly artifactId: string
+  readonly workspaceId: string
+  readonly language: ArtifactLanguage
+  readonly updatedAt: string
+}
+
+export type RecoveryRecord = RecoveryDraft | ArtifactRecoveryDraft
 
 export interface RecoveryDocumentDraft {
   readonly path: string

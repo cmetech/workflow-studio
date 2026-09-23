@@ -1,0 +1,15 @@
+{
+  "commit": "748b6c5711bc055449cc245dc4e9800cc6bb0412",
+  "unicodeVersion": "14.0.0",
+  "adaptation": "Export normalizeNfc; apply Studio formatting and checked-index TypeScript annotations.",
+  "sources": [
+    {
+      "source": "apps/desktop/src/lib/workflow-marketplace-casefold.ts",
+      "sha256": "c547762a34e600afe057ace6e3c72cc0c1ba0431f01e12f31f10695d5ffafd4a"
+    },
+    {
+      "source": "apps/desktop/src/lib/workflow-marketplace-casefold.generated.ts",
+      "sha256": "c498e1dfd988d3556ce3334aa487b8aa61afc76bc884c548dc5dcc439719bf89"
+    }
+  ]
+}

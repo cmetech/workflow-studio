@@ -7,3 +7,28 @@ Workflow Studio verifies each generated contract's version and digest before usi
 the matching generated conformance corpus digest and identity, so contracts and corpus fixtures activate only as a
 verified pair. The intentionally small contracts under `tests/fixtures/contracts/` exist only to test the reader
 boundary; they are not a production field inventory.
+
+## Portable package contract
+
+`workflow-package-v1.json`, `workflow-package-v1-vectors.json`,
+`workflow-package-resource-resolution-v1.json`, and `workflow-package-resource-resolution-v1-vectors.json`
+are exact committed upstream bytes.
+`workflow-package-provenance.json` is Studio-owned provenance: it pins the agent commit, artifact directory,
+and SHA-256 of all four files. This checksum identifies the contracts; it does not grant package publisher trust.
+Do not reformat these artifacts or normalize their line endings.
+
+Run `npm run package-contracts:check` to verify the bundled envelope, schemas, vectors, and exact-byte pins offline.
+To refresh from the pinned commit in a local agent repository, run
+`npm run package-contracts:sync -- --source-root <agent-repository>`. This reads Git objects, not dirty checkout files,
+and performs no remote Git operations. A deliberate contract upgrade must update provenance and compatibility tests.
+After changing bundled resources, run `npm run resources:sync-integrity` and `npm run resources:verify`.
+
+The package contract's `resource_rules` contains file/count limits, not workflow resource-resolution descriptors.
+The vector loader validates the pinned envelope; manifest, path, native scanning, and digest consumers must execute
+their corresponding vector families and boundary recipes before package preparation can be considered complete.
+
+The separate resource-resolution export distinguishes compiler preparation, live runtime lookup, and sealed
+resource lookup. Its coverage declaration identifies required source-origin, filesystem, and host context.
+Loading these artifacts does not establish semantic parity or package readiness. The supported interpreter must
+execute the applicable lookup, discriminator, MCP-candidate, and compilation vectors and fail closed where context
+or profile coverage is unavailable.

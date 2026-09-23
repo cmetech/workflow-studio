@@ -1,3 +1,4 @@
+import { validatePackageExamples } from './validate-package-examples'
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -114,9 +115,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function main(): Promise<void> {
-  const errors = await validateExampleResources()
+  const errors = [...(await validateExampleResources()), ...(await validatePackageExamples())]
   if (errors.length) throw new Error(errors.join('\n'))
-  process.stdout.write('Validated bundled workflow examples.\n')
+  process.stdout.write('Validated bundled workflow and package examples.\n')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)

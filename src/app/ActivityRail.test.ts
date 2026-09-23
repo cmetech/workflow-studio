@@ -72,3 +72,10 @@ describe('ActivityRail', () => {
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-expanded', 'false')
   })
 })
+it('opens Packages as a contextual activity', async () => {
+  const registry = createCommandRegistry()
+  for (const command of listCommands()) registry.registerCommand(command)
+  render(ActivityRail, { props: { commandSurface: registry } } as never)
+  await fireEvent.click(screen.getByRole('button', { name: 'Packages' }))
+  expect(screen.getByRole('button', { name: 'Packages' })).toHaveAttribute('aria-expanded', 'true')
+})

@@ -626,7 +626,7 @@ fn hooks_run_in_git_order_with_exact_arguments_and_post_commit_is_advisory() {
 
 #[cfg(unix)]
 #[test]
-fn clean_filter_cannot_change_the_accepted_pair_bytes() {
+fn configured_clean_filter_refuses_pair_version_before_any_filter_can_run() {
     let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
@@ -659,7 +659,7 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(error.code, "git_status_filter_unsupported");
     assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
     assert_eq!(fs::read(&index_path).unwrap(), before_index);
     assert_eq!(
@@ -670,7 +670,7 @@ fn clean_filter_cannot_change_the_accepted_pair_bytes() {
 
 #[cfg(unix)]
 #[test]
-fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blob() {
+fn configured_filter_refusal_preserves_head_and_index_even_with_replacement_refs() {
     let _environment = environment_lock();
     let root = repository();
     write_pair(root.path());
@@ -722,7 +722,7 @@ fn replacement_ref_cannot_substitute_accepted_bytes_for_a_filtered_candidate_blo
     .err()
     .expect("raw candidate bytes must not resolve through replacement refs");
 
-    assert_eq!(error.code, "git_commit_candidate_changed");
+    assert_eq!(error.code, "git_status_filter_unsupported");
     assert_eq!(assert_git(root.path(), &["rev-parse", "HEAD"]), before_head);
     assert_eq!(fs::read(&index_path).unwrap(), before_index);
 }
@@ -973,6 +973,78 @@ fn tracked_symlink_retarget_commits_link_bytes_and_target_content_only_is_not_pa
             .next(),
         Some("120000")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_retarget_survives_copied_index_stat_cache_and_preserves_unrelated_staging() {
+    use std::ffi::CString;
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let _environment = environment_lock();
+    let root = repository();
+    assert_git(root.path(), &["config", "core.checkStat", "minimal"]);
+    assert_git(root.path(), &["config", "core.trustctime", "false"]);
+    fs::write(root.path().join("one.yaml"), "name: one\n").unwrap();
+    fs::write(root.path().join("two.yaml"), "name: two\n").unwrap();
+    let link = root.path().join("flow.yaml");
+    let stamp = 1_600_000_000;
+    let set_link_time = || {
+        let path = CString::new(link.as_os_str().as_bytes()).unwrap();
+        let times = [libc::timespec {
+            tv_sec: stamp,
+            tv_nsec: 0,
+        }; 2];
+        assert_eq!(
+            unsafe {
+                libc::utimensat(
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    times.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    };
+    symlink("one.yaml", &link).unwrap();
+    set_link_time();
+    assert_git(root.path(), &["add", "flow.yaml"]);
+    assert_git(root.path(), &["commit", "-m", "base link"]);
+    fs::write(root.path().join("unrelated.txt"), "keep staged\n").unwrap();
+    assert_git(root.path(), &["add", "unrelated.txt"]);
+    let staged = assert_git(root.path(), &["ls-files", "--stage", "--", "unrelated.txt"]);
+
+    fs::remove_file(&link).unwrap();
+    symlink("two.yaml", &link).unwrap();
+    set_link_time();
+    // The real index must recheck the racy link bytes. Copying its bytes to a
+    // newly created index loses that timestamp protection without changing
+    // any cached stat fields. No scheduling delay or inode reuse is required.
+    fs::File::options()
+        .write(true)
+        .open(root.path().join(".git/index"))
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(stamp as u64)),
+        )
+        .unwrap();
+
+    create_pair_version(root.path(), "flow.yaml", None, "retarget racy link").unwrap();
+
+    assert_eq!(
+        assert_git(root.path(), &["show", "HEAD:flow.yaml"]),
+        "two.yaml"
+    );
+    assert_eq!(assert_git(root.path(), &["show", ":flow.yaml"]), "two.yaml");
+    assert_eq!(
+        assert_git(root.path(), &["ls-files", "--stage", "--", "unrelated.txt"]),
+        staged
+    );
+    assert!(assert_git(root.path(), &["ls-tree", "HEAD", "--", "unrelated.txt"]).is_empty());
 }
 
 #[cfg(unix)]

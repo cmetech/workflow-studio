@@ -30,6 +30,10 @@ import {
 } from '$src/e2e/loop-group-fixtures'
 import type { GraphScopeKey } from '$src/lib/projection/types'
 import type { LayoutRecordV2 } from '$src/lib/layout/types'
+import { installPackageScenario, packageScenarioFiles } from './package-scenarios'
+import { installPackagePerformanceControls, packagePerformanceFiles } from './package-performance-fixture'
+import { createArtifactDocument, editArtifactDocument } from '$src/lib/artifacts/artifact-session'
+import { createArtifactRecoveryDraft } from '$src/lib/recovery/recovery-store'
 
 const DEFINITION_PATH = 'workflows/release-demo.yaml'
 const COMPANION_PATH = 'workflows/release-demo.hermes.yaml'
@@ -407,7 +411,9 @@ nodes:
     loop_group:
       nodes: []
 `
-  const largeCanvasLayout = scenario === 'large-canvas' || scenario === 'routed-capacity' ? capacityLayout() : null
+  const largeCanvasLayout = ['large-canvas', 'routed-capacity', 'package-performance'].includes(scenario)
+    ? capacityLayout()
+    : null
   const metrics = createEditorMetricsCollector()
   installEditorMetrics(metrics)
   const largeCanvasDefinition =
@@ -481,7 +487,34 @@ nodes:
                     ? { ...AUTHORING_FILES, [DEFINITION_PATH]: ADVANCED_INSPECTOR_YAML }
                     : AUTHORING_FILES
   const selectedRoot = scenario === 'long-git' ? LONG_WINDOWS_ROOT : '/e2e/workspace'
-  const base = createBrowserBridge({ initialFiles, selectedRoot })
+  const base = createBrowserBridge({
+    ...(scenario === 'package-binary'
+      ? {
+          initialArtifacts: { 'packages/laptop-diagnostic/assets/sample.bin': new Uint8Array([255, 0]) },
+          chooseArtifactSource: async () => new Uint8Array([255, 1, 2]),
+        }
+      : {}),
+    initialFiles: scenario.startsWith('package-')
+      ? {
+          ...initialFiles,
+          ...packageScenarioFiles,
+          ...(scenario === 'package-performance' ? packagePerformanceFiles : {}),
+        }
+      : initialFiles,
+    selectedRoot,
+  })
+  if (scenario === 'package-recovery') {
+    const path = 'packages/laptop-diagnostic/scripts/analyze-snapshot.py'
+    const disk = await base.workspaceReadTextArtifact(path)
+    const draft = createArtifactRecoveryDraft(
+      editArtifactDocument(
+        createArtifactDocument('browser-workspace', path, 'python', disk.text, disk.sha256, false),
+        'def recovered(:\n',
+      ),
+      new Date().toISOString(),
+    )
+    await base.recoveryWrite({ key: draft.artifactId, content: JSON.stringify(draft) })
+  }
   let setupRetries = 0
   let updateChecks = 0
   let updateDeferred = false
@@ -892,7 +925,14 @@ nodes:
     },
   }
 
-  setNativeBridgeForTest(bridge)
+  setNativeBridgeForTest(
+    scenario.startsWith('package-')
+      ? installPackageScenario(bridge, async (event) => {
+          await Promise.all([...workspaceChangeHandlers].map((handler) => handler(event)))
+        })
+      : bridge,
+  )
+  if (scenario === 'package-performance') installPackagePerformanceControls(() => metrics.snapshot())
   window.__WORKFLOW_STUDIO_E2E__ = {
     metrics: () => ({ ...metrics.snapshot(), arrange: latestArrangeMetrics() }),
     resetMetrics: () => {

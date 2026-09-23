@@ -1,3 +1,4 @@
+import type { BrowserArtifactOptions } from './browser-artifacts'
 import type { WorkspaceFileEntry } from '../workspace/types'
 import type { ContractCacheStoredEntry } from '../contract/contract-cache'
 import {
@@ -20,7 +21,7 @@ interface BrowserFile {
   modifiedAt: string
 }
 
-export interface BrowserBridgeOptions {
+export interface BrowserBridgeOptions extends BrowserArtifactOptions {
   readonly initialFiles?: Readonly<Record<string, string>>
   readonly selectedRoot?: string
 }
@@ -56,7 +57,59 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     await Promise.all([...handlers].map((handler) => handler(event)))
   }
 
+  let artifactBytes = new Map(
+    Object.entries(options.initialArtifacts ?? {}).map(([path, value]) => [path, value.slice()]),
+  )
+  type PackageFacilities = ReturnType<typeof import('./browser-package-facilities').createBrowserPackageFacilities>
+  let facilities: PackageFacilities | undefined
+  let facilityLoading: Promise<PackageFacilities> | undefined
+  let packageGeneration = 0
+  async function packageFacilities(): Promise<PackageFacilities> {
+    const generation = packageGeneration
+    facilityLoading ??= import('./browser-package-facilities')
+      .then(({ createBrowserPackageFacilities }) => {
+        facilities = createBrowserPackageFacilities(
+          { ...options, initialArtifacts: Object.fromEntries(artifactBytes) },
+          files,
+          emit,
+          FIXED_MODIFIED_AT,
+        )
+        artifactBytes = facilities.bytes
+        return facilities
+      })
+      .catch((error: unknown) => {
+        facilityLoading = undefined
+        throw error
+      })
+    const loaded = await facilityLoading
+    if (generation !== packageGeneration)
+      throw new NativeError('workspace_root_changed', 'The workspace changed while package capabilities were loading.')
+    return loaded
+  }
   return {
+    chooseImportArtifact: async (...args: Parameters<WorkspaceNativeBridge['chooseImportArtifact']>) =>
+      (await packageFacilities()).bridge.chooseImportArtifact(...args),
+    workspaceReadArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceReadArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceReadArtifact(...args),
+    workspaceReadTextArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceReadTextArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceReadTextArtifact(...args),
+    workspaceWriteTextArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceWriteTextArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceWriteTextArtifact(...args),
+    workspaceImportArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceImportArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceImportArtifact(...args),
+    workspaceReplaceArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceReplaceArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceReplaceArtifact(...args),
+    workspaceRevealArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceRevealArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceRevealArtifact(...args),
+    workspaceOpenArtifact: async (...args: Parameters<WorkspaceNativeBridge['workspaceOpenArtifact']>) =>
+      (await packageFacilities()).bridge.workspaceOpenArtifact(...args),
+    workspaceApplyTransaction: async (...args: Parameters<WorkspaceNativeBridge['workspaceApplyTransaction']>) =>
+      (await packageFacilities()).bridge.workspaceApplyTransaction(...args),
+    workspaceHashPackage: async (...args: Parameters<WorkspaceNativeBridge['workspaceHashPackage']>) =>
+      (await packageFacilities()).bridge.workspaceHashPackage(...args),
+    workspaceReplaceGeneratedFiles: async (
+      ...args: Parameters<WorkspaceNativeBridge['workspaceReplaceGeneratedFiles']>
+    ) => (await packageFacilities()).bridge.workspaceReplaceGeneratedFiles(...args),
     hostHealth: async () => ({
       appVersion: 'browser',
       os: 'browser',
@@ -195,10 +248,40 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     chooseImportDefinition: async () => null,
     chooseExportDirectory: async () => null,
     workspaceSetRoot: async (rootPath) => {
+      packageGeneration += 1
+      facilities?.reset()
       selectedRoot = rootPath
       return { workspaceId: 'browser-workspace', rootPath: selectedRoot, repository: null }
     },
-    workspaceScan: async () => scanFixture(files),
+    workspaceScan: async () => {
+      const entries = new Map(scanFixture(files).map((entry) => [entry.relativePath, entry]))
+      for (const [path, value] of artifactBytes) {
+        if (files.has(path)) continue
+        entries.set(path, {
+          relativePath: path,
+          kind: 'file',
+          size: value.length,
+          modifiedAt: FIXED_MODIFIED_AT,
+          symlink: 'none',
+          readOnly: false,
+        })
+        const parts = path.split('/')
+        for (let index = 1; index < parts.length; index += 1) {
+          const directory = parts.slice(0, index).join('/')
+          entries.set(directory, {
+            relativePath: directory,
+            kind: 'directory',
+            size: 0,
+            modifiedAt: FIXED_MODIFIED_AT,
+            symlink: 'none',
+            readOnly: false,
+          })
+        }
+      }
+      return [...entries.values()].sort((a, b) =>
+        a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : 0,
+      )
+    },
     workspaceRead: async (relativePath) => readFixture(files, relativePath),
     workspaceWrite: async ({ relativePath, text, expectedCurrentHash }) => {
       validateRelativeYaml(relativePath)
@@ -329,6 +412,15 @@ export function createBrowserBridge(options: BrowserBridgeOptions = {}): Workspa
     layoutLoad: async () => layoutContent,
     layoutSave: async (content) => {
       layoutContent = content
+    },
+    gitReadPackageContext: async () => {
+      throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitPreviewPackageVersion: async () => {
+      throw new NativeError('git_not_repository', 'This browser workspace is not a local Git repository.')
+    },
+    gitCommitPackageVersion: async () => {
+      throw new NativeError('git_unavailable', 'Creating a Git version requires the desktop application.')
     },
     gitDetect: async () => null,
     gitBeginHistorySession: async () => {

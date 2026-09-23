@@ -727,3 +727,22 @@ describe('Inspector', () => {
     expect(screen.getByRole('textbox', { name: 'System prompt' })).toBeVisible()
   })
 })
+
+it('renders contract resource actions for a node field and passes the selected field to the coordinator', async () => {
+  const onResourceAction = vi.fn()
+  const resourceContract = {
+    schema_version: 1,
+    surfaces: [{ field_path: 'nodes[].command', node_types: ['command'], scope: 'root', lookup_kind: 'command' }],
+  } as never
+  render(Inspector, {
+    fields: [codeField],
+    values: {},
+    selectionNodeId: 'run',
+    resourceContract,
+    resourceNodeKind: 'command',
+    resourceInPackage: true,
+    onResourceAction,
+  })
+  await fireEvent.click(await screen.findByRole('button', { name: 'Create' }))
+  expect(onResourceAction).toHaveBeenCalledWith(codeField, 'create', expect.any(HTMLButtonElement))
+})

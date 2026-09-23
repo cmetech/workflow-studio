@@ -1,0 +1,17 @@
+packages:
+  - id: laptop-diagnostic
+    path: laptop-diagnostic
+    title: Laptop diagnostic
+    summary: Shared Python scripts, a command document and a synthetic snapshot.
+  - id: multi-workflow-support
+    path: multi-workflow-support
+    title: Shared support workflows
+    summary: Two workflows share one packaged support script.
+  - id: command-resources
+    path: command-resources
+    title: Reusable command resources
+    summary: A workflow resolves a command Markdown resource.
+  - id: external-requirements
+    path: external-requirements
+    title: Destination requirements
+    summary: External requirements remain destination-dependent advisories.

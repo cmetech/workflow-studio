@@ -315,6 +315,11 @@ nodes:
 `
 
 interface AuthoringAppOptions {
+  readonly definitionPath?: string
+  readonly workspaceId?: string
+  readonly files?: Awaited<ReturnType<ReturnType<typeof createBrowserBridge>['workspaceScan']>>
+  readonly definitionHash?: string
+  readonly companionHash?: string
   readonly text?: string
   readonly companionText?: string
   readonly scopeContract?: AuthoringContract
@@ -370,45 +375,50 @@ function projection(text = source) {
 
 async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
   const text = options.text ?? source
+  const definitionPath = options.definitionPath ?? 'flow.yaml'
+  const companionPath = definitionPath.replace(/\.yaml$/, '.hermes.yaml')
+  const workspaceId = options.workspaceId ?? 'workspace'
+  const workflowId = `workflow:${workspaceId}:${definitionPath}`
   loadWorkspaceEntries(
-    'workspace',
+    workspaceId,
     'Workspace',
-    options.missingEntry
-      ? []
-      : [
-          {
-            relativePath: 'flow.yaml',
-            kind: 'file',
-            size: 1,
-            modifiedAt: '0',
-            symlink: 'none',
-            readOnly: options.readOnly ?? false,
-          },
-        ],
+    options.files ??
+      (options.missingEntry
+        ? []
+        : [
+            {
+              relativePath: definitionPath,
+              kind: 'file',
+              size: 1,
+              modifiedAt: '0',
+              symlink: 'none',
+              readOnly: options.readOnly ?? false,
+            },
+          ]),
   )
   openDocumentSession(
     {
-      workflowId: 'workflow:workspace:flow.yaml',
+      workflowId: workflowId,
       generation: 0,
       savedGeneration: 0,
       definition: {
-        id: 'workflow:workspace:flow.yaml:definition',
+        id: `${workflowId}:definition`,
         kind: 'definition',
-        path: 'flow.yaml',
+        path: definitionPath,
         text,
         revision: 0,
         savedRevision: 0,
-        diskHash: 'a'.repeat(64),
+        diskHash: options.definitionHash ?? 'a'.repeat(64),
       },
       companion: options.companionText
         ? {
-            id: 'workflow:workspace:flow.yaml:companion',
+            id: `${workflowId}:companion`,
             kind: 'companion',
-            path: 'flow.hermes.yaml',
+            path: companionPath,
             text: options.companionText,
             revision: 0,
             savedRevision: 0,
-            diskHash: 'b'.repeat(64),
+            diskHash: options.companionHash ?? 'b'.repeat(64),
           }
         : null,
     },
@@ -440,13 +450,13 @@ async function renderAuthoringApp(options: AuthoringAppOptions = {}) {
   if (options.missingEntry) {
     $documentWorkspace.set({
       ...$documentWorkspace.get(),
-      missingChange: { kind: 'remove', paths: ['flow.yaml'], dirty: false },
+      missingChange: { kind: 'remove', paths: [definitionPath], dirty: false },
     })
   }
   setActiveLayout({
     schemaVersion: 2,
-    workspaceId: 'workspace',
-    workflowPath: 'flow.yaml',
+    workspaceId,
+    workflowPath: definitionPath,
     activeScopeKey: 'root',
     scopeLayouts: {
       root: {
@@ -2160,4 +2170,101 @@ describe('App canvas authoring composition', () => {
     expect(nativeWindow.unlistenClose).toHaveBeenCalledOnce()
     expect(nativeWindow.unlistenDrop).toHaveBeenCalledOnce()
   })
+  it.each(['create', 'select', 'extract'] as const)(
+    '%s package script from the Inspector commits one saved semantic transaction',
+    async (mode) => {
+      const loaded = await loadAuthoringContract(new TextEncoder().encode(JSON.stringify(archonContractJson)), {
+        kind: 'bundled',
+        identifier: 'archon',
+      })
+      if (!loaded.ok) throw Error('contract')
+      additionalContract = loaded.contract
+      const text =
+        '# retain header\nname: Resources\ndescription: Resource editor\nnodes:\n  - id: run\n    script: ' +
+        (mode === 'extract' ? '|\n      print(1)' : 'old') +
+        '\n    runtime: uv\n'
+      const companion = 'language_compatibility: archon-2026-07\n'
+      const manifest = {
+        schemaVersion: 1,
+        id: 'resources',
+        version: '1.0.0',
+        displayName: 'Resources',
+        description: 'Resources',
+        license: 'MIT',
+        publisher: 'local',
+        tags: ['resources'],
+        externalRequirements: { runtimes: [], providers: [], services: [], secrets: [], tools: [] },
+        workflows: [{ definition: 'flow.yaml', companion: 'flow.hermes.yaml' }],
+      }
+      const bridge = createBrowserBridge({
+        initialFiles: {
+          'pkg/workflow-package.json': JSON.stringify(manifest),
+          'pkg/flow.yaml': text,
+          'pkg/flow.hermes.yaml': companion,
+          'pkg/scripts/old.py': 'print(0)',
+          ...(mode === 'select' ? { 'pkg/scripts/fresh.py': 'print(1)' } : {}),
+        },
+      })
+      const apply = vi.spyOn(bridge, 'workspaceApplyTransaction')
+      setNativeBridgeForTest(bridge)
+      const rendered = await renderAuthoringApp({
+        text,
+        companionText: companion,
+        scopeContract: additionalContract,
+        definitionPath: 'pkg/flow.yaml',
+        workspaceId: 'browser-workspace',
+        files: await bridge.workspaceScan(),
+        definitionHash: (await bridge.workspaceRead('pkg/flow.yaml')).sha256,
+        companionHash: (await bridge.workspaceRead('pkg/flow.hermes.yaml')).sha256,
+      })
+      setCanvasSelection(['run'])
+      const verb = mode === 'select' ? 'Select' : mode === 'extract' ? 'Extract' : 'Create'
+      const create = await screen.findByRole(
+        'button',
+        { name: mode === 'extract' ? 'Extract to Resource' : verb },
+        deferredSurfaceWait,
+      )
+      await waitFor(() => expect(create).not.toBeDisabled())
+      await fireEvent.click(create)
+      if (mode === 'select')
+        await fireEvent.change(await screen.findByLabelText('Package resource'), {
+          target: { value: 'pkg/scripts/fresh.py' },
+        })
+      else await fireEvent.input(await screen.findByLabelText('Resource name'), { target: { value: 'fresh' } })
+      if (mode === 'create')
+        await fireEvent.input(screen.getByLabelText('Initial content'), { target: { value: 'print(1)' } })
+      await fireEvent.click(screen.getByRole('button', { name: 'Preview change' }))
+      await screen.findByText('pkg/scripts/fresh.py', {}, deferredSurfaceWait)
+      expect(apply).not.toHaveBeenCalled()
+      const confirm = screen.getByRole('button', { name: `${verb} and update workflow` })
+      await waitFor(() => expect(confirm).not.toBeDisabled(), deferredSurfaceWait)
+      await fireEvent.click(confirm)
+      await waitFor(() => expect(apply).toHaveBeenCalledOnce(), deferredSurfaceWait)
+      await waitFor(
+        () =>
+          expect(
+            (parse($documentSession.get().pair!.definition.text) as { nodes: { script: string }[] }).nodes[0]!.script,
+          ).toContain('fresh'),
+        deferredSurfaceWait,
+      )
+      expect(historyStore.get().undo).toHaveLength(1)
+      expect($documentSession.get().pair?.definition.savedRevision).toBe(
+        $documentSession.get().pair?.definition.revision,
+      )
+      expect((await bridge.workspaceReadTextArtifact('pkg/scripts/fresh.py')).text).toBe(
+        mode === 'extract' ? 'print(1)\n' : 'print(1)',
+      )
+      expect(apply.mock.calls[0]![0].writes).toHaveLength(mode === 'select' ? 1 : 2)
+      expect((await bridge.workspaceRead('pkg/flow.yaml')).text).toContain('# retain header')
+      expect(await screen.findByRole('region', { name: 'Artifact text editor' }, deferredSurfaceWait)).toBeVisible()
+      expect(await screen.findByRole('textbox', { name: 'pkg/scripts/fresh.py' })).toBeVisible()
+      await fireEvent.click(screen.getByRole('button', { name: 'Back to Workflow' }))
+      await waitFor(
+        () => expect(screen.getByRole('button', { name: mode === 'extract' ? 'Open' : verb })).toHaveFocus(),
+        deferredSurfaceWait,
+      )
+      rendered.unmount()
+    },
+    60000,
+  )
 })

@@ -77,3 +77,45 @@ export const emptyGitInspection: GitInspection = Object.freeze({
   history: Object.freeze([]),
   historyAuthorizationToken: null,
 })
+
+export type GitBase =
+  | { readonly kind: 'head'; readonly oid: string; readonly reference: string }
+  | { readonly kind: 'unborn'; readonly reference: string }
+export interface GitCommittedPackageFile {
+  /** Package-relative; includes the root digests.json when committed. */
+  readonly relativePath: string
+  readonly sha256: string
+  readonly size: number
+  readonly gitMode: string
+}
+export interface GitPackageContext {
+  readonly workspaceId: string
+  readonly packageRoot: string
+  readonly repository: GitRepository
+  readonly base: GitBase
+  readonly contextToken: string
+  readonly committedManifestText: string | null
+  readonly baselineManifestText: string | null
+  readonly committedFiles: readonly GitCommittedPackageFile[]
+  readonly committedIndexText: string | null
+  readonly workingIndexText: string | null
+  readonly workingIndexHash: string | null
+}
+export interface GitPackageVersionRequest {
+  readonly contextToken: string
+  /** A fresh post-preparation snapshot; null requests verified whole-package deletion. */
+  readonly sourceSnapshotToken: string | null
+  readonly expectedIndexHash: string
+  readonly version: string | null
+  readonly message: string
+}
+export interface GitPackageVersionPreview {
+  readonly authorizationToken: string
+  readonly packageRoot: string
+  readonly base: GitBase
+  readonly version: string | null
+  readonly message: string
+  /** Exact repository-relative changed paths, including deletions. */
+  readonly changedPaths: readonly string[]
+  readonly diff: string
+}

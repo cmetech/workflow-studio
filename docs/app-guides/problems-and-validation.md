@@ -1,5 +1,7 @@
 # Problems and validation
 
+For complete workflow packages, see [Package readiness](#guide:package-readiness) for artifact checks, digest verification, and repository index conflicts.
+
 Use this guide when a workflow cannot be saved or exported. Workflow Studio validates authoring structure locally, while loop24 remains responsible for runtime behavior.
 
 ## Four validation layers

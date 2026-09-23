@@ -149,6 +149,11 @@ describe('App companion contract readiness', () => {
       })
       expect(companionText).toBe('{}\n')
       expect(companionText).not.toContain('language_compatibility')
+      // Finish the real authoring transition before the test environment disposes lazy modules.
+      await fireEvent.click(
+        await screen.findByRole('treeitem', { name: /existing.yaml, paired workflow/i }, deferredSurfaceWait),
+      )
+      expect(await screen.findByRole('group', { name: 'command node collect' }, deferredSurfaceWait)).toBeVisible()
     } finally {
       rendered.unmount()
       hydration.resolve([])

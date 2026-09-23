@@ -6,6 +6,7 @@ import { analyzeBundleBudget } from '../../scripts/check-bundle-budget.mjs'
 
 function fixtureBundle(
   options: {
+    artifactInInitial?: boolean
     coldInInitial?: boolean
     oversized?: boolean
     orphanElkWorker?: boolean
@@ -39,6 +40,8 @@ function fixtureBundle(
     'src/features/examples/ExampleGallery.svelte',
     'src/features/version-control/GitView.svelte',
     'src/features/editor/EditorModes.svelte',
+    'src/features/artifacts/ArtifactEditor.svelte',
+    'src/features/packages/PackageManifestEditor.svelte',
     'src/features/canvas/GraphCanvas.svelte',
   ]
   const coldManifest = Object.fromEntries(
@@ -96,7 +99,11 @@ function fixtureBundle(
       },
       'src/app/App.svelte': {
         file: 'assets/app.js',
-        imports: options.coldInInitial ? ['index.html', 'src/features/settings/SettingsPage.svelte'] : ['index.html'],
+        imports: options.artifactInInitial
+          ? ['index.html', 'src/features/artifacts/ArtifactEditor.svelte']
+          : options.coldInInitial
+            ? ['index.html', 'src/features/settings/SettingsPage.svelte']
+            : ['index.html'],
         css: ['assets/app.css'],
         dynamicImports: coldSources,
       },
@@ -122,6 +129,11 @@ describe('initial renderer bundle budget', () => {
     expect(result.violations).toEqual(
       expect.arrayContaining([expect.stringMatching(/settings\/branding/i), expect.stringMatching(/CodeMirror/i)]),
     )
+  })
+
+  it('rejects package artifact editors in startup even when their emitted code is small', () => {
+    const result = analyzeBundleBudget(fixtureBundle({ artifactInInitial: true }))
+    expect(result.violations).toContainEqual(expect.stringMatching(/package artifact editors/i))
   })
 
   it('rejects an initial entry closure above the minified limit', () => {

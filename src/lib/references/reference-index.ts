@@ -25,6 +25,7 @@ export interface IndexedReferenceToken extends ScannedReference {
 }
 
 export interface IndexedReferenceOccurrence {
+  readonly authenticatedBody?: boolean
   readonly document: 'definition'
   readonly scope: ReferenceSurfaceScope
   readonly scopeKey: GraphScopeKey
@@ -57,6 +58,7 @@ export interface ReferenceIndex {
 }
 
 interface SurfacePolicy {
+  readonly authenticatedBodySource?: 'command_bodies' | 'named_script_bodies'
   readonly fieldPath: string
   readonly relativePath: string
   readonly scope: ReferenceSurfaceScope
@@ -199,6 +201,7 @@ export function buildReferenceIndex(
   definition: unknown,
   projection: WorkflowProjection,
   prepared: PreparedReferenceContract,
+  authenticatedBodies?: AuthenticatedReferenceBodies,
 ): ReferenceIndex {
   referenceIndexBuildCount += 1
   const occurrences: IndexedReferenceOccurrence[] = []
@@ -238,6 +241,7 @@ export function buildReferenceIndex(
           scope,
           group,
           prepared,
+          ...(authenticatedBodies ? { authenticatedBodies } : {}),
           rootById,
           bodyByGroup,
           occurrences,
@@ -273,6 +277,7 @@ export function buildReferenceIndex(
 }
 
 interface CollectGroupInput {
+  readonly authenticatedBodies?: AuthenticatedReferenceBodies
   readonly rawNode: Readonly<Record<string, unknown>>
   readonly graph: ProjectedGraph
   readonly node: ProjectedNode
@@ -285,6 +290,12 @@ interface CollectGroupInput {
   readonly occurrences: IndexedReferenceOccurrence[]
 }
 
+/** Already resolved package bytes, keyed by root node ID or group/node identity. */
+export interface AuthenticatedReferenceBodies {
+  readonly command_bodies: ReadonlyMap<string, string>
+  readonly named_script_bodies: ReadonlyMap<string, string>
+}
+
 function collectGroupOccurrences(input: CollectGroupInput): void {
   const bases = expandPath(input.rawNode, parseRelativePath(input.group.relativePath))
   for (const base of bases) {
@@ -295,14 +306,19 @@ function collectGroupOccurrences(input: CollectGroupInput): void {
       if (typeof value !== 'string') continue
       const relativePath = [input.group.relativePath, leaf].filter(Boolean).join('.')
       const policy = input.prepared.policies.get(policyKey(input.scope, relativePath))
+      const semanticId = input.scope === 'body' ? `${input.graph.scope.groupId}/${input.node.id}` : input.node.id
+      const authenticated = policy?.authenticatedBodySource
+        ? input.authenticatedBodies?.[policy.authenticatedBodySource].get(semanticId)
+        : undefined
       if (
         !policy ||
         !policy.nodeTypes.includes(input.node.kind) ||
-        !admittedAuthoredValue(value, policy, input.prepared)
+        (authenticated === undefined && !admittedAuthoredValue(value, policy, input.prepared))
       )
         continue
+      const authoredText = authenticated ?? value
       const valuePath = [...input.graph.sourcePath, input.nodeIndex, ...base.path, ...leafPath]
-      const scan = scanReferences(value, policy.mode, {
+      const scan = scanReferences(authoredText, policy.mode, {
         normalizerVersion: input.prepared.normalizerVersion,
         unicodeProfile: input.prepared.unicodeProfile,
         includePrevious: policy.previousOutputs,
@@ -335,6 +351,7 @@ function collectGroupOccurrences(input: CollectGroupInput): void {
         .filter((segment): segment is string => typeof segment === 'string')
         .join('.')
       input.occurrences.push({
+        ...(authenticated === undefined ? {} : { authenticatedBody: true }),
         document: 'definition',
         scope: input.scope,
         scopeKey: targetGraph.scope.key,
@@ -347,7 +364,7 @@ function collectGroupOccurrences(input: CollectGroupInput): void {
         callerPolicy: policy.callerPolicy,
         mode: policy.mode,
         previousOutputs: policy.previousOutputs,
-        authoredText: value,
+        authoredText,
         references,
         errors: scan.errors,
       })
@@ -465,6 +482,10 @@ function readSurfacePolicy(value: unknown): SurfacePolicy {
     callerPolicy: field.caller_policy,
     mode: field.scanner_mode,
     previousOutputs: field.previous_outputs,
+    ...(field.authenticated_body_source === 'command_bodies' ||
+    field.authenticated_body_source === 'named_script_bodies'
+      ? { authenticatedBodySource: field.authenticated_body_source }
+      : {}),
     ...(typeof field.value_discriminator === 'string' ? { discriminatorId: field.value_discriminator } : {}),
   }
 }

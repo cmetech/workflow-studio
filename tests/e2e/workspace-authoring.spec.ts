@@ -480,6 +480,26 @@ test('Escape clears edge-only and mixed selection without projection resurrectio
   await openSeededPair(page)
   const prepare = page.getByRole('group', { name: 'prompt node prepare', exact: true })
   const dependency = page.getByRole('group', { name: 'Dependency from prepare to publish' })
+  const refreshDescription = async (expectedYaml: string): Promise<void> => {
+    await page.getByRole('button', { name: 'YAML', exact: true }).click()
+    // Keep the edit outside node ranges: replacing the whole document leaves
+    // the caret on publish, which is a separate intentional selection gesture.
+    await page
+      .locator('[aria-label="Definition YAML"] .cm-line')
+      .filter({ hasText: /^description:/ })
+      .click()
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
+    await page.keyboard.insertText(expectedYaml.split('\n')[1]!)
+    await expectAuthoritativeYaml(page, expectedYaml)
+    await expect
+      .poll(async () => {
+        const snapshot = await e2eSnapshot(page)
+        return snapshot.analysisDefinitionRevision === snapshot.definitionRevision
+      })
+      .toBe(true)
+  }
 
   await dependency.focus()
   await dependency.press('Enter')
@@ -491,7 +511,7 @@ test('Escape clears edge-only and mixed selection without projection resurrectio
     'description: Verify the complete authoring path.',
     'description: Verify cleared edge selection after projection refresh.',
   )
-  await replaceDefinitionYaml(page, edgeOnlyRefresh)
+  await refreshDescription(edgeOnlyRefresh)
   await page.getByRole('button', { name: 'Visual', exact: true }).click()
   await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
 
@@ -513,10 +533,11 @@ test('Escape clears edge-only and mixed selection without projection resurrectio
     'description: Verify cleared edge selection after projection refresh.',
     'description: Verify cleared mixed selection after projection refresh.',
   )
-  await replaceDefinitionYaml(page, mixedRefresh)
+  await refreshDescription(mixedRefresh)
   await page.getByRole('button', { name: 'Visual', exact: true }).click()
   await expect(prepare).not.toHaveClass(/selected/)
   await expect(dependency.locator('path.workflow-edge')).not.toHaveClass(/selected/)
+  await expect.poll(async () => (await activeScopeSnapshot(page)).selectedNodeIds).toEqual([])
   await expect(page.getByRole('button', { name: 'Create Edge' })).toBeDisabled()
 })
 
@@ -803,7 +824,7 @@ nodes:
   await expectAuthoritativeYaml(page, afterDelete)
 
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  const createExampleCopy = page.getByRole('button', { name: /^Create Editable Copy:/ }).first()
+  const createExampleCopy = page.getByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true })
   await expect(createExampleCopy).toBeVisible({ timeout: 20_000 })
   await createExampleCopy.focus()
   await createExampleCopy.press('Enter')
@@ -1031,10 +1052,7 @@ test('deletes all nodes to a blocked blank draft, undoes, rebuilds, saves, and r
   await page.getByRole('button', { name: 'Save workflow' }).click()
   await expect(page.getByRole('status', { name: 'Document save status' })).toHaveText('Saved')
   await page.getByRole('button', { name: 'Examples', exact: true }).click()
-  await page
-    .getByRole('button', { name: /^Create Editable Copy:/ })
-    .first()
-    .click()
+  await page.getByRole('button', { name: 'Create Editable Copy: Minimal prompt', exact: true }).click()
   await page.getByRole('button', { name: 'Back to Workflow' }).click()
   await page.getByRole('button', { name: 'Explorer', exact: true }).click()
   await page.getByRole('treeitem', { name: /release-demo.yaml, paired workflow/i }).click()

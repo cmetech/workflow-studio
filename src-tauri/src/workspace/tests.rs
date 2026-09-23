@@ -4,6 +4,404 @@ use tempfile::tempdir;
 
 use super::{files, paths, WorkspaceScope};
 
+#[test]
+fn artifact_utf8_binary_controls_are_metadata_only_and_plain_unicode_remains_text() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for byte in (0u8..=31)
+        .chain(std::iter::once(127))
+        .filter(|b| ![9, 10, 13].contains(b))
+    {
+        let bytes = [b'a', byte, 13, 10];
+        fs::write(root.path().join("data.bin"), bytes).unwrap();
+        assert_eq!(
+            super::artifacts::read_text(&scope, "data.bin")
+                .unwrap_err()
+                .code,
+            "artifact_binary"
+        );
+        assert_eq!(
+            super::artifacts::read(&scope, "data.bin").unwrap().size,
+            bytes.len() as u64
+        );
+        assert_eq!(fs::read(root.path().join("data.bin")).unwrap(), bytes);
+    }
+    let text = "\u{feff}Café 日本語\tvalue\r\nnext\n";
+    fs::write(root.path().join("plain.bin"), text).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "plain.bin")
+            .unwrap()
+            .text,
+        text
+    );
+}
+
+#[test]
+fn artifact_executes_pinned_single_path_vectors() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/workflow-package-v1-vectors.json"
+    ))
+    .unwrap();
+    for vector in vectors["pathVectors"].as_array().unwrap() {
+        if vector["input"]["kind"] != "regular" {
+            continue;
+        }
+        let Some(path) = vector["input"]["path"].as_str() else {
+            continue;
+        };
+        let accepted = vector["expected"]["accepted"].as_bool().unwrap();
+        let root = tempdir().unwrap();
+        if accepted {
+            fs::create_dir_all(root.path().join(path).parent().unwrap()).unwrap();
+        }
+        let result = super::artifacts::write_text(&scope(root.path()), path, "fixture", None);
+        assert_eq!(result.is_ok(), accepted, "{}: {result:?}", vector["name"]);
+    }
+}
+
+#[test]
+fn artifact_text_drafts_and_revision_checks_preserve_yaml_boundary() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let saved = super::artifacts::write_text(&scope, "script.py", "def broken(:", None).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "script.py")
+            .unwrap()
+            .text,
+        "def broken(:"
+    );
+    assert!(files::read(&scope, "script.py", files::MAX_YAML_BYTES).is_err());
+    fs::write(root.path().join("script.py"), "external").unwrap();
+    assert_eq!(
+        super::artifacts::write_text(&scope, "script.py", "draft", Some(&saved.sha256))
+            .unwrap_err()
+            .code,
+        "workspace_revision_conflict"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("script.py")).unwrap(),
+        "external"
+    );
+    fs::remove_file(root.path().join("script.py")).unwrap();
+    assert_eq!(
+        super::artifacts::write_text(&scope, "script.py", "draft", Some(&saved.sha256))
+            .unwrap_err()
+            .code,
+        "workspace_revision_conflict"
+    );
+    assert!(!root.path().join("script.py").exists());
+}
+
+#[test]
+fn artifact_read_rejects_unsafe_paths_binary_text_and_oversize() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for path in [
+        "../secret",
+        ".git/config",
+        "a/.GIT/config",
+        "a//b",
+        "a/./b",
+        "C:/secret",
+    ] {
+        assert_eq!(
+            super::artifacts::read(&scope, path).unwrap_err().code,
+            "workspace_path_invalid"
+        );
+    }
+    fs::write(root.path().join("binary"), [255]).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "binary")
+            .unwrap_err()
+            .code,
+        "invalid_utf8"
+    );
+    let file = fs::File::create(root.path().join("large")).unwrap();
+    file.set_len(super::artifacts::max_bytes() + 1).unwrap();
+    assert_eq!(
+        super::artifacts::read(&scope, "large").unwrap_err().code,
+        "file_too_large"
+    );
+}
+
+#[test]
+fn artifact_grants_are_single_use_identity_and_generation_bound() {
+    let root = tempdir().unwrap();
+    let source = tempdir().unwrap();
+    let scope = scope(root.path());
+    let path = source.path().join("source.bin");
+    fs::write(&path, [0, 1, 255]).unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    let token = super::artifacts::grant_source(&path, 1, &grants)
+        .unwrap()
+        .source_grant_token;
+    let imported =
+        super::artifacts::import(&scope, 1, &grants, "resource.bin", &token, None).unwrap();
+    assert_eq!(imported.size, 3);
+    assert_eq!(
+        fs::read(root.path().join("resource.bin")).unwrap(),
+        [0, 1, 255]
+    );
+    assert_eq!(
+        super::artifacts::import(
+            &scope,
+            1,
+            &grants,
+            "resource.bin",
+            &token,
+            Some(&imported.sha256)
+        )
+        .unwrap_err()
+        .code,
+        "artifact_source_grant_invalid"
+    );
+    let token = super::artifacts::grant_source(&path, 1, &grants)
+        .unwrap()
+        .source_grant_token;
+    assert_eq!(
+        super::artifacts::import(&scope, 2, &grants, "other.bin", &token, None)
+            .unwrap_err()
+            .code,
+        "artifact_source_grant_invalid"
+    );
+    let token = super::artifacts::grant_source(&path, 2, &grants)
+        .unwrap()
+        .source_grant_token;
+    fs::write(&path, "changed").unwrap();
+    assert_eq!(
+        super::artifacts::import(&scope, 2, &grants, "other.bin", &token, None)
+            .unwrap_err()
+            .code,
+        "artifact_source_grant_invalid"
+    );
+    assert!(!root.path().join("other.bin").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_rejects_internal_and_external_symlinks() {
+    use std::os::unix::fs::symlink;
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source"), "secret").unwrap();
+    symlink("source", root.path().join("link")).unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "link").unwrap_err().code,
+        "workspace_symlink_unsupported"
+    );
+    assert_eq!(
+        super::artifacts::write_text(&scope, "link", "new", None)
+            .unwrap_err()
+            .code,
+        "workspace_symlink_unsupported"
+    );
+}
+
+#[test]
+fn artifact_external_open_rejects_scripts_and_disguised_content() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("script.py"), "print(1)").unwrap();
+    fs::write(root.path().join("fake.png"), "print(1)").unwrap();
+    let scope = scope(root.path());
+    for path in ["script.py", "fake.png"] {
+        assert_eq!(
+            super::artifacts::passive_png(&scope, path)
+                .unwrap_err()
+                .code,
+            "artifact_open_unsupported"
+        );
+    }
+}
+
+#[test]
+fn artifact_verified_png_is_reencoded_without_trailing_content() {
+    let root = tempdir().unwrap();
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[0, 0, 0, 255]).unwrap();
+        writer.finish().unwrap();
+    }
+    let clean = bytes.clone();
+    bytes.extend_from_slice(b"print('never open package bytes directly')");
+    fs::write(root.path().join("image.png"), bytes).unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "image.png")
+            .unwrap()
+            .media_type,
+        "image/png"
+    );
+    assert_eq!(
+        super::artifacts::passive_png(&scope, "image.png").unwrap(),
+        clean
+    );
+}
+
+#[test]
+fn artifact_stream_copy_failure_preserves_original_and_cleans_staging() {
+    struct BrokenSource;
+    impl std::io::Read for BrokenSource {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected copy failure"))
+        }
+    }
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("resource.bin"), "original").unwrap();
+    let scope = scope(root.path());
+    let hash = super::artifacts::read(&scope, "resource.bin")
+        .unwrap()
+        .sha256;
+    assert!(files::write_artifact_stream(
+        &scope,
+        "resource.bin",
+        &mut BrokenSource,
+        Some(&hash),
+        None
+    )
+    .is_err());
+    assert_eq!(
+        fs::read_to_string(root.path().join("resource.bin")).unwrap(),
+        "original"
+    );
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn artifact_source_verification_failure_after_copy_never_commits() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let result = files::write_artifact_stream_verified(
+        &scope,
+        "resource.bin",
+        &mut &b"copied"[..],
+        None,
+        None,
+        || {
+            Err(super::WorkspaceError::new(
+                "artifact_source_grant_invalid",
+                "Selected source identity changed during copying.",
+            ))
+        },
+    );
+    assert_eq!(result.unwrap_err().code, "artifact_source_grant_invalid");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn artifact_normalization_uses_pinned_unicode14_tables() {
+    assert_eq!(unicode_normalization::UNICODE_VERSION, (14, 0, 0));
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::write_text(&scope, "cafe\u{301}.py", "draft", None)
+            .unwrap_err()
+            .code,
+        "workspace_path_invalid"
+    );
+    super::artifacts::write_text(&scope, "caf\u{e9}.py", "draft", None).unwrap();
+}
+
+#[test]
+fn artifact_source_grant_rejects_git_metadata() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join(".git")).unwrap();
+    let path = root.path().join(".git/config");
+    fs::write(&path, "private repository metadata").unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    assert_eq!(
+        super::artifacts::grant_source(&path, 1, &grants)
+            .unwrap_err()
+            .code,
+        "workspace_path_invalid"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn artifact_windows_aliases_report_platform_restriction() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    for path in ["data:report", "report.", "report "] {
+        assert_eq!(
+            super::artifacts::write_text(&scope, path, "draft", None)
+                .unwrap_err()
+                .code,
+            "workspace_path_unsupported_platform"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_posix_names_preserve_colons_and_trailing_dots() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    super::artifacts::write_text(&scope, "data:report.", "draft", None).unwrap();
+    assert_eq!(
+        super::artifacts::read_text(&scope, "data:report.")
+            .unwrap()
+            .text,
+        "draft"
+    );
+}
+
+#[test]
+fn artifact_stream_rechecks_destination_after_staging() {
+    struct ChangingSource {
+        path: std::path::PathBuf,
+        done: bool,
+    }
+    impl std::io::Read for ChangingSource {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.done {
+                return Ok(0);
+            }
+            fs::write(&self.path, "external")?;
+            output[0] = 42;
+            self.done = true;
+            Ok(1)
+        }
+    }
+    let root = tempdir().unwrap();
+    let path = root.path().join("resource.bin");
+    fs::write(&path, "original").unwrap();
+    let scope = scope(root.path());
+    let hash = super::artifacts::read(&scope, "resource.bin")
+        .unwrap()
+        .sha256;
+    assert!(files::write_artifact_stream(
+        &scope,
+        "resource.bin",
+        &mut ChangingSource {
+            path: path.clone(),
+            done: false
+        },
+        Some(&hash),
+        None
+    )
+    .is_err());
+    assert_eq!(fs::read_to_string(path).unwrap(), "external");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn artifact_rejects_symlinks_when_platform_supports_them() {
+    if !swap_symlink_tests_supported() {
+        return;
+    }
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("source"), "original").unwrap();
+    create_file_symlink(&root.path().join("source"), &root.path().join("link"));
+    let scope = scope(root.path());
+    assert_eq!(
+        super::artifacts::read(&scope, "link").unwrap_err().code,
+        "workspace_symlink_unsupported"
+    );
+}
+
 fn scope(path: &std::path::Path) -> WorkspaceScope {
     WorkspaceScope::new(path).unwrap()
 }
@@ -1020,6 +1418,25 @@ fn trash_reports_partial_when_quarantine_hash_mismatch_cannot_roll_back() {
         fs::read_to_string(root.path().join("flow.yaml")).unwrap(),
         "id: source-recreated\n"
     );
+    let recovery = fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".workflow-studio-trash-")
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(&recovery).unwrap(),
+        "id: in-place-external\n"
+    );
+    assert!(result.results[0]
+        .message
+        .as_ref()
+        .unwrap()
+        .contains(recovery.file_name().unwrap().to_str().unwrap()));
 }
 
 #[test]
@@ -1640,4 +2057,900 @@ fn swap_symlink_tests_supported() -> bool {
 #[cfg(not(windows))]
 fn swap_symlink_tests_supported() -> bool {
     dir_symlink_tests_supported()
+}
+
+#[test]
+fn transaction_creates_nested_files_and_refuses_stale_plan_before_mutation() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    fs::write(root.path().join("existing.md"), "old").unwrap();
+    let value = serde_json::json!({"workspaceId": super::transaction::workspace_id(&scope).unwrap(), "expectedEntries": [{"relativePath":"new/deep/one.md","expectedCurrentHash":null},{"relativePath":"existing.md","expectedCurrentHash":"stale"}],"writes":[{"relativePath":"new/deep/one.md","text":"one","expectedCurrentHash":null},{"relativePath":"existing.md","text":"new","expectedCurrentHash":"stale"}],"moves":[],"trashes":[]});
+    let plan = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        super::transaction::apply(&scope, &plan).unwrap_err().code,
+        "workspace_revision_conflict"
+    );
+    assert!(!root.path().join("new").exists());
+    let mut good = value;
+    good["writes"].as_array_mut().unwrap().pop();
+    good["expectedEntries"].as_array_mut().unwrap().pop();
+    good["expectedEntries"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"relativePath":"new","expectedCurrentHash":null}));
+    let plan = serde_json::from_value(good).unwrap();
+    assert_eq!(
+        super::transaction::apply(&scope, &plan).unwrap().status,
+        "committed"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("new/deep/one.md")).unwrap(),
+        "one"
+    );
+}
+
+#[test]
+fn transaction_failure_after_each_step_restores_files_and_created_directories() {
+    for fail in 0..4 {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("old.md"), "original").unwrap();
+        let scope = scope(root.path());
+        let hash = files::hash_bytes(b"original");
+        let plan = serde_json::from_value(serde_json::json!({"workspaceId": super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":[{"relativePath":"old.md","expectedCurrentHash":hash},{"relativePath":"new/deep/dest.md","expectedCurrentHash":null},{"relativePath":"new/manifest.json","expectedCurrentHash":null}],"writes":[{"relativePath":"new/manifest.json","text":"{}","expectedCurrentHash":null}],"moves":[{"sourcePath":"old.md","destinationPath":"new/deep/dest.md"}],"trashes":[]})).unwrap();
+        let result = super::transaction::apply_with_hook(&scope, &plan, |step| {
+            if step == fail {
+                Err(super::WorkspaceError::new("injected", "failure"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err(), "failure index {fail}");
+        assert_eq!(
+            fs::read_to_string(root.path().join("old.md")).unwrap(),
+            "original"
+        );
+        assert!(!root.path().join("new").exists());
+    }
+}
+
+#[test]
+fn package_hash_includes_ignored_and_nested_digest_files_and_rejects_added_members() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("p/node_modules")).unwrap();
+    fs::create_dir_all(root.path().join("p/nested")).unwrap();
+    for (path, text) in [
+        ("p/workflow-package.json", "{}"),
+        ("p/digests.json", "generated"),
+        ("p/node_modules/data", "ignored"),
+        ("p/nested/digests.json", "nested"),
+    ] {
+        fs::write(root.path().join(path), text).unwrap();
+    }
+    let scope = scope(root.path());
+    let captured = super::package_hash::capture(&scope, "p").unwrap();
+    assert_eq!(
+        captured
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "nested/digests.json",
+            "node_modules/data",
+            "workflow-package.json"
+        ]
+    );
+    fs::write(root.path().join("p/new.txt"), "new").unwrap();
+    assert_eq!(
+        super::package_hash::verify(&scope, &captured)
+            .unwrap_err()
+            .code,
+        "package_source_changed"
+    );
+}
+
+#[test]
+fn package_hash_rejects_repository_metadata_casefold_aliases_and_limits() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("p/.git")).unwrap();
+    fs::write(root.path().join("p/.git/config"), "private").unwrap();
+    let scope = scope(root.path());
+    assert_eq!(
+        super::package_hash::capture(&scope, "p").unwrap_err().code,
+        "package_repository_metadata"
+    );
+    fs::remove_file(root.path().join("p/.git/config")).unwrap();
+    fs::remove_dir(root.path().join("p/.git")).unwrap();
+    fs::write(root.path().join("p/Stra\u{00df}e"), "a").unwrap();
+    fs::write(root.path().join("p/STRASSE"), "b").unwrap();
+    assert_eq!(
+        super::package_hash::capture(&scope, "p").unwrap_err().code,
+        "package_path_collision"
+    );
+}
+
+#[test]
+fn package_generated_files_commit_together_and_refuse_changed_index() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("p")).unwrap();
+    fs::write(root.path().join("p/workflow-package.json"), "{}").unwrap();
+    let scope = scope(root.path());
+    let captured = super::package_hash::capture(&scope, "p").unwrap();
+    let writes = vec![
+        super::transaction::WriteRequest {
+            relative_path: "p/digests.json".into(),
+            text: "digest".into(),
+            expected_current_hash: None,
+        },
+        super::transaction::WriteRequest {
+            relative_path: super::generated_write::INDEX_PATH.into(),
+            text: "index".into(),
+            expected_current_hash: None,
+        },
+    ];
+    super::generated_write::replace(&scope, &captured, &writes).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("p/digests.json")).unwrap(),
+        "digest"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join(super::generated_write::INDEX_PATH)).unwrap(),
+        "index"
+    );
+    let captured = super::package_hash::capture(&scope, "p").unwrap();
+    let mut writes = writes;
+    writes[0].expected_current_hash = Some(files::hash_bytes(b"digest"));
+    writes[0].text = "new".into();
+    writes[1].expected_current_hash = Some(files::hash_bytes(b"index"));
+    fs::write(
+        root.path().join(super::generated_write::INDEX_PATH),
+        "external",
+    )
+    .unwrap();
+    assert_eq!(
+        super::generated_write::replace(&scope, &captured, &writes)
+            .unwrap_err()
+            .code,
+        "workspace_revision_conflict"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("p/digests.json")).unwrap(),
+        "digest"
+    );
+}
+
+#[test]
+fn package_limits_include_complete_tree_and_root_digest() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("p")).unwrap();
+    let scope = scope(root.path());
+    let big = fs::File::create(root.path().join("p/digests.json")).unwrap();
+    big.set_len(super::artifacts::max_bytes() + 1).unwrap();
+    drop(big);
+    assert_eq!(
+        super::package_hash::capture(&scope, "p").unwrap_err().code,
+        "package_file_size_limit"
+    );
+}
+
+#[test]
+fn transaction_reports_recovery_when_external_file_blocks_rollback() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "old").unwrap();
+    let scope = scope(root.path());
+    let plan=serde_json::from_value(serde_json::json!({"workspaceId":super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":[{"relativePath":"old","expectedCurrentHash":files::hash_bytes(b"old")},{"relativePath":"dest","expectedCurrentHash":null}],"writes":[],"moves":[{"sourcePath":"old","destinationPath":"dest"}],"trashes":[]})).unwrap();
+    let result = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 1 {
+            fs::write(root.path().join("old"), "external").unwrap();
+            Err(super::WorkspaceError::new("injected", "fail"))
+        } else {
+            Ok(())
+        }
+    })
+    .unwrap_err();
+    assert_eq!(result.code, "workspace_transaction_partial");
+    assert!(!result.path_results.is_empty());
+    assert_eq!(
+        fs::read_to_string(root.path().join("old")).unwrap(),
+        "external"
+    );
+    let saved = result
+        .path_results
+        .iter()
+        .find_map(|path| path.destination_path.as_ref())
+        .unwrap();
+    assert_eq!(fs::read_to_string(root.path().join(saved)).unwrap(), "old");
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_installed_write_and_original() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}],
+        "moves": [], "trashes": []
+    }))
+    .unwrap();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 2 {
+            let before = same_file::Handle::from_path(root.path().join("old")).unwrap();
+            fs::write(root.path().join("old"), "C").unwrap();
+            assert_eq!(
+                before,
+                same_file::Handle::from_path(root.path().join("old")).unwrap()
+            );
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "C");
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == "old" && value.status == "partial"));
+    let backup = error
+        .path_results
+        .iter()
+        .find_map(|value| value.destination_path.as_ref())
+        .expect("actionable original recovery path");
+    assert_eq!(fs::read_to_string(root.path().join(backup)).unwrap(), "A");
+}
+
+#[test]
+fn transaction_disposal_preserves_write_in_final_hash_to_unlink_gap() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("installed"), "B").unwrap();
+    let scope = scope(root.path());
+    let bound = super::artifacts::bind(&scope, "installed").unwrap();
+    let identity = files::transaction_identity(&bound).unwrap();
+    let result = files::transaction_remove_with_hook(
+        &scope,
+        "installed",
+        &bound,
+        &identity,
+        &files::hash_bytes(b"B"),
+        || {
+            fs::write(root.path().join("installed"), "C").unwrap();
+            assert_eq!(identity, files::transaction_identity(&bound).unwrap());
+        },
+    );
+    assert!(result.is_err(), "changed bytes need a recovery receipt");
+    let error = result.unwrap_err();
+    let retained = error
+        .path_results
+        .iter()
+        .find_map(|entry| entry.destination_path.as_ref())
+        .expect("exact retained path");
+    assert_eq!(fs::read_to_string(retained).unwrap(), "C");
+}
+
+#[test]
+fn transaction_disposal_retains_later_writes_through_open_handle() {
+    use std::io::{Seek, SeekFrom, Write};
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("installed"), "B").unwrap();
+    let scope = scope(root.path());
+    let bound = super::artifacts::bind(&scope, "installed").unwrap();
+    let identity = files::transaction_identity(&bound).unwrap();
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(root.path().join("installed"))
+        .unwrap();
+    let receipt = files::transaction_remove(
+        &scope,
+        "installed",
+        &bound,
+        &identity,
+        &files::hash_bytes(b"B"),
+    )
+    .unwrap();
+    assert!(!root.path().join("installed").exists());
+    writer.seek(SeekFrom::Start(0)).unwrap();
+    writer.write_all(b"C").unwrap();
+    writer.sync_all().unwrap();
+    assert_eq!(receipt.status, "recoveryRetained");
+    let saved = receipt.destination_path.unwrap();
+    assert!(!std::path::Path::new(&saved).starts_with(root.path()));
+    assert_eq!(fs::read_to_string(saved).unwrap(), "C");
+}
+
+#[test]
+fn transaction_rollback_reports_inner_gap_write_and_restores_original() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+    })).unwrap();
+    let error = super::transaction::apply_with_disposal_hook(
+        &scope,
+        &plan,
+        |step| {
+            if step == 2 {
+                Err(super::WorkspaceError::new(
+                    "injected",
+                    "rollback installed write",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+        |relative| {
+            assert_eq!(relative, "old");
+            let before = same_file::Handle::from_path(root.path().join(relative)).unwrap();
+            fs::write(root.path().join(relative), "C").unwrap();
+            assert_eq!(
+                before,
+                same_file::Handle::from_path(root.path().join(relative)).unwrap()
+            );
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "A");
+    let receipt = error
+        .path_results
+        .iter()
+        .find(|entry| entry.status == "recoveryRetained")
+        .unwrap();
+    assert_eq!(receipt.relative_path, "old");
+    assert_eq!(
+        fs::read_to_string(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        "C"
+    );
+}
+
+#[test]
+fn transaction_success_discloses_original_recovery_without_package_pollution() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("workflow-package.json"), "A").unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"A");
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"workflow-package.json","expectedCurrentHash":hash}],
+        "writes": [{"relativePath":"workflow-package.json","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+    })).unwrap();
+    let result = super::transaction::apply(&scope, &plan).unwrap();
+    assert_eq!(result.status, "committed");
+    let receipt = result
+        .results
+        .iter()
+        .find(|entry| entry.status == "recoveryRetained")
+        .unwrap();
+    assert_eq!(receipt.relative_path, "workflow-package.json");
+    assert_eq!(
+        fs::read_to_string(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        "A"
+    );
+    let snapshot = super::package_hash::capture(&scope, "").unwrap();
+    assert_eq!(snapshot.files.len(), 1);
+    assert_eq!(snapshot.files[0].sha256, files::hash_bytes(b"B"));
+}
+
+#[test]
+fn transaction_binary_replacement_returns_recovery_receipt_and_rejects_user_hardlinks() {
+    let root = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    fs::write(root.path().join("old.bin"), [0, 255]).unwrap();
+    fs::write(external.path().join("new.bin"), [255, 0]).unwrap();
+    let scope = scope(root.path());
+    let captured = super::package_hash::capture(&scope, "").unwrap();
+    let grants = super::artifacts::ArtifactGrantState::default();
+    let grant =
+        super::artifacts::grant_source(&external.path().join("new.bin"), 1, &grants).unwrap();
+    let imported = super::artifacts::import_captured(
+        &scope,
+        1,
+        &grants,
+        "old.bin",
+        &grant.source_grant_token,
+        Some(&files::hash_bytes(&[0, 255])),
+        Some(&captured),
+    )
+    .unwrap();
+    assert_eq!(imported.recovery_results.len(), 1);
+    let receipt = &imported.recovery_results[0];
+    assert_eq!(receipt.status, "recoveryRetained");
+    assert_eq!(
+        fs::read(receipt.destination_path.as_ref().unwrap()).unwrap(),
+        [0, 255]
+    );
+    assert_eq!(
+        super::package_hash::capture(&scope, "")
+            .unwrap()
+            .files
+            .len(),
+        1
+    );
+    fs::hard_link(
+        root.path().join("old.bin"),
+        external.path().join("user-linked.bin"),
+    )
+    .unwrap();
+    assert!(super::package_hash::capture(&scope, "").is_err());
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_moved_file() {
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("old"), "A").unwrap();
+    let scope = scope(root.path());
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"old","expectedCurrentHash":files::hash_bytes(b"A")},{"relativePath":"dest","expectedCurrentHash":null}],
+        "writes": [], "moves": [{"sourcePath":"old","destinationPath":"dest"}], "trashes": []
+    })).unwrap();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 2 {
+            fs::write(root.path().join("dest"), "C").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join("dest")).unwrap(), "C");
+    assert!(!root.path().join("old").exists());
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == "dest" && value.status == "partial"));
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_staged_file() {
+    let root = tempdir().unwrap();
+    let scope = scope(root.path());
+    let plan = serde_json::from_value(serde_json::json!({
+        "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+        "expectedEntries": [{"relativePath":"dest","expectedCurrentHash":null}],
+        "writes": [{"relativePath":"dest","text":"B","expectedCurrentHash":null}], "moves": [], "trashes": []
+    })).unwrap();
+    let mut saved = String::new();
+    let error = super::transaction::apply_with_hook(&scope, &plan, |step| {
+        if step == 0 {
+            saved = fs::read_dir(root.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            fs::write(root.path().join(&saved), "C").unwrap();
+            return Err(super::WorkspaceError::new(
+                "injected",
+                "stop before installation",
+            ));
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "workspace_transaction_partial");
+    assert_eq!(fs::read_to_string(root.path().join(&saved)).unwrap(), "C");
+    assert!(error
+        .path_results
+        .iter()
+        .any(|value| value.relative_path == saved && value.status == "partial"));
+}
+
+#[test]
+fn transaction_preserves_same_identity_concurrent_backup_on_failure_and_success() {
+    for fail in [true, false] {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("old"), "A").unwrap();
+        let scope = scope(root.path());
+        let hash = files::hash_bytes(b"A");
+        let plan = serde_json::from_value(serde_json::json!({
+            "workspaceId": super::transaction::workspace_id(&scope).unwrap(),
+            "expectedEntries": [{"relativePath":"old","expectedCurrentHash":hash}],
+            "writes": [{"relativePath":"old","text":"B","expectedCurrentHash":hash}], "moves": [], "trashes": []
+        })).unwrap();
+        let mut saved = String::new();
+        let result = super::transaction::apply_with_hook(&scope, &plan, |step| {
+            if step == 2 {
+                saved = fs::read_dir(root.path())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
+                    .find(|name| name.starts_with(".workflow-studio-original-"))
+                    .unwrap();
+                fs::write(root.path().join(&saved), "C").unwrap();
+                if fail {
+                    return Err(super::WorkspaceError::new(
+                        "injected",
+                        "stop after installation",
+                    ));
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_err(), "changed backup must be reported");
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "workspace_transaction_partial");
+        assert_eq!(fs::read_to_string(root.path().join(&saved)).unwrap(), "C");
+        assert!(error
+            .path_results
+            .iter()
+            .any(|value| value.destination_path.as_ref() == Some(&saved)
+                && value.status == "partial"));
+        if fail {
+            assert!(!root.path().join("old").exists());
+        } else {
+            assert_eq!(fs::read_to_string(root.path().join("old")).unwrap(), "B");
+        }
+    }
+}
+
+#[test]
+fn package_contract_filesystem_boundary_recipes() {
+    use base64::Engine;
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/workflow-package-v1-vectors.json"
+    ))
+    .unwrap();
+    fn bytes(value: &serde_json::Value) -> Vec<u8> {
+        if let Some(repeat) = value["repeat"].as_str() {
+            return repeat
+                .repeat(value["count"].as_u64().unwrap() as usize)
+                .into_bytes();
+        }
+        let text = value["value"].as_str().unwrap();
+        if value["encoding"] == "base64" {
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .unwrap()
+        } else {
+            text.as_bytes().to_vec()
+        }
+    }
+    fn path(template: &str, index: u64) -> String {
+        template
+            .replace("{index:04d}", &format!("{index:04}"))
+            .replace("{index:02d}", &format!("{index:02}"))
+    }
+    for vector in vectors["boundaryVectors"].as_array().unwrap() {
+        let recipe = &vector["recipe"];
+        let kind = recipe["kind"].as_str().unwrap();
+        if kind != "packageFiles" && kind != "filesystemEntries" {
+            continue;
+        }
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("p")).unwrap();
+        if kind == "filesystemEntries" {
+            for index in 0..recipe["count"].as_u64().unwrap() {
+                fs::create_dir(
+                    root.path()
+                        .join("p")
+                        .join(path(recipe["pathTemplate"].as_str().unwrap(), index)),
+                )
+                .unwrap();
+            }
+        } else {
+            let create = |name: String, data: Vec<u8>| {
+                let file = root.path().join("p").join(name);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(file, data).unwrap();
+            };
+            for file in recipe["files"].as_array().unwrap() {
+                create(
+                    file["path"].as_str().unwrap().into(),
+                    bytes(&file["content"]),
+                );
+            }
+            for set in recipe["generatedFiles"].as_array().unwrap() {
+                for index in 0..set["count"].as_u64().unwrap() {
+                    create(
+                        path(
+                            set["pathTemplate"].as_str().unwrap(),
+                            index + set["startIndex"].as_u64().unwrap(),
+                        ),
+                        bytes(&set["content"]),
+                    );
+                }
+            }
+        }
+        if kind == "packageFiles" {
+            fs::write(root.path().join("p/digests.json"), "generated metadata").unwrap();
+        }
+        let result = super::package_hash::capture(&scope(root.path()), "p");
+        if vector["expected"]["accepted"] == true {
+            assert!(
+                result.is_ok(),
+                "{}: {:?}",
+                vector["name"],
+                result.unwrap_err()
+            );
+            if kind == "filesystemEntries" {
+                let writes = vec![
+                    super::transaction::WriteRequest {
+                        relative_path: "p/digests.json".into(),
+                        text: "{}".into(),
+                        expected_current_hash: None,
+                    },
+                    super::transaction::WriteRequest {
+                        relative_path: super::generated_write::INDEX_PATH.into(),
+                        text: "{}".into(),
+                        expected_current_hash: None,
+                    },
+                ];
+                let workspace = scope(root.path());
+                assert_eq!(
+                    super::generated_write::replace(&workspace, &result.unwrap(), &writes)
+                        .unwrap_err()
+                        .code,
+                    "package_traversal_limit"
+                );
+                assert!(!root.path().join("p/digests.json").exists());
+                fs::remove_dir(
+                    root.path()
+                        .join("p")
+                        .join(path(recipe["pathTemplate"].as_str().unwrap(), 0)),
+                )
+                .unwrap();
+                let captured = super::package_hash::capture(&workspace, "p").unwrap();
+                super::generated_write::replace(&workspace, &captured, &writes).unwrap();
+                let captured = super::package_hash::capture(&workspace, "p").unwrap();
+                let existing_writes: Vec<_> = writes
+                    .into_iter()
+                    .map(|mut write| {
+                        write.expected_current_hash = Some(files::hash_bytes(b"{}"));
+                        write
+                    })
+                    .collect();
+                super::generated_write::replace(&workspace, &captured, &existing_writes).unwrap();
+            }
+        } else {
+            assert_eq!(
+                result.unwrap_err().code,
+                vector["expected"]["diagnosticCode"].as_str().unwrap(),
+                "{}",
+                vector["name"]
+            );
+        }
+    }
+}
+
+#[test]
+fn package_hash_rejects_membership_change_during_capture() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("p")).unwrap();
+    fs::write(root.path().join("p/a"), "a").unwrap();
+    let scope = scope(root.path());
+    let result = super::package_hash::capture_with_hook(&scope, "p", || {
+        fs::write(root.path().join("p/new"), "new").unwrap();
+    });
+    assert_eq!(result.unwrap_err().code, "package_source_changed");
+}
+
+#[test]
+fn package_generated_failure_between_writes_restores_both_outputs() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("p")).unwrap();
+    fs::create_dir_all(root.path().join(".well-known/hermes-workflows")).unwrap();
+    fs::write(root.path().join("p/a"), "source").unwrap();
+    fs::write(root.path().join("p/digests.json"), "old digest").unwrap();
+    fs::write(
+        root.path().join(super::generated_write::INDEX_PATH),
+        "old index",
+    )
+    .unwrap();
+    let scope = scope(root.path());
+    let writes = vec![
+        super::transaction::WriteRequest {
+            relative_path: "p/digests.json".into(),
+            text: "new digest".into(),
+            expected_current_hash: Some(files::hash_bytes(b"old digest")),
+        },
+        super::transaction::WriteRequest {
+            relative_path: super::generated_write::INDEX_PATH.into(),
+            text: "new index".into(),
+            expected_current_hash: Some(files::hash_bytes(b"old index")),
+        },
+    ];
+    for fail in 0..5 {
+        let capture = super::package_hash::capture(&scope, "p").unwrap();
+        assert!(
+            super::generated_write::replace_with_hook(&scope, &capture, &writes, |step| {
+                if step == fail {
+                    Err(super::WorkspaceError::new("injected", "failure"))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("p/digests.json")).unwrap(),
+            "old digest"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join(super::generated_write::INDEX_PATH)).unwrap(),
+            "old index"
+        );
+    }
+}
+
+#[test]
+fn package_generated_postcommit_source_verification_rolls_back_outputs() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("p")).unwrap();
+    fs::write(root.path().join("p/source"), "original").unwrap();
+    let scope = scope(root.path());
+    let capture = super::package_hash::capture(&scope, "p").unwrap();
+    let writes = vec![
+        super::transaction::WriteRequest {
+            relative_path: "p/digests.json".into(),
+            text: "digest".into(),
+            expected_current_hash: None,
+        },
+        super::transaction::WriteRequest {
+            relative_path: super::generated_write::INDEX_PATH.into(),
+            text: "index".into(),
+            expected_current_hash: None,
+        },
+    ];
+    let result = super::generated_write::replace_with_hook(&scope, &capture, &writes, |step| {
+        if step == 1 {
+            fs::write(root.path().join("p/source"), "changed").unwrap();
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(result.code, "package_source_changed");
+    assert!(!root.path().join("p/digests.json").exists());
+    assert!(!root.path().join(".well-known").exists());
+}
+
+#[test]
+fn transaction_readonly_target_fails_closed_before_mutation() {
+    let root = tempdir().unwrap();
+    let target = root.path().join("draft.md");
+    fs::write(&target, "old").unwrap();
+    let mut permissions = fs::metadata(&target).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&target, permissions).unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"old");
+    let plan = serde_json::from_value(serde_json::json!({"workspaceId":super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":[{"relativePath":"draft.md","expectedCurrentHash":hash}],"writes":[{"relativePath":"draft.md","text":"new","expectedCurrentHash":hash}],"moves":[],"trashes":[]})).unwrap();
+    let outcome = super::transaction::apply(&scope, &plan);
+    let mut permissions = fs::metadata(&target).unwrap().permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(&target, permissions).unwrap();
+    assert_eq!(outcome.unwrap_err().code, "workspace_readonly_unsupported");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "old");
+}
+#[cfg(unix)]
+#[test]
+fn transaction_preserves_executable_permission_bits() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempdir().unwrap();
+    let target = root.path().join("draft.py");
+    fs::write(&target, "old").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+    let scope = scope(root.path());
+    let hash = files::hash_bytes(b"old");
+    let plan = serde_json::from_value(serde_json::json!({"workspaceId":super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":[{"relativePath":"draft.py","expectedCurrentHash":hash}],"writes":[{"relativePath":"draft.py","text":"new","expectedCurrentHash":hash}],"moves":[],"trashes":[]})).unwrap();
+    super::transaction::apply(&scope, &plan).unwrap();
+    assert_eq!(
+        fs::metadata(target).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+}
+
+#[test]
+fn package_hash_rejects_nested_manifests_case_insensitively() {
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("p/nested")).unwrap();
+    fs::write(root.path().join("p/nested/WORKFLOW-PACKAGE.JSON"), "{}").unwrap();
+    assert_eq!(
+        super::package_hash::capture(&scope(root.path()), "p")
+            .unwrap_err()
+            .code,
+        "package_root_nested"
+    );
+}
+
+#[test]
+fn package_workspace_root_capture_revalidates_without_absolute_joins() {
+    let root = tempdir().unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("workflow-package.json"), "{}").unwrap();
+    fs::write(root.path().join("nested/a.md"), "a").unwrap();
+    fs::write(root.path().join("digests.json"), "generated").unwrap();
+    let workspace = scope(root.path());
+    let captured = super::package_hash::capture(&workspace, "").unwrap();
+    assert_eq!(
+        captured
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["nested/a.md", "workflow-package.json"]
+    );
+    assert_eq!(
+        super::package_hash::workspace_entries(&captured)
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "digests.json",
+            "nested",
+            "nested/a.md",
+            "workflow-package.json"
+        ]
+    );
+    super::package_hash::verify(&workspace, &captured).unwrap();
+    super::package_hash::verify_sources(&workspace, &captured, &[]).unwrap();
+    assert_eq!(
+        super::generated_write::replace(&workspace, &captured, &[])
+            .unwrap_err()
+            .code,
+        "package_root_required"
+    );
+    fs::write(root.path().join("nested/a.md"), "changed").unwrap();
+    assert_eq!(
+        super::package_hash::verify_sources(&workspace, &captured, &[])
+            .unwrap_err()
+            .code,
+        "package_source_changed"
+    );
+}
+
+#[test]
+fn package_transaction_failure_at_each_staged_file_restores_existing_and_new_package_trees() {
+    for fail in 0..8 {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("existing.md"), "retained bytes").unwrap();
+        let scope = scope(root.path());
+        let paths = [
+            "new/README.md",
+            "new/workflow-package.json",
+            "new/workflows/main.yaml",
+            "new/scripts/helper.py",
+            "new/workflows/main.hermes.yaml",
+            "new/commands/run.md",
+            "new/fixtures/input.json",
+            "new/digests.json",
+        ];
+        let expected: Vec<_> = paths
+            .iter()
+            .map(|path| serde_json::json!({"relativePath":path,"expectedCurrentHash":null}))
+            .collect();
+        let writes: Vec<_> = paths.iter().map(|path| serde_json::json!({"relativePath":path,"text":"new bytes","expectedCurrentHash":null})).collect();
+        let plan = serde_json::from_value(serde_json::json!({"workspaceId":super::transaction::workspace_id(&scope).unwrap(),"expectedEntries":expected,"writes":writes,"moves":[],"trashes":[]})).unwrap();
+        let result = super::transaction::apply_with_staging_hook(&scope, &plan, |position| {
+            if position == fail {
+                Err(super::WorkspaceError::new(
+                    "injected_staging_failure",
+                    "injected disk staging failure",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            result.unwrap_err().code,
+            "injected_staging_failure",
+            "staged position {fail}"
+        );
+        assert_eq!(
+            fs::read(root.path().join("existing.md")).unwrap(),
+            b"retained bytes"
+        );
+        assert!(!root.path().join("new").exists());
+        assert_eq!(
+            fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "no temporary siblings after staged failure {fail}"
+        );
+    }
 }

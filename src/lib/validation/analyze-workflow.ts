@@ -470,7 +470,7 @@ interface WorkflowProfileSelection {
   explicitValue?: unknown
 }
 
-function selectWorkflowProfile(companionValue: unknown): WorkflowProfileSelection {
+export function selectWorkflowProfile(companionValue: unknown): WorkflowProfileSelection {
   if (!isRecord(companionValue) || !Object.hasOwn(companionValue, 'language_compatibility')) {
     return { profile: 'hermes-legacy', recognized: true }
   }

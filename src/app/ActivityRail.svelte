@@ -3,6 +3,7 @@
   import { resolveCommand } from '$src/lib/commands/surface'
   import type { ActivityId, CommandContext } from '$src/lib/commands/types'
   import { activeActivity, isPageActivity } from '$src/stores/shell'
+  import Package from 'lucide-svelte/icons/package'
   import Files from 'lucide-svelte/icons/files'
   import Workflow from 'lucide-svelte/icons/workflow'
   import GalleryVerticalEnd from 'lucide-svelte/icons/gallery-vertical-end'
@@ -31,6 +32,7 @@
 
   const activities: readonly { id: ActivityId; icon: typeof Files }[] = [
     { id: 'explorer', icon: Files },
+    { id: 'packages', icon: Package },
     { id: 'nodes', icon: Workflow },
     { id: 'examples', icon: GalleryVerticalEnd },
     { id: 'documentation', icon: BookOpen },

@@ -1,5 +1,7 @@
 # Quick Start
 
+For workflows with scripts, commands, or shared fixtures, see [Creating a package](#guide:creating-a-package) after this workflow introduction.
+
 Use this path to create, understand, and save a small loop24 workflow without leaving the local editor. Workflow Studio works offline and does not execute workflows.
 
 ## 1. Open a local folder

@@ -15,9 +15,25 @@ export const GUIDE_GROUPS: readonly GuideGroup[] = [
   { id: 'getting-started', title: 'Getting started' }, { id: 'build-graph', title: 'Build the graph' },
   { id: 'configure-behavior', title: 'Configure behavior' }, { id: 'review-recover', title: 'Review and recover' },
   { id: 'use-application', title: 'Use the application' },
+  { id: 'workflow-packages', title: 'Workflow packages' },
 ]
 
 export const GUIDE_PRESENTATION: Readonly<Record<string, GuidePresentation>> = {
+  'workflow-packages': { group: 'workflow-packages', order: 130, description: "Understand the files that travel together as one reusable workflow package.", useWhen: "Understand the files that travel together as one reusable workflow package." },
+  'package-folder-structure': { group: 'workflow-packages', order: 135, description: "Arrange workflow members and supporting files under a contained package root.", useWhen: "Arrange workflow members and supporting files under a contained package root." },
+  'creating-a-package': { group: 'workflow-packages', order: 140, description: "Create a package from a supported workflow and explicit resource sources.", useWhen: "Create a package from a supported workflow and explicit resource sources." },
+  'multiple-workflows-per-package': { group: 'workflow-packages', order: 145, description: "Share resources across explicitly listed workflow members.", useWhen: "Share resources across explicitly listed workflow members." },
+  'command-resources': { group: 'workflow-packages', order: 150, description: "Edit command Markdown with bounded metadata parsing and passive previews.", useWhen: "Edit command Markdown with bounded metadata parsing and passive previews." },
+  'script-resources': { group: 'workflow-packages', order: 155, description: "Write packaged scripts with offline syntax checks and contract-based resolution.", useWhen: "Write packaged scripts with offline syntax checks and contract-based resolution." },
+  'mcp-and-supporting-resources': { group: 'workflow-packages', order: 160, description: "Include the packaged resource closure and distinguish destination services.", useWhen: "Include the packaged resource closure and distinguish destination services." },
+  'packaged-and-external-requirements': { group: 'workflow-packages', order: 165, description: "Separate distributed bytes from tools, services, secrets, and trust.", useWhen: "Separate distributed bytes from tools, services, secrets, and trust." },
+  'package-readiness': { group: 'workflow-packages', order: 170, description: "Interpret static blockers separately from destination-dependent advisories.", useWhen: "Interpret static blockers separately from destination-dependent advisories." },
+  'package-versions-digests-trust': { group: 'workflow-packages', order: 175, description: "Understand exact-byte identity and why resource edits require review.", useWhen: "Understand exact-byte identity and why resource edits require review." },
+  'preparing-packages': { group: 'workflow-packages', order: 180, description: "Validate, review, and record a package without remote publication.", useWhen: "Validate, review, and record a package without remote publication." },
+  'updating-packages': { group: 'workflow-packages', order: 185, description: "Review shared resource changes and prepare a new local version.", useWhen: "Review shared resource changes and prepare a new local version." },
+  'publishing-packages-with-git': { group: 'workflow-packages', order: 190, description: "Make prepared local content available through an external repository operation.", useWhen: "Make prepared local content available through an external repository operation." },
+  'coworker-package-installation': { group: 'workflow-packages', order: 195, description: "Understand the destination marketplace review and trust boundary.", useWhen: "Understand the destination marketplace review and trust boundary." },
+  'package-troubleshooting': { group: 'workflow-packages', order: 200, description: "Recover drafts and diagnose stale snapshots, conflicts, and unsupported contexts.", useWhen: "Recover drafts and diagnose stale snapshots, conflicts, and unsupported contexts." },
   'quick-start': {
     group: 'getting-started',
     order: 10,
@@ -126,6 +142,7 @@ export const DOCUMENTATION_TASKS: readonly DocumentationTask[] = [
   { id: 'git-versions', title: 'Review local Git versions', description: 'Inspect or record local workflow history.', topicId: 'guide:git-versions' },
   { id: 'fix-problem', title: 'Fix a validation problem', description: 'Understand save-blocking issues and advisories.', topicId: 'guide:problems-and-validation' },
   { id: 'keyboard-shortcuts', title: 'Work faster with keyboard shortcuts', description: 'Find commands, chords, and canvas gestures.', topicId: 'guide:keyboard-shortcuts' },
+  { id: 'prepare-package', title: 'Prepare a workflow package', description: 'Validate scripts and resources, then create a local Git version.', topicId: 'guide:preparing-packages' },
 ]
 
 export const REFERENCE_ENTRY_POINTS: readonly ReferenceEntryPoint[] = [

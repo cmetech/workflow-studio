@@ -7,6 +7,8 @@ import type { ProgressEvent, ProgressSnapshot } from '../progress/types'
 import type { UpdateEvent, UpdateSnapshot, UpdateStatusResponse } from '../updates/types'
 import type {
   GitDiff,
+  GitPackageContext,
+  GitPackageVersionPreview,
   GitHistoryResult,
   GitPairSnapshot,
   GitRepository,
@@ -27,6 +29,10 @@ import {
   type WorkspaceNativeBridge,
   type WorkspaceChangedEvent,
   type WorkspaceReadResult,
+  type WorkspaceArtifactMetadata,
+  type ArtifactSourceSelection,
+  type WorkspaceTransactionResult,
+  type WorkspacePackageSnapshot,
   type WorkspaceRenameResult,
   type WorkspaceRootInfo,
   type WorkspaceTrashResult,
@@ -76,7 +82,8 @@ function isPathOperationStatus(value: unknown): value is PathOperationResult['st
     value === 'trashed' ||
     value === 'written' ||
     value === 'failed' ||
-    value === 'partial'
+    value === 'partial' ||
+    value === 'recoveryRetained'
   )
 }
 
@@ -141,6 +148,24 @@ export const tauriBridge: WorkspaceNativeBridge = {
   chooseExportDirectory: () => invokeTyped<string | null>('dialog_choose_export_directory'),
   workspaceSetRoot: (rootPath) => invokeTyped<WorkspaceRootInfo>('workspace_set_root', { rootPath }),
   workspaceScan: () => invokeTyped<readonly WorkspaceFileEntry[]>('workspace_scan'),
+  workspaceApplyTransaction: (plan) => invokeTyped<WorkspaceTransactionResult>('workspace_apply_transaction', { plan }),
+  workspaceHashPackage: (packageRoot) =>
+    invokeTyped<WorkspacePackageSnapshot>('workspace_hash_package', { packageRoot }),
+  workspaceReplaceGeneratedFiles: (request) =>
+    invokeTyped<WorkspaceTransactionResult>('workspace_replace_generated_files', { request }),
+  chooseImportArtifact: () => invokeTyped<ArtifactSourceSelection | null>('dialog_choose_import_artifact'),
+  workspaceReadArtifact: (relativePath) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_read_artifact', { relativePath }),
+  workspaceReadTextArtifact: (relativePath) =>
+    invokeTyped<WorkspaceReadResult>('workspace_read_text_artifact', { relativePath }),
+  workspaceWriteTextArtifact: (request) =>
+    invokeTyped<WorkspaceWriteResult>('workspace_write_text_artifact', { ...request }),
+  workspaceImportArtifact: (request) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_import_artifact', { ...request }),
+  workspaceReplaceArtifact: (request) =>
+    invokeTyped<WorkspaceArtifactMetadata>('workspace_replace_artifact', { ...request }),
+  workspaceRevealArtifact: (relativePath) => invokeTyped<void>('workspace_reveal_artifact', { relativePath }),
+  workspaceOpenArtifact: (relativePath) => invokeTyped<void>('workspace_open_artifact', { relativePath }),
   workspaceRead: (relativePath) => invokeTyped<WorkspaceReadResult>('workspace_read', { relativePath }),
   workspaceWrite: (request) => invokeTyped<WorkspaceWriteResult>('workspace_write', { ...request }),
   workspaceRenamePair: (request) => invokeTyped<WorkspaceRenameResult>('workspace_rename_pair', { ...request }),
@@ -175,6 +200,11 @@ export const tauriBridge: WorkspaceNativeBridge = {
   recoveryDelete: (id) => invokeTyped<void>('recovery_delete', { id }),
   layoutLoad: () => invokeTyped<string | null>('layout_load'),
   layoutSave: (content) => invokeTyped<void>('layout_save', { content }),
+  gitReadPackageContext: (packageRoot) => invokeTyped<GitPackageContext>('git_read_package_context', { packageRoot }),
+  gitPreviewPackageVersion: (request) =>
+    invokeTyped<GitPackageVersionPreview>('git_preview_package_version', { request }),
+  gitCommitPackageVersion: (authorizationToken) =>
+    invokeTyped<GitVersionResult>('git_commit_package_version', { authorizationToken }),
   gitDetect: () => invokeTyped<GitRepository | null>('git_detect'),
   gitBeginHistorySession: () => invokeTyped<number>('git_begin_history_session'),
   gitStatus: (root) => invokeTyped<GitStatus>('git_status', { root }),

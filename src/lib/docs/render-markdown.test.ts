@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from './render-markdown'
 
 describe('renderMarkdown', () => {
+  it('publishes bounded topic anchors and stable heading targets without accepting arbitrary fragments',()=>{
+    const html=renderMarkdown('## Runtime resolution\n\n[Runtime](#guide:script-resources#runtime-resolution) [Bad](#guide:script-resources#../escape)')
+    expect(html).toContain('data-documentation-heading="runtime-resolution"')
+    expect(html).toContain('data-topic-id="guide:script-resources#runtime-resolution"')
+    expect(html).not.toContain('data-topic-id="guide:script-resources#../escape"')
+  })
   it('brands prose while preserving code and link destinations', () => {
     const html = renderMarkdown('Hermes runs workflows. [Hermes guide](https://example.test/hermes) uses `hermes-legacy`.\n\n```yaml\nlanguage_compatibility: hermes-legacy\n# Hermes source comment\n```')
     expect(html).toContain('loop24 runs workflows.')
@@ -31,7 +37,7 @@ describe('renderMarkdown', () => {
 [near miss](#guides:dag) [guide path](#guide:../dag) [path](#field:../prompt) [empty](#node:) [unsafe](javascript:alert(1)) [external](https://docs.example.test)
 `)
 
-    expect(html).toContain('<h1>Heading</h1>')
+    expect(html).toContain('<h1 data-documentation-heading="heading" tabindex="-1">Heading</h1>')
     expect(html).toContain('<ul>')
     expect(html).toContain('<code>code</code>')
     expect(html).toContain('<table>')

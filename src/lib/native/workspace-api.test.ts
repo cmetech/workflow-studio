@@ -345,3 +345,30 @@ describe('workspace change API', () => {
     })
   })
 })
+
+it.each(['workspace_transaction_partial', 'external_revision_conflict'])(
+  'preserves retained recovery destinations through native rejection mapping: %s',
+  async (code) => {
+    const retained = {
+      relativePath: 'pkg/digests.json',
+      destinationPath: 'C:/Users/me/AppData/Studio/recovery/original-123',
+      status: 'recoveryRetained',
+      message: 'Concurrent bytes retained for manual recovery.',
+    }
+    invoke.mockRejectedValueOnce({ code, message: 'The operation could not complete safely.', pathResults: [retained] })
+    await expect(
+      tauriBridge.workspaceApplyTransaction({
+        workspaceId: 'workspace',
+        expectedEntries: [],
+        writes: [],
+        moves: [],
+        trashes: [],
+      }),
+    ).rejects.toMatchObject({
+      name: 'NativeError',
+      code,
+      message: 'The operation could not complete safely.',
+      pathResults: [retained],
+    })
+  },
+)

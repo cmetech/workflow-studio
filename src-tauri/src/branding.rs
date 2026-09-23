@@ -2366,32 +2366,50 @@ fn push_list_warning(
     warnings.push(message);
 }
 
-fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
-    let scope = BrandStorageScope::bind(app_data)?;
+fn collect_brand_candidates(
+    entries: impl Iterator<Item = BrandResult<String>>,
+) -> BrandResult<(Vec<String>, bool)> {
     let mut ids = Vec::new();
     let mut candidates_truncated = false;
     let mut scanned_entries = 0_usize;
-    for entry in scope
-        .brands
-        .entries()
-        .map_err(|error| io_error("brand_storage_failed", error))?
-    {
-        let entry = entry.map_err(|error| io_error("brand_storage_failed", error))?;
+    for entry in entries {
+        let name = entry?;
         scanned_entries += 1;
         if scanned_entries > MAX_STORAGE_TREE_ENTRIES {
             candidates_truncated = true;
             break;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
         if validate_brand_id(&name) && name != BUILTIN_BRAND_ID {
+            let position = match ids.binary_search(&name) {
+                Ok(_) => continue,
+                Err(position) => position,
+            };
             if ids.len() >= MAX_LIST_CANDIDATES {
                 candidates_truncated = true;
-                break;
+                if position >= MAX_LIST_CANDIDATES {
+                    continue;
+                }
+                ids.pop();
             }
-            ids.push(name);
+            // Directory enumeration order is unspecified. Keep the lexicographically
+            // first bounded set across the existing entry-scan budget.
+            ids.insert(position, name);
         }
     }
-    ids.sort();
+    Ok((ids, candidates_truncated))
+}
+
+fn list_brand_packs_at(app_data: &Path) -> BrandResult<BrandPackListResult> {
+    let scope = BrandStorageScope::bind(app_data)?;
+    let entries = scope
+        .brands
+        .entries()
+        .map_err(|error| io_error("brand_storage_failed", error))?;
+    let (ids, candidates_truncated) = collect_brand_candidates(entries.map(|entry| {
+        entry
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .map_err(|error| io_error("brand_storage_failed", error))
+    }))?;
     let mut packs = Vec::new();
     let mut warnings = Vec::new();
     let mut warning_bytes = 0_usize;
@@ -3382,6 +3400,36 @@ mod tests {
         assert!(listed.packs[0].revision.starts_with("sha256:"));
         assert_eq!(listed.warnings.len(), 1);
         assert!(listed.warnings[0].contains("corrupt"));
+    }
+
+    #[test]
+    fn list_candidates_keep_sorted_priority_independent_of_directory_order() {
+        let mut names: Vec<String> = (0..300)
+            .map(|index| format!("z-corrupt-{index:03}"))
+            .collect();
+        names.push("acme".to_owned());
+        let (late, truncated) = collect_brand_candidates(names.iter().cloned().map(Ok)).unwrap();
+        names.reverse();
+        let (early, _) = collect_brand_candidates(names.into_iter().map(Ok)).unwrap();
+
+        assert_eq!(late.first().map(String::as_str), Some("acme"));
+        assert_eq!(late, early);
+        assert_eq!(late.len(), MAX_LIST_CANDIDATES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn list_candidates_stop_at_the_storage_entry_budget() {
+        let consumed = std::cell::Cell::new(0);
+        let entries = std::iter::repeat_with(|| {
+            consumed.set(consumed.get() + 1);
+            Ok("invalid.name".to_owned())
+        });
+        let (ids, truncated) = collect_brand_candidates(entries).unwrap();
+
+        assert!(ids.is_empty());
+        assert!(truncated);
+        assert_eq!(consumed.get(), MAX_STORAGE_TREE_ENTRIES + 1);
     }
 
     #[test]

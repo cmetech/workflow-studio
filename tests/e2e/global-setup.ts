@@ -8,6 +8,13 @@ export function warmupAttemptTimeoutMs(platform: string = process.platform): num
 }
 const WARMUP_ATTEMPT_TIMEOUT_MS = warmupAttemptTimeoutMs()
 const DEFERRED_SURFACE_MODULES = [
+  '/src/features/artifacts/ArtifactEditor.svelte',
+  '/src/features/packages/PackageOverview.svelte',
+  '/src/features/packages/PackageInspector.svelte',
+  '/src/features/packages/PackageManifestEditor.svelte',
+  '/src/features/packages/PackageAuthoringDialogs.svelte',
+  '/src/features/packages/PreparePackageDialog.svelte',
+  '/src/features/inspector/ResourceActionDialog.svelte',
   '/src/features/settings/SettingsPage.svelte',
   '/src/features/settings/ContractSettingsHost.svelte',
   '/src/features/settings/UpdateSettings.svelte',
@@ -76,6 +83,9 @@ async function warmEntryGraphAttempt(context: BrowserContext, baseURL: string): 
       async (modulePaths) => Promise.all(modulePaths.map((modulePath) => import(modulePath))).then(() => undefined),
       DEFERRED_SURFACE_MODULES,
     )
+    // Dependency discovery can schedule a dev-server reload after imports resolve.
+    // Keep the warm-up page alive until that startup activity has settled.
+    await page.waitForLoadState('networkidle', { timeout: WARMUP_ATTEMPT_TIMEOUT_MS })
   } catch (error) {
     const body = await page
       .locator('body')

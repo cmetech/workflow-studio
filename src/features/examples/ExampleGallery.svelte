@@ -2,7 +2,7 @@
   import { profileLabel } from '$src/lib/branding/workflow-copy'
   import { tick } from 'svelte'
   import ArrowLeft from 'lucide-svelte/icons/arrow-left'
-  import type { ExampleDescriptor } from '$src/lib/examples/types'
+  import type { ExampleDescriptor, PackageExampleDescriptor } from '$src/lib/examples/types'
 
   type ExampleCatalogState =
     | { readonly phase: 'loading' }
@@ -16,6 +16,8 @@
     onCreateEditableCopy: (example: ExampleDescriptor) => void | Promise<void>
     onOpenDocumentation: (example: ExampleDescriptor, topicId: string, opener: HTMLButtonElement) => void
     onRetry?: () => void | Promise<void>
+    packageExamples?: readonly PackageExampleDescriptor[]
+    onCreatePackageCopy?: (example: PackageExampleDescriptor) => void | Promise<void>
     embedded?: boolean
   }
 
@@ -25,8 +27,33 @@
     onCreateEditableCopy,
     onOpenDocumentation,
     onRetry,
+    packageExamples = [],
+    onCreatePackageCopy,
     embedded = false,
   }: Props = $props()
+  let selectedPackage = $state<PackageExampleDescriptor | null>(null)
+  let packageBusy = $state(false)
+  let packageError = $state('')
+  async function copyPackage(example: PackageExampleDescriptor): Promise<void> {
+    if (packageBusy || !onCreatePackageCopy) return
+    packageBusy = true
+    packageError = ''
+    try {
+      await onCreatePackageCopy(example)
+    } catch (error) {
+      packageError = error instanceof Error ? error.message : String(error)
+    } finally {
+      packageBusy = false
+    }
+  }
+  async function selectPackage(example: PackageExampleDescriptor): Promise<void> {
+    const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
+    previewReturn = { exampleId: `package:${example.id}`, scrollTop: pageScroll?.scrollTop ?? 0 }
+    selectedPackage = example
+    await tick()
+    if (pageScroll) pageScroll.scrollTop = 0
+    previewBack?.focus({ preventScroll: true })
+  }
   let selectedExample = $state<ExampleDescriptor | null>(null)
   let gallery = $state<HTMLElement>()
   let previewBack = $state<HTMLButtonElement>()
@@ -44,6 +71,7 @@
   async function returnToExamples(): Promise<void> {
     const restoration = previewReturn
     selectedExample = null
+    selectedPackage = null
     await tick()
     if (!restoration) return
     const pageScroll = gallery?.closest<HTMLElement>('[data-page-scroll]')
@@ -59,122 +87,171 @@
 
 <section bind:this={gallery} class="example-gallery" aria-labelledby={embedded ? undefined : 'examples-title'}>
   {#if !embedded}<h2 id="examples-title">Examples</h2>{/if}
-  {#if catalogState.phase === 'loading'}
-    <p class="catalog-state" role="status">Loading validated examples…</p>
-  {:else if catalogState.phase === 'empty'}
-    <p class="catalog-state" role="status">No bundled examples are available.</p>
-  {:else if catalogState.phase === 'error'}
-    <div class="catalog-state" role="alert">
-      <p>{catalogState.message}</p>
-      {#if onRetry}
-        <button type="button" onclick={() => void onRetry()}>Retry loading examples</button>
-      {/if}
-    </div>
-  {:else if selectedExample}
-    <section class="preview" aria-label={`${selectedExample.title} preview`}>
-      <header class="preview-header">
-        <button
-          bind:this={previewBack}
-          class="preview-back"
-          type="button"
-          data-variant="secondary"
-          onclick={() => void returnToExamples()}
-          ><ArrowLeft size={16} aria-hidden="true" /><span>Back to Examples</span></button
-        >
-        <div>
-          <h3>{selectedExample.title}</h3>
-          <p>{selectedExample.summary}</p>
-        </div>
-      </header>
-      <dl>
-        <div>
-          <dt>Profile</dt>
-          <dd>{profileLabel(selectedExample.profile)}</dd>
-        </div>
-        <div>
-          <dt>Difficulty</dt>
-          <dd>{selectedExample.difficulty}</dd>
-        </div>
-        <div>
-          <dt>Nodes</dt>
-          <dd>{selectedExample.highlightedNodeIds.join(', ')}</dd>
-        </div>
-        <div>
-          <dt>Concepts</dt>
-          <dd>{selectedExample.concepts.join(', ')}</dd>
-        </div>
-      </dl>
-      <div class="topics" aria-label={`${selectedExample.title} documentation`}>
-        {#each selectedExample.documentationTopicIds as topicId (topicId)}
-          <button
-            type="button"
-            onclick={(event) => onOpenDocumentation(selectedExample!, topicId, event.currentTarget)}
-          >
-            Open documentation: {topicLabels[`${selectedExample.profile}:${topicId}`] ?? topicId}
-          </button>
-        {/each}
-      </div>
-      <div class="actions">
-        <button type="button" data-variant="primary" onclick={() => onCreateEditableCopy(selectedExample!)}
-          >Create Editable Copy: {selectedExample.title}</button
-        >
-      </div>
-      <div class="yaml-files">
-        <section aria-label="Definition YAML">
-          <h4>Definition YAML</h4>
-          <pre><code>{selectedExample.definitionText}</code></pre>
-        </section>
-        {#if selectedExample.companionText}
-          <section aria-label="Companion YAML">
-            <h4>Companion YAML</h4>
-            <pre><code>{selectedExample.companionText}</code></pre>
-          </section>
-        {/if}
-      </div>
+  {#if packageError}<p role="alert">{packageError}</p>{/if}
+  {#if selectedPackage}
+    <section class="preview" aria-label={`${selectedPackage.title} preview`}>
+      <button bind:this={previewBack} type="button" disabled={packageBusy} onclick={() => void returnToExamples()}
+        >Back to Examples</button
+      >
+      <h3>{selectedPackage.title}</h3>
+      <p>Package</p>
+      <p>{selectedPackage.summary}</p>
+      <p>Read-only bundled package. Create a complete copy to edit its workflows and resources.</p>
+      <button
+        type="button"
+        disabled={packageBusy || !onCreatePackageCopy}
+        onclick={() => void copyPackage(selectedPackage!)}>Create Editable Copy: {selectedPackage.title}</button
+      >
+      {#each selectedPackage.files as file (file.path)}<details>
+          <summary>{file.path}</summary>
+          <pre><code>{file.text}</code></pre>
+        </details>{/each}
     </section>
   {:else}
-    <p class="intro">Validated bundled workflows are read-only. Create a copy to edit one in the current workspace.</p>
-    <div class="cards">
-      {#each catalogState.examples as example (example.id)}
-        <article class="card" aria-label={example.title}>
-          <h3>{example.title}</h3>
-          <p>{example.summary}</p>
-          <dl>
-            <div>
-              <dt>Profile</dt>
-              <dd>{profileLabel(example.profile)}</dd>
+    {#if !selectedExample && packageExamples.length}
+      <div class="cards" aria-label="Package examples">
+        {#each packageExamples as example (example.id)}
+          <article class="card" aria-label={example.title}>
+            <h3>{example.title}</h3>
+            <p>Package</p>
+            <p>{example.summary}</p>
+            <p>{example.files.length} files</p>
+            <div class="actions">
+              <button
+                type="button"
+                data-example-preview={`package:${example.id}`}
+                onclick={() => void selectPackage(example)}>Preview {example.title}</button
+              >
+              <button
+                type="button"
+                disabled={packageBusy || !onCreatePackageCopy}
+                onclick={() => void copyPackage(example)}>Create Editable Copy: {example.title}</button
+              >
             </div>
-            <div>
-              <dt>Difficulty</dt>
-              <dd>{example.difficulty}</dd>
-            </div>
-            <div>
-              <dt>Nodes</dt>
-              <dd>{example.highlightedNodeIds.join(', ')}</dd>
-            </div>
-            <div>
-              <dt>Concepts</dt>
-              <dd>{example.concepts.join(', ')}</dd>
-            </div>
-          </dl>
-          <div class="topics" aria-label={`${example.title} documentation`}>
-            {#each example.documentationTopicIds as topicId (topicId)}
-              <button type="button" onclick={(event) => onOpenDocumentation(example, topicId, event.currentTarget)}>
-                Open documentation: {topicLabels[`${example.profile}:${topicId}`] ?? topicId}
-              </button>
-            {/each}
+          </article>
+        {/each}
+      </div>
+    {/if}
+    {#if catalogState.phase === 'loading'}
+      <p class="catalog-state" role="status">Loading validated examples…</p>
+    {:else if catalogState.phase === 'empty'}
+      <p class="catalog-state" role="status">No bundled examples are available.</p>
+    {:else if catalogState.phase === 'error'}
+      <div class="catalog-state" role="alert">
+        <p>{catalogState.message}</p>
+        {#if onRetry}
+          <button type="button" onclick={() => void onRetry()}>Retry loading examples</button>
+        {/if}
+      </div>
+    {:else if selectedExample}
+      <section class="preview" aria-label={`${selectedExample.title} preview`}>
+        <header class="preview-header">
+          <button
+            bind:this={previewBack}
+            class="preview-back"
+            type="button"
+            data-variant="secondary"
+            onclick={() => void returnToExamples()}
+            ><ArrowLeft size={16} aria-hidden="true" /><span>Back to Examples</span></button
+          >
+          <div>
+            <h3>{selectedExample.title}</h3>
+            <p>{selectedExample.summary}</p>
           </div>
-          <div class="actions">
-            <button type="button" data-example-preview={example.id} onclick={() => void selectExample(example)}
-              >Preview {example.title}</button
-            >
-            <button type="button" onclick={() => onCreateEditableCopy(example)}
-              >Create Editable Copy: {example.title}</button
-            >
+        </header>
+        <dl>
+          <div>
+            <dt>Profile</dt>
+            <dd>{profileLabel(selectedExample.profile)}</dd>
           </div>
-        </article>
-      {/each}
-    </div>
+          <div>
+            <dt>Difficulty</dt>
+            <dd>{selectedExample.difficulty}</dd>
+          </div>
+          <div>
+            <dt>Nodes</dt>
+            <dd>{selectedExample.highlightedNodeIds.join(', ')}</dd>
+          </div>
+          <div>
+            <dt>Concepts</dt>
+            <dd>{selectedExample.concepts.join(', ')}</dd>
+          </div>
+        </dl>
+        <div class="topics" aria-label={`${selectedExample.title} documentation`}>
+          {#each selectedExample.documentationTopicIds as topicId (topicId)}
+            <button
+              type="button"
+              onclick={(event) => onOpenDocumentation(selectedExample!, topicId, event.currentTarget)}
+            >
+              Open documentation: {topicLabels[`${selectedExample.profile}:${topicId}`] ?? topicId}
+            </button>
+          {/each}
+        </div>
+        <div class="actions">
+          <button type="button" data-variant="primary" onclick={() => onCreateEditableCopy(selectedExample!)}
+            >Create Editable Copy: {selectedExample.title}</button
+          >
+        </div>
+        <div class="yaml-files">
+          <section aria-label="Definition YAML">
+            <h4>Definition YAML</h4>
+            <pre><code>{selectedExample.definitionText}</code></pre>
+          </section>
+          {#if selectedExample.companionText}
+            <section aria-label="Companion YAML">
+              <h4>Companion YAML</h4>
+              <pre><code>{selectedExample.companionText}</code></pre>
+            </section>
+          {/if}
+        </div>
+      </section>
+    {:else}
+      <p class="intro">
+        Validated bundled workflows are read-only. Create a copy to edit one in the current workspace.
+      </p>
+      <div class="cards">
+        {#each catalogState.examples as example (example.id)}
+          <article class="card" aria-label={example.title}>
+            <h3>{example.title}</h3>
+            <p>Workflow</p>
+            <p>{example.summary}</p>
+            <dl>
+              <div>
+                <dt>Profile</dt>
+                <dd>{profileLabel(example.profile)}</dd>
+              </div>
+              <div>
+                <dt>Difficulty</dt>
+                <dd>{example.difficulty}</dd>
+              </div>
+              <div>
+                <dt>Nodes</dt>
+                <dd>{example.highlightedNodeIds.join(', ')}</dd>
+              </div>
+              <div>
+                <dt>Concepts</dt>
+                <dd>{example.concepts.join(', ')}</dd>
+              </div>
+            </dl>
+            <div class="topics" aria-label={`${example.title} documentation`}>
+              {#each example.documentationTopicIds as topicId (topicId)}
+                <button type="button" onclick={(event) => onOpenDocumentation(example, topicId, event.currentTarget)}>
+                  Open documentation: {topicLabels[`${example.profile}:${topicId}`] ?? topicId}
+                </button>
+              {/each}
+            </div>
+            <div class="actions">
+              <button type="button" data-example-preview={example.id} onclick={() => void selectExample(example)}
+                >Preview {example.title}</button
+              >
+              <button type="button" onclick={() => onCreateEditableCopy(example)}
+                >Create Editable Copy: {example.title}</button
+              >
+            </div>
+          </article>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </section>
 

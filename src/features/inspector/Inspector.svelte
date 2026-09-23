@@ -4,9 +4,24 @@
   import type { DocumentationIndex } from '$src/lib/docs/types'
   import { resolveWidget } from '$src/lib/forms/widget-registry'
   import ContextDocs from '$src/features/documentation/ContextDocs.svelte'
+  import ResourceFieldActions from './ResourceFieldActions.svelte'
+  import type { ResourceResolutionContract } from '$src/lib/package-contract/resource-contract-loader'
   import type { GraphScopeKey } from '$src/lib/projection/types'
 
   interface Props {
+    resourceContract?: ResourceResolutionContract | undefined
+    resourceNodeKind?: string | undefined
+    resourceInPackage?: boolean | undefined
+    resourceDisabledReason?: string | undefined
+    resourceFields?: Readonly<Record<string, { inline?: boolean; artifactPath?: string }>> | undefined
+    onResourceAction?:
+      | ((
+          field: FormField,
+          action: 'select' | 'create' | 'extract' | 'open' | 'reveal',
+          opener: HTMLButtonElement,
+        ) => void | Promise<void>)
+      | undefined
+    onResourceHelp?: ((topicId: string) => void) | undefined
     fields: readonly FormField[]
     values: Readonly<Record<string, unknown>>
     selectionLabel?: string | undefined
@@ -37,6 +52,13 @@
   type InspectorTab = (typeof tabs)[number]
 
   let {
+    resourceContract,
+    resourceNodeKind,
+    resourceInPackage = false,
+    resourceDisabledReason,
+    resourceFields = {},
+    onResourceAction,
+    onResourceHelp,
     fields,
     values,
     selectionLabel = 'No selection',
@@ -269,6 +291,25 @@
               {/if}
             {:else}
               <p class="unsupported" role="status">{resolution.message} YAML is preserved; this field is read-only.</p>
+            {/if}
+            {#if resourceContract && resourceNodeKind && selectionNodeId}
+              <ResourceFieldActions
+                contract={resourceContract}
+                fieldPath={field.fieldPath}
+                nodeKind={resourceNodeKind}
+                scope={selectionScopeKey && selectionScopeKey !== 'root' ? 'body' : 'root'}
+                inPackage={resourceInPackage}
+                {...resourceFields[field.id] ?? {}}
+                {...resourceDisabledReason || disabledReason
+                  ? { disabledReason: resourceDisabledReason || disabledReason! }
+                  : {}}
+                onSelect={(opener) => onResourceAction?.(field, 'select', opener)}
+                onCreate={(opener) => onResourceAction?.(field, 'create', opener)}
+                onExtract={(opener) => onResourceAction?.(field, 'extract', opener)}
+                onOpen={(opener) => onResourceAction?.(field, 'open', opener)}
+                onReveal={(opener) => onResourceAction?.(field, 'reveal', opener)}
+                {...onResourceHelp ? { onHelp: onResourceHelp } : {}}
+              />
             {/if}
             {#if field.examples.length > 0}<p class="example">Example: {JSON.stringify(field.examples[0])}</p>{/if}
           </div>

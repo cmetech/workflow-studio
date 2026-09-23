@@ -1,0 +1,6 @@
+name: external-tool
+description: Declare destination requirements without credentials.
+nodes:
+  - id: summarize
+    prompt: Summarize the supplied synthetic support notes.
+    allowed_tools: [read_file]

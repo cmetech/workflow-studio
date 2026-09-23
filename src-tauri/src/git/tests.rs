@@ -3437,7 +3437,12 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         ],
     );
     for follow in [false, true] {
-        let mut expected = vec!["log"];
+        let mut expected = vec![
+            "log",
+            "--no-show-signature",
+            "--no-ext-diff",
+            "--no-textconv",
+        ];
         if follow {
             expected.push("--follow");
         }
@@ -3467,6 +3472,7 @@ fn maps_every_closed_git_operation_to_exact_argv() {
         &[
             "show",
             "--no-ext-diff",
+            "--no-textconv",
             "--no-color",
             "0123456789abcdef:flows/main.yaml",
         ],
@@ -3684,4 +3690,103 @@ fn git_with_dates(root: &Path, arguments: &[&str], date: &str) {
         "git fixture command failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[path = "package_tests.rs"]
+mod package_tests;
+
+fn assert_promisor_trace_stays_local(trace: &str, allow_internal_fetch: bool) -> usize {
+    let children: Vec<serde_json::Value> = trace
+        .lines()
+        .filter(|line| line.contains("\"event\":\"child_start\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for child in &children {
+        let argv = child["argv"].as_array().unwrap();
+        assert!(
+            allow_internal_fetch
+                && child["use_shell"] == false
+                && argv.first().and_then(|arg| arg.as_str()) == Some("git")
+                && argv.iter().any(|arg| arg == "fetch"),
+            "Unexpected subprocess: {child}"
+        );
+    }
+    if !children.is_empty() {
+        assert!(
+            trace.contains("not allowed"),
+            "Missing transport rejection: {trace}"
+        );
+    }
+    children.len()
+}
+
+#[test]
+fn promisor_read_and_mutation_commands_deny_transport_without_lazy_fetch_support() {
+    let temporary = tempdir().unwrap();
+    let root = temporary.path();
+    git(root, &["init", "-b", "main"]);
+    git(root, &["config", "extensions.partialClone", "origin"]);
+    git(root, &["config", "remote.origin.promisor", "true"]);
+    git(root, &["config", "protocol.file.allow", "always"]);
+    git(
+        root,
+        &["config", "protocol.studio-missing-helper.allow", "always"],
+    );
+    let missing = "1111111111111111111111111111111111111111";
+    for origin in [
+        root.join("absent-origin").to_string_lossy().into_owned(),
+        "studio-missing-helper::absent-origin".into(),
+    ] {
+        git(root, &["config", "remote.origin.url", &origin]);
+        let reads = [
+            ReadOperation::RawBlob { oid: missing },
+            ReadOperation::RawTreeEntry {
+                tree: missing,
+                path: "sample",
+            },
+            ReadOperation::PackageTree {
+                tree: missing,
+                path: "sample",
+            },
+            ReadOperation::PackageHistory {
+                base: missing,
+                path: "sample",
+            },
+            ReadOperation::PackageDiff {
+                base: missing,
+                tree: missing,
+                names: false,
+            },
+            ReadOperation::Show {
+                oid: missing,
+                path: "sample",
+            },
+        ];
+        let mut commands: Vec<_> = reads
+            .into_iter()
+            .map(|op| build_read_command(root, op).unwrap())
+            .collect();
+        commands.push(
+            super::runner::mutation_command_with_index_for_test(
+                root,
+                MutationOperation::ReadTree { tree: missing },
+                &root.join("candidate-index"),
+            )
+            .unwrap(),
+        );
+        for mut command in commands {
+            // Simulate Git versions that ignore GIT_NO_LAZY_FETCH; the independent
+            // transport guard must still override repository protocol.*.allow.
+            command
+                .env_remove("GIT_NO_LAZY_FETCH")
+                .env("GIT_TRACE2_EVENT", "1")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", root.join("absent-global-config"));
+            let output =
+                super::runner::run_command_for_test(command, std::time::Duration::from_secs(10))
+                    .unwrap();
+            assert!(!output.success());
+            assert_promisor_trace_stays_local(&output.stderr_text(), true);
+        }
+    }
 }

@@ -86,7 +86,7 @@
     )
   }
 
-  function selectTopic(topic: DocumentationTopic, opener?: HTMLElement): void {
+  function selectTopic(topic: DocumentationTopic, opener?: HTMLElement, anchor?: string): void {
     const focused = document.activeElement
     const fromArticle = Boolean(opener && articleElement()?.contains(opener))
     responsiveFocusOwned =
@@ -99,13 +99,23 @@
       articleScrollTop: 0,
       focusOrigin: fromArticle ? session.focusOrigin : captureFocusOrigin(opener, topic.id),
     })
-    void revealSelectedTopic(topic.id, fromArticle)
+    void revealSelectedTopic(topic.id, fromArticle, anchor)
   }
 
-  async function revealSelectedTopic(selectedId: string, fromArticle = false): Promise<void> {
+  async function revealSelectedTopic(selectedId: string, fromArticle = false, anchor?: string): Promise<void> {
     await tick()
     if (session.selectedTopicId !== selectedId) return
     const article = articleElement()
+    if (anchor) {
+      const heading = [...(article?.querySelectorAll<HTMLElement>('[data-documentation-heading]') ?? [])].find(
+        (element) => element.dataset.documentationHeading === anchor,
+      )
+      if (heading) {
+        heading.focus({ preventScroll: true })
+        heading.scrollIntoView?.({ block: 'start', behavior: 'instant' })
+        return
+      }
+    }
     if (article) article.scrollTop = 0
     if (narrowPresentation) {
       const pageScroll = article?.closest<HTMLElement>('[data-page-scroll]')
@@ -238,7 +248,7 @@
     responsiveFocusOwned = false
   }
 
-  function selectContextualTopic(topic: DocumentationTopic): void {
+  function selectContextualTopic(topic: DocumentationTopic, anchor?: string): void {
     transientNavigationMode = topic.kind === 'guide' ? 'guides' : 'reference'
     const referenceGroupId = topic.referenceGroup ? `reference:${topic.referenceGroup}` : undefined
     if (referenceGroupId) {
@@ -246,7 +256,7 @@
         expandedGroupIds: [...session.expandedGroupIds.filter((id) => !id.startsWith('reference:')), referenceGroupId],
       })
     }
-    selectTopic(topic)
+    selectTopic(topic, undefined, anchor)
   }
 
   onMount(() => {
@@ -284,15 +294,16 @@
   })
 
   $effect(() => {
-    const topic = topicId ? index.byId.get(topicId) : undefined
+    const [baseId, anchor] = topicId?.split('#') ?? []
+    const topic = baseId ? index.byId.get(baseId) : undefined
     if (topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
-      selectContextualTopic(topic)
+      selectContextualTopic(topic, anchor)
       consumedRequestId = navigationRequestId
-      onTopicConsumed?.(topic.id, navigationRequestId)
-    } else if (topic && navigationRequestId === undefined && consumedTopicId !== topic.id) {
-      selectContextualTopic(topic)
-      consumedTopicId = topic.id
-      onTopicConsumed?.(topic.id)
+      onTopicConsumed?.(topicId!, navigationRequestId)
+    } else if (topic && navigationRequestId === undefined && consumedTopicId !== topicId) {
+      selectContextualTopic(topic, anchor)
+      consumedTopicId = topicId
+      onTopicConsumed?.(topicId!)
     } else if (topicId && !topic && navigationRequestId !== undefined && consumedRequestId !== navigationRequestId) {
       consumedRequestId = navigationRequestId
       onTopicConsumed?.(topicId, navigationRequestId)

@@ -29,7 +29,10 @@ mod logging_spec;
 pub fn run() {
     tauri::Builder::default()
         .manage(workspace::WorkspaceState::default())
+        .manage(workspace::package_hash::PackageSnapshotState::default())
+        .manage(workspace::artifacts::ArtifactGrantState::default())
         .manage(git::GitState::default())
+        .manage(git::package::PackageGitState::default())
         .manage(workspace::dialogs::DialogGrantState::default())
         .manage(contracts::ContractGrantState::default())
         .manage(branding::BrandGrantState::default())
@@ -39,12 +42,28 @@ pub fn run() {
         .manage(updater::UpdateState::default())
         .plugin(logging::plugin())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::health::host_health,
             workspace::workspace_set_root,
             workspace::workspace_scan,
+            workspace::transaction::workspace_apply_transaction,
+            workspace::package_hash::workspace_hash_package,
+            workspace::generated_write::workspace_replace_generated_files,
+            workspace::artifacts::dialog_choose_import_artifact,
+            workspace::artifacts::workspace_read_artifact,
+            workspace::artifacts::workspace_read_text_artifact,
+            workspace::artifacts::workspace_write_text_artifact,
+            workspace::artifacts::workspace_import_artifact,
+            workspace::artifacts::workspace_replace_artifact,
+            workspace::artifacts::workspace_reveal_artifact,
+            workspace::artifacts::workspace_open_artifact,
             workspace::workspace_read,
             workspace::workspace_write,
             workspace::workspace_rename_pair,
@@ -83,6 +102,9 @@ pub fn run() {
             contracts::contract_choose_hermes_executable,
             contracts::contract_cache_load,
             contracts::contract_cache_write,
+            git::package::git_read_package_context,
+            git::package::git_preview_package_version,
+            git::package::git_commit_package_version,
             git::git_detect,
             git::git_begin_history_session,
             git::git_status,

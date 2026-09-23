@@ -1,0 +1,27 @@
+{
+  "contractVersion": 1,
+  "algorithm": "sha256",
+  "files": [
+    {
+      "path": "commands/summarize.md",
+      "size": 139,
+      "sha256": "77a23d3f40ebbc6a9e71e2acf8df8ac60a2e744069b4f171b6fa4197d077ac81"
+    },
+    {
+      "path": "workflow-package.json",
+      "size": 562,
+      "sha256": "34a342edfd078877cfe396de860d7442ba10b9a10d61cb71e7de0db04d81b261"
+    },
+    {
+      "path": "workflows/command-demo.hermes.yaml",
+      "size": 39,
+      "sha256": "d7ad1cb95fa63bc08cd01cb3d30a4192507f62763af00e0fac72599b0e44e522"
+    },
+    {
+      "path": "workflows/command-demo.yaml",
+      "size": 115,
+      "sha256": "e4b77379609d39ccdcbb8a52d9503b223648e0d6889e1dc368cbe86a61b314c3"
+    }
+  ],
+  "packageDigest": "9125fbf0f53d07d5a08b6189ee8007a47ea4e4c5d2d5e68036c1b3a5d0a0a7b4"
+}

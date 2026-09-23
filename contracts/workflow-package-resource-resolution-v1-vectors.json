@@ -1,0 +1,1214 @@
+{
+  "admission": [
+    {
+      "code": null,
+      "input": {
+        "host_python_supplied": false,
+        "normalizer_version": 4,
+        "origins_supplied": true,
+        "profile": "archon-2026-07",
+        "version": 1
+      }
+    },
+    {
+      "code": "unsupported_resource_contract",
+      "input": {
+        "host_python_supplied": true,
+        "normalizer_version": 4,
+        "origins_supplied": true,
+        "profile": "archon-2026-07",
+        "version": 2
+      }
+    },
+    {
+      "code": "unsupported_resource_profile",
+      "input": {
+        "host_python_supplied": true,
+        "normalizer_version": 2,
+        "origins_supplied": true,
+        "profile": "hermes-legacy",
+        "version": 1
+      }
+    },
+    {
+      "code": "unsupported_resource_profile",
+      "input": {
+        "host_python_supplied": true,
+        "normalizer_version": 7,
+        "origins_supplied": true,
+        "profile": "archon-2026-07",
+        "version": 1
+      }
+    },
+    {
+      "code": "resource_resolution_context_required",
+      "input": {
+        "host_python_supplied": true,
+        "normalizer_version": 6,
+        "origins_supplied": false,
+        "profile": "archon-2026-07",
+        "version": 1
+      }
+    },
+    {
+      "code": "resource_resolution_context_required",
+      "input": {
+        "host_python_supplied": false,
+        "host_sensitive_mcp_candidates": true,
+        "normalizer_version": 5,
+        "origins_supplied": true,
+        "profile": "archon-2026-07",
+        "version": 1
+      }
+    },
+    {
+      "code": null,
+      "input": {
+        "host_python_supplied": false,
+        "host_sensitive_mcp_candidates": false,
+        "normalizer_version": 6,
+        "origins_supplied": true,
+        "profile": "archon-2026-07",
+        "version": 1
+      }
+    }
+  ],
+  "compilation": [
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "named_script",
+            "node_id": "bun",
+            "package_key": "project:root",
+            "path": "scripts/web.js"
+          },
+          {
+            "kind": "command",
+            "node_id": "command",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "loop_command",
+            "node_id": "loop",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "named_script",
+            "node_id": "uv",
+            "package_key": "project:root",
+            "path": "scripts/job.py"
+          }
+        ]
+      },
+      "id": "top-level-command-loop-uv-bun",
+      "normalizer_version": 4,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "review\n",
+            "scripts/job.py": "pass\n",
+            "scripts/web.js": "void 0;\n"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "command"
+              },
+              {
+                "id": "loop",
+                "loop": {
+                  "command": "review",
+                  "max_iterations": 2,
+                  "until": "DONE"
+                }
+              },
+              {
+                "id": "uv",
+                "runtime": "uv",
+                "script": "job"
+              },
+              {
+                "id": "bun",
+                "runtime": "bun",
+                "script": "web"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "command",
+            "node_id": "child__review",
+            "package_key": "library:child",
+            "path": "commands/review.md"
+          }
+        ]
+      },
+      "id": "included-origin",
+      "normalizer_version": 4,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "wrong origin"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "child",
+                "include": "child"
+              }
+            ]
+          }
+        },
+        {
+          "files": {
+            "commands/review.md": "correct origin"
+          },
+          "key": "library",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "child",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "review"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "mcp",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "mcp/local.yaml"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "data/config.json"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "scripts/server.py"
+          }
+        ]
+      },
+      "id": "mcp-local-and-external",
+      "normalizer_version": 4,
+      "sources": [
+        {
+          "files": {
+            "data/config.json": "{}",
+            "mcp/local.yaml": "command: external-runtime\nargs: [--config=data/config.json, scripts/server.py, absent.txt, $TOKEN, --flag]\n",
+            "scripts/server.py": "pass"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "mcp": "local",
+                "prompt": "hello"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "code": "missing_mcp"
+      },
+      "id": "missing-packaged-mcp",
+      "normalizer_version": 4,
+      "sources": [
+        {
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "mcp": "missing",
+                "prompt": "hello"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "code": "resource_escape"
+      },
+      "id": "path-escape-authored",
+      "normalizer_version": 4,
+      "sources": [
+        {
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "runtime": "uv",
+                "script": "../job"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "command",
+            "node_id": "group/command",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "loop_command",
+            "node_id": "group/loop",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "named_script",
+            "node_id": "group/script",
+            "package_key": "project:root",
+            "path": "scripts/job.py"
+          }
+        ]
+      },
+      "id": "loop-group-resources",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "review",
+            "scripts/job.py": "pass"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "group",
+                "loop_group": {
+                  "max_iterations": 2,
+                  "nodes": [
+                    {
+                      "command": "review",
+                      "id": "command"
+                    },
+                    {
+                      "id": "script",
+                      "runtime": "uv",
+                      "script": "job"
+                    },
+                    {
+                      "id": "loop",
+                      "loop": {
+                        "command": "review",
+                        "max_iterations": 2,
+                        "until": "DONE"
+                      }
+                    }
+                  ],
+                  "until": "DONE"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "mcp",
+            "node_id": "group/inherit",
+            "package_key": "project:root",
+            "path": "mcp/group.yaml"
+          },
+          {
+            "kind": "mcp",
+            "node_id": "group/override",
+            "package_key": "project:root",
+            "path": "mcp/node.yaml"
+          }
+        ]
+      },
+      "id": "mcp-group-precedence",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "mcp/default.yaml": "url: https://default.invalid",
+            "mcp/group.yaml": "url: https://group.invalid",
+            "mcp/node.yaml": "url: https://node.invalid"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "group",
+                "loop_group": {
+                  "max_iterations": 2,
+                  "nodes": [
+                    {
+                      "id": "inherit",
+                      "prompt": "hello"
+                    },
+                    {
+                      "id": "override",
+                      "mcp": "node",
+                      "prompt": "hello"
+                    }
+                  ],
+                  "until": "DONE"
+                },
+                "mcp": "group"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "code": "archon_unknown_top_level_field"
+      },
+      "id": "unsupported-authored-mcp-default",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "mcp/default.yaml": "url: https://default.invalid"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "mcp": "default",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "group",
+                "loop_group": {
+                  "max_iterations": 2,
+                  "nodes": [
+                    {
+                      "id": "inherit",
+                      "prompt": "hello"
+                    }
+                  ],
+                  "until": "DONE"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "mcp",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "mcp/local.yaml"
+          }
+        ]
+      },
+      "id": "mcp-host-interpreter-v5",
+      "normalizer_version": 5,
+      "sources": [
+        {
+          "files": {
+            "mcp/local.yaml": "command: @HOST_PYTHON_JSON@\nargs: [-c, pass]\n"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "mcp": "local",
+                "prompt": "hello"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "named_script",
+            "node_id": "bun",
+            "package_key": "project:root",
+            "path": "scripts/web.js"
+          },
+          {
+            "kind": "command",
+            "node_id": "command",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "loop_command",
+            "node_id": "loop",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "named_script",
+            "node_id": "uv",
+            "package_key": "project:root",
+            "path": "scripts/job.py"
+          }
+        ]
+      },
+      "id": "top-level-command-loop-uv-bun-v5",
+      "normalizer_version": 5,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "review\n",
+            "scripts/job.py": "pass\n",
+            "scripts/web.js": "void 0;\n"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "command"
+              },
+              {
+                "id": "loop",
+                "loop": {
+                  "command": "review",
+                  "max_iterations": 2,
+                  "until": "DONE"
+                }
+              },
+              {
+                "id": "uv",
+                "runtime": "uv",
+                "script": "job"
+              },
+              {
+                "id": "bun",
+                "runtime": "bun",
+                "script": "web"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "command",
+            "node_id": "child__review",
+            "package_key": "library:child",
+            "path": "commands/review.md"
+          }
+        ]
+      },
+      "id": "included-origin-v5",
+      "normalizer_version": 5,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "wrong origin"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "child",
+                "include": "child"
+              }
+            ]
+          }
+        },
+        {
+          "files": {
+            "commands/review.md": "correct origin"
+          },
+          "key": "library",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "child",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "review"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "mcp",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "mcp/local.yaml"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "data/config.json"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "scripts/server.py"
+          }
+        ]
+      },
+      "id": "mcp-local-and-external-v5",
+      "normalizer_version": 5,
+      "sources": [
+        {
+          "files": {
+            "data/config.json": "{}",
+            "mcp/local.yaml": "command: external-runtime\nargs: [--config=data/config.json, scripts/server.py, absent.txt, $TOKEN, --flag]\n",
+            "scripts/server.py": "pass"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "mcp": "local",
+                "prompt": "hello"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "named_script",
+            "node_id": "bun",
+            "package_key": "project:root",
+            "path": "scripts/web.js"
+          },
+          {
+            "kind": "command",
+            "node_id": "command",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "loop_command",
+            "node_id": "loop",
+            "package_key": "project:root",
+            "path": "commands/review.md"
+          },
+          {
+            "kind": "named_script",
+            "node_id": "uv",
+            "package_key": "project:root",
+            "path": "scripts/job.py"
+          }
+        ]
+      },
+      "id": "top-level-command-loop-uv-bun-v6",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "review\n",
+            "scripts/job.py": "pass\n",
+            "scripts/web.js": "void 0;\n"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "command"
+              },
+              {
+                "id": "loop",
+                "loop": {
+                  "command": "review",
+                  "max_iterations": 2,
+                  "until": "DONE"
+                }
+              },
+              {
+                "id": "uv",
+                "runtime": "uv",
+                "script": "job"
+              },
+              {
+                "id": "bun",
+                "runtime": "bun",
+                "script": "web"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "command",
+            "node_id": "child__review",
+            "package_key": "library:child",
+            "path": "commands/review.md"
+          }
+        ]
+      },
+      "id": "included-origin-v6",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "commands/review.md": "wrong origin"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "child",
+                "include": "child"
+              }
+            ]
+          }
+        },
+        {
+          "files": {
+            "commands/review.md": "correct origin"
+          },
+          "key": "library",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "child",
+            "nodes": [
+              {
+                "command": "review",
+                "id": "review"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "expected": {
+        "resources": [
+          {
+            "kind": "mcp",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "mcp/local.yaml"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "data/config.json"
+          },
+          {
+            "kind": "mcp_resource",
+            "node_id": "use",
+            "package_key": "project:root",
+            "path": "scripts/server.py"
+          }
+        ]
+      },
+      "id": "mcp-local-and-external-v6",
+      "normalizer_version": 6,
+      "sources": [
+        {
+          "files": {
+            "data/config.json": "{}",
+            "mcp/local.yaml": "command: external-runtime\nargs: [--config=data/config.json, scripts/server.py, absent.txt, $TOKEN, --flag]\n",
+            "scripts/server.py": "pass"
+          },
+          "key": "project",
+          "workflow": {
+            "description": "Resource fixture",
+            "name": "root",
+            "nodes": [
+              {
+                "id": "use",
+                "mcp": "local",
+                "prompt": "hello"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "contract_id": "workflow-package-resource-resolution",
+  "contract_version": 1,
+  "discriminator": [
+    {
+      "inline": false,
+      "value": "job"
+    },
+    {
+      "inline": false,
+      "value": "job.py"
+    },
+    {
+      "inline": false,
+      "value": "pass"
+    },
+    {
+      "inline": true,
+      "value": "print(1)"
+    },
+    {
+      "inline": false,
+      "value": "x=1"
+    },
+    {
+      "inline": true,
+      "value": "x;"
+    },
+    {
+      "inline": true,
+      "value": "x\ny"
+    },
+    {
+      "inline": true,
+      "value": "x\u00a0y"
+    },
+    {
+      "inline": true,
+      "value": "x\u001cy"
+    },
+    {
+      "inline": false,
+      "value": "x\u200by"
+    },
+    {
+      "inline": false,
+      "value": "x\ufeffy"
+    },
+    {
+      "inline": false,
+      "value": "\u00e8\u00b7\u00af\u00e5\u00be\u201e.py"
+    }
+  ],
+  "filesystem_recipes": [
+    {
+      "expected_by_mode": {
+        "compiler-source": {
+          "code": "include_resource_invalid"
+        },
+        "runtime-live": {
+          "path": "scripts/job.py"
+        }
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "symlink-before-valid-script",
+      "kind": "script",
+      "reference": "job",
+      "requires": "symlink-capable-host",
+      "runtime": "uv",
+      "symlinks": {
+        "scripts/job": "job.py"
+      },
+      "verification": "test_compiler_rejects_first_symlink_without_falling_back"
+    }
+  ],
+  "fixture_substitutions": {
+    "@HOST_PYTHON_JSON@": "json-encoded-host-python-executable"
+  },
+  "lookup": [
+    {
+      "expected": {
+        "path": "commands/review.md"
+      },
+      "files": {
+        "commands/review.md": "review"
+      },
+      "id": "compiler-command-replace",
+      "kind": "command",
+      "mode": "compiler-source",
+      "reference": "review.txt"
+    },
+    {
+      "expected": {
+        "path": "commands/review.txt.md"
+      },
+      "files": {
+        "commands/review.txt.md": "review"
+      },
+      "id": "runtime-command-append",
+      "kind": "command",
+      "mode": "runtime-live",
+      "reference": "review.txt"
+    },
+    {
+      "expected": {
+        "path": "commands/review"
+      },
+      "files": {
+        "commands/review": "first",
+        "commands/review.md": "second"
+      },
+      "id": "compiler-command-authored-first",
+      "kind": "command",
+      "mode": "compiler-source",
+      "reference": "review"
+    },
+    {
+      "expected": {
+        "code": "missing_command"
+      },
+      "files": {},
+      "id": "compiler-command-missing",
+      "kind": "command",
+      "mode": "compiler-source",
+      "reference": "review"
+    },
+    {
+      "expected": {
+        "path": "scripts/job.py"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "compiler-uv-replace",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job.txt",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "code": "invalid_resource"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "runtime-uv-invalid-suffix",
+      "kind": "script",
+      "mode": "runtime-live",
+      "reference": "job.txt",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "path": "scripts/job.ts"
+      },
+      "files": {
+        "scripts/job.js": "second",
+        "scripts/job.ts": "first"
+      },
+      "id": "compiler-bun-order",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job",
+      "runtime": "bun"
+    },
+    {
+      "expected": {
+        "path": "scripts/job.js"
+      },
+      "files": {
+        "scripts/job.js": "second"
+      },
+      "id": "compiler-bun-js",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job",
+      "runtime": "bun"
+    },
+    {
+      "expected": {
+        "path": "scripts/job.py"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "compiler-explicit-extension",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job.py",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "code": "missing_named_script"
+      },
+      "files": {},
+      "id": "compiler-script-missing",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job",
+      "runtime": "uv"
+    },
+    {
+      "directories": [
+        "scripts/job"
+      ],
+      "expected": {
+        "code": "include_resource_invalid"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "compiler-unsafe-first",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job",
+      "runtime": "uv"
+    },
+    {
+      "directories": [
+        "scripts/job"
+      ],
+      "expected": {
+        "path": "scripts/job.py"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "runtime-unsafe-first",
+      "kind": "script",
+      "mode": "runtime-live",
+      "reference": "job",
+      "runtime": "uv"
+    },
+    {
+      "cached": {
+        "scripts/job": "pass"
+      },
+      "expected": {
+        "path": "scripts/job"
+      },
+      "files": {
+        "scripts/job.py": "pass"
+      },
+      "id": "compiler-cached-first",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": "job",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "path": "server"
+      },
+      "files": {
+        "mcp/server": "url: nested",
+        "mcp/server.yaml": "url: suffix",
+        "server": "url: direct"
+      },
+      "id": "compiler-mcp-direct",
+      "kind": "mcp",
+      "mode": "compiler-source",
+      "reference": "server"
+    },
+    {
+      "expected": {
+        "path": "mcp/server"
+      },
+      "files": {
+        "mcp/server": "url: nested",
+        "mcp/server.yaml": "url: suffix"
+      },
+      "id": "compiler-mcp-nested",
+      "kind": "mcp",
+      "mode": "compiler-source",
+      "reference": "server"
+    },
+    {
+      "expected": {
+        "path": "mcp/server.yaml"
+      },
+      "files": {
+        "mcp/server.yaml": "url: suffix"
+      },
+      "id": "compiler-mcp-suffix",
+      "kind": "mcp",
+      "mode": "compiler-source",
+      "reference": "server.json"
+    },
+    {
+      "expected": {
+        "code": "missing_mcp"
+      },
+      "files": {},
+      "id": "compiler-mcp-missing",
+      "kind": "mcp",
+      "mode": "compiler-source",
+      "reference": "server"
+    },
+    {
+      "expected": {
+        "servers": {
+          "server": {
+            "url": "https://direct.invalid"
+          }
+        }
+      },
+      "files": {
+        "mcp/server.yaml": "url: https://suffix.invalid",
+        "server": "url: https://direct.invalid"
+      },
+      "id": "runtime-mcp-direct",
+      "kind": "mcp",
+      "mode": "runtime-live",
+      "reference": "server"
+    },
+    {
+      "expected": {
+        "code": "invalid_resource"
+      },
+      "files": {},
+      "id": "runtime-path-escape",
+      "kind": "script",
+      "mode": "runtime-live",
+      "reference": "../job",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "path": "packages/fixture/job.py"
+      },
+      "files": {
+        "packages/fixture/job.py": "pass"
+      },
+      "id": "sealed-bound-script",
+      "kind": "script",
+      "mode": "runtime-sealed",
+      "reference": "packages/fixture/job.py",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "path": "commands/review..md"
+      },
+      "files": {
+        "commands/review..md": "review"
+      },
+      "id": "compiler-trailing-dot",
+      "kind": "command",
+      "mode": "compiler-source",
+      "reference": "review."
+    },
+    {
+      "expected": {
+        "path": "scripts/.job.py"
+      },
+      "files": {
+        "scripts/.job.py": "pass"
+      },
+      "id": "compiler-leading-dot",
+      "kind": "script",
+      "mode": "compiler-source",
+      "reference": ".job",
+      "runtime": "uv"
+    },
+    {
+      "expected": {
+        "path": "scripts/job.PY"
+      },
+      "files": {
+        "scripts/job.PY": "pass"
+      },
+      "id": "runtime-uppercase-suffix",
+      "kind": "script",
+      "mode": "runtime-live",
+      "reference": "job.PY",
+      "runtime": "uv"
+    }
+  ],
+  "lookup_precondition": "candidate-stage-valid-inputs-unless-explicit-invalid-case",
+  "mcp_candidates": [
+    {
+      "document": {
+        "args": [
+          "--config=data/a.json",
+          "$TOKEN",
+          "--flag",
+          "missing",
+          ""
+        ],
+        "command": "external-runtime",
+        "nested": {
+          "key-not-a-candidate": "scripts/server.py"
+        }
+      },
+      "expected": [
+        "data/a.json",
+        "missing",
+        "external-runtime",
+        "scripts/server.py"
+      ]
+    }
+  ]
+}

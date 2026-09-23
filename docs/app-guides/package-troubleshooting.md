@@ -1,0 +1,25 @@
+# Package troubleshooting
+
+Start with the package overview and the first blocking finding. Repair `workflow-package.json` in source mode if structured metadata cannot load. A missing `scripts/analyze.py` requires restoring or explicitly selecting the intended resource; changing the reference blindly can bind a different file.
+
+If a declared workflow or companion is missing, the Packages view offers **Repair manifest** for the existing safe manifest. Open **Advanced Source**, correct the member path, and save. Package navigation returns when membership is valid; validate again before preparing. Unsafe or inaccessible paths must be corrected outside the app before they can be opened.
+
+## Drafts and external changes
+
+Invalid script and command drafts can be saved. Recovery preserves differing unsaved edits by workspace and path. When disk content changes, Compare shows both versions. Keep Mine requires comparison and a fresh revision check. Reload Disk accepts current disk content; accepting a deletion closes the artifact while retaining its recovery draft. A second external edit can require another comparison.
+
+## Preparation failures
+
+If preparation requires the repository root, reopen that directory as the workspace and select the package subfolder. Opening only the package folder does not grant access to its parent repository's index.
+
+For a stale snapshot, save or refresh and validate again. For a shared-index conflict, reconcile the unselected entry changes before preparing. For unsupported include origins or runtime contexts, use the supported portable source layout rather than guessing compiler resolution.
+
+Missing local Git identity requires local configuration. Expired preview authorization or changed HEAD requires a new preview. If native rollback reports a partial outcome, inspect each reported recovery location before retrying or removing files. Do not assume an error means no files changed.
+
+Package transactions and artifact saves can retain old files in the application's recovery storage, including after a successful operation. The receipt shows the original path and the exact recovery location. Artifact save notices remain visible across artifact navigation until you dismiss them; dismissing a notice does not delete the retained files. A neighboring JSON record preserves the original workspace and file path after the app closes. These files remain outside the package and its digest. Retention preserves writes made by another editor that already had the file open; finish those edits before deciding which version to keep. Recovery files are not automatically removed.
+
+Recovery normally uses application storage. If that location is unavailable or on another filesystem, Studio looks for a private recovery directory outside the workspace on the workspace's filesystem. The receipt identifies the location actually used, and retained files remain available after restarting.
+
+If recovery storage is full or no safe location is available, inspect the reported files and locations before retrying. A filesystem-root workspace, restricted parent folders, or a separately mounted resource may have no suitable recovery location outside the workspace; choose a writable workspace folder with a usable parent in that case. Studio preserves the source when retention cannot be completed. Keep recovery files until you have verified the desired contents and closed other editors using them.
+
+See [Readiness](#guide:package-readiness), [Preparing packages](#guide:preparing-packages), and [Folder structure](#guide:package-folder-structure).

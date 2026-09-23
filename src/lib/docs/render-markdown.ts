@@ -24,10 +24,18 @@ export function renderMarkdown(markdown: string): string {
       node.textContent = workflowCopy(prose)
     }
   }
+  const headingCounts = new Map<string, number>()
+  for (const heading of template.content.querySelectorAll<HTMLElement>('h1,h2,h3,h4')) {
+    const slug = (heading.textContent ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'section'
+    const count = (headingCounts.get(slug) ?? 0) + 1
+    headingCounts.set(slug, count)
+    heading.dataset.documentationHeading = count === 1 ? slug : slug + '-' + count
+    heading.tabIndex = -1
+  }
   for (const link of template.content.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const rawHref = link.getAttribute('href') ?? ''
     if (rawHref.startsWith('#')) {
-      if (/^#(?:field|node|contract|guide):[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawHref)) {
+      if (/^#(?:field|node|contract|guide):[A-Za-z0-9][A-Za-z0-9._-]*(?:#[a-z0-9]+(?:-[a-z0-9]+)*)?$/.test(rawHref)) {
         const button = document.createElement('button')
         button.type = 'button'
         button.dataset.topicId = rawHref.slice(1)

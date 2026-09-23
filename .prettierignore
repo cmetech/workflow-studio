@@ -11,3 +11,6 @@ svelte.config.js
 vite.config.ts
 # Byte-frozen user fixture; its SHA-256 is an acceptance baseline.
 tests/e2e/fixtures/loop-group-showcase.yaml
+# Exact package bytes are covered by digest and upstream parity verification.
+examples/packages/
+tests/fixtures/workflow-packages/

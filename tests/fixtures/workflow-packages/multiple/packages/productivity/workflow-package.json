@@ -1,0 +1,22 @@
+{
+  "description": "Diagnostic and support-bundle workflows for laptops.",
+  "displayName": "Laptop Support",
+  "externalRequirements": {
+    "providers": [],
+    "runtimes": ["uv"],
+    "secrets": [],
+    "services": [],
+    "tools": []
+  },
+  "id": "productivity",
+  "license": "MIT",
+  "publisher": "example-company",
+  "schemaVersion": 1,
+  "tags": ["diagnostics", "support"],
+  "version": "1.2.3",
+  "workflows": [
+    {
+      "definition": "main.yaml"
+    }
+  ]
+}

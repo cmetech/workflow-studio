@@ -4,6 +4,8 @@
 
 **Date:** 2026-09-03
 
+**Contract reconciliation:** 2026-09-22. The original product approval is retained; [2026-09-22 marketplace contract reconciliation](../../analysis/2026-09-22-workflow-package-marketplace-contract-reconciliation.md) corrects implementation assumptions and records unresolved resolver/editor scope. It does not mark the feature implemented.
+
 **Audience:** Engineers implementing, reviewing, testing, documenting, or maintaining Workflow Studio package authoring
 
 **Related specification:** `docs/superpowers/specs/2026-07-25-workflow-studio-design.md`
@@ -16,7 +18,7 @@ A local folder or Git repository may contain multiple independently versioned pa
 
 Workflow Studio remains an authoring and packaging application. It never executes workflow nodes, scripts, command resources, MCP servers, or package installers and never installs dependencies.
 
-Hermes/co-worker remains authoritative for marketplace discovery, remote Git access, installation, compatibility checks, atomic staging, admission, execution, and trust. A separate Hermes design and implementation plan must define those runtime behaviors before marketplace installation ships.
+Hermes/co-worker remains authoritative for marketplace discovery, remote Git access, installation, compatibility checks, atomic staging, admission, execution, and trust. The marketplace implementation exists at the agent revision pinned in the reconciliation report. Studio must verify interoperability with that implementation and its destination-platform requirements.
 
 ## 2. Goals
 
@@ -71,6 +73,8 @@ Generated digest and marketplace files are derived outputs. They are inspectable
 ### 4.3 Hermes authority
 
 Hermes owns the portable-package schemas, resource-resolution rules, digest algorithm, marketplace-index contract, compatibility semantics, installation policy, and trust model. Workflow Studio consumes a pinned, bundled version of these contracts and test vectors so it works offline.
+
+The package envelope uses `contract_version`, three embedded schemas, `path_rules`, `resource_rules` (six size/count limits), `digest_rules`, `compatibility_rules`, and `diagnostic_codes`. It has no embedded contract digest or resource-resolution inventory. Pin exact artifact bytes externally. Reference-resolution coverage remains a separate gate: use existing authoring descriptors where sufficient and obtain shared upstream resolver exports/vectors where missing.
 
 An unsupported newer package contract may be displayed and edited as ordinary files, but structured package actions and package preparation fail closed. Workflow Studio never guesses how to reinterpret an unsupported package.
 
@@ -154,7 +158,7 @@ Hermes will publish a versioned digest specification and shared test vectors. At
 - file-count and per-file/total-size limits; and
 - behavior for unsupported file types, path encodings, and symlinks.
 
-Studio calculates hashes from the exact saved bytes. It does not normalize line endings or reformat files as part of preparation. `digests.json` and the repository marketplace index are excluded from self-referential hashing exactly as the Hermes contract prescribes.
+Studio calculates hashes from the exact saved bytes. It does not normalize line endings or reformat files as part of preparation. Only root-relative `digests.json` is excluded from the package digest. The repository index is outside package roots in the supported layout; nested files named `digests.json` remain included. Git ignore rules do not filter digest inputs. Path ordering is by Unicode code point, and the domain, U64BE framing, and raw file hashes come from `digest_rules`.
 
 The marketplace index is deterministic and derived from package manifests and digests. Entries are sorted by package ID. It contains no timestamp and no self-referential commit SHA. The co-worker records the exact fetched Git commit as provenance during installation and independently recalculates the package digest.
 
@@ -277,7 +281,7 @@ Studio labels these findings as destination-dependent and never claims that the 
 
 ## 11. Preparation and update flow
 
-Studio uses the terms **Saved**, **Prepared locally**, and **Available from repository**. It never labels a commit published because it does not inspect or change the remote.
+Studio uses the terms **Saved** and **Prepared locally** for locally verified state. **Available from repository** describes the external marketplace handoff in instructions, not a status Studio can confirm offline. It never labels a commit published because it does not inspect or change the remote.
 
 ### 11.1 New package
 
@@ -327,7 +331,7 @@ Rename and move operations update recognized references only when the canonical 
 
 ## 14. Security boundary
 
-All paths are resolved immediately before native access and must remain inside the selected workspace and package roots. Package scans are bounded, do not traverse symlinks, exclude Git internals and app state, and reject distributable symlinks even when their targets remain inside the package.
+All paths are resolved immediately before native access and must remain inside the selected workspace and package roots. Package scans are bounded, do not traverse symlinks, reject prohibited repository metadata inside a package, and reject distributable symlinks even when their targets remain inside the package. Keep app state outside package roots. Do not silently exclude regular supporting files. Reject non-NFC paths and full Unicode case-fold collisions; preserve the contract's separate file, byte, traversal, index, and catalog limits.
 
 The renderer cannot invoke arbitrary executables. Native commands remain narrow and accept typed argument arrays without shell interpolation. Static script parsing uses bundled libraries in the renderer/worker boundary and never imports or executes the script.
 
@@ -337,7 +341,7 @@ Private/public remote access is outside Studio. No remote URL or credential is n
 
 ## 15. Co-worker handoff
 
-The companion Hermes marketplace implementation will support public and authenticated private Git repositories. Its installer must:
+The pinned companion marketplace implementation provides repository-source and install flows. Verify Studio-produced packages against its following required behavior, including the configured backend credential and filesystem capabilities:
 
 1. resolve an index/package selection to a Git repository and exact commit;
 2. fetch into bounded temporary staging using the user's configured Git credential path;
@@ -352,7 +356,7 @@ The companion Hermes marketplace implementation will support public and authenti
 
 An update repeats the full process. Package metadata cannot grant or carry trust. Any covered byte change invalidates prior trust according to Hermes policy.
 
-No sibling `hermes-agent` source is changed under the Workflow Studio implementation plan. The Hermes contract and installer require a separately approved upstream specification and plan.
+No sibling `hermes-agent` source is changed under the Workflow Studio implementation plan. Any missing resource-resolution export requires separately authorized upstream work. The existing contract and installer need cross-repository acceptance, not replacement. Local preparation is not proof of remote publication.
 
 ## 16. Documentation
 
@@ -431,7 +435,7 @@ The existing 250-node/500-edge canvas performance contract remains required; pac
 
 ## 19. Delivery sequence
 
-1. Specify and version the Hermes portable-package, digest, resource-resolution, and marketplace-index contracts with shared fixtures.
+1. Consume the pinned portable-package, digest, and marketplace-index contracts and fixtures; separately close the resource-resolution coverage/export gate before dependent behavior.
 2. Add read-only package discovery, multi-package projection, and package overview to Studio.
 3. Add command, script, structured-resource, text, and binary artifact handling.
 4. Add node-to-resource transactions, reference validation, draft recovery, and external-change support.
@@ -439,7 +443,7 @@ The existing 250-node/500-edge canvas performance contract remains required; pac
 6. Add package-scoped Git preparation and version creation.
 7. Add offline documentation and complete example packages.
 8. Run cross-platform and cross-repository compatibility verification.
-9. Design and implement the separate Hermes public/private marketplace installer.
+9. Verify the existing agent marketplace install/update/trust handoff on supported destination backends; record platform gaps explicitly.
 
 ## 20. Acceptance criteria
 

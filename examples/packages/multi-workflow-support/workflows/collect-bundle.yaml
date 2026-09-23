@@ -1,0 +1,6 @@
+name: collect-bundle
+description: Read a shared synthetic support script.
+nodes:
+  - id: summarize
+    runtime: uv
+    script: shared-support

@@ -23,6 +23,13 @@ const coldSourceGroups = [
   ['Example Gallery', [/^src\/features\/examples\/ExampleGallery\.svelte$/i]],
   ['Git history UI', [/^src\/features\/version-control\/GitView\.svelte$/i]],
   ['CodeMirror editor', [/^src\/features\/editor\/EditorModes\.svelte$/i]],
+  [
+    'package artifact editors',
+    [
+      /^src\/features\/artifacts\/ArtifactEditor\.svelte$/i,
+      /^src\/features\/packages\/PackageManifestEditor\.svelte$/i,
+    ],
+  ],
   ['Svelte Flow editor', [/^src\/features\/canvas\/GraphCanvas\.svelte$/i]],
 ]
 

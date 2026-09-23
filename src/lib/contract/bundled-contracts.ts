@@ -4,10 +4,9 @@ import { loadConformanceCorpus, type ConformanceCorpus } from './conformance'
 import type { AuthoringContract } from './types'
 
 const bundledSources = import.meta.glob('/contracts/*.json', {
-  eager: true,
   import: 'default',
   query: '?raw',
-}) as Readonly<Record<string, string>>
+}) as Readonly<Record<string, () => Promise<string>>>
 
 let cached: Promise<BundledResourceSet> | undefined
 
@@ -36,8 +35,8 @@ export async function loadBundledConformanceCorpora(
   )
 }
 
-function readBundledResource(file: string): string {
+async function readBundledResource(file: string): Promise<string> {
   const matches = Object.entries(bundledSources).filter(([identifier]) => identifier.endsWith(`/contracts/${file}`))
   if (matches.length !== 1) throw new Error(`Missing or ambiguous bundled workflow resource: ${file}.`)
-  return matches[0]![1]
+  return matches[0]![1]()
 }

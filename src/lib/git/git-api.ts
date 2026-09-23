@@ -1,5 +1,5 @@
-import type { GitNativeBridge } from '$src/lib/native/types'
-import type { GitInspection, GitPairPaths, GitPairSnapshot, GitRepository } from './types'
+import type { GitNativeBridge, GitPackageNativeBridge } from '$src/lib/native/types'
+import type { GitInspection, GitPairPaths, GitPairSnapshot, GitRepository, GitPackageVersionRequest } from './types'
 import { emptyGitInspection } from './types'
 
 export async function inspectGitRepository(
@@ -80,4 +80,14 @@ export function loadGitCommit(
   pair: GitPairPaths,
 ): Promise<GitPairSnapshot> {
   return native.gitShowPair(root, oid, authorizationToken, pair.definitionPath, pair.companionPath)
+}
+
+export function readPackageGitContext(native: GitPackageNativeBridge, packageRoot: string) {
+  return native.gitReadPackageContext(packageRoot)
+}
+export function previewPackageVersion(native: GitPackageNativeBridge, request: GitPackageVersionRequest) {
+  return native.gitPreviewPackageVersion(request)
+}
+export function createPackageVersion(native: GitPackageNativeBridge, authorizationToken: string) {
+  return native.gitCommitPackageVersion(authorizationToken)
 }

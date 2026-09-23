@@ -4,6 +4,9 @@ import type { ContractCacheLoadResult, ContractCacheStoredEntry } from '../contr
 import type { WorkflowProfile } from '../contract/types'
 import type {
   GitDiff,
+  GitPackageContext,
+  GitPackageVersionRequest,
+  GitPackageVersionPreview,
   GitHistoryResult,
   GitPairSnapshot,
   GitRepository,
@@ -64,10 +67,99 @@ export interface WorkspaceWriteRequest {
 }
 
 export interface WorkspaceWriteResult {
+  /** Exact retained live-file locations after an artifact save; display only. */
+  readonly recoveryResults?: readonly PathOperationResult[]
   readonly relativePath: string
   readonly sha256: string
   readonly size: number
   readonly modifiedAt: string
+}
+
+export interface WorkspaceArtifactMetadata {
+  /** Exact native recovery locations retained after a successful import or replacement. */
+  readonly recoveryResults?: readonly PathOperationResult[]
+  readonly relativePath: string
+  readonly mediaType: string
+  readonly size: number
+  readonly sha256: string
+  readonly modifiedAt: string
+  readonly readOnly: boolean
+}
+
+export interface ArtifactSourceSelection {
+  readonly sourceGrantToken: string
+}
+
+export interface WorkspaceImportArtifactRequest {
+  readonly relativePath: string
+  readonly sourceGrantToken: string
+  /** One-use complete package capture for guarded package mutations. */
+  readonly packageSnapshotToken?: string
+}
+
+export interface WorkspaceReplaceArtifactRequest extends WorkspaceImportArtifactRequest {
+  readonly expectedCurrentHash: string | null
+}
+
+export interface ExpectedWorkspaceEntry {
+  readonly relativePath: string
+  readonly expectedCurrentHash: string | null
+}
+export interface WorkspaceMoveRequest {
+  readonly sourcePath: string
+  readonly destinationPath: string
+}
+export interface PackageMutationPlan {
+  /** Omit only for standalone operations or new-package creation with an absence guard. */
+  readonly packageSnapshotToken?: string
+  readonly workspaceId: string
+  readonly expectedEntries: readonly ExpectedWorkspaceEntry[]
+  readonly writes: readonly WorkspaceWriteRequest[]
+  readonly moves: readonly WorkspaceMoveRequest[]
+  readonly trashes: readonly WorkspaceTrashRequest[]
+}
+export interface WorkspaceTransactionResult {
+  readonly status: 'committed'
+  readonly results: readonly PathOperationResult[]
+}
+export interface WorkspaceFileIdentity {
+  readonly sha256: string
+  readonly size: number
+  readonly modifiedAt: string
+}
+export interface PackageFileHash {
+  readonly relativePath: string
+  readonly size: number
+  readonly sha256: string
+  readonly identity: WorkspaceFileIdentity
+}
+export interface WorkspacePackageSnapshot {
+  readonly packageRoot: string
+  readonly workspaceId: string
+  readonly sourceSnapshotToken: string
+  readonly generatedDigestHash: string | null
+  readonly entries: readonly WorkspaceFileEntry[]
+  readonly files: readonly PackageFileHash[]
+}
+export interface WorkspaceReplaceGeneratedRequest {
+  readonly sourceSnapshotToken: string
+  readonly writes: readonly WorkspaceWriteRequest[]
+}
+export interface PackageNativeBridge {
+  workspaceApplyTransaction(plan: PackageMutationPlan): Promise<WorkspaceTransactionResult>
+  workspaceHashPackage(packageRoot: string): Promise<WorkspacePackageSnapshot>
+  workspaceReplaceGeneratedFiles(request: WorkspaceReplaceGeneratedRequest): Promise<WorkspaceTransactionResult>
+}
+
+export interface ArtifactNativeBridge {
+  chooseImportArtifact(): Promise<ArtifactSourceSelection | null>
+  workspaceReadArtifact(relativePath: string): Promise<WorkspaceArtifactMetadata>
+  workspaceReadTextArtifact(relativePath: string): Promise<WorkspaceReadResult>
+  workspaceWriteTextArtifact(request: WorkspaceWriteRequest): Promise<WorkspaceWriteResult>
+  workspaceImportArtifact(request: WorkspaceImportArtifactRequest): Promise<WorkspaceArtifactMetadata>
+  workspaceReplaceArtifact(request: WorkspaceReplaceArtifactRequest): Promise<WorkspaceArtifactMetadata>
+  workspaceRevealArtifact(relativePath: string): Promise<void>
+  workspaceOpenArtifact(relativePath: string): Promise<void>
 }
 
 export interface WorkspaceRenameRequest {
@@ -92,7 +184,7 @@ export interface WorkspaceTrashRequest {
 export interface PathOperationResult {
   readonly relativePath: string
   readonly destinationPath?: string
-  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'written' | 'failed' | 'partial'
+  readonly status: 'moved' | 'rolledBack' | 'trashed' | 'written' | 'failed' | 'partial' | 'recoveryRetained'
   readonly errorCode?: string
   readonly message?: string
 }
@@ -248,6 +340,12 @@ export interface GitNativeBridge extends NativeBridge {
   ): Promise<GitPairSnapshot>
 }
 
+export interface GitPackageNativeBridge extends NativeBridge {
+  gitReadPackageContext(packageRoot: string): Promise<GitPackageContext>
+  gitPreviewPackageVersion(request: GitPackageVersionRequest): Promise<GitPackageVersionPreview>
+  gitCommitPackageVersion(authorizationToken: string): Promise<GitVersionResult>
+}
+
 export interface GitMutationNativeBridge extends NativeBridge {
   gitInit(root: string): Promise<GitRepository>
   gitSetLocalIdentity(root: string, userName: string, userEmail: string): Promise<void>
@@ -277,10 +375,13 @@ export interface ContractNativeBridge extends NativeBridge {
 
 export interface WorkspaceNativeBridge
   extends
+    ArtifactNativeBridge,
+    PackageNativeBridge,
     LayoutNativeBridge,
     ContractNativeBridge,
     GitNativeBridge,
     GitMutationNativeBridge,
+    GitPackageNativeBridge,
     BrandNativeBridge,
     SetupNativeBridge,
     UpdateNativeBridge {

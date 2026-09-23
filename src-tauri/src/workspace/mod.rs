@@ -1,7 +1,16 @@
+pub(crate) mod artifacts;
 pub(crate) mod dialogs;
 mod files;
+pub(crate) mod generated_write;
+pub(crate) mod package_hash;
 mod paths;
+pub(crate) mod transaction;
+mod transaction_recovery;
 mod watcher;
+
+pub(crate) use transaction_recovery::security::{
+    create_private as create_private_directory, verify_private as verify_private_directory,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +20,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 use same_file::Handle;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceError {
@@ -81,7 +90,7 @@ impl Default for WorkspaceState {
 
 pub(crate) struct WorkspaceBinding {
     pub(crate) root: PathBuf,
-    generation: u64,
+    pub(crate) generation: u64,
 }
 
 struct ActiveWorkspace {
@@ -108,10 +117,12 @@ pub struct WorkspaceScope {
     root: PathBuf,
     identity: Handle,
     directory: Dir,
+    recovery: Option<transaction_recovery::RecoveryStore>,
+    recovery_error: Option<String>,
 }
 
 impl WorkspaceScope {
-    fn new(root: &Path) -> WorkspaceResult<Self> {
+    pub(crate) fn new(root: &Path) -> WorkspaceResult<Self> {
         let root = paths::canonical_root(root)?;
         let identity = Handle::from_path(&root).map_err(|_| {
             WorkspaceError::new(
@@ -129,6 +140,11 @@ impl WorkspaceScope {
             root,
             identity,
             directory,
+            #[cfg(test)]
+            recovery: Some(transaction_recovery::RecoveryStore::isolated()?),
+            #[cfg(not(test))]
+            recovery: None,
+            recovery_error: None,
         })
     }
 
@@ -154,7 +170,7 @@ impl WorkspaceScope {
         Ok(&self.directory)
     }
 
-    fn root_path(&self) -> WorkspaceResult<&Path> {
+    pub(crate) fn root_path(&self) -> WorkspaceResult<&Path> {
         self.verify()
     }
 }
@@ -174,7 +190,20 @@ pub fn workspace_set_root(
     git_state: State<'_, crate::git::GitState>,
     app: AppHandle,
 ) -> WorkspaceResult<WorkspaceRootInfo> {
-    let scope = WorkspaceScope::new(Path::new(&root_path))?;
+    let mut scope = WorkspaceScope::new(Path::new(&root_path))?;
+    let primary = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|path| path.join("transaction-recovery"));
+    let recovery = transaction_recovery::RecoveryStore::select(primary.as_deref(), &scope);
+    match recovery {
+        Ok(store) => scope.recovery = Some(store),
+        Err(error) => {
+            scope.recovery = None;
+            scope.recovery_error = Some(error.message);
+        }
+    }
     let root = scope.verify()?;
     let (info, git_metadata) = discover_workspace_root(root)?;
     let watcher = watcher::start(root, git_metadata.as_ref(), app)?;
@@ -392,3 +421,6 @@ mod repository_result_tests {
             .starts_with(r"\\?\"));
     }
 }
+
+#[cfg(test)]
+mod package_mutation_tests;
